@@ -400,6 +400,45 @@ Tools (`lib/oc-log.sh`, `oc-commit`, `oc-ledger`, etc.) automatically derive the
 
 Worked examples (2026-09-12): 34 `shipchain` rows written unattributed by `oc-ship-chain` while the tool held the owning session id (n=3515 class); and an actor string that is not a rostered role (a lane stamping its factory label instead of its roster role) trips `unrostered-actor` — **stamp as your ROSTER ROLE**.
 
+### A1b — a SELF uuid is read from the environment, never passed (owner order 2026-09-26 23:14Z)
+
+A1 governs **who acts**. This governs **who is acted upon**, and the two collapse into one whenever the lane acts on itself. A tool argument that names the CALLER's own session must be derived from `$OPENCRABS_SESSION_ID`, exactly like the actor; a positional `<uuid>` for that verb is a defect in the tool, not a convenience.
+
+**The split is by ROLE IN THE CALL, not by name:**
+
+| Kind | Verbs | Rule |
+|---|---|---|
+| **SELF** — the uuid is the caller's own | `oc-ledger ack` · `enroll` · `claim-ref` · `confirm` · `claim` · `oc-drift-check` | **derived from env**; the argument becomes optional, and when supplied it is **cross-checked** against `$OPENCRABS_SESSION_ID` and REFUSED on mismatch |
+| **TARGET** — the uuid names another session | `oc-ledger retire` · `promote` · `oc-ping-proof` · `oc-tg-audit` · `oc-notify-fanout` recipients | **stays explicit** — there is no ambient answer, and defaulting one would silently act on the wrong lane |
+
+`oc-ledger claim` already spells this out as `[<uuid>]` (optional) — so the convention exists in the usage line and was never enforced in the body.
+
+**Why this is a correctness rule and not hygiene.** A hand-passed self uuid has exactly one failure mode that matters: it can be **wrong**, and nothing in the tool can tell a wrong self uuid from a right one. Measured cost, all in this file's own history:
+
+- `oc-ledger:613` records the silent case — **mis-attributed worker stamps** (`n=1337` corrected via `--by` against `n=1386` *"silent-lie"*). The row was written for a session that was not the actor, and it read as legitimate.
+- `oc-ledger:788` already tells the lane the answer: *"copy the uuid from a LIVE read — `oc-ledger roster --live`, or `$OPENCRABS_SESSION_ID`."* The tool knows the environment holds the truth and still demands the argument.
+- A1 above carries the trailer instance of the same class: a `<role> <uuid>` actor passed `oc-commit`'s presence-only guard, wrote the role word verbatim, and gate 4 refused it as UNSIGNED — ship rc 2, **main stranded undeployed**, ~25 CI minutes (lane 63d775f9, 2026-09-26).
+
+The machinery is already in `oc-ledger` twice over (`:614`, `:1031` — `${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}`), so this is wiring, not invention. `cmd_ack` and its sibling verbs take `uuid="${1:-}"` and never consult it.
+
+**Refusal is the point.** Deriving silently and accepting a passed value would leave the wrong-uuid row possible; the cross-check is what converts a preference into a gate. A SELF verb that accepts any syntactically valid uuid is not fixed, only shorter.
+
+**Precedence — the environment variable WINS, and `OC_ACTOR` is an explicit override only (owner order 2026-09-26 23:20Z: *"OC_ACTOR is outdated"*).**
+
+A1 and `environment.md` both state that manual `export OC_ACTOR` is **retired**. The code does the opposite: at **8 sites** the idiom is `${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}`, so a stale `OC_ACTOR` **silently overrides the ambient session id** — `oc-ledger:614` · `:1031` · `oc-commit:252` · `lib/oc-log.sh:135` · `lib/oc-notify.sh:157` · `oc-notify-fanout:1016` · `:1017` · `:1225`. Retired-but-winning is the worst of both shapes: the law tells a lane not to set it, and if the lane has set it anyway the value beats the truth.
+
+**This is the mechanism of the incident A1 cites**, not an adjacent one: lane 63d775f9 exported `OC_ACTOR` in the `--by` spelling (`editor <uuid>`), that export won over its own `$OPENCRABS_SESSION_ID`, `oc-commit` wrote the actor **verbatim**, and gate 4 refused the trailer as UNSIGNED — ship rc 2, main stranded, ~25 CI minutes. Had the environment won, the malformed value would never have reached the commit.
+
+**Rule, therefore:**
+
+| | |
+|---|---|
+| `$OPENCRABS_SESSION_ID` | **the authority** for both actor and self uuid, always |
+| `OC_ACTOR` | a **deliberate, disclosed override** — stamping on behalf of another session, or a tool's own fallback name (`oc-deploy` stamps `--by "oc-deploy recover-receipt"`). It must **announce that it is overriding**, so an override is visible in the row rather than indistinguishable from the ambient case |
+| precedence | **inverted from today's.** Env first; `OC_ACTOR` only where the ambient value is absent or an override is explicit |
+
+An override that wins silently is indistinguishable from a bug, and this one has already cost a stranded main.
+
 ### A2 — A shift-length goal must fit its turn budget, and its death must notify
 
 An autonomous `/goal` issued for a shift MUST carry a turn budget that covers the shift; a 20-turn default on a multi-hour window expires mid-flight. When a goal ends — budget exhausted, or any terminal state — its death MUST be surfaced. A silently expired goal leaves the loop running on standing orders with no judge, and every "goal clock is running" claim after that is false.
