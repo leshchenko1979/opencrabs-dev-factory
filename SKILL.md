@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.265
+version: 0.4.266
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -411,7 +411,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 | NEW issues NEVER upstream — every new issue (upstream-code bugs and fork-only infra alike) is filed on the FORK | `leshchenko1979/opencrabs` | owner 2026-08-27 14:08Z |
 | Upstream receives PRs ONLY — body = detailed description ending `Original issue: <full fork URL>`; NEVER `Closes #N` (wrong issue space) | `adolfousier/opencrabs` PR bodies | owner 2026-08-27 |
 | Fork issue closed by US right after the PR is filed | fork issue tracker | — |
-| Fork issues NEVER claimed on GitHub: no tackling comments, assignment, labels/reactions by any lane — claiming = `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48); uniqueness sweeps stay read-only search | ledger | owner 2026-08-27 17:07Z |
+| Fork issues NEVER claimed on GitHub: no tackling comments, assignment, labels/reactions by any lane — claiming = `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48); uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING, not the design/implementation record | ledger | owner 2026-08-27 17:07Z |
 | PR SHIPMENT — **PR SHIPMENT LAW (single home): feature COMPLETE + smoke PASS (v0.4.104 four-leg rubric) → the EDITOR posts smoke evidence to its forum topic and its obligation ENDS there; the HARVEST lane ports, gates and files the upstream PR. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
 | APPROVAL = Alexey's reply or a positive Telegram reaction to the explicit request in the forum topic; silence is NOT consent; spontaneous / ad-hoc PRs remain forbidden | owner word | v0.4.1 |
 
@@ -466,9 +466,9 @@ links; development-time upstream contact is PR-comments only (supersedes the
   (ALL new issues — upstream-code bugs and fork-only infra alike; upstream
   receives PRs only). Discoverer
   files it (symptom + evidence); fixer claims via an `oc-ledger claim` row +
-  an `Issue-Ref` trailer on the commit — NO `gh` comment, assignment or label
-  on the fork issue (fork-issue comments are the owner's lane only,
-  2026-08-27). Covers
+  an `Issue-Ref` trailer on the commit — NO CLAIMING `gh` comment, assignment
+  or label on the fork issue (2026-08-27); CARVE-OUT: the item-7 approved-design
+  comment and `oc-issue-log`'s per-commit note (owner 2026-08-28) are sanctioned. Covers
   task starts (`editor.md` Phase 1) AND mid-loop finds: red-build bugs, failed
   smoke tests, defects in another editor's feature.
 - Continuous Issue Relationship Linking (owner order 2026-09-16; creation gate 2026-09-25; `--root` 2026-09-26): whenever
