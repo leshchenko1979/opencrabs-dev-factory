@@ -54,6 +54,15 @@
 # (c) PATH BOUNDARY. The match must begin at a path start (`(?<![\w/.-])`), so
 #     `src/brain/tools/registry.rs` yields `src/brain/tools/registry.rs` and never
 #     a bare `tools/` inside it.
+# (d) TOOL NAME (#616). A body naming a live `oc-*` tool is a surface claim too --
+#     `oc-questions` IS tools/state/oc-questions -- and it is consulted ONLY when
+#     the body carries no path claim, because a name is much weaker evidence: read
+#     unconditionally it wired 11 src/** fixes to the tools lane (#299 quotes a
+#     session's next-step text, #440 cites a "related defect", #531 calls one "the
+#     CI-side twin of this defect", #457 names cron JOBS). A name resolving to no
+#     live tool adds nothing, so the body stays UNPINNED. This is NOT a
+#     title-prefix test: `fix(tools):` spans both repos, which is why #471 and
+#     #405 name no live tool and correctly stay P2.
 #
 # The resolved path is always printed, so a reader can check the verdict rather
 # than trust it. The TITLE scope is reported as CONTEXT and never decides the
