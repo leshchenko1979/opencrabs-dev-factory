@@ -48,6 +48,20 @@ The per-group register is **gone** — its `json` block, the T1–T18 / Tier-3 t
 
 **Fork issue #358 is obsoleted by this removal** — it would build the fail-loud reader for a block that no longer exists.
 
+## Cron prompts are POINTERS — the law is the single source of truth (owner order 2026-09-26) [LANE]
+
+A **cron prompt carries the INVOCATION and the mechanical envelope, never the law.** The law lives in the skill corpus, and the prompt names where to read it. Owner's question, verbatim: *"why not make the laws the SSOT and cron prompt just the pointer?"* — and the measurement that answered it is below, because the drift it prevents is not hypothetical.
+
+**The measured instance (2026-09-26).** `oc-triage-factory-patrol`'s prompt had grown to **5,289 characters** — the second-largest enabled prompt on the box — and **every rule in it already lived in law**: the scope test and the tier order in `triage.md` §Duty T4, the cohort predicate at `triage.md:312`, the unattended-plan prohibition at `fleet-directives.md` §unattended-plan, the MODE register, the work list. **Zero unique content.** It reached that size by accretion: each new ruling was pasted in (three times on 2026-09-26 alone) because the prompt is what the cron session reads at fire time, and nothing ever removed the copy it superseded.
+
+**Two copies always diverge, and the prompt is the copy nobody re-reads.** Measured on that same prompt, hours after the owner replaced the binary IN/OUT rule with the three-tier order: it still carried the **RETIRED Owner Push Freeze** as a live gate, and its closing line still read *"Do NOT widen to the full fork backlog"* — the exact rule the owner had just reversed. Neither was noticed by any reader, because a cron prompt is read by a session that never compares it to the law.
+
+**The rule.** A cron prompt states (a) which skill to load, (b) which law section to execute, and (c) the mechanical envelope that genuinely cannot live in law — the exact command to run, a log-redirect naming rule, a duty-receipt stem. Everything else is a **pointer**. When a ruling lands, the law changes and the prompt does not.
+
+**And a MISSING rule is a LAW defect, never a licence to invent.** A prompt that finds a needed rule absent from the law must report that and stop: a prompt-local rule is invisible to every other reader, unreviewable, and is the mechanism by which the two copies diverge. Prior art, owner order: the outreach factory already carries this — *"Runbook lives in the `/outreach-reply-sweep` skill … single source of truth for sweep procedure, report format, and hard rules. **Crons reference the skill; prompts stay thin.**"*
+
+**Envelope check before you call a prompt thin.** A trigger that **notifies a bound lane** (e.g. `factory-triage-patrol`, 2,198 chars) is thin by construction — the work happens in a lane that has the skill loaded. A prompt whose cron session **is the worker** must additionally load the skill first, so it carries the load step and nothing more. Both shapes are thin; a prompt that restates a law is not, whichever shape it has.
+
 ## Discussion links + fix-approval gate (owner 2026-08-28 14:28Z)
 
 1. **Whenever a PR or issue is discussed, a link must be given.** Every mention of a PR or issue number — chat, reports, ledger entries, rulings — carries the full URL (or an owner/repo#N reference that resolves to one). No bare numbers: a number without a link is an unfinished sentence. If a reference cannot be resolved to a link, say so explicitly.
