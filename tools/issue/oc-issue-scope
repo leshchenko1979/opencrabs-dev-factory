@@ -209,6 +209,26 @@ ck('tier is TOTAL and exclusive: every (type, bucket) gets exactly one tier',
        for t in ('fix', 'feat', 'bug', 'test', 'docs', 'chore', 'refactor', 'tools', '')
        for b in ('IN', 'OUT', 'UNPINNED')))
 
+# --- #616: a live TOOL NAME is a surface claim, a PATH outranks it -----------
+# The fallback fires ONLY when the body carries no path claim. Measured over 184
+# live issues: consulting names unconditionally flipped ELEVEN src/** fixes to
+# the tools lane (#299 quotes "dispatch `oc-deploy ship`" from a session's
+# next-step text; #440 cites a "related defect"; #531 calls one "the CI-side twin
+# of this defect"; #457 names cron JOBS), while the seven legitimate ones name a
+# tool and NO path. The fixture T carries `oc-notify` (tools/lib/oc-notify.sh).
+ck('TOOL NAME: a name-only body resolves to its tracked path (#616)',
+   bucket('Symptom. `oc-notify` composes a body naming the asking lane.', T)[:2]
+   == ('IN', 'tools/lib/oc-notify.sh'))
+ck('  and a name-only body with a NON-existent tool stays UNPINNED (control)',
+   bucket('see `oc-nonexistent` for details', T)[0] == 'UNPINNED')
+ck('  a PATH outranks an incidental tool name (the 12-issue class)',
+   bucket('Fix: `src/tests/x.rs`. Same defect class as `oc-notify`.', T)[:2]
+   == ('OUT', 'src/tests/x.rs'))
+ck('  polarity applies to a name too (`not oc-notify` claims nothing)',
+   bucket('this is not `oc-notify` at all', T)[0] == 'UNPINNED')
+ck('  an incidental name beside a path does NOT reach the claims list',
+   'tools/lib/oc-notify.sh' not in claims('Fix: `src/tests/x.rs`, unlike `oc-notify`.', T))
+
 print(f"\n{'='*30}\n  PASS: {ok}   FAIL: {bad}")
 sys.exit(1 if bad else 0)
 PYEOF
@@ -296,6 +316,16 @@ import re
 # The lookbehind is the PATH BOUNDARY (rule c): it is why
 # src/brain/tools/registry.rs yields the whole path and never a bare tools/.
 TOK = re.compile(r'(?<![\w/.-])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.*-]*)+/?)')
+# A live TOOL NAME is a surface claim too (#616). `oc-questions` IS
+# tools/state/oc-questions, so a body naming it lands on the factory surface --
+# but TOK requires a '/', so a name-only body yielded NO claim and read
+# UNPINNED, which tiers a factory fix as P2. The lookbehind is the same path
+# boundary: it is why `tools/state/oc-questions` is matched by TOK (preceded by
+# '/') and never re-matched here as a bare name.
+# Resolution is MECHANICAL -- the tools tree is enumerable -- so this is not a
+# title-prefix test, which the scope law forbids (fix(tools): spans both repos:
+# #471 and #405 are correctly P2 and name no live tool).
+TOOLNAME = re.compile(r'(?<![\w/.-])(oc-[a-z0-9][a-z0-9-]*)(?![\w-])')
 NEG = re.compile(r'(?i)\b(not|never|outside|excluding|rather than|instead of|without)\b')
 NEG_WIN = 30
 # A COMPARISON is not a claim about where the fix lands. #387's only tools token
@@ -333,6 +363,14 @@ def build_index(pairs):
         if len(parts) > 1 and '.' in parts[-1]:
             ext = '.' + parts[-1].rsplit('.', 1)[1]
             idx.setdefault('/'.join(parts[:-1]) + '/' + ext, repo)
+        # (#616) a TOOL NAME resolves to its tracked path. Recorded from the
+        # pairs already in hand -- no extra git call. Path keys always contain
+        # '/', name keys never do, so the two namespaces cannot collide. The
+        # basename must BE the tool (oc-x.sh -> oc-x), never a suffix of it.
+        base = parts[-1]
+        stem = base.rsplit('.', 1)[0] if '.' in base else base
+        if '/' in p and p.startswith('tools/') and re.fullmatch(r'oc-[a-z0-9][a-z0-9-]*', stem):
+            idx.setdefault(stem, p)
     return idx
 
 def _clean(tok):
@@ -382,21 +420,49 @@ def _is_evidence(tok):
     return len([x for x in tok.strip('/').split('/') if x]) >= 2
 
 def claims(body, T):
-    """Non-negated tokens that RESOLVE to tracked paths, in body order."""
+    """Non-negated tokens that RESOLVE to tracked paths, in body order.
+
+    PATHS first, and a TOOL NAME (#616) only when the body carries NO path claim
+    at all. That precedence is measured, not stylistic: a name is much weaker
+    evidence than a path, and consulting it unconditionally wired ELEVEN src/**
+    fixes to the tools lane -- #299 quotes "dispatch `oc-deploy ship`" from a
+    session's next-step text, #440 cites a "related defect" by tool name, #531
+    calls one "the CI-side twin of this defect", #457 names cron JOBS, #344/#567
+    cite a tool as EVIDENCE, #572/#418 name CONSUMERS. Every one of those bodies
+    already carries a real src/ path, so the fallback never fires for them, while
+    the seven legitimate ones (#612, #312, #363, #417, #551, #573, #530) name a
+    tool and NO path -- the name is the only surface signal there is.
+    A name contributes its TRACKED PATH, so the FACTORY prefix test buckets it
+    with no new branch; a name resolving to no live tool contributes nothing.
+    """
     out = []
     # (a2) COMPARISON is not a claim: the object of an analogy names a SIBLING
     # defect. Suppress only the token immediately following the frame.
     cmp_ends = [m.end() for m in ANALOG.finditer(body)]
+
+    def _gated(pos):
+        """The two token-shape gates, shared by both kinds."""
+        if NEG.search(body[max(0, pos - NEG_WIN):pos]):        # (a) POLARITY
+            return False
+        return not any(0 <= pos - e <= ANALOG_GAP for e in cmp_ends)
+
     for m in TOK.finditer(body):
-        pre = body[max(0, m.start() - NEG_WIN):m.start()]
-        if NEG.search(pre):            # (a) POLARITY
-            continue
-        if any(0 <= m.start() - e <= ANALOG_GAP for e in cmp_ends):
+        if not _gated(m.start()):
             continue
         tok = _clean(m.group(1))
         d, repo = _resolves(tok, T)                           # (b) RESOLUTION
         if d and _is_evidence(tok) and tok not in out:
             out.append(tok)
+    if out:
+        return out
+    # FALLBACK: no path claim anywhere, so a live tool name is the only surface
+    # evidence the body offers. Same gates, so `not oc-smoke` stays silent.
+    for m in TOOLNAME.finditer(body):
+        if not _gated(m.start()):
+            continue
+        p = T.get(m.group(1))
+        if p and p not in out:
+            out.append(p)
     return out
 
 def bucket(body, T):
