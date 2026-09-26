@@ -25,6 +25,8 @@
 #        oc-issue-scope --selftest
 # Exit:  0 classified (IN or OUT) / 1 UNPINNED (no resolvable surface claim)
 #        2 usage / 3 gh or git failed
+# Emits: bucket (IN|OUT|UNPINNED -- the surface FACT) AND priority (1|2|3 -- the
+#        ORDERING: 1 fix the factory, 2 fix the binary, 3 new features).
 #
 # THREE RULES, each measured before it was encoded:
 #
@@ -57,6 +59,31 @@
 # than trust it. The TITLE scope is reported as CONTEXT and never decides the
 # bucket — that is failure variant 1, and --json carries a `title_disagrees` flag
 # so the patrol sees the #419/#471 shape the moment it recurs.
+#
+# -----------------------------------------------------------------------------
+# PRIORITY TIER (owner order 2026-09-26, verbatim):
+#   "I want to amend the in / out rule. Let there be priorities:
+#    1. Fix the factory  2. Fix the binary  3. New features"
+#
+# The BUCKET above is the surface FACT and is unchanged; `priority` is the
+# ORDERING layered on it. Both are emitted (--json carries `bucket` AND
+# `priority`), so a consumer that keys on the surface keeps working.
+#
+#   P1  fix-typed, bucket IN          the factory surface (tools/**, .github)
+#   P2  fix-typed, bucket != IN       src/** — the daemon
+#   P3  feat-typed, ANY bucket        a new feature
+#
+# Non-fix/non-feat types (docs/chore/test/refactor, and a title carrying no type
+# token at all) follow the SURFACE rule: IN -> P1, else P2. The tier is TOTAL and
+# EXCLUSIVE — every issue gets exactly one, and a lower tier is DEPRIORITISED,
+# never excluded. Order: P1 first; P2 only when P1 has no dispatchable residue;
+# P3 last.
+#
+# THE EDGE CASE the definition settles and a naive implementation gets wrong: a
+# feat-typed issue ON the factory surface is P3, NOT P1 — priority 1 is "fix the
+# factory", and a new factory feature is a new feature. Live specimens: #393
+# (feat(notify), tools/**), #318 and #278 all bucket IN and all read P3.
+# Specimen over the live corpus: P1 16 · P2 149 · P3 16 = 181.
 # =============================================================================
 set -u
 
@@ -158,6 +185,30 @@ ck('TITLE agrees with body -> not flagged', v == 'IN' and dis is False)
 ck('rc contract: single UNPINNED is the rc-1 verdict (documented in the header)',
    ns['bucket']('no paths here', T)[0] == 'UNPINNED')
 
+# --- PRIORITY TIER (owner order 2026-09-26) ---------------------------------
+# "1. Fix the factory  2. Fix the binary  3. New features". The two legs the
+# build order names as THE rule are first, in both directions.
+pri, typ = ns['priority'], ns['type_of']
+ck('PRIORITY: a feat-typed IN issue reads P3, not P1 (the edge case)',
+   pri('feat(notify): x', 'IN') == 3)
+ck('PRIORITY: a fix-typed OUT issue reads P2, not P1',
+   pri('fix(agent): x', 'OUT') == 2)
+ck('  and fix-typed IN reads P1 (fix the factory)', pri('fix(tools): x', 'IN') == 1)
+ck('  and feat-typed OUT still reads P3', pri('feat(agent): x', 'OUT') == 3)
+ck('  and fix-typed UNPINNED reads P2 (deprioritised, never excluded)',
+   pri('fix(x): no paths here', 'UNPINNED') == 2)
+ck('surface rule: an UNTYPED IN issue reaches P1 (no type token, still factory)',
+   pri('tools: multi-line python bodies', 'IN') == 1)
+ck('surface rule: an untyped OUT issue reads P2', pri('Stale doc comment on X', 'OUT') == 2)
+ck('bug is fix-typed (its IN reads P1)', pri('bug(logging): x', 'IN') == 1)
+ck('type_of reads the scope form and the bare form',
+   typ('fix(tools): x') == 'fix' and typ('tools: x') == 'tools'
+   and typ('Stale doc comment') == '' and typ('feat(db): x') == 'feat')
+ck('tier is TOTAL and exclusive: every (type, bucket) gets exactly one tier',
+   all(pri(f'{t}: x', b) in (1, 2, 3)
+       for t in ('fix', 'feat', 'bug', 'test', 'docs', 'chore', 'refactor', 'tools', '')
+       for b in ('IN', 'OUT', 'UNPINNED')))
+
 print(f"\n{'='*30}\n  PASS: {ok}   FAIL: {bad}")
 sys.exit(1 if bad else 0)
 PYEOF
@@ -198,8 +249,11 @@ as_json, mode = sys.argv[4] == '1', sys.argv[5]
 rows = []
 for it in issues:
     v, res, claims, dis = ns['classify'](it.get('title') or '', it.get('body') or '', T)
-    rows.append({'number': it['number'], 'title': (it.get('title') or '')[:70],
+    ttl = it.get('title') or ''
+    rows.append({'number': it['number'], 'title': ttl[:70],
                  'bucket': v, 'resolved': res, 'claims': claims,
+                 'type': ns['type_of'](ttl),
+                 'priority': ns['priority'](ttl, v),
                  'title_disagrees': dis})
 
 if as_json:
@@ -207,20 +261,27 @@ if as_json:
 elif mode == 'open':
     from collections import Counter
     c = Counter(r['bucket'] for r in rows)
+    p = Counter(r['priority'] for r in rows)
     print(f"oc-issue-scope: {len(rows)} open issue(s) — "
-          f"IN {c['IN']} · OUT {c['OUT']} · UNPINNED {c['UNPINNED']}\n")
-    for b in ('IN', 'OUT', 'UNPINNED'):
-        sub = [r for r in rows if r['bucket'] == b]
-        if not sub: continue
-        print(f"{b} ({len(sub)})")
-        for r in sub:
+          f"P1 {p[1]} · P2 {p[2]} · P3 {p[3]}")
+    print(f"  (surface: IN {c['IN']} · OUT {c['OUT']} · UNPINNED {c['UNPINNED']})\n")
+    for tier, label in ((1, 'P1 — fix the factory'), (2, 'P2 — fix the binary'),
+                        (3, 'P3 — new features')):
+        grp = [r for r in rows if r['priority'] == tier]
+        if not grp: continue
+        print(f"{label} ({len(grp)})")
+        for r in grp:
             flag = '  [TITLE-DISAGREES]' if r['title_disagrees'] else ''
-            print(f"  #{r['number']:<5} {r['resolved'] or '-':<40}{flag}")
-    print("\nTITLE-DISAGREES = the fix(...) prefix names a different surface than the")
+            print(f"  #{r['number']:<5} {r['type'] or '-':<6} {r['bucket']:<9} "
+                  f"{r['resolved'] or '-':<38}{flag}")
+        print()
+    print("TITLE-DISAGREES = the fix(...) prefix names a different surface than the")
     print("body does. That is the #419/#471 shape; the BODY decides the bucket.")
+    print("Priority: 1 fix the factory · 2 fix the binary · 3 new features.")
 else:
     r = rows[0]
-    print(f"#{r['number']}  {r['bucket']}")
+    print(f"#{r['number']}  {r['bucket']}  P{r['priority']}")
+    print(f"  type:     {r['type'] or '(none)'}")
     print(f"  resolved: {r['resolved'] or '(none)'}")
     print(f"  claims:   {', '.join(r['claims']) if r['claims'] else '(none)'}")
     if r['title_disagrees']:
@@ -355,5 +416,38 @@ def classify(title, body, T):
         title_in = any(scope.startswith(d.rstrip('/')) for d in FACTORY)
         dis = (title_in != (v == 'IN'))
     return v, res, cl, dis
+
+# --- PRIORITY TIER (owner order 2026-09-26) ---------------------------------
+# Owner, verbatim: "I want to amend the in / out rule. Let there be priorities:
+#   1. Fix the factory  2. Fix the binary  3. New features"
+# The BUCKET stays the surface FACT (other legs consume it); the TIER is the
+# ORDERING. Total and exclusive -- every issue gets exactly one tier, and a
+# lower tier is DEPRIORITISED, never excluded.
+TYPE_RE = re.compile(r'(?i)^\s*([a-z]+)\s*(?:\([^)]*\))?\s*[:!]')
+FIX_TYPES = ('fix', 'bug')          # the ACT of fixing
+
+def type_of(title):
+    """The conventional type token of a title, or '' when it carries none."""
+    m = TYPE_RE.match(title or '')
+    return m.group(1).lower() if m else ''
+
+def priority(title, bucket_v):
+    """1 = fix the factory, 2 = fix the binary, 3 = new features.
+
+    A feat-typed issue ON the factory surface is P3, NOT P1: priority 1 is
+    "fix the factory", and a new factory feature is a new feature. Live
+    specimens the rule settles: #393/#318/#278 all bucket IN and all read P3,
+    while #433 (fix, IN) reads P1 and #378 (feat, OUT) reads P3.
+
+    fix-typed and non-fix/non-feat COLLAPSE to the same expression by design --
+    both are "1 if the surface is the factory else 2". The branch is written
+    separately below only so a reader can see the fix-typed case was considered
+    rather than lost: measured over 181 open issues, the tier is INSENSITIVE to
+    whether `bug` counts as fix-typed (all three bug-typed issues are UNPINNED,
+    so they read P2 either way).
+    """
+    if type_of(title) == 'feat':
+        return 3
+    return 1 if bucket_v == 'IN' else 2
 # --- CLASSIFIER END ---
 OC_CLASSIFIER_PY
