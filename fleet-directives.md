@@ -396,7 +396,7 @@ Sibling of the receipt laws (phantom #6, `fleet-directives.md §Cross-lane messa
 
 ### A1 — Ledger rows carry an actor, by tool default (v0.4.176)
 
-Tools (`lib/oc-log.sh`, `oc-commit`, `oc-ledger`, etc.) automatically derive the actor from `$OPENCRABS_SESSION_ID` (commit `978fe5fe`). Manual `export OC_ACTOR` is retired. Sharpened: tools default the actor to the ambient session rather than writing an unattributed row — an `(unattributed — pass --by or export OC_ACTOR)` row is a TOOL defect, not lane sloppiness, and is dispatched to Toolsmith.
+Tools (`lib/oc-log.sh`, `oc-commit`, `oc-ledger`, etc.) automatically derive the actor from `$OPENCRABS_SESSION_ID` (commit `978fe5fe`). Manual `export OC_ACTOR` is retired. **The `Session-Id` trailer carries the BARE session uuid, never a role label** — a `<role> <uuid>` actor passes `oc-commit`'s presence-only guard and writes the role word verbatim, which gate 4 then refuses as UNSIGNED (measured 2026-09-26, lane 63d775f9: ship rc 2, main stranded undeployed). Sharpened: tools default the actor to the ambient session rather than writing an unattributed row — an `(unattributed — pass --by or export OC_ACTOR)` row is a TOOL defect, not lane sloppiness, and is dispatched to Toolsmith.
 
 Worked examples (2026-09-12): 34 `shipchain` rows written unattributed by `oc-ship-chain` while the tool held the owning session id (n=3515 class); and an actor string that is not a rostered role (a lane stamping its factory label instead of its roster role) trips `unrostered-actor` — **stamp as your ROSTER ROLE**.
 

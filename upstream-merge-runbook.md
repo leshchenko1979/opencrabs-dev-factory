@@ -168,6 +168,24 @@ per-commit at replay time.
    pre-install; 2026-09-11: the atomic cutover head `12d25260` hit exactly
    this and stranded main undeployed). **This is a STANDING artifact of the
    sync sequence, not a one-off fix — it recurs on EVERY sync.**
+   **TRAILER FORM — the marker's `Session-Id` carries the BARE 36-char session
+   uuid, never a role label.** `oc-commit` derives the trailer from the actor and
+   its guard only tests that a uuid is PRESENT, so an actor exported in the
+   ledger's `--by` form (`<role> <uuid>`) passes that guard and writes the role
+   word into the trailer verbatim; gate 4 strips whitespace and then fails the
+   strict 36-char pattern. Measured 2026-09-26 (lane 63d775f9):
+   `Session-Id: editor 63d775f9-…` → `editor63d775f9-…` → fail 3, ship rc 2,
+   **main stranded undeployed**.
+   **PRE-CHECK SIGNATURE BEFORE THE MERGE (HQ ruling 2026-09-26).** Gate 4 runs
+   inside `oc-deploy ship` — i.e. at LEG4, AFTER LEG3's `git merge --ff-only`
+   (`tools/ship/oc-ship-chain:1001`) — so a signature fault strands main instead
+   of refusing the merge. The check is PURE GIT (read the trailer, match the
+   pattern) and costs no CI, so **the chain pre-checks SIGNATURE before LEG3's
+   merge**; a marker then never strands main and the remedy loop closes.
+   Complementary half, routed to Toolsmith: an empty marker commit has an EMPTY
+   patch-id, so `oc_same_patch` fails closed and every marker costs a fresh gate
+   — but an empty commit is tree-identical to its parent BY CONSTRUCTION, so the
+   carry predicate should accept same-TREE as well as same-patch-id.
    Before dispatching the build leg, land an **empty trailer-signed marker
    commit** on the sync head:
    ```bash

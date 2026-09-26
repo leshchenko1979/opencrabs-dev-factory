@@ -15,6 +15,10 @@ local-cargo ban and `gh -R` — are stated in `SKILL.md §Hard rules` and bind r
 - **Actor attribution is automatic via ambient `OPENCRABS_SESSION_ID` (v0.4.176):**
   `lib/oc-log.sh`, `oc-commit`, `oc-ledger`, and tool scripts derive `actor:` directly
   from `$OPENCRABS_SESSION_ID` (commit `978fe5fe`). Manual `export OC_ACTOR` is retired.
+  **If it is exported anyway it must be the BARE uuid** — a `<role> <uuid>` value
+  passes `oc-commit`'s presence-only guard and lands the role word in the
+  `Session-Id` trailer, which `oc-order-validate` gate 4 reads as UNSIGNED
+  (measured 2026-09-26: ship rc 2, main stranded undeployed).
 - Checkout `~/opencrabs`: remote **`origin`** = fork `leshchenko1979/opencrabs`
   (push target) · remote **`adolfousier`** = sync source (upstream).
 - **`gh` in `~/opencrabs` defaults to UPSTREAM — `-R` is MANDATORY (2026-09-22).**
