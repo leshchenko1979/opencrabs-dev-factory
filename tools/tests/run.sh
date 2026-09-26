@@ -177,14 +177,43 @@ FAIL_LOG_REL="tools/tests/battery-last-fail.log"
 # Only the PARENT truncates: chunk children append to this same path, and a
 # child truncating it would erase rows its siblings already wrote.
 if [ -z "${BATTERY_IN_CHUNK:-}" ]; then : > "$FAIL_LOG" 2>/dev/null || true; fi
+# ---- self-contained red receipt (#614) --------------------------------------
+# Defect (measured 2026-09-26): the receipt NAMED $FAIL_LOG while the log's life
+# was ONE RUN -- :179 truncates it the moment a queued run starts, and
+# finalize_fail_log removes it on green. A reader arriving after the next run
+# found a FAIL receipt pointing at 0 bytes: the #517 defect one step out. The
+# receipt is the durable artifact, so the diagnosis rides IN it.
+# Contract: on RED the receipt carries `fail_rows` (the FAIL rows and their
+# continuation lines, bounded by FAIL_ROWS_CAP) plus `fail_rows_truncated`, so
+# no later run can destroy the evidence. $FAIL_LOG is kept for immediate reading
+# (tail/grep on a large dump) and is no longer the durable half.
+# json.dumps, not hand-rolled: a row may carry quotes or backslashes, and a
+# string-built array would emit invalid JSON exactly when it is needed.
+FAIL_ROWS_CAP="${OC_BATTERY_FAIL_ROWS_CAP:-200}"
+battery_capture_fail_rows() {
+  FAIL_ROWS_JSON='[]'; FAIL_ROWS_TRUNC='false'
+  [ -s "${FAIL_LOG:-}" ] || return 0
+  local total; total="$(wc -l < "$FAIL_LOG" 2>/dev/null || echo 0)"
+  case "$total" in ''|*[!0-9]*) total=0 ;; esac
+  [ "$total" -gt "$FAIL_ROWS_CAP" ] && FAIL_ROWS_TRUNC='true'
+  FAIL_ROWS_JSON="$(python3 -c 'import json,sys
+cap=int(sys.argv[2])
+try: lines=open(sys.argv[1],encoding="utf-8",errors="replace").read().splitlines()
+except Exception: print("[]"); raise SystemExit
+print(json.dumps(lines[:cap]))' "$FAIL_LOG" "$FAIL_ROWS_CAP" 2>/dev/null)"
+  [ -n "$FAIL_ROWS_JSON" ] || FAIL_ROWS_JSON='[]'
+  return 0
+}
 finalize_fail_log() {
   if [ "$FAIL" -eq 0 ]; then rm -f "$FAIL_LOG"; FAIL_LOG_FIELD=""; else FAIL_LOG_FIELD="$FAIL_LOG_REL"; fi
 }
 emit_summary() {
   local verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
   finalize_fail_log
-  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s"\n}\n' \
+  battery_capture_fail_rows
+  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s\n}\n' \
     "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" "$FAIL_LOG_FIELD" \
+    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" \
     > "$TOOLS_DIR/tests/battery-last.json"
   note ""
   note "=============================="
@@ -1634,6 +1663,13 @@ rm -rf "$D451STUB"
 # continuation lines and the receipt JSON names it; a GREEN run removes it, so
 # the log's PRESENCE is itself the red signal.
 #
+# #614 (2026-09-26) widened it: the log's life was ONE RUN (the next run
+# truncates it at :179, a green one removes it) while the receipt outlives it --
+# so a red receipt could name a 0-byte file and the failing leg became
+# unrecoverable. The diagnosis now rides IN the receipt (`fail_rows` +
+# `fail_rows_truncated`); the sidecar stays for immediate tail/grep but is no
+# longer the durable half. Leg (e) is the discriminating one.
+#
 # Discriminating input: on the pre-fix artifact bad() has no transcript arm and
 # record() does not exist, so `bad` writes nothing to $FAIL_LOG. Legs (a)-(c)
 # go red on HEAD while passing here.
@@ -1675,6 +1711,49 @@ SELF_ABS="$(readlink -f "$0" 2>/dev/null || echo "$0")"
   && ok "both receipt writers declare the fail_log field" \
   || bad "a receipt writer is missing the fail_log field ($SELF_ABS)"
 rm -rf "$FLT"
+# (e) #614 -- THE DISCRIMINATING LEG. A red receipt must be SELF-CONTAINED: the
+#     failing rows ride in the receipt, so the NEXT run's truncate of $FAIL_LOG
+#     cannot destroy the diagnosis. Drives the real emit_summary in a SUBSHELL
+#     (never the parent: it would reset this run's own receipt) and reads the
+#     verdict OUT of the produced JSON, never a pipeline rc. On the pre-fix
+#     artifact `fail_rows` is absent, so this leg reddens -- and its message
+#     reproduces the defect verbatim.
+R614="$(mktemp -d)"; mkdir -p "$R614/t/tests"
+R614_V="$( ( TOOLS_DIR="$R614/t"; FAIL_LOG="$R614/f.log"
+  FAIL_LOG_REL="tools/tests/battery-last-fail.log"; FAIL_LOG_FIELD="tools/tests/battery-last-fail.log"
+  FAIL_ROWS_JSON='[]'; FAIL_ROWS_TRUNC='false'; BATTERY_MODE="r614"
+  PASS=1; FAIL=1
+  printf '  FAIL - r614-probe-leg\n    probe context line\n' > "$FAIL_LOG"
+  emit_summary >/dev/null 2>&1 || true
+  : > "$FAIL_LOG"
+  python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: print("NOPARSE"); raise SystemExit
+rows=d.get("fail_rows")
+print("SELF_CONTAINED" if isinstance(rows,list) and any("r614-probe-leg" in r for r in rows) else "LOST")' "$R614/t/tests/battery-last.json" 2>/dev/null || echo NOPARSE ) )"
+[ "$R614_V" = "SELF_CONTAINED" ] \
+  && ok "red receipt is self-contained: the failing row survives the next run's truncate (#614)" \
+  || bad "#614: red receipt NOT self-contained (verdict=$R614_V) -- it names a log the next run destroys"
+
+# (f) truncation must be DECLARED, never silent: over-cap rows still carry their
+#     head AND say so. Asserts the flag and that rows actually arrived.
+R614_T="$( FAIL_LOG="$R614/big.log"; FAIL_ROWS_CAP=1
+  FAIL_ROWS_JSON='[]'; FAIL_ROWS_TRUNC='false'
+  printf '  FAIL - one\n  FAIL - two\n  FAIL - three\n' > "$FAIL_LOG"
+  battery_capture_fail_rows 2>/dev/null || true
+  printf '%s|%s' "$FAIL_ROWS_TRUNC" "$(printf '%s' "$FAIL_ROWS_JSON" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)" )"
+case "$R614_T" in
+  true'|'1) ok "over-cap rows are captured up to the cap AND the truncation is declared" ;;
+  *) bad "#614: truncation not declared or no rows captured (got: ${R614_T:0:40})" ;;
+esac
+
+# (g) wiring: BOTH receipt writers must embed fail_rows -- counts the printf
+#     field, so a writer left behind is caught rather than a comment satisfying it.
+R614_N="$(grep -cE '^ *printf .*"fail_rows": %s' "$SELF_ABS")"
+[ "$R614_N" -ge 2 ] \
+  && ok "both receipt writers embed fail_rows" \
+  || bad "a receipt writer is missing fail_rows ($R614_N of 2 printf lines)"
+rm -rf "$R614"
 
 # ---- 76. oc-questions (Open Questions register, #547) ------------------------
 # Owner-commissioned fleet instrument. The register is the ONLY sanctioned
@@ -1915,8 +1994,10 @@ fi
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s"\n}\n' \
+battery_capture_fail_rows
+printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s\n}\n' \
   "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$FAIL_LOG_FIELD" \
+  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" \
   > "$TOOLS_DIR/tests/battery-last.json"
 
 # ---- summary ----------------------------------------------------------------
