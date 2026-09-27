@@ -23,7 +23,7 @@ metadata:
     - https://github.com/adolfousier/opencrabs (upstream — PRs only; new issues NEVER filed here)
     - https://github.com/leshchenko1979/opencrabs (fork — push target + ISSUES HOME)
   provenance:
-    - "Full release history moved out of the load path at v0.4.43 (B6, Duty-6 run-2) — every v0.4.31+ bump entry lives in CHANGELOG.md (git-tracked, prepended newest-first). This pointer replaces the inline list (~3k tokens loaded on every role-file claim). Current version: see CHANGELOG.md."
+    - "Release history and the current version live in CHANGELOG.md (git-tracked, newest-first). The v0.4.43 B6 rationale is in war-stories.md."
 ---
 
 # opencrabs-dev — OpenCrabs source procedure
@@ -103,7 +103,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/state/oc-ledger <verb>` | workers-ledger: stamp/sync/check-version/cadence/ack/enroll/roster/commit-pending/claim-ref/confirm/events — `--verbs` lists registered subcommands; unrecognized verbs emit vocabulary hints; `roster --live --role <role>` is the ROLE-RESOLUTION verb; the `oc-roster --role <role>` form delegates to it and returns byte-identical output |
 | `./tools/state/oc-shadow-rotate [--dry-run]` | INTERNAL tail step of `oc-ledger sync` (standalone = manual fallback) |
 | `./tools/state/oc-review-persist <lens> <text\|@file\|-> [--dir DIR]` · `check-cycle <dir> [--strict-receipt]` | persist a Duty-6 review report (the index line IS the "persisted" receipt); `check-cycle` is the cycle-close gate |
-| `./tools/smoke/oc-smoke-evidence [--unit opencrabs-ops] [--strings m1,m2] [--negative-control <bin>] [--append-log [<path>]]` | mechanical identity + presence evidence for a Phase 6b smoke verdict; behavioral judgment stays human; `--append-log` is the SANCTIONED writer of the **IDENTITY EVIDENCE BLOCK** in the canonical `smoke-verdicts.log` — the VERDICT ROWS are LANE-AUTHORED (see `upstream-merge-runbook.md` §Upstream-merge cadence · HARVEST LAW · NO-HOLD); bare = the canonical absolute, a wrong path is unrepresentable (M2-2) |
+| `./tools/smoke/oc-smoke-evidence [--unit opencrabs-ops] [--markers m1,m2] [--negative-control <bin>] [--append-log [<path>]]` | mechanical identity + presence evidence for a Phase 6b smoke verdict; behavioral judgment stays human; `--append-log` is the SANCTIONED writer of the **IDENTITY EVIDENCE BLOCK** in the canonical `smoke-verdicts.log` — the VERDICT ROWS are LANE-AUTHORED (see `upstream-merge-runbook.md` §Upstream-merge cadence · HARVEST LAW · NO-HOLD); bare = the canonical absolute, a wrong path is unrepresentable (M2-2) |
 | `./tools/issue/oc-issue-log <issue-n> <sha> [--state <text>] [--repo <slug>] [--dry-run]` | per-commit implementation comment via gh `--body-file` ONLY |
 | `./tools/git/oc-commit -m <msg> [--issue N] [--no-comment] [--state <text>] [--repo <path>]` | gated commit wrapper: derives `Issue-Ref` from the actor's latest ledger claim, adds Session-Id + Issue-Ref trailers, folds in the post-commit comment |
 | `./tools/ship/oc-ship-audit [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
@@ -341,22 +341,18 @@ probe hygiene, and the single-sided-probe sufficiency ruling — are canonical a
 
 ## Red-run triage heuristics (shared core)
 
-ONE location: `editor.md` §Red-run triage heuristics (moved v0.4.262). Read by the editor in its
-fix round and by HQ in RED triage — fix unresolved-name/import errors FIRST, count brace DEPTH not
-brace counts, give an inner match its own exhaustive arms, and **settle contradictory INCOMING
-verdicts via the live GH API before acting** (even ACKs can be stale).
+ONE location: `editor.md §Red-run triage heuristics`. Read by the editor in its fix round and by
+HQ in RED triage. The heuristics themselves live there — no second copy here.
 
 ## Shared environment facts (all roles)
 
-**Full text: `environment.md`.** The load-bearing facts, inline so a cold session cannot miss them:
+**Full text: `environment.md`.** One fact inlined, because no §Hard rules bullet carries it:
 
-- **No local cargo — EVER.** This box has no sanctioned Rust toolchain; CI is the only
-  sanctioned compile/test executor (Box law, `editor.md §Box law`). No `cargo`/`rustc`/`clippy`
-  in any form — install, PATH-prepend, explicit path, or an invocation that exits 0.
 - **`gh` in `~/opencrabs` defaults to UPSTREAM.** `-R`/`--repo` is MANDATORY for any
   fork-targeted read or write; an unscoped call returns a real but WRONG issue or 404s.
-- **`origin` = fork `leshchenko1979/opencrabs`** (push target + issues home) · **`adolfousier`** = upstream (PRs only).
-- **Actor attribution is automatic** via ambient `OPENCRABS_SESSION_ID`.
+
+The cargo ban, the `origin`/`adolfousier` split and actor attribution live in `environment.md` and in
+§Hard rules — deliberately not restated here (Duty-6 c25 B-9: three cargo-ban homes inside SKILL.md alone).
 
 Everything else — the skill glob gate's exact matching semantics, branch namespaces, the
 carrier/feature-set/dispatch rules, and the daemon facts — is in `environment.md`.
@@ -393,7 +389,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 - **Context Manifest Curation (Compaction Section 10, owner order 2026-09-17):** when context compaction occurs, the compactor MUST explicitly retain `opencrabs-dev`, `opencrabs-dev/fleet-directives.md`, and the active role file (`opencrabs-dev/editor.md`, `opencrabs-dev/hq.md`, `opencrabs-dev/triage.md`, `opencrabs-dev/toolsmith.md`, or `opencrabs-dev/harvest.md`) in `active_skills`. Only non-active role files are placed in `discard_skills`. Essential tools (`session_notify`, `session_search`, `bash`, `read_file`, `telegram_send`) must stay pre-activated. Canonical: `fleet-directives.md §Post-compaction skill reload & context manifest curation`.
 - ONLY HQ edits skill files: `SKILL.md` · `editor.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·
   `review-lenses.md` · `fleet-directives.md` · `upstream-merge-runbook.md` · `war-stories.md` ·
-  `s2-swap-journal-spec.md` · `README.md` · `CHANGELOG.md` · `tools/docs/*.md` — including all worker lanes AND
+  `s2-swap-journal-spec.md` · `README.md` · `CHANGELOG.md` · `session-notify.md` · `environment.md` · `tools/docs/*.md` — including all worker lanes AND
   the TRIAGE and TOOLSMITH lanes (2026-08-26; Compiler retired 2026-08-28). Workers propose via poll format or
   direct notify; they never write. ONE exception: `tools/**` CODE is the TOOLSMITH lane's (v0.4.87 carve-out),
   shipped with battery receipts — README's tool-fleet section and `tools/docs/*.md` count as that surface; the

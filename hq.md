@@ -169,7 +169,7 @@ or record them onto the ledger via `oc-ledger stamp proposal "ADD|CHANGE <rule> 
 5. Consolidated verdict table to the owner; **HQ lands every ACCEPTED proposal itself — in its entirety, in the cycle's version batch, with NO design gate, NO plan card and NO owner approval (owner order 2026-09-25: findings "not wasted but fixed in their entirety", human gate removed from the Duty 4/6 fixing process). The verdict table is the RECORD of what was decided and landed, not a request, and it does not wait.** Every accepted proposal lands, or the cycle is incomplete; a proposal whose fix belongs to another owner (daemon/carrier source, upstream repo, `tools/**` code) is ROUTED to that owner and recorded as routed. Canon: `fleet-directives.md §Discussion links + fix-approval gate` (the Duty 4/6 EXCEPTION bullet).
 6. Convergence beats volume: several workers burning independently on the same
    gap is stronger signal than any single proposal — merge them into one rule.
-- **Checkable Completion Formula**: `DONE = poll fanout dispatched + submissions read from reviews/<cycle-id>/proposals/ and oc-ledger events --kind proposal + verdict recorded in review state.`
+- **Checkable Completion Formula**: `DONE = poll fanout dispatched + submissions read from reviews/<cycle-id>/proposals/ and oc-ledger events --kind proposal + verdict recorded in review state + PER-LENS CENSUS present in the verdict (step 7).` The census is a NAMED section of `VERDICT.md`, one row per lens, not a prose summary — a verdict that omits it is INCOMPLETE (Duty-6 c25 I-3: it was specified at step 7 and produced by no cycle).
 
 ## Duty 5 — Procedure rulings (decision 6)
 
@@ -189,7 +189,7 @@ incident suggests drift.
 Method:
 0. **Cycle State Durability & Step-0 Recovery** (v0.4.170, owner order 2026-09-13; **instrumentation schema FROZEN v0.4.227**, HQ ruling 2026-09-20 answering lane `ef83024b`):
    Every Duty 4+6 cycle maintains a machine-readable state file at `reviews/<cycle-id>/state.json` (under `$OC_DEV_STATE`).
-   **TWO `reviews/` ROOTS EXIST AND ONLY ONE IS LIVE (v0.4.258, from Duty-6 cycle `20260925-c24` finding D-F5).**
+   **THE FROZEN SCHEMA IS VALIDATED, not merely declared (Duty-6 c25 I-7).** Three cycles broke it three ways with nothing catching it: c24 wrote `status: COMPLETE` (not in the enum), invented the lens key `brainscrub` (the register says `brain-scrub`), and c25 added `corpus_hash` outside the ruled key set. Cycle open/close MUST therefore assert: `status ∈ {IN_PROGRESS, COMPLETED}`, every key ⊆ the ruled set, every lens key drawn from the `oc-review-persist` register, and `proposals` POPULATED from the intake directory in the same step that writes the manifest (c22 wrote 57; c23/c24/c25 all wrote `[]` against 41 real submissions). **TWO `reviews/` ROOTS EXIST AND ONLY ONE IS LIVE (v0.4.258, from Duty-6 cycle `20260925-c24` finding D-F5).**
    The **state-repo root** (`~/.opencrabs/profiles/ops/opencrabs-dev/reviews/`) is CANONICAL — it holds the live
    cycles and is what `$OC_DEV_STATE` resolves to. The **skill-repo root**
    (`~/.opencrabs/profiles/ops/skills/opencrabs-dev/reviews/`) is FROZEN EVIDENCE: keep it, never sweep it,
@@ -222,7 +222,7 @@ Method:
 
    Evidence lands at `reviews/<cycle-id>/evidence/`. **Record the corpus hash the pack prints — a report is valid only for that hash.** A re-run of the SAME cycle id is byte-identical by construction (the open instant is an input, never the wall clock). Called by **ABSOLUTE PATH for the trial**: its module set is 9+ files in a project dir, so routing it into `tools/` is a separate decision, not a packaging detail.
 
-   **Coverage limit, stated so it is not assumed:** the pack reads top-level `*.md` only, so `tools/docs/RC-CONTRACT.md`, `tools/docs/HEALTH-CHECKS.md` and `tools/docs/HEALTH-CLASSES.md` (~139 KB of law) are OUTSIDE the corpus until the manifest leg lands. A cycle that needs those files read them directly. **A missing or failing pack is REPORTED, never silently skipped** — the lenses then run on semantic evidence only, and the cycle record says so.
+   **Coverage limit, stated so it is not assumed:** the pack reads top-level `*.md` only, so `tools/docs/RC-CONTRACT.md`, `tools/docs/HEALTH-CHECKS.md` and `tools/docs/HEALTH-CLASSES.md` (~139 KB of law) are OUTSIDE the corpus until the manifest leg lands. **The excluded law is ASSIGNED, not left to whoever remembers (Duty-6 c25 I-6):** `tools/docs/RC-CONTRACT.md` → the **J** lens (its rules are state-derivable); `tools/docs/HEALTH-CHECKS.md` + `HEALTH-CLASSES.md` → the **F** lens (they govern the tool sweep); `docs/instruments/*.md` (meta-factory repo, not resolvable from this skill) → read by **HQ** at step 5 when a finding names an instrument clause. A cycle whose record does not say who read them records the gap as an ACCEPTED dated exclusion instead. **A missing or failing pack is REPORTED, never silently skipped** — the lenses then run on semantic evidence only, and the cycle record says so.
 1. Reviewers are READ-ONLY SUB-AGENTS (spawn read_only=true, allow_nested=false),
    one per lens (A/B/C/D/E/F/G/H/I/J + standing brain-scrub); they NEVER edit skill files. Duty-6 reviews
    are ALWAYS sub-agent work, never HQ-only inline reading. Same-day
@@ -243,7 +243,7 @@ Method:
    the slice (the sentence-match, near-title and dead-reference legs for that family's
    files, with the corpus hash) comes from `reviews/<cycle-id>/evidence/`. Layer 2
    (semantic mechanisation) is **REPORT-ONLY** — it never
-   creates or routes a finding: its gate failed a pre-registered test (precision 0.111 /
+   creates or routes a finding: its gate failed a pre-registered test (precision 0.111 (n=66, the pre-registered trial population; bars 0.70/0.40) /
    recall 0.126 against bars 0.70 / 0.40, n=66). A reviewer that validates a mechanisation
    opportunity must name the tool owner AND the command, never the idea alone.
 
@@ -289,14 +289,13 @@ Method:
 Rationale: HQ authors most rules — author-blindness is structural.
 Independent subagent eyes keep the set honest, and **HQ's own completeness check keeps it whole** — the owner gate was REMOVED from the Duty 4/6 fixing process on 2026-09-25, so the reviewers' findings are landed in their entirety rather than triaged down to what an owner happened to approve.
 
-## Duty 7 — RETIRED: Direct Process-Owner Feedback (owner order 2026-09-14, v0.4.176)
+## Duty 7 — RETIRED (owner order 2026-09-14, v0.4.176)
 
-The centralized Idea Box coordination queue is RETIRED. Feedback, quirk reports, and improvement proposals route directly to the respective process owner without intermediate queuing:
-- **Tool anomalies & CLI tooling**: Route directly to the active **TOOLSMITH** lane (`session_notify` or ledger).
-- **Skill directives & process governance**: Route directly to **HQ** (`reviews/<cycle-id>/proposals/` or `oc-ledger stamp proposal`).
-- **Domain/subsystem code & features**: Route directly to the owning **Editor / Domain Lane** via the fork issue tracker.
-
-Legacy references to "hq.md Duty 7" are retired.
+Duty 7 and the centralized Idea Box coordination queue are RETIRED; feedback routes directly to the
+process owner. **The routing table itself is NOT retired and is canonical at
+`fleet-directives.md §Unified Event Capture`** (tool anomaly → TOOLSMITH · skill/governance proposal
+→ `reviews/<cycle-id>/proposals/` or `oc-ledger stamp proposal` · domain code → the owning Editor
+lane via the fork tracker). Legacy references to "hq.md Duty 7" are retired.
 
 ### Related Triage operations (ownership pointers)
 - **Backlog assignment (Duty T5, v0.4.92):** post-compaction sweep of OPEN fork issues against ledger claim-refs; unclaimed → route or surface here for dispatch.
@@ -324,7 +323,7 @@ Long-running commands (>60s, test batteries, carrier/CI waits, heavy audits) MUS
 
 ## Cadence boundary is stamped at review consolidation
 
-`oc-ledger cadence` = count of `skill-bump` events since the last BOUNDARY event. **The boundary predicate is a `kind=note` row whose text BEGINS `<version> ACCEPTED`** — the tool's own regex is `^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED` (in `cmd_cadence`, `tools/state/oc-ledger:1278`), taken as the MAX `n`; `review-battery` and legacy `skill-review*` rows are consulted **only when NO note close exists at all** (`:1280`), which is the pre-close-epoch fallback the v1.1 KINDS vocabulary can no longer produce — known drift, do not stamp those. **Consequence, and it is the whole point of this paragraph: the close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `oc-ledger stamp review-battery`.** This section prescribed the `review-battery` form until v0.4.243, and following it literally would have silently FAILED to reset the counter while the stamp itself returned success — a green receipt on a boundary that never moved (found by Duty 4 cycle `20260922-c22`: the prose was stale, the tool was right). Lesson 2026-09-01: the Duty 4+6 verdict was consolidated but never stamped → counter read 24/5 FIRE on stale data. Rule: every consolidated review verdict ends with the boundary stamp BEFORE reporting the cadence state; never narrate a cadence reading without confirming the boundary row exists.
+`oc-ledger cadence` = count of `skill-bump` events since the last BOUNDARY event. **The boundary predicate is a `kind=note` row whose text BEGINS `<version> ACCEPTED`** — the tool's own regex is `^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED` (the `cmd_cadence` arm in `tools/state/oc-ledger`, `^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED`), taken as the MAX `n`; `review-battery` and legacy `skill-review*` rows are consulted **only when NO note close exists at all**, which is the pre-close-epoch fallback the v1.1 KINDS vocabulary can no longer produce — known drift, do not stamp those. **Consequence, and it is the whole point of this paragraph: the close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `oc-ledger stamp review-battery`.** This section prescribed the `review-battery` form until v0.4.243, and following it literally would have silently FAILED to reset the counter while the stamp itself returned success — a green receipt on a boundary that never moved (found by Duty 4 cycle `20260922-c22`: the prose was stale, the tool was right). Lesson 2026-09-01: the Duty 4+6 verdict was consolidated but never stamped → counter read 24/5 FIRE on stale data. Rule: every consolidated review verdict ends with the boundary stamp BEFORE reporting the cadence state; never narrate a cadence reading without confirming the boundary row exists.
 
 ## Rule-text provenance — CHANGELOG at ship time
 

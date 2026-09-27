@@ -87,7 +87,8 @@ local-cargo ban and `gh -R` — are stated in `SKILL.md §Shared environment fac
 - This box has **no sanctioned Rust toolchain** — CI is the only sanctioned
   compile/test executor (Compiler role RETIRED 2026-08-28). No cargo/rustc/clippy in ANY form —
   install, PATH-prepend, explicit path, even an invocation that exits 0 is a
-  violation. **No local tool exists at all** — `/root/.rustup` is gone and the
+  violation. **Canonical full law: `editor.md §Box law — no local cargo, ever`** (Duty-6 c25 A-8:
+  one home, pointers everywhere else). **No local tool exists at all** — `/root/.rustup` is gone and the
   `rustfmt` wrapper was RETIRED 2026-09-19 (exits 1 `BLOCKED`), so fmt runs only
   in CI as the soft-fail leg of `pr-checks.yml`; **cosmetic diffs it reports on
   CI-green code are KEPT AS-IS, not applied — fix only formatting artifacts you

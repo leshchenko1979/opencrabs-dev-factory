@@ -426,7 +426,11 @@ Commands:
   4. Verify 4-leg smoke pass in smoke-verdicts.log
   5. git push origin {branch}
   6. tools/harvest/oc-prchecks {branch}
-Contract: SHIP on GREEN CI gate + verified 4-leg smoke pass. File PR on adolfousier/opencrabs:main citing gate run ID + smoke evidence, link fork #{issue}, notify Triage.
+Mode: {HIGH-TRUST|DEGRADED}   (read live from the ledger; fail-closed to DEGRADED)
+Contract: {MODE-CONDITIONAL} — under HIGH-TRUST: SHIP on GREEN CI gate + verified 4-leg smoke pass,
+file PR on adolfousier/opencrabs:main citing gate run ID + smoke evidence, link fork #{issue}, notify
+Triage. Under DEGRADED: hold the PR group for explicit owner approval; smoke first, file only on the word.
+Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.
 ```
 
 ### 3. Orchestration Sequence
@@ -438,7 +442,7 @@ sequenceDiagram
     participant Triage as Triage (Topic 42487)
     participant Tool as tools/harvest/oc-harvest-dispatch
     participant Ledger as workers-ledger.json
-    participant Editor as Editor Lane
+    participant Harvest as HARVEST Lane
     participant ForkCI as Fork CI (pr-checks)
     participant Upstream as Upstream Repo
 
@@ -448,14 +452,15 @@ sequenceDiagram
     Tool-->>Triage: APPROVED (or REJECTED)
     Triage->>Tool: dispatch <issue> <commits> [--to <uuid>]
     Tool->>Ledger: Verify lane idle & zero active claims
-    Tool->>Editor: session_notify([HARVEST DISPATCH: #N])
-    Note over Editor: Cut worktree off adolfousier/main<br/>Cherry-pick + oc-harvest-sweep
-    Editor->>ForkCI: Push branch + dispatch pr-checks
-    ForkCI-->>Editor: Gate verdict: SUCCESS
-    Note over Editor: AUTO-SHIP (pre-authorized on dispatch)
-    Editor->>Upstream: File upstream PR (gh pr create)
-    Editor->>Triage: session_notify: PR filed + fork issue linked
+    Tool->>Harvest: session_notify([HARVEST DISPATCH: #N])
+    Note over Harvest: Cut worktree off adolfousier/main<br/>Cherry-pick + oc-harvest-sweep
+    Harvest->>ForkCI: Push branch + dispatch pr-checks
+    ForkCI-->>Harvest: Gate verdict: SUCCESS
+    Note over Harvest: HIGH-TRUST: AUTO-SHIP on dispatch.<br/>DEGRADED: hold for the owner's word.
+    Harvest->>Upstream: File upstream PR (gh pr create)
+    Harvest->>Triage: session_notify: PR filed + fork issue linked
     Triage->>Alexey: Report PR receipt in topic 42487
+    Note over Harvest: The EDITOR's obligation ends at smoke evidence (owner order 2026-09-24).
 ```
 
 **OpenCrabs source work** (`~/opencrabs`): any code edit, CI build, or binary swap follows the **`/opencrabs-dev`** skill (`skills/opencrabs-dev/SKILL.md`) — fresh-base fetch, fork issue claim via `Issue-Ref` trailer + `oc-ledger claim` row (NO tackling comments on fork issues — owner ban 2026-08-27), per-task worktree, CI gate (pr-checks), CI-only evidence gates, sha-verified run, backup + atomic swap, ops-only user-unit restart. Upstream stays PRs-only; this section is just the pointer (procedure canonical in the skill).

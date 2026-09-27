@@ -215,7 +215,8 @@ on census evidence + owner word (hq.md step 7).
 #### RULE BLOCK: SKILL.md size budget — NOT a family (no lens of its own; Reviewer B enforces it)
 
    - **SKILL.md BUDGET RULE:** SKILL.md is the always-loaded router — every
-     line costs 4x (all four roles re-read it IN FULL under the RELOAD LAW).
+     line costs Nx, where N is the role count in the STEP ZERO table — five since
+     the v0.4.250 harvest carve-out — and each role re-reads it IN FULL under the RELOAD LAW.
      It carries: hard rules, ontology/glossary, tool-table PURPOSE-only rows,
      role routing, load paths. Executable procedure, verb vocabularies, and
      step-by-step mechanics belong in the owning role file or reference page
@@ -277,7 +278,9 @@ on census evidence + owner word (hq.md step 7).
      secondary — I-4.2).
      CORPUS (I-5.1 v0.4.116): durable reports live in
      `reviews/<cycle>/reports/`; when two skill-review-index.log files
-     diverge, the CYCLE-LOCAL index wins over the root one. Severity scale:
+     diverge, defer to `hq.md §Duty 6 step 0`: the canonical root is the STATE repo
+     (`$OC_DEV_STATE/reviews/<cycle>/reports/`); the frozen skill-repo `reviews/` root is history and
+     MUST NOT be written. Severity scale:
      HIGH (load-bearing lie / stall class) · MED (real gap, bounded blast
      radius) · LOW (nit). I reads
      persisted reports + this catalog + HQ's validation notes; it
