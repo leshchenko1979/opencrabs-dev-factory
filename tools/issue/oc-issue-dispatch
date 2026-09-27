@@ -1134,6 +1134,30 @@ def score_affinity(issue, lane):
     return score
 
 
+# Lanes too specialised to absorb a zero-affinity issue (#529/#639). Hoisted
+# from two inline copies so the arm cannot drift from itself.
+SPECIALIZED_REDIRECT = ("mermaid", "vector", "cron", "sqlite", "compaction", "loop-guard")
+
+
+def best_affinity_score(issue, lanes):
+    """Highest affinity any candidate scores for `issue` (#647).
+
+    An ORDERING hint, not a gate: the assignment loop still enforces
+    availability per unit. Without it a batch is greedy in INPUT order, so a
+    weak match can consume the lane a later, stronger match needed (measured:
+    #480, the wave's strongest match, was left with only 0-score lanes because
+    # a 9-scorer took its lane 34s earlier).
+    """
+    issue_domains = detect_issue_domains(issue)
+    best = 0
+    for lane in lanes:
+        if not lane["is_busy"] or owner_candidate_for(lane, issue_domains):
+            s = score_affinity(issue, lane)
+            if s > best:
+                best = s
+    return best
+
+
 def select_best_lane(issue, candidate_lanes, allow_fallback=False):
     """
     Select the best idle lane for an issue respecting designated domain affinity.
@@ -1167,13 +1191,26 @@ def select_best_lane(issue, candidate_lanes, allow_fallback=False):
     best_score, best_lane = scored[0]
     if best_score < 0 and not allow_fallback:
         return None
-    if best_score == 0:
+    if best_score == 0 and not allow_fallback:
+        # (#639 Wire C) A ZERO score is the ABSENCE of an affinity match, not a
+        # weak one. Dispatching on it hands the unit to a lane that will refuse
+        # it -- a guaranteed wasted turn -- and hides which units are actually
+        # starved. fleet-directives.md clause 3 is explicit: with no matching
+        # domain idle, leave the unit QUEUED or commission a domain-appropriate
+        # lane; "random fallbacks across unrelated topics are blocked".
+        #
+        # Scoped to issues that HAVE detectable domains. An issue whose surface
+        # no domain covers scores 0 against EVERY lane, so refusing there would
+        # make it unroutable forever rather than merely queued; that case keeps
+        # the specialised-lane guard below, which is all that can be decided.
+        if issue_domains:
+            return None
         # Check if lane has specialized feature
         lane_feat = best_lane.get("feature", "").lower()
-        if any(d in lane_feat for d in ("mermaid", "vector", "cron", "sqlite", "compaction", "loop-guard")) and not allow_fallback:
+        if any(d in lane_feat for d in SPECIALIZED_REDIRECT) and not allow_fallback:
             # Avoid polluting specialized topic with zero affinity
             # Look for a generic lane among scored
-            generic_candidates = [l for s, l in scored if s >= 0 and not any(d in l.get("feature", "").lower() for d in ("mermaid", "vector", "cron", "sqlite", "compaction", "loop-guard"))]
+            generic_candidates = [l for s, l in scored if s >= 0 and not any(d in l.get("feature", "").lower() for d in SPECIALIZED_REDIRECT)]
             if generic_candidates:
                 return generic_candidates[0]
             return None
@@ -1602,7 +1639,11 @@ def cmd_auto(args):
         return 0
 
     editor_lanes = get_worker_roster(ledger_data)
-    # A lane that OWNS a domain some dispatchable issue touches stays a candidate
+
+    # (#647) Order by best-available affinity DESC. Stable, so ties keep input
+    # order and the previous behaviour is preserved within equal scores.
+    _scores = {id(i): best_affinity_score(i, editor_lanes) for i in dispatchable}
+    dispatchable.sort(key=lambda i: _scores[id(i)], reverse=True)
     # even when busy (fork #342). Without this the pre-filter drops the surface
     # owner BEFORE select_best_lane can score it, which is the live misroute: the
     # owner lane is busy whenever it has work -- i.e. exactly when its own issues
@@ -1619,6 +1660,7 @@ def cmd_auto(args):
         return 4
 
     dispatched_count = 0
+    affinity_skipped = 0
     assigned_lanes = set()
 
     # Wall-clock budget for the whole run (#S). Without one, a hung notify costs
@@ -1640,7 +1682,9 @@ def cmd_auto(args):
 
         best_lane = select_best_lane(issue, candidates, allow_fallback=args.force)
         if not best_lane:
-            print(f"Skipping issue #{issue.get('number')}: No available lane with matching domain affinity (pass --force to override).")
+            affinity_skipped += 1
+            print(f"Skipping issue #{issue.get('number')}: no idle lane with matching domain affinity "
+                  f"-- LEFT QUEUED (pass --force to override).")
             continue
 
         assigned_lanes.add(best_lane["uuid"])
@@ -1680,7 +1724,17 @@ def cmd_auto(args):
             else:
                 print(f"  Delivery SUCCESS for issue #{num}")
 
-    print(f"\nSummary: {dispatched_count} issue(s) dispatched.")
+    print(f"\nSummary: {dispatched_count} issue(s) dispatched"
+          + (f", {affinity_skipped} left queued for want of domain affinity"
+             if affinity_skipped else "")
+          + ".")
+    if dispatched_count == 0 and affinity_skipped > 0:
+        # A run that dispatched nothing must not report plain success: that is
+        # the false-success shape clause 3 exists to prevent. Same code as the
+        # no-idle-lanes case, told apart by the MESSAGE (the rc-8 precedent).
+        print(f"CAPACITY_EXHAUSTED: {affinity_skipped} dispatchable issue(s) had no idle lane "
+              f"with matching domain affinity; all left queued.", file=sys.stderr)
+        return 4
     return 0
 
 
@@ -1952,7 +2006,29 @@ def run_selftest():
     assert_true("Mismatched specialized lane refused when no matching lane available", select_best_lane(issue_db, [lane_mermaid]) is None)
     # But routes cleanly when db lane or generic lane is present
     assert_eq("Routes to matching domain lane", select_best_lane(issue_db, [lane_mermaid, lane_db])["uuid"], "lane-db-1")
-    assert_eq("Routes to generic lane over conflicting specialized lane", select_best_lane(issue_db, [lane_mermaid, lane_generic])["uuid"], "lane-generic-1")
+    # (#639 Wire C) A zero score is the ABSENCE of a match, not a weak one. The
+    # generic lane carries no `db` affinity, so routing to it is a guaranteed
+    # wasted turn -- the mis-route class #626/#539/#606 all landed in. The law's
+    # remedy (fleet-directives.md clause 3) is to leave the unit QUEUED. This leg
+    # REPLACES an earlier one that asserted the mis-route itself.
+    assert_true("Zero-affinity generic lane refused -- unit left queued (#639)",
+                select_best_lane(issue_db, [lane_mermaid, lane_generic]) is None)
+    # Control, and the reason the refusal is scoped to DOMAIN-BEARING issues: an
+    # issue whose surface no domain covers scores 0 against EVERY lane, so
+    # refusing there would make it unroutable forever rather than merely queued.
+    # It keeps avoiding the specialised lane, which is all that can be decided.
+    issue_nodomain = {"number": 9001, "labels": [],
+                      "title": "chore: wheels turn slowly",
+                      "body": "zzz qqq wibble"}
+    assert_true("control: the domain-less fixture really has no domains",
+                not detect_issue_domains(issue_nodomain))
+    assert_eq("control: a domain-less issue still avoids the specialised lane",
+              select_best_lane(issue_nodomain, [lane_mermaid, lane_generic])["uuid"],
+              "lane-generic-1")
+    # --force is the documented escape hatch and must still override.
+    assert_eq("--force overrides the zero-affinity refusal",
+              select_best_lane(issue_db, [lane_mermaid, lane_generic], allow_fallback=True)["uuid"],
+              "lane-generic-1")
 
     # Test 3c: role-owned domain beats prose (fork #342 sufficiency leg). A lane that
     # OWNS tools/** must win a tools/ issue even when its feature prose never names the
@@ -2030,8 +2106,13 @@ def run_selftest():
                         "busy_known": True, "feature": "generic editor", "raw": {"role": "editor"}}
     lane_editor_idle = {"uuid": "lane-editor-idle", "class": "ACTIVE", "is_busy": False,
                         "feature": "generic editor", "raw": {"role": "editor"}}
+    # Retargeted again by #639 Wire C: this kill needs BOTH lanes at score 0 so
+    # the busy/idle order is what decides -- but issue_tools now carries the
+    # `tools` domain, and a domain-bearing issue with no positive-affinity lane
+    # is refused (left queued). A domain-less issue keeps both at 0, so the
+    # availability filter is still the only thing under test here.
     assert_eq("Busy non-owner does not displace an idle editor",
-              select_best_lane(issue_tools, [lane_editor_busy, lane_editor_idle])["uuid"],
+              select_best_lane(issue_nodomain, [lane_editor_busy, lane_editor_idle])["uuid"],
               "lane-editor-idle")
 
     # Test 3e: the PLAN domain (fork #529, live mis-route). #506 was dispatched to
@@ -2179,9 +2260,21 @@ def run_selftest():
                     {"title": "fix(telegram): normalise text-presentation glyphs in the flow chrome",
                      "body": "the phantom guard re-opens a turn and the retry loop repeats it"}))
 
-    # Test 4: Selection when lane is busy
-    lane_busy = {"uuid": "lane-busy", "feature": "telegram-buttons", "is_busy": True, "class": "ACTIVE"}
-    lane_idle = {"uuid": "lane-idle", "feature": "generic editor", "is_busy": False, "class": "IDLE"}
+    # Test 4: Selection when lane is busy.
+    # Retargeted by #639 Wire C: the idle lane previously read "generic editor",
+    # i.e. ZERO affinity, and a domain-bearing issue with no positive-affinity
+    # lane is now refused (left queued) -- so the contrast this leg needs was
+    # being supplied by the very behaviour Wire C removes. Both lanes now carry
+    # the issue's domain, the busy one carries MORE of it, and the leg asserts
+    # the busy lane is skipped anyway. The two assertions below pin that premise
+    # so a future domain change reddens this leg instead of silently voiding it.
+    lane_busy = {"uuid": "lane-busy", "feature": "telegram-buttons memory", "is_busy": True, "class": "ACTIVE"}
+    lane_idle = {"uuid": "lane-idle", "feature": "telegram-buttons", "is_busy": False, "class": "IDLE"}
+    assert_true("Test 4 premise: the idle lane has positive affinity for the issue",
+                score_affinity(issue_tg, lane_idle) > 0)
+    # Measured on the fixture: busy 43 (memory+telegram), idle 20 (telegram).
+    assert_true("Test 4 premise: the busy lane scores strictly higher",
+                score_affinity(issue_tg, lane_busy) > score_affinity(issue_tg, lane_idle))
     selected = select_best_lane(issue_tg, [lane_busy, lane_idle])
     assert_eq("Busy lane skipped even with higher affinity", selected["uuid"], "lane-idle")
 
