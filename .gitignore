@@ -16,3 +16,15 @@ __pycache__/
 # transcript, not a durable artifact -- and being untracked it tripped the
 # sync stray-guard (die 7) while a red was under investigation.
 tools/tests/battery-last-fail.log
+
+# Runtime review artefacts (Duty-4 proposals, Duty-6 reports, evidence).
+# These belong to the STATE repo (opencrabs-dev/reviews/), which is where the
+# intake lane reads and where oc-ledger's TRACKED sweep covers them. Lanes that
+# write them into the SKILL repo instead create an untracked path -- and because
+# the sync stray-guard reads a full `git status --porcelain`, ONE lane's misplaced
+# proposal directory blocks every version bump with die 7. Live instance
+# 2026-09-27: reviews/20260927-c25/ held 7 files, 6 of them duplicates of state-repo
+# copies and ONE (telegram-95bec69b-1.md) with no counterpart anywhere -- so both
+# "delete" and "rehome" would have destroyed a real submission. Ignoring the class
+# is non-destructive: the stray file stays on disk and on someone's record.
+reviews/
