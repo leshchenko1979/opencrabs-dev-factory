@@ -614,7 +614,7 @@ it would FAIL on the pre-fix artifact — state the input on which it fails.**
 
 ONE location: red-run diagnosis reads these (pre-S3: Compiler Step 2; now:
 `oc-deploy` RED reports + HQ triage); the
-Editor applies the same ones in its fix round (editor.md Phase 6c). No lane
+Editor applies the same ones in its fix round (editor.md Phase 6-Fix). No lane
 uses them as a licence to fix outside its scope.
 
 - Fix unresolved-name/import errors FIRST (E0425/E0433...) — later errors are

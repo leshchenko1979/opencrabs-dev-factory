@@ -21,7 +21,7 @@
 
 **Roles & authority:** **Autonomous Priority Authority Law** · **Autonomous Editor Goal & Continuous Phase Execution Law** · **Claim Release & Superseded Plans** · **Early Claim** · **Designated Domain Affinity & Topic Context Focus Law** · **Strict Atomicity & Zero Bundling** · **PR naming convention**
 
-**Channels & messaging:** **Telegram surface law** · **telegram_send addressing rule** · **Cross-lane message delivery discipline** · **Direct dispatch** · **Receiver-side dedupe of reload demands** · **Attribution guard** · **Unified Event Capture**
+**Channels & messaging:** **Telegram surface — file delivery & own-feature probes** · **telegram_send addressing rule** · **Cross-lane message delivery discipline** · **Direct dispatch** · **Receiver-side dedupe of reload demands** · **Attribution guard** · **Unified Event Capture**
 
 **Ships & carriers:** **Features-compat gate** · **Carrier Concurrency & Coalescence Law** · **Post-Rewrite Swap Recovery** · **Upstream PR filing — base CI gate pre-claim** · **Upstream Coding & Testing Standards** · **LLM Ergonomics & Efficiency Law**
 
@@ -566,7 +566,7 @@ Work notifications go **sender → resource-owner directly**. No intermediary la
 1. **Claim at recognition, not at dispatch.** The moment a lane reads an issue and judges it inside its designated domain (see §Designated Domain Affinity above), it claims it — `oc-ledger claim <issue>` — BEFORE it starts work, and independently of whether a dispatch wire has arrived. The dispatch is a notification; the claim is the lock.
 2. **First claim wins, and it is exclusive.** A lane that finds an OPEN claim-ref for an issue does not start it, does not dispatch it, and does not "help" — the owning lane holds it. The claim row is the fleet's mutual-exclusion primitive; nothing else is. This is the recognition-side twin of the dispatch-side rule already in force (verify-unclaimed before dispatch, §Dispatch Eligibility).
 3. **Why earlier closes the double-dispatch window:** double dispatch happens because routing decides BEFORE any lane holds the issue — two dispatchers reading the same free backlog can each pick a lane, and both start. Moving the claim to the recognition instant puts the lock on the issue before a second dispatcher can read it as free, which is also what makes `DISPATCHABLE = unclaimed AND vetted AND NOT landed` honest rather than aspirational.
-4. **An early claim carries an early release duty.** A lane that claims and then cannot proceed releases with `oc-ledger unclaim` — a `note` row closes nothing and leaves the issue reading CLAIMED. An early claim left stale is a hold on the work, not a safety net.
+4. **An early claim carries an early release duty.** A lane that claims and then cannot proceed releases with `oc-ledger stamp unclaim "<what>"` — `unclaim` is a ledger KIND, not a verb (the enum is closed), and a `note` row closes nothing and leaves the issue reading CLAIMED. An early claim left stale is a hold on the work, not a safety net.
 
 **Honest limit — what this does NOT fix (the owner's own words):** *"as for releasing the lanes - we have lots of them. the problem is throughput and human gate. but there is currently no way to make the human work faster. today was a one-time when I was busy with other stuff."* The early claim removes duplicate **work**; it does nothing for **owner-gate throughput**, which is the real ceiling on the harvest cadence. Two corollaries a lane must not get wrong:
 

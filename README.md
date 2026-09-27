@@ -39,7 +39,7 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 
 | Role | State | Runs |
 |---|---|---|
-| **EDITOR** | live | Fork issues, per-task worktrees, CI gates, signed commits, `oc-deploy ship`, upstream PRs |
+| **EDITOR** | live | Fork issues, per-task worktrees, CI gates, signed commits, `oc-deploy ship` |
 | **HQ** | live | Worker ledger, duty cadence, multi-lens code/structure reviews, direct directive proposals |
 | **TRIAGE** | live (v0.4.86 carve-out) | Issue assignment, repo hygiene patrols, rebase/merge execution, upstream lifecycle tracking (folded from Harvester v0.4.176) |
 | **TOOLSMITH** | live (v0.4.87 carve-out) | Owns `tools/` CODE — makes and fixes the CLI tools every other role uses, direct recipient of tool quirks/defects (v0.4.176) |

@@ -1,4 +1,4 @@
-# TRIAGE — interrupt lane: idea/quirk intake, fix routing, enforcement
+# TRIAGE — interrupt lane: fix routing, enforcement
 
 **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `triage.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
 

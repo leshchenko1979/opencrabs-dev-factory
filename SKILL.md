@@ -3,8 +3,8 @@ name: opencrabs-dev
 description: >
   OpenCrabs source ops (~/opencrabs): roles EDITOR (fork issues, per-task
   worktrees, CI gate (pr-checks), signed commits, push + sha hand-off, oc-deploy ship,
-  smoke-test-on-notify, upstream PR), HQ (skill set + worker ledger),
-  TRIAGE (interrupt lane: idea/QUIRK intake, fix routing, enforcement — carved out of HQ at v0.4.86),
+  smoke-test-on-notify), HQ (skill set + worker ledger),
+  TRIAGE (interrupt lane: fix routing, enforcement — carved out of HQ at v0.4.86),
     TOOLSMITH (CLI tool lane: owns tools/ — makes and fixes the CLI tools every other role uses — carved out at v0.4.87),
     HARVEST (upstream contribution lane: ports a READY cluster, gates it, files the upstream PR and owns its lifecycle — carved out at v0.4.250); Compiler role retired 2026-08-28).
   Use when editing/fixing OpenCrabs Rust code, debugging quick-build-linux carrier or other CI runs, fetching CI artifacts, or swapping /usr/local/bin/opencrabs.
@@ -108,7 +108,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/git/oc-commit -m <msg> [--issue N] [--no-comment] [--state <text>] [--repo <path>]` | gated commit wrapper: derives `Issue-Ref` from the actor's latest ledger claim, adds Session-Id + Issue-Ref trailers, folds in the post-commit comment |
 | `./tools/ship/oc-ship-audit [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
 | `./tools/audit/oc-tg-audit <uuid> [--date D] [--days N] [--log-dir P]` | Telegram surface-law evidence scan |
-| `./tools/state/oc-ledger sync` CHANGELOG gate | **Exists — HARD (die 6):** a bump whose CHANGELOG entry is missing is refused (v0.4.65, the v0.4.54 backfill incident). **Names what it bundles — WARN (lens C8 extension; Toolsmith disposition accepted 2026-09-22):** the sync also LISTS every commit in its own range that the entry does not name, including those that legitimately carry no issue ref. WARN, never die — the range is other lanes' work, so a hard gate would let one lane's landing block the fleet's version record, and an exclusion list is where this class of gate goes to die. The anchor is the previous sync commit, resolved from its own subject; when it cannot be derived the comparison is SKIPPED with a NOTE, because an unverifiable check must never pass as clean. |
+| `./tools/state/oc-ledger sync` CHANGELOG gate | the sync refuses a bump whose CHANGELOG entry is missing (die 6) and WARNS on bundled commits the entry does not name. Full register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/harvest/oc-harvest-census <scan|check|record|sync>` | pre-flight census & lifecycle registry for upstream PR harvests; prevents duplicate/colliding PRs. `record` appends to `manual_records`, which `check` CONSULTS before declaring a unit unharvested — rc 1 `REFUSED … manually recorded as filed in PR #<n> (unit <u>)` — and the registry write MERGES into the loaded dict so foreign keys survive. Use `check`/`scan`, which derive IN_FLIGHT from the live scan |
 | `./tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` \| `dispatch <issue> <commits> [--dry-run]` | dispatches automated harvest-to-upstream work order for eligible features |
 | `./tools/harvest/oc-harvest-sweep <pr-branch> [--base adolfousier/main] [--repo P] [--port-of sha1,sha2]` | pre-gate harvest verification (harvest Phase 7 sweep, mechanical legs); behavioral judgment stays human |
@@ -118,10 +118,10 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/git/oc-start <issue-N> --branch <branch>` | unified entry: claim + branch + worktree initialization |
 | `./tools/smoke/oc-smoke <issue-N> [--probe <cmd>] [--no-ledger]` | unified 4-leg smoke verification & verdict row logging + automatic ledger done stamp on PASS |
 | `./tools/issue/oc-issue-dispatch [--auto]` · `<issue-number> [--to <uuid>] [--force] [--allow-landed] [--redispatch] [--budget-secs N]` | mechanized issue triage dispatch to idle editor lanes; the issue is POSITIONAL and `--to` names the target session — there is NO `--issue` or `--lane` flag (verified live 2026-09-25 against the tool's own `--help` and `tools/docs/RC-CONTRACT.md` row 36). `--force` overrides the claim gate, `--allow-landed` disables the landed filter, `--redispatch` disables the 7-day dedup window |
-| `./tools/state/oc-questions <verb>` | the Open Questions register (#547) — the sanctioned blocked-on-you channel (canon: `fleet-directives.md §Open Questions register`; instrument law: `docs/instruments/open-questions.md` in the meta-factory repo). Verbs `ask` · `answer` · `amend` · `withdraw` · `notify` · `list` · `publish` · `lint` · `gc` (no `render`: the card/button leg was DELETED by owner order 2026-09-24, because decisions are collected on the PAGE). `ask --factory <KEY>` is REQUIRED and the factory key IS the standing set id; the session and lane are derived from `OPENCRABS_SESSION_ID` plus that session's own binding, so there is no `--lane` to pass and an UNBOUND session is REFUSED non-zero. The page URL is CONSTANT and readable (`questions.l1979.ru/<factory>/`, per-lane anchors `#lane-<slug>`). Full verb/rc/contract register: `tools/docs/RC-CONTRACT.md` row 49 |
-| `./tools/audit/oc-lint-laws [--strict]` | mechanical syntax & tool existence lint of skill markdown laws. **`--strict` known limitation (v0.4.207, measured 2026-09-19; count re-measured 2026-09-25):** `flag_known` demands the flag BE the whole case arm (`^[[:space:]]*--flag)`), so ALTERNATION arms (`--role\|--role=*)`, `--selftest\|selftest)`), INLINE tests (`[ "${1:-}" = "--bundle" ]`) and comments are not recognised. This yields PHANTOM-FLAG **false positives** — **read the count and locations from `oc-lint-laws --strict` itself, which is authoritative and self-updating; do NOT copy them into this row, because the numbers drift on every edit to any corpus file** (measured 2026-09-25: 8 findings, every one of this class and every one naming a real working flag — e.g. `oc-roster --role hq` rc=0, `oc-deploy --selftest` rc=0, and `--bundle`/`--issue` each covered by passing selftest assertions at `tools/state/oc-ledger:1275` and `:1415`). Non-strict mode finds them too. **Do not "fix" these as phantoms** — root fix dispatched to Toolsmith. |
+| `./tools/state/oc-questions <verb>` | the Open Questions register — the sanctioned blocked-on-you channel. Verbs, rc and the ask/answer contract: `tools/docs/RC-CONTRACT.md` row 49 · canon: `docs/instruments/open-questions.md` |
+| `./tools/audit/oc-lint-laws [--strict]` | mechanical syntax & tool-existence lint of skill markdown. Read findings from the tool itself, never from this row. Register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/audit/oc-claims-single-source [--scan DIR] [--selftest]` | battery guard: the claim-closure predicate has exactly ONE home (`tools/lib/oc_claims.py`) — fails the battery on a re-added private copy under `tools/`. Keys on the re-implementation SHAPE, never on a name (the two copies it exists to prevent were called `claims_index` and `claim_is_closed`, so a name-keyed guard misses both). Scan units include embedded `python3 -c` / heredoc blobs, not only whole files. rc register: tools/docs/RC-CONTRACT.md |
-| `./tools/harvest/oc-prchecks <branch-or-sha> [--wait N] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR]` · `oc-prchecks resume <run-id>` | one-command CI gate on a PR-lane branch (editor.md Phase 5); `wait <ref> [--budget N] [--poll S]` provides single-invocation blocking gate; **`resume <run-id>` RE-ATTACHES to a run this lane WITNESSED** — no dispatch, no adoption (#74 H2) — and is the recovery for a rc-5 in-flight-timeout, whose stdout carries the run id + URL for exactly this (`extra.run_id` in the journal is the same handle). Full rc/adoption/lock/fmt-soft-fail register: tools/docs/RC-CONTRACT.md |
+| `./tools/harvest/oc-prchecks <branch-or-sha> [--wait N]` · `resume <run-id>` | one-command CI gate on a PR-lane branch; `resume` re-attaches to a run this lane witnessed. Register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/harvest/oc-upstream-delta [--repo P] [--fork-origin R] [--upstream R]` | watch-cycle arithmetic; READ-ONLY — PROPOSE/WAIT judgment stays human |
 | `./tools/git/oc-wt add\|remove\|list` (`--force` is a flag on add/remove) | editor worktree manager (`--force` journals before removal) |
 | `./tools/state/oc-drift-check <uuid> [--ack]` (omit-arg canonical; legacy `<uuid> <claimed-ver>` accepted) | editor §Mid-cycle skill drift step 1-2, mechanical |
@@ -134,7 +134,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/ship/oc-ship-chain --sha S --branch B` | CI gate → issue-log → ff-merge → ship → swap in ONE invocation; no-self-ping |
 | `./tools/notify/oc-notify-fanout --title T` | per-lane skill-change brief generator; DB-validated forum-scoped targets, receipts + ledger stamp |
 | `./tools/git/oc-rebase-safety overlap\|audit` | re-gate split rule arithmetic |
-| `./tools/state/oc-roster <live\|forum\|claims\|work\|classify> [--detail\|--json]` | the DERIVED in-progress roster — joins ledger claim events + worktree dirty state + session-DB liveness + forum bindings; stores nothing. `live` = the freeze list; `classify` = ACTIVE/IDLE/ORPHAN/UNKNOWN per row; a claim author absent from the session DB is reported PHANTOM and excluded. `--selftest` = 44 checks. **`--role <role>` is a supported delegation to `oc-ledger roster --live --role <role>` — byte-identical output (verified 2026-09-19, `cmp` rc=0); a bare `--role` with no value answers rc 2.** Sync runbook step 0 |
+| `./tools/state/oc-roster <live\|forum\|claims\|work\|classify>` | the DERIVED in-progress roster (claim events + worktree state + session liveness + bindings); stores nothing. `--role <role>` delegates to `oc-ledger roster`. |
 
 Tests: `tools/tests/run.sh` — one command, exit 0 only if all pass (the SELFTEST BATTERY — tool
 selftests, distinct from the CI-gate CODE TESTS cargo triad). Must stay green before any version
@@ -248,7 +248,7 @@ probe hygiene, and the single-sided-probe sufficiency ruling — are canonical a
   Its content is declared in TWO classes (v0.4.238, a RECOVERABILITY rule: a
   tracked file's only durable record is git):
   - **TRACKED** — `workers-ledger.json` · `journal/` · `oc-deploy/journal/`
-    (the deploy audit trail `oc-ledger recover-receipt` reads) · the lane
+    (the deploy audit trail `oc-deploy recover-receipt` reads) · the lane
     `*-state.md` records · `reviews/` · `evidence/` · `tools.log` ·
     `smoke-verdicts.log` · `deployed.sha`/`.meta.json` · `baseline.json` ·
     `fanout.state` · markers (`pacemakers-off`).
@@ -257,11 +257,11 @@ probe hygiene, and the single-sided-probe sufficiency ruling — are canonical a
     reaped on the hygiene cadence WITH a keep-window (a sidecar taken while its
     source was still UNTRACKED is the only copy of that reading).
   A TRACKED class's additions and updates MUST be committed by the state-repo
-  commit path. That path has ONE home (#508, 2026-09-22): `STATE_TRACKED_PATHS` +
-  `STATE_TRACKED_GLOB` (`tools/state/oc-ledger:223`/`:230`), consumed by
-  `state_sweep_tracked` (`:232`), with a selftest asserting the single source
-  (`:1540`). BOTH callers sweep the SAME namespace — the auto-commit tail (`:276`)
-  and `commit-pending --bundle` (`:1101`). Before #508 the auto-commit staged
+  commit path. That path has ONE home (#508, 2026-09-22): the `STATE_TRACKED_PATHS`
+  and `STATE_TRACKED_GLOB` assignments in `tools/state/oc-ledger`, consumed by
+  `state_sweep_tracked`, with a selftest asserting the single source. BOTH callers
+  sweep the SAME namespace — the auto-commit tail and `commit-pending --bundle`.
+  Before #508 the auto-commit staged
   `workers-ledger.json` ALONE and the sweeping verb was invoked by NO enabled cron:
   measured 2026-09-22, 345 entries had piled up on that split. Consequence for
   authorship: a class named TRACKED above is only actually swept if it is in
@@ -287,7 +287,7 @@ probe hygiene, and the single-sided-probe sufficiency ruling — are canonical a
   disk; workers absorb re-reads at their own boundaries (turn start, role-file
   load), no reload pings are owed or sent (defined here lens A16 v0.4.89;
   used in editor.md/triage.md/toolsmith.md).
-- **Triage lane** — the interrupt lane carved out of HQ at v0.4.86 (idea/QUIRK intake, fix routing,
+- **Triage lane** — the interrupt lane carved out of HQ at v0.4.86 (fix routing,
   enforcement patrols — `triage.md`); never edits skill files.
 - **Toolsmith lane** — the CLI tool lane carved out at v0.4.87 (owner "Go toolsmith" 2026-09-06): owns
   `tools/` code — makes + fixes the CLI tools every other role uses (`toolsmith.md`); never edits skill

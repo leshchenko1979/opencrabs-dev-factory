@@ -3,8 +3,8 @@
 **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `hq.md`, `fleet-directives.md` in `active_skills`; re-read IN FULL on compaction/spawn).
 
 **Load only after SKILL.md confirmed the role is HQ.** This is HQ
-session's standing role. Interrupt-shaped duties (idea-box / QUIRK intake,
-fix routing, enforcement patrols) operate in the TRIAGE lane since v0.4.86
+session's standing role. Interrupt-shaped duties (fix routing, enforcement
+patrols) operate in the TRIAGE lane since v0.4.86
 (owner "Go with Option A" 2026-09-06) — procedure: `triage.md`; batched
 escalations from that lane land here. Skill-file authorship stays SOLELY
 with HQ (single-writer law unchanged; v0.4.87 carve-out: the
@@ -284,7 +284,7 @@ Method:
 8. **Duty-6 Ledger Cadence Reset Stamp (owner order 2026-09-15):** Upon completing the cycle (reports persisted, master verdict written, codifications applied or planned), HQ **MUST explicitly stamp the cycle close note** onto the ledger:
    `tools/state/oc-ledger stamp note "v<version> ACCEPTED — Duty 6 Cycle <cycle-id> closed" --by "hq <uuid>"`
    This stamps the mechanical boundary recognized by `oc-ledger cadence` (`^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED`), resetting the review cadence counter from `FIRE` back to `0/5 WAIT`. Without this stamp, `oc-ledger cadence` will fail to reset and will continuously report overdue review cycles.
-- **Checkable Completion Formula**: `DONE = every catalog lens persisted via oc-review-persist (assert `./tools/state/oc-review-persist check-cycle reviews/<cycle-id>` rc 0 — the tool derives the lens set from the catalog AT GATE TIME; NEVER hardcode the count here) + receipts logged in skill-review-index.log + master verdict compiled in reviews/<cycle-id>/verdict.md + review manifest marked COMPLETED in reviews/<cycle-id>/state.json + oc-ledger stamp note "v<version> ACCEPTED — Duty 6 Cycle <id> closed" executed (resetting cadence to 0/5 WAIT).`
+- **Checkable Completion Formula**: `DONE = every catalog lens persisted via oc-review-persist (assert `./tools/state/oc-review-persist check-cycle reviews/<cycle-id>` rc 0 — the tool derives the lens set from the catalog AT GATE TIME; NEVER hardcode the count here) + receipts logged in skill-review-index.log + master verdict compiled in reviews/<cycle-id>/VERDICT.md + review manifest marked COMPLETED in reviews/<cycle-id>/state.json + oc-ledger stamp note "v<version> ACCEPTED — Duty 6 Cycle <id> closed" executed (resetting cadence to 0/5 WAIT).`
 
 Rationale: HQ authors most rules — author-blindness is structural.
 Independent subagent eyes keep the set honest, and **HQ's own completeness check keeps it whole** — the owner gate was REMOVED from the Duty 4/6 fixing process on 2026-09-25, so the reviewers' findings are landed in their entirety rather than triaged down to what an owner happened to approve.
