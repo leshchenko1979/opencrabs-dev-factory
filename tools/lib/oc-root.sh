@@ -101,7 +101,12 @@ oc_tools_dir() {
       printf '%s\n' "$_ocd"; return 0
     fi
     if [ "$(basename "$_ocd")" = "tools" ]; then return 1; fi
+    _ocp="$_ocd"
     _ocd="$(dirname "$_ocd")"
+    # H-2: dirname(".") is "." and dirname("x") is ".", so a BARE relative name
+    # (no slash -- readlink -f failed on it) parks here and spins forever with no
+    # timeout. Break the moment the walk stops making progress.
+    [ "$_ocd" = "$_ocp" ] && break
   done
   return 1
 }
