@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.267
+version: 0.4.268
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -163,7 +163,7 @@ Editors live in a Telegram forum group: one topic = one editor = one live sessio
   `channel_messages`, never a read-modify-write — so parallel renames cannot
   clobber each other, and a rename keys on `thread_id`, so session bindings are
   unaffected. The live name for a thread is the NEWEST row for that `thread_id`, not any row: the table is append-only and retains every historical name.
-  **THE NAME SOURCE IS `channel_messages.topic_name` AND ONLY THAT. `sessions.title` is a bind-time label that does NOT follow a rename (measured 2026-09-27, this lane: two registry lane-corrections I declared "from live bindings" read `sessions.title` and were stale — t34653 declared `Compaction visibility` after the topic was renamed `Memory: Compaction` at 10:43Z, and t30090 declared a string that returns 0 rows box-wide for `topic_name LIKE '%channel-ownership%'`), and `session_bindings` carries NO name column at all, so it cannot be a topic source in either direction. Never re-type a topic name either: emit the carry from the row, per §Never author a literal from a rendered output.**
+  **THE AUTHORITATIVE NAME IS THE NEWEST `topic renamed to "<x>"` / `topic created "<x>"` EVENT ROW — NOT the `topic_name` COLUMN, which is an ECHO. `latest_topic_name()` feeds both the inbound (`handler.rs:357-363`) and outbound (`delivery.rs:621-626`) writes, so a plain message's `topic_name` is a copy of whatever was newest when it was written and can propagate a superseded name indefinitely (measured 2026-09-27, t34653: `Compaction visibility` carries **0** rename/create events — it was never a rename target — yet was the newest `topic_name` at 12:50:16Z, two days after the event stream renamed it to `Memory: Compaction`). Read the column and you can be pushed backwards off a correct answer; read the events and t49643's live name is `Core: Skills` where its column echoes `Skills`. `sessions.title` is a bind-time label that does not follow renames at all, and `session_bindings` has no name column. Never re-type a name: emit it from the event row.**
 
 - Every Editor commit carries a git trailer: `Session-Id: <full session uuid>`
   (`git commit --trailer "Session-Id: <uuid>"`). FULL uuid — the 8-char display
