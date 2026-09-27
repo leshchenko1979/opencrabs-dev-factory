@@ -510,11 +510,28 @@ push_mirror() { # $1=repo dir, $2=label — off-box durability tail step (v0.4.5
   # Timeout-bounded because the backlog hook runs INSIDE the ledger lock: a
   # hung network push must never stall every lane's mutation. Bound lives here
   # so all call sites (sync, commit-pending, the backlog arm) inherit it.
+  # (#655) Act on the remote's REAL state. Without this the tool both measures
+  # and pushes against a stale @{u}: measured, a stale tracking ref reads
+  # "ahead 1" / count=1 while the truth is "ahead 1, behind 1", and the push is
+  # rejected non-fast-forward -- then WARNs the same way on every later run and
+  # never succeeds. The fetch is bounded by the same timeout and is
+  # best-effort: if it fails we still attempt the push, which reports its own
+  # reason. Cost is confined to this path, which the backlog arm gates.
+  local br; br="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null)"
+  [ -n "$br" ] && timeout -s KILL "$_OC_PUSH_TIMEOUT" git -C "$dir" fetch -q origin "$br" >/dev/null 2>&1
   out="$(timeout -s KILL "$_OC_PUSH_TIMEOUT" git -C "$dir" push -q origin HEAD "+refs/tags/v0.4.*:refs/tags/v0.4.*" 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "mirror: $name pushed to $(git -C "$dir" remote get-url origin)"
   else
-    echo "WARN: mirror push failed for $name rc=$rc (local unaffected): $out" >&2
+    # Distinguish a moved remote from a real divergence: the former clears on
+    # the next push, the latter owes a human merge and must never be forced.
+    local rel=""
+    case "$out" in
+      *non-fast-forward*|*"fetch first"*|*"remote contains work"*)
+        rel="$(git -C "$dir" rev-list --left-right --count '@{u}...HEAD' 2>/dev/null)"
+        rel=" [ahead ${rel#*	} behind ${rel%%	*}]" ;;
+    esac
+    echo "WARN: mirror push failed for $name rc=$rc (local unaffected)$rel: $out" >&2
   fi
   oc_log_extra "mirror_push_$name" "rc=$rc"
   return 0
@@ -2611,6 +2628,40 @@ ACKEOF
   git -C "$T/state" commit -q --allow-empty -m bl-age
   _o="$(OC_LEDGER_PUSH_MIN=99 OC_LEDGER_PUSH_MAX_AGE=0 bash "$ME" stamp note push-age 2>&1)"
   chk "push-age-arm-announced" "true" "$(grep -q 'mirror-due: state backlog=.*newest .*s old' <<< "$_o" && echo true || echo false)"
+
+  # (#655) push_mirror must act on the remote's REAL state. Measured: with a
+  # stale @{u} the tool reads "ahead N" while the truth is "ahead N, behind M",
+  # so it both measures and pushes against a stale view and WARNs identically on
+  # every later mutation. The fetch is asserted structurally, and the DISCLOSURE
+  # is asserted behaviourally against two tiny real repos -- because a
+  # disclosure leg that reads the source would pass on a message never printed.
+  chk "push-fetches-before-push" "1" \
+    "$(awk '/^push_mirror\(\)/,/^}$/' "$ME" | grep -c 'fetch -q origin')"
+  awk '/^push_mirror\(\)/,/^}$/' "$ME" > "$T/pm_fn.sh"
+  _p655dir="$T/push655"
+  rm -rf "$P"; mkdir -p "$P"
+  git init -q --bare "$_p655dir/origin.git"
+  git -C "$_p655dir/origin.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$_p655dir/origin.git" "$_p655dir/w" 2>/dev/null
+  git -C "$_p655dir/w" config user.email sa@sb; git -C "$_p655dir/w" config user.name sa
+  ( cd "$_p655dir/w" && echo base > f && git add f && git commit -q -m base && git push -q origin main )
+  # a second clone diverges: it commits, and the remote also advances
+  git clone -q "$_p655dir/origin.git" "$_p655dir/d" 2>/dev/null
+  git -C "$_p655dir/d" config user.email sa@sb; git -C "$_p655dir/d" config user.name sa
+  git -C "$_p655dir/d" checkout -q main
+  ( cd "$_p655dir/w" && echo remote > r && git add r && git commit -q -m remote && git push -q origin main )
+  ( cd "$_p655dir/d" && echo local > l && git add l && git commit -q -m local )
+  # stale tracking ref: make d believe it is strictly ahead
+  git -C "$_p655dir/d" update-ref refs/remotes/origin/main "$(git -C "$_p655dir/d" rev-parse HEAD~1)"
+  _p655out="$(bash -c '_OC_PUSH_TIMEOUT=20; oc_log_extra() { :; }; . '"$T"'/pm_fn.sh; push_mirror '"$_p655dir"'/d probe' 2>&1)"
+  printf '%s' "$_p655out" | grep -q '\[ahead .* behind .*\]' \
+    && ok || bad "push-rejection-discloses-the-relationship"
+  # CONTROL, not a signal: asserts the failure is never SILENT. It must not key
+  # on git's wording -- measured, the same divergence prints "non-fast-forward"
+  # on one path and "fetch first" on the other, so a wording assertion reddens
+  # on a git-version change rather than on a defect.
+  printf '%s' "$_p655out" | grep -q 'mirror push failed for probe rc=1' \
+    && ok || bad "push-rejection-is-never-silent"
   chk "push-age-arm-mirror-caught-up" "$(loc_head)" "$(mir_head)"
 
   # (d) NO origin -> silent no-op (never a line, never a failure)
