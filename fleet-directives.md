@@ -439,6 +439,24 @@ A1 and `environment.md` both state that manual `export OC_ACTOR` is **retired**.
 
 An override that wins silently is indistinguishable from a bug, and this one has already cost a stranded main.
 
+### A1c — a re-keyed topic re-keys the lane's identity; the trailer is a RETURN ADDRESS (lane 42a44908 ruling request, 2026-09-26)
+
+When a topic binding is re-keyed mid-life — which happens on daemon restarts, three of them in one hour on 2026-09-26 (23:00:19, 23:12:01, 23:53:21, all manual, `NRestarts=0`) — the lane's **ambient session id and its ledger-enrolled id diverge**, and a cold continuation doc carries the old one.
+
+**Ruling: the `Session-Id` trailer carries the AMBIENT id.** The trailer is a *return address*: `oc-deploy:2111` blames a site to a culprit sha and reads the trailer to find whom to notify, and `oc-notify-fanout` self-defaults from `$OPENCRABS_SESSION_ID`. An id that is not a live session has **no mailbox**, so putting it in the trailer manufactures exactly the undrainable target the owner ruled must FAIL (*"Trying to target a headless session for session notifications should fail"*, #574). Continuity of the claim is not worth a dead return address.
+
+**The claim-agreement cost is real and is paid in the LEDGER, not by keeping the trailer dead.** Measured this turn: **15 distinct uuids appear in claim rows and are not live sessions** (`b53581f4` at rows 1502/1520/11749; `1a63f103` at 2054; `a6462b1c` at 1491/1495 …). Every one of those rows was stamped with a hand-carried uuid that a continuation doc supplied — the same defect A1b just legislated against, one verb further out.
+
+**Therefore, for a lane acting on a re-keyed topic:**
+
+| | |
+|---|---|
+| trailer | ambient `$OPENCRABS_SESSION_ID`, never the id a continuation doc names |
+| claim / stamp | re-derived from env under A1b, so a **new** claim row is born correct |
+| an **existing** row naming a dead id | corrected by a later row under the ambient id — the ledger is append-only, so the stale row stays as the record and the correction travels beside it |
+| a continuation doc naming a session id | a **claim about the past**, never a source for a present-tense identity argument |
+
+This is A1b's rule seen from the other side: A1b says a SELF uuid comes from the environment; A1c says what happens when the environment *moves*. The failure mode is identical — a remembered id beating the live one — and it is the reason a cold lane must re-read rather than re-use.
 ### A2 — A shift-length goal must fit its turn budget, and its death must notify
 
 An autonomous `/goal` issued for a shift MUST carry a turn budget that covers the shift; a 20-turn default on a multi-hour window expires mid-flight. When a goal ends — budget exhausted, or any terminal state — its death MUST be surfaced. A silently expired goal leaves the loop running on standing orders with no judge, and every "goal clock is running" claim after that is false.
