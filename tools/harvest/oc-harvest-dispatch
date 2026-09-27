@@ -663,6 +663,15 @@ def check_upstream_pr(issue_num, upstream_repo, mock_prs=None):
 # resolve_actor_uuid and its two actor regexes followed it: the lib owns them
 # now, beside the predicate that needs the same lane identity.
 
+def _accepted_roles():
+    # The roles an AUTO dispatch may select. ONE home for the policy.
+    # NOTE: no triple double-quote anywhere in this engine -- the file's own
+    # hazard note records that it ENDS the bash string early and truncates the
+    # tool mid-file (cost: 1607 lines, 2026-09-18). Use # comments here.
+    raw = os.environ.get('OC_HARVEST_ROLES', 'editor,harvest')
+    return tuple(r.strip() for r in raw.split(',') if r.strip())
+
+
 def get_available_editors(ledger_file, target_uuid=None):
     if not os.path.exists(ledger_file):
         return []
@@ -672,10 +681,16 @@ def get_available_editors(ledger_file, target_uuid=None):
     busy_uuids = set(c['uuid'] for c in active_claims)
     workers = data.get('workers', [])
     available = []
+    # The accepted ROLES, in one home. v0.4.250 centralised harvesting on a
+    # dedicated lane, whose role is 'harvest' -- but an editor-only filter made
+    # that lane INVISIBLE to the auto pool, so the relabel could not be applied
+    # without removing the lane from the very pool harvest units come from.
+    # Overridable so a future role change is a config change, not a code change
+    # plus a gate: OC_HARVEST_ROLES=editor,harvest,<new>.
     for w in workers:
         u = w.get('uuid')
         role = w.get('role', '')
-        if role != 'editor':
+        if role not in _accepted_roles():
             continue
         if target_uuid and u != target_uuid:
             continue
@@ -1155,6 +1170,22 @@ elif action == 'test-active-claims':
     repo_path = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != 'none' else None
     print(json.dumps(oc_claims.get_active_claims(ledger_file, repo_path)))
 
+elif action == 'roles':
+    # (#role-widen) Test-only: print the AUTO-SELECT pool so the role filter can
+    # be asserted directly. Never used by a real dispatch path.
+    # The ledger arrives as a positional (sys.argv[8], the same slot dispatch
+    # reads), NOT as a named variable -- no mock_ledger exists in scope here.
+    _rl = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] else None
+    if not _rl or not os.path.exists(_rl):
+        print(json.dumps({'accepted': list(_accepted_roles()), 'pool': [],
+                          'uuids': [], 'error': 'no ledger arg'}))
+        sys.exit(0)
+    _pool = get_available_editors(_rl)
+    print(json.dumps({'accepted': list(_accepted_roles()),
+                      'pool': [w.get('role') for w in _pool],
+                      'uuids': [w.get('uuid') for w in _pool]}))
+    sys.exit(0)
+
 elif action == 'vet':
     candidate = sys.argv[2]
     repo_path = sys.argv[3]
@@ -1228,17 +1259,19 @@ elif action == 'dispatch':
     if target_uuid:
         busy_uuids = set(c['uuid'] for c in active_claims)
         if target_uuid in busy_uuids:
-            print(f'CAPACITY_EXHAUSTED: Target editor {target_uuid} is BUSY with active claim(s)', file=sys.stderr)
+            print(f'CAPACITY_EXHAUSTED: Target lane {target_uuid} is BUSY with active claim(s)', file=sys.stderr)
             sys.exit(4)
         selected_worker = {'uuid': target_uuid, 'topic_id': 'N/A'}
     else:
         avail = get_available_editors(ledger_file)
         if not avail:
-            print('CAPACITY_EXHAUSTED: All registered editor lanes currently have active claims.', file=sys.stderr)
+            print('CAPACITY_EXHAUSTED: All registered %s lanes currently have '
+              'active claims.' % '/'.join(_accepted_roles()), file=sys.stderr)
             sys.exit(4)
         selected_worker = select_spread_lane(avail, ledger_file)
         if not selected_worker:
-            print('CAPACITY_EXHAUSTED: All registered editor lanes currently have active claims.', file=sys.stderr)
+            print('CAPACITY_EXHAUSTED: All registered %s lanes currently have '
+              'active claims.' % '/'.join(_accepted_roles()), file=sys.stderr)
             sys.exit(4)
 
     # Step 3: Format wire envelope
@@ -1866,6 +1899,42 @@ EOF
     echo "  ok 5 - dispatch to busy lane -> CAPACITY_EXHAUSTED exit 4"
   else
     echo "  bad 5 - dispatch to busy lane expected rc=4 CAPACITY_EXHAUSTED, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 5b. (#role-widen) The auto pool accepts editor OR harvest. The harvest lane
+  #     exists (topic "Upstream: Harvest") but could not be relabelled while the
+  #     filter was editor-only, because the relabel would have REMOVED it from
+  #     the pool harvest units come from. Asserted on the pool itself, and with a
+  #     NEGATIVE control so the filter is not simply "accept everything".
+  local role_ledger="$st_dir/role-ledger.json"
+  cat << 'EOF' > "$role_ledger"
+{
+  "workers": [
+    {"uuid": "aaaa1111-1111-1111-1111-111111111111", "role": "editor", "topic_id": 201},
+    {"uuid": "bbbb2222-2222-2222-2222-222222222222", "role": "harvest", "topic_id": 39218},
+    {"uuid": "cccc3333-3333-3333-3333-333333333333", "role": "triage", "topic_id": 301}
+  ],
+  "events": []
+}
+EOF
+  out="$(run_engine "roles" "" "" "" "" "" "" "$role_ledger" "false" "true" 2>&1)" || true
+  if oc_has "$out" "editor" && oc_has "$out" "harvest"; then
+    echo "  ok 5b - auto pool accepts editor AND harvest"
+  else
+    echo "  bad 5b - auto pool must accept editor and harvest, got: $out"
+    return 1
+  fi
+  if oc_has "$out" "triage"; then
+    echo "  bad 5b-2 - a non-accepted role (triage) entered the auto pool: $out"
+    return 1
+  else
+    echo "  ok 5b-2 - a non-accepted role stays OUT of the pool (filter discriminates)"
+  fi
+  if oc_has "$out" "bbbb2222-2222-2222-2222-222222222222"; then
+    echo "  ok 5b-3 - the harvest lane's uuid is selectable"
+  else
+    echo "  bad 5b-3 - the harvest lane was not in the pool: $out"
     return 1
   fi
 
