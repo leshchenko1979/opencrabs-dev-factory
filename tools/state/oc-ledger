@@ -1422,14 +1422,14 @@ cmd_cadence() {
 # the argument becomes optional. That is the owner's directive: "tools still
 # require the lanes to pass session id as a param, while there is an env var".
 #
-# NOT IMPLEMENTED HERE -- A1b's second half (REFUSE a supplied uuid that differs
-# from $OPENCRABS_SESSION_ID). It is law, and I am not shipping it on this pass
-# because it REMOVES A DOCUMENTED CAPABILITY: `ack`/`enroll` are used by HQ on
-# ANOTHER lane's uuid (a roster-admin action), which the selftest exercises
-# deliberately -- 60 legs redden under the cross-check, including
-# `ack2-otheruuid-rc0` (a second worker uuid that must ack successfully).
-# A1b's own table puts ack/enroll in SELF, which contradicts that usage, so the
-# table is what needs the ruling, not this helper. Raised to HQ with the count.
+# A1b's second half is SHIPPED AS A WARNING, NOT A REFUSAL (#657). A refusal
+# REMOVES A DOCUMENTED CAPABILITY: `ack`/`enroll` act on ANOTHER lane's uuid (a
+# roster-admin action) and the selftest exercises that deliberately -- 60 legs
+# redden under a hard cross-check, including `ack2-otheruuid-rc0`. So the tool
+# now NAMES the mismatch without blocking it, which surfaces the accidental case
+# (a lane stamping under a lane that is not its own) and keeps the admin path.
+# Same disposition as `--by` in #320: warn, never refuse, when refusal would
+# break legitimate use.
 #
 # The ambient source is the SAME one the rest of this tool uses (derive_by in
 # cmd_stamp, and the C8 self-id) so one caller cannot resolve to two actors.
@@ -1437,6 +1437,12 @@ _self_uuid() { # $1 = verb name, $2 = supplied uuid (may be empty)
   local verb="$1" given="${2:-}"
   if [ -n "$given" ]; then
     _is_uuid "$given" || die 2 "$verb: uuid shape invalid (want 8-4-4-4-12 hex): '$given'"
+    # (#657) name a mismatch, never block it. Gated on the ambient being a real
+    # UUID so a label ambient (fixtures, non-session shells) stays silent.
+    local amb="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
+    if [ -n "$amb" ] && _is_uuid "$amb" && [ "$amb" != "$given" ]; then
+      printf '%s\n' "note: $verb acts on '$given', which is NOT the ambient session '$amb' -- correct for a roster-admin action; a mistake if you meant yourself (omit the uuid to default to the ambient)." >&2
+    fi
     printf '%s\n' "$given"; return 0
   fi
   local env_id="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
@@ -3649,6 +3655,22 @@ SHIMEOF
   # cross-check later, THIS leg reddens first and points at the reason.
   OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack aaaaaaaa-1111-2222-3333-444444444444 0.9.3 >/dev/null 2>&1
   chk "a1b-other-uuid-not-cross-checked" 3 $?
+
+  # (#657) A1b's cross-check half, shipped as a WARNING. These legs assert the
+  # two properties that make the warning useful rather than noise: it NAMES the
+  # mismatch, and it never changes the outcome.
+  _a1o="$(OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.4 2>&1)"
+  chk "a1b-other-uuid-warns" "true" \
+    "$(printf '%s' "$_a1o" | grep -q 'NOT the ambient session' && echo true || echo false)"
+  _a1o="$(OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.5 2>&1)"; _a1rc=$?
+  chk "a1b-warned-ack-still-succeeds" 0 "$_a1rc"
+  chk "a1b-warned-ack-wrote-the-other-lane" "0.9.5" \
+    "$(jq -r '[.workers[]|select(.uuid=="'"$A1E"'")][0].last_acked.version // ""' "$A1L")"
+  # GATE: a non-uuid ambient must stay SILENT, or every fixture and every
+  # non-session shell would emit the note and the warning would become noise.
+  _a1o="$(OC_ACTOR=test-runner OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.6 2>&1)"
+  chk "a1b-label-ambient-stays-silent" "true" \
+    "$(printf '%s' "$_a1o" | grep -q 'NOT the ambient session' && echo false || echo true)"
   rm -rf "$A1T"
 
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
