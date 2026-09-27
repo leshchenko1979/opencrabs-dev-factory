@@ -44,6 +44,16 @@ this PR is the ONE sanctioned exception (completed features only).
 #     0 hits on the bare read). An empty read is INDISTINGUISHABLE from "no approval
 #     exists", and a lane that draws that conclusion re-asks the owner — which is the
 #     defect this clause exists to remove. Same trap, same fix as the MODE read at v0.4.244.
+#
+#     TWO GAPS THIS CLAUSE DOES NOT CLOSE, both recorded 2026-09-27 (lane 7e1ebbb6, Duty-4 `20260927-c25`):
+#     (a) AN APPROVAL GIVEN BEFORE 2026-09-26 HAS NO READ PATH. The stamp-then-read law begins with this
+#         clause, so approvals issued earlier exist only as chat scroll — the owner's 2026-09-25T21:13Z order
+#         ('harvest T3 and the 6 issues') is recorded as a ROUTING NOTE, not as a `FILING APPROVED` row, and
+#         binds nobody. Treat any pre-clause approval as UNSTAMPED: re-confirm it and stamp it in the same turn,
+#         rather than citing the chat line.
+#     (b) THE DELIVERY LEG ASKS 'was the TARGET woken?' AND NOT 'did MY PAYLOAD land?'. A `Delivered` verdict
+#         proves the route; the content is settled by the target's OWN row (messages / notify_queue), never by
+#         the verdict. Where the two disagree the row wins, and a mid-turn park is a delivery, not a loss.
 # 0b. FILING NOTICE: post the smoke-test EVIDENCE + the filing report in
 #    YOUR forum topic (what you drove, what you saw, run id + built sha + PR URL).
 

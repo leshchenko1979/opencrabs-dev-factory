@@ -319,6 +319,8 @@ Standing order (owner override 2026-09-08 13:51Z): file PRs AS SOON AS tests are
 
 ### Cluster readiness — what gates a harvest set (HQ ruling 2026-09-26, `n=11674`)
 
+**`ADVISORY:` lines are NOT refusals — document them as their own class.** `check` emits advisories (`ADVISORY: orphan path …` and siblings) BESIDE its refusal legs: they report a condition worth a look while rc stays 0, so a lane that greps for non-empty output reads an advisory as a block and a lane that greps only rc reads it as clean. Neither is the rule: the refusal legs are `REFUSED …`, the advisories are informational, and the rc is the verdict. Recorded 2026-09-27 (lane 6cd8175f, Duty-4 `20260927-c25`) — the class ran for months with no entry naming it, so both misreadings were available.
+
 A set is **READY** iff (a) the most recent swap among its ready members is >24 h ago AND (b) it has **no unready members**, where a ready member = swapped + smoked + **closed**.
 
 - **THE TARGET IS EXCLUDED FROM ITS OWN READINESS SET.** The issue being harvested never gates itself; its **gh relatives** do. Including it was **circular**, and the circle is mechanical, not theoretical:
