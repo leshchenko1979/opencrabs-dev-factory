@@ -1157,6 +1157,38 @@ fi
 section "oc-ledger confirm + derive_by"
 # (oc-ledger selftest executed in section 11)
 
+section "oc-ledger lock budget (#619)"
+if tool oc-ledger; then
+  # (#619) The lock waiter budget must be DERIVED from the holder worst case, which
+  # the two in-lock network pushes dominate. This leg is BEHAVIOURAL, not a grep: a
+  # grep for OC_LEDGER_LOCK_WAIT self-matches the leg that contains it, which is the
+  # trap this test was written to avoid (measured 2026-09-26). Hold the lock, vary the
+  # push bound, and read the budget the tool itself reports.
+  LB="$(mktemp -d)"
+  printf '{"workers":[],"events":[]}' > "$LB/l.json"
+  # (c) CONTROL: with the lock free the same invocation must SUCCEED, or the legs
+  # below would pass on a tool that is simply broken.
+  OC_LEDGER_LOCK_WAIT=1 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$LB/l.json" stamp note "c" --by "hq probe" >/dev/null 2>&1 \
+    && ok "#619 control: lock free -> stamp succeeds (rc 0)" || bad "#619 control: lock free -> stamp failed"
+  # (a) the waiter budget is TUNABLE -- the fix's load-bearing capability
+  ( flock -x 9; sleep 4 ) 9>>"$LB/l.json.lock" &
+  HLD=$!; sleep 0.5
+  O1="$(OC_LEDGER_LOCK_WAIT=1 OC_LEDGER_PUSH_TIMEOUT=1 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$LB/l.json" stamp note "a" --by "hq probe" 2>&1)"; R1=$?
+  wait "$HLD" 2>/dev/null
+  [ "$R1" -eq 4 ] && ok "#619: a 1s waiter budget times out with rc 4" || bad "#619: want rc 4, got $R1"
+  case "$O1" in *"after 1s"*) ok "#619: the refusal names the budget it used" ;; *) bad "#619: refusal does not name the budget: $(printf '%s' "$O1" | head -1)" ;; esac
+  case "$O1" in *"worst case 32s"*) ok "#619: budget disclosed as 2x1s push + 30s non-push = 32s" ;; *) bad "#619: want worst case 32s, got: $(printf '%s' "$O1" | head -1)" ;; esac
+  # (b) DERIVATION: raise the push bound and the reported worst case must move with
+  # it. This is the invariant the defect broke -- an operator could widen the holder
+  # without touching the waiter, driving the two arbitrarily far apart.
+  ( flock -x 9; sleep 4 ) 9>>"$LB/l.json.lock" &
+  HLD=$!; sleep 0.5
+  O2="$(OC_LEDGER_LOCK_WAIT=1 OC_LEDGER_PUSH_TIMEOUT=10 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$LB/l.json" stamp note "b" --by "hq probe" 2>&1)"
+  wait "$HLD" 2>/dev/null
+  case "$O2" in *"worst case 50s"*) ok "#619: budget TRACKS the push bound (10s -> 50s)" ;; *) bad "#619: budget did not track the push bound: $(printf '%s' "$O2" | head -1)" ;; esac
+  rm -rf "$LB"
+fi
+
 # ---- 17. lens-F coverage batch (v0.4.72, F8: tools the battery never ran) ---
 section "oc-shadow-rotate"
 if tool oc-shadow-rotate; then
@@ -1264,6 +1296,20 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   tn="$(basename "$t")"
   HELP_N=$((HELP_N+1))
   OC_TOOLS_NOLOG=1 timeout 20 "$t" --help >/dev/null 2>&1     && ok "$tn --help rc=0" || bad "$tn --help rc!=0 (tools/docs/RC-CONTRACT.md violated)"
+  # (#618) The rc check above discards STDERR, so a --help whose body executes
+  # phantom commands still reads rc=0. That is how oc-smoke shipped `absent` and
+  # `na` running as commands and vanishing from its own help text: an UNQUOTED
+  # heredoc whose body carries unescaped backticks. The help still printed, so
+  # nothing reddened. Read stderr and assert it is free of shell diagnostics.
+  # The patterns name SHELL diagnostics specifically. A bare "not found" is NOT
+  # one: oc-pr-atomicity's own usage line documents "4 PR not found" as an exit
+  # code, and the loose arm flagged that legitimate text -- a false positive of
+  # the guard I had just written. Anchor on the shell's own wording.
+  HERR="$(OC_TOOLS_NOLOG=1 timeout 20 "$t" --help 2>&1 >/dev/null || true)"
+  case "$HERR" in
+    *"command not found"*|*"syntax error"*|*"unbound variable"*|*"No such file or directory"*|*"Bad substitution"*)
+      bad "$tn --help wrote a SHELL DIAGNOSTIC to stderr: $(printf '%s' "$HERR" | head -1 | cut -c1-70)" ;;
+  esac
 done
 [ "$HELP_N" -ge 30 ] && ok "fleet --help floor: $HELP_N tool(s) enumerated" \
   || bad "fleet --help floor: only $HELP_N tool(s) enumerated -- the glob stopped matching (want >= 30)"

@@ -64,6 +64,10 @@ usage() {
   local code="${1:-2}"
   local fd=2
   [ "$code" -eq 0 ] && fd=1
+  # NOTE: this delimiter is DELIBERATELY unquoted -- the body expands $PROG.
+  # Backticks in the body must therefore be ESCAPED (\`), or the shell runs
+  # them: #618 measured `absent` and `na` executing and vanishing from the
+  # help text. Do NOT "fix" this to <<'EOF' without removing $PROG first.
   cat <<EOF >&$fd
 usage: $PROG <issue> [--verdict PASS|FAIL] [--probe <cmd>]
                  [--markers m1,m2] [--evidence <text>]
@@ -83,9 +87,9 @@ Options:
                       never claims a lineage it did not check)
   --behavioral <tok>  Behavioral leg (leg 4) status when NO --probe is given:
                       verified|failed|absent|na. Default: derived — a probe that
-                      runs sets verified/failed; with no probe it is `absent`,
+                      runs sets verified/failed; with no probe it is \`absent\`,
                       and the row then opens "3-leg smoke pass" rather than
-                      claiming a leg it never ran (#598). A `na` declaration is
+                      claiming a leg it never ran (#598). A \`na\` declaration is
                       the legitimate structural-N/A case the rubric allows.
   --target <name>     Deployment unit the verdict is about (default: live-ops)
   --unit <unit>       Systemd user unit to check (default: opencrabs-ops)

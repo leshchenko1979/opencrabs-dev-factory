@@ -317,7 +317,20 @@ AFFINITY_KEYWORDS = {
     # QUOTES a command still matches on "bash" (13 of the 22): bodies are noisy by
     # nature, and tightening further would drop real issues before it dropped noise.
     "bash": ["bash", "subshell", "spill", "pipefail"],
-    "config": ["config", "toml", "setting", "options", "parse", "yaml", "schema", "serde", "types"],
+    # `options` was REMOVED (#615, measured 2026-09-26). It is ordinary English
+    # with a large UI-feature collision surface, and a hyphenated feature name
+    # tokenises into components -- which is CORRECT for 8 of the 9 lanes it
+    # affects (`push-to-session`->notify, `harvest-23units`->harvest,
+    # `rich-resume-guard`->telegram), so the hyphen boundary is not the defect.
+    # `suggest-options` (a Telegram-UI lane) acquired `config` from it and was
+    # dispatched an src/config/profile.rs defect on that token alone (#606).
+    # Cost of the removal, both sides: 7 of 184 issues lose a SPURIOUS `config`
+    # (#583 mermaid fences, #541 phantom guard, #531 sweep tests, #479 db topics,
+    # #402 telegram flow, #354 db sweep, #344 recovery wake -- none touches
+    # config) and 1 of 34 lanes loses it, the defect itself. `config-manager-warn`
+    # keeps `config` through the literal component. Closing the hyphen instead
+    # would strip 8 LEGITIMATE lanes, so it is not the fix.
+    "config": ["config", "toml", "setting", "parse", "yaml", "schema", "serde", "types"],
     "cron": ["cron", "schedule", "job", "timer", "isolation", "scheduler", "trigger"],
     "memory": ["memory", "vector", "search", "embedding", "codegraph", "graph", "store", "similarity"],
     "skills": ["skill", "manifest", "compaction", "slash", "prompt", "context", "instruction"],
@@ -2090,6 +2103,39 @@ def run_selftest():
     assert_true("#605: naming a tools file still claims it (control)",
                 "tools" in detect_issue_domains(
                     {"title": "", "body": "the culprit is tools/issue/oc-issue-dispatch"}))
+
+    # #615: a HYPHENATED feature name tokenises into components, which is correct
+    # for 8 of the 9 lanes it affects (`push-to-session`->notify,
+    # `harvest-23units`->harvest, `rich-resume-guard`->telegram), so the hyphen
+    # boundary is NOT the defect -- `options` is. It is ordinary English with a
+    # large UI-feature collision surface, and it handed `suggest-options` (a
+    # Telegram-UI lane) the `config` domain, on which token alone #606 -- an
+    # src/config/profile.rs defect -- was dispatched to it.
+    assert_true("#615: `suggest-options` no longer acquires the config domain",
+                "config" not in _domains_for_text("suggest-options"))
+    # CONTROLS -- each pins a match the removal must NOT have cost. Without these
+    # the leg above passes for a keyword table that was simply emptied.
+    assert_true("#615 control: `harvest-23units` still acquires harvest (the case "
+                "that rules out closing the hyphen)",
+                "harvest" in _domains_for_text("harvest-23units"))
+    assert_true("#615 control: `#83 config-manager-warn` still acquires config via "
+                "the literal component",
+                "config" in _domains_for_text("#83 config-manager-warn (inline editor, watch)"))
+    assert_true("#615 control: `push-to-session` still acquires notify",
+                "notify" in _domains_for_text("push-to-session"))
+    assert_true("#615 control: `cron-session-isolation` still acquires cron AND notify",
+                {"cron", "notify"} <= _domains_for_text("cron-session-isolation"))
+    assert_true("#615: `options` is absent from the config table (the removal is the fix)",
+                "options" not in AFFINITY_KEYWORDS["config"])
+    # Issue side: the 7 spurious `config` acquisitions measured live. #479 is a
+    # db-topics issue whose body says "the options are ..." -- no config surface.
+    assert_true("#615: a db-topics issue reaching config only via `options` loses it",
+                "config" not in detect_issue_domains(
+                    {"title": "fix(db): a forum's General topic and a DM are the same row",
+                     "body": "the options are equivalent, so the row is shared"}))
+    assert_true("#615 control: a real config issue still acquires config",
+                "config" in detect_issue_domains(
+                    {"title": "fix(config): types.rs drops the field", "body": ""}))
     # The adjacency requirement is what keeps an INSTRUCTION that names the
     # surface: a looser window would suppress this and lose a genuine mention.
     assert_true("#605: a negation with a verb between still names the surface",

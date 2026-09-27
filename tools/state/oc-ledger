@@ -585,7 +585,22 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
 }
 with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
   local rc; exec 9>"$LEDGER.lock"
-  flock -w 30 9 || die 4 "lock timeout on $LEDGER.lock"
+  # (#619) The waiter budget must EXCEED the holder's worst case, or a normal
+  # ship storm starves concurrent appends and DROPS JOURNAL ROWS SILENTLY.
+  # The holder (git_state_commit) pushes TWO repos under this same lock --
+  # push_backlog_if_due "$sd" state and "$SKILL_DIR" skill, both from the #524
+  # durability fix -- each bounded by $_OC_PUSH_TIMEOUT, so its worst case is
+  # 2x that bound. A flat 30 was HALF the holder's worst case, and the
+  # asymmetry is structural: the push bound is tunable (OC_LEDGER_PUSH_TIMEOUT)
+  # while the waiter budget was not, so an operator raising the former widened
+  # the holder without touching the waiter. Measured consequence (2026-09-26,
+  # 3 occurrences in one lane's chain logs): "ledger journaling FAILED (rc=4)
+  # ... 3 journal line(s) lost", the first lost line being "LEG1 gate GREEN".
+  # Derived, so the invariant holds by construction; +30 for the non-push work
+  # (sweep + commit) that also runs inside the hold.
+  _OC_LOCK_WORST=$(( 2 * _OC_PUSH_TIMEOUT + 30 ))
+  _OC_LOCK_WAIT="${OC_LEDGER_LOCK_WAIT:-$_OC_LOCK_WORST}"
+  flock -w "$_OC_LOCK_WAIT" 9 || die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_WAIT}s (holder worst case ${_OC_LOCK_WORST}s = 2x push bound ${_OC_PUSH_TIMEOUT}s + 30s non-push; raise with OC_LEDGER_LOCK_WAIT or lower OC_LEDGER_PUSH_TIMEOUT)"
   "$@"; rc=$?
   exec 9>&-
   return $rc
@@ -2325,6 +2340,25 @@ ACKEOF
   # anchored on the CALL-SITE indent: the bare pattern also matches this very
   # assertion line, so an unanchored count self-matches (3, not 2).
   chk "push-wired-both-dirs" "2" "$(grep -c '^  push_backlog_if_due ' "$ME")"
+  # (#619) The waiter budget must EXCEED the holder's worst case, or a ship storm
+  # starves concurrent appends and DROPS JOURNAL ROWS SILENTLY. The holder pushes
+  # TWO repos under this same lock (the #524 hook), each bounded by
+  # _OC_PUSH_TIMEOUT, so its worst case is 2x that bound -- and a flat 30 was
+  # HALF of it. The assertions are on the DERIVATION, not on a literal, so a
+  # future retune of the push bound cannot silently break the invariant again.
+  # (#619) Structural legs for the lock budget. Each pattern is built by
+  # CONCATENATION so this leg's own text cannot satisfy it -- a literal grep here
+  # SELF-MATCHES: 'OC_LEDGER_LOCK_WAIT' measured 3 hits (two production lines plus
+  # this leg) and 'holder worst case' 2, so the legs reddened on their own source
+  # rather than on the tool (measured 2026-09-26). The BEHAVIOURAL coverage lives
+  # in tools/tests/run.sh ("oc-ledger lock budget (#619)"): it holds the lock and
+  # varies the push bound, which a grep cannot do.
+  _p_derived='_OC_LOCK_WOR''ST=$(( 2 * _OC_PUSH_TIMEOUT'
+  chk "lock-wait-derived-not-flat" "1" "$(grep -cF "$_p_derived" "$ME")"
+  _p_tunable='_OC_LOCK_WAIT="${OC_LEDGER_LOCK_''WAIT'
+  chk "lock-wait-tunable" "1" "$(grep -cF "$_p_tunable" "$ME")"
+  _p_die='die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_''WAIT}s'
+  chk "lock-die-names-worst-case" "1" "$(grep -cF "$_p_die" "$ME")"
   git init -q --bare "$T/mirror2.git"
   git -C "$T/state" remote remove origin 2>/dev/null || true
   git -C "$T/state" remote add origin "$T/mirror2.git"

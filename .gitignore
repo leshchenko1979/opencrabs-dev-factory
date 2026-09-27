@@ -10,3 +10,9 @@ __pycache__/
 # stray-guard reads a full `git status --porcelain`, a single UNTRACKED one
 # blocks every version bump with die 7. Same class as *.bak above.
 *.pre-*
+
+# The battery red-receipt transcript (#517/#614). Since #614 the receipt embeds
+# its own evidence (fail_rows), so this file is a transient human-readable
+# transcript, not a durable artifact -- and being untracked it tripped the
+# sync stray-guard (die 7) while a red was under investigation.
+tools/tests/battery-last-fail.log
