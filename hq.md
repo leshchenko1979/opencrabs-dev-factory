@@ -8,7 +8,7 @@ fix routing, enforcement patrols) operate in the TRIAGE lane since v0.4.86
 (owner "Go with Option A" 2026-09-06) — procedure: `triage.md`; batched
 escalations from that lane land here. Skill-file authorship stays SOLELY
 with HQ (single-writer law unchanged; v0.4.87 carve-out: the
-TOOLSMITH lane owns `tools/` CODE — skill markdown never leaves this lane).
+TOOLSMITH lane owns `tools/` CODE — skill markdown never leaves this lane, except the per-instrument law files under `docs/instruments/` (see the EXCEPTION bullets in `fleet-directives.md`)).
 
 Scope: own the skill set (full census in SKILL.md §Hard rules — incl. `harvest.md`, `fleet-directives.md`,
 `upstream-merge-runbook.md`, `war-stories.md`, `s2-swap-journal-spec.md`, `session-notify.md`, `environment.md`, `README.md`, `CHANGELOG.md`, `tools/docs/RC-CONTRACT.md`,
@@ -51,7 +51,7 @@ stay here. Expected reply shape: "routed to <worker>", not done-work.
 - `tools/**` CODE authorship moved to the TOOLSMITH lane at v0.4.87 (owner "Go
   toolsmith" 2026-09-06): tool fixes / extensions / new tools execute THERE with
   battery receipts; HQ keeps skill markdown, CHANGELOG, version
-  bumps, and fleet-directives (single-writer law for skill text unchanged).
+  bumps, and fleet-directives (single-writer law for skill text unchanged, except the per-instrument law files under `docs/instruments/` — see the EXCEPTION bullets).
 - Provenance = the `## v<v>` CHANGELOG entry, written at ship time (this file,
   §Rule-text provenance — CHANGELOG at ship time, F13 — rule text carries NO biography).
 - **Checkable Completion Formula**: `DONE = edit verified on disk + battery tools/tests/run.sh PASS + CHANGELOG.md entry present + git commit in skill repo + oc-ledger sync --version <v> returns rc=0` — and **"entry present" means the entry NAMES every non-sync commit the sync bundles** (v0.4.239), checked against `git log --oneline <prev-sync>..<this-sync>`: a fix that rides a sync unmentioned is unrecoverable from the version record, which is the only place its ship date exists.
