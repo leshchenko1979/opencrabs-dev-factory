@@ -632,7 +632,7 @@ with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
 }
 
 derive_by() { # default stamp attribution (v0.4.58, Duty-4 IDEA from lane 7e1ebbb6, n=1386 trap):
-  # OC_ACTOR (or OPENCRABS_SESSION_ID fallback) -> roster role label; unrostered actor says so; NO actor = LOUD
+  # OC_ACTOR wins here BY DESIGN: this is the --by ATTRIBUTION-LABEL path, not a self-identifying verb, so an explicit label must outrank the ambient. -> roster role label; unrostered actor says so; NO actor = LOUD
   # "(unattributed ...)" — the old silent "supervisor (topic 30220)" default
   # (quoted verbatim: that role string is now `hq`)
   # mis-attributed worker stamps (n=1337-correct-via---by vs n=1386-silent-lie).
@@ -1114,8 +1114,8 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
   [ -n "$range" ] || return 0
   # The syncing session's own commits, by Session-Id trailer. Built in ONE git
   # call (a per-commit read would be one process per commit on every sync).
-  # OC_ACTOR wins when set, matching how the rest of this tool derives actors.
-  self_id="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
+  # The ambient session id, env var first (A1b: OC_ACTOR is the retired primary).
+  self_id="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
   if [ -n "$self_id" ]; then
     selfids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Session-Id,valueonly)' --no-merges "$anchor"..HEAD $range_after 2>/dev/null \
       | awk -v id="$self_id" 'NF>1 && index($0, id)>0 { printf "%s ", $1 }' || true)"
@@ -1439,13 +1439,13 @@ _self_uuid() { # $1 = verb name, $2 = supplied uuid (may be empty)
     _is_uuid "$given" || die 2 "$verb: uuid shape invalid (want 8-4-4-4-12 hex): '$given'"
     # (#657) name a mismatch, never block it. Gated on the ambient being a real
     # UUID so a label ambient (fixtures, non-session shells) stays silent.
-    local amb="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
+    local amb="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
     if [ -n "$amb" ] && _is_uuid "$amb" && [ "$amb" != "$given" ]; then
       printf '%s\n' "note: $verb acts on '$given', which is NOT the ambient session '$amb' -- correct for a roster-admin action; a mistake if you meant yourself (omit the uuid to default to the ambient)." >&2
     fi
     printf '%s\n' "$given"; return 0
   fi
-  local env_id="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
+  local env_id="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
   [ -n "$env_id" ] || die 2 "$verb: no uuid supplied and no ambient session id. Fix: run inside a lane turn (OPENCRABS_SESSION_ID is set), or pass the uuid explicitly."
   printf '%s\n' "$env_id"
 }
@@ -2023,6 +2023,7 @@ PAYLOAD
   done
   c8sync() { # $1 = version
     OC_LEDGER="$C8D/workers-ledger.json" OC_SKILL_DIR="$C8S" OC_DEPLOY_STATE_DIR="$C8D" \
+      OPENCRABS_SESSION_ID="${OC_ACTOR:-}" \
       bash "$ME" sync --version "$1" --why selftest-c8 2>&1
   }
   # (a) UNDERIVABLE anchor: no 'skill v...' commit exists in the fixture yet, so
@@ -3668,7 +3669,7 @@ SHIMEOF
     "$(jq -r '[.workers[]|select(.uuid=="'"$A1E"'")][0].last_acked.version // ""' "$A1L")"
   # GATE: a non-uuid ambient must stay SILENT, or every fixture and every
   # non-session shell would emit the note and the warning would become noise.
-  _a1o="$(OC_ACTOR=test-runner OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.6 2>&1)"
+  _a1o="$(OC_ACTOR=test-runner OPENCRABS_SESSION_ID=test-runner OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.6 2>&1)"
   chk "a1b-label-ambient-stays-silent" "true" \
     "$(printf '%s' "$_a1o" | grep -q 'NOT the ambient session' && echo false || echo true)"
   rm -rf "$A1T"
