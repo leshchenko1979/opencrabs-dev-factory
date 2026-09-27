@@ -280,6 +280,8 @@ DONE = Full symbol graph & caller tree mapped via `memory_search scope="external
 
 - One logical change per branch; drive-by refactors go to their own branch + issue.
 - Stage only paths YOU changed: `git add <paths>`. Never `git add -A`, never `commit -a`.
+- **A redirect into a TRACKED file destroys it before the command can fail (v0.4.267, lane 42a44908).** `cmd > tracked_file` truncates the target at open time, so a command that then fails leaves an EMPTY tracked file — and `git checkout -- <path>` is the only repair, since the content is gone. Redirect to a scratch path (`/tmp/...`) and move it into place only on success, or use `git show <sha>:<path> > /tmp/x` then compare before writing. Measured 2026-09-27 while rebuilding an upstream worktree: the fastest-looking repair was also the one that destroyed the file.
+- **A zero-match `grep -c` exits 1, and inside an `&&` chain it silently CANCELS the next command (v0.4.267, lane 2ed8adeb).** `grep -c PAT f && next` does not run `next` when the count is 0 — the chain short-circuits on a result that is a legitimate answer, not an error. So a verification step written this way reports nothing and looks like it passed. Use `grep -c PAT f; rc=$?` and branch on the COUNT, or `|| true` when the zero is expected. The same holds for `[ ... ]` tests whose false branch is not a failure.
 - Never revert/reset/amend commits you did not write — report and wait, or branch off.
 - **New enum variant → grep ALL matches on it before committing** (v0.4.71,
   Duty-4 P14). `grep -rn '<Variant>::' src/`
