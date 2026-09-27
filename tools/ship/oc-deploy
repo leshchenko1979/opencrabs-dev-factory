@@ -2041,7 +2041,11 @@ FANOUT_STATE="$STATE_DIR/fanout.state"
 # failure now delays the swap-result stamp by up to this budget. The swap itself
 # is already complete (binary swapped, markers written) before the fan-out runs,
 # so the delay costs chain latency, never correctness. Set to 0 to disable.
-NOTIFY_RETRY_BUDGET="${OC_DEPLOY_NOTIFY_RETRY_BUDGET:-120}"
+# (#623 residual) 180, not 120: the budget must EXCEED the window it covers or
+# the tail is uncovered by construction. Measured by an editor lane on its own
+# swap -- the 120 s budget was consumed IN FULL and the send still failed
+# (+127 s) -- while the window this file's own comment cites runs to 169 s.
+NOTIFY_RETRY_BUDGET="${OC_DEPLOY_NOTIFY_RETRY_BUDGET:-180}"
 NOTIFY_RETRY_INTERVAL="${OC_DEPLOY_NOTIFY_RETRY_INTERVAL:-15}"
 NOTIFY_CMD="${OC_DEPLOY_NOTIFY:-opencrabs}"
 NOTIFY_PROFILE="${OC_DEPLOY_PROFILE:-ops}"
@@ -2141,6 +2145,10 @@ notify_one() { # $1=uuid $2=role $3=title $4=text $5=run -> journals notified|sk
       [ "$nrc" = 0 ] && break
       _notify_retryable "$nrc" || break
     done
+    # Distinguish "still failing after every retry the budget allowed" from
+    # "failed once". The first is RECOVERABLE (the gateway may bind later; a
+    # sweep can re-drive), the second says the destination is unreachable.
+    [ "$nrc" != 0 ] && [ "$(date +%s)" -ge "$_dl" ] && BUDGET_EXHAUSTED=1
   fi
   if [ "$nrc" = 0 ]; then
     if [ "$RETRIES" -gt 0 ]; then
@@ -2150,7 +2158,12 @@ notify_one() { # $1=uuid $2=role $3=title $4=text $5=run -> journals notified|sk
     fi
     NOTIFIED=$((NOTIFIED+1))
   else
-    jline skip 0 "{\"uuid\":\"$1\",\"reason\":\"$(_notify_reason "$nrc")\",\"verb_rc\":$nrc,\"retries\":$RETRIES}"
+    if [ "${BUDGET_EXHAUSTED:-0}" = 1 ]; then
+      jline skip 0 "{\"uuid\":\"$1\",\"reason\":\"$(_notify_reason "$nrc")\",\"verb_rc\":$nrc,\"retries\":$RETRIES,\"budget_exhausted\":true,\"budget_secs\":$NOTIFY_RETRY_BUDGET}"
+      BUDGET_EXHAUSTED=0
+    else
+      jline skip 0 "{\"uuid\":\"$1\",\"reason\":\"$(_notify_reason "$nrc")\",\"verb_rc\":$nrc,\"retries\":$RETRIES}"
+    fi
     SKIPPED=$((SKIPPED+1))
   fi
 }

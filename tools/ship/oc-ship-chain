@@ -163,6 +163,64 @@ else
   oc_log_finish() { :; }
 fi
 # Combined exit handler: cleans up lock, logs lost journal lines, finishes tool logging
+# (#661) A structured non-zero exit must WAKE the arming lane. The header
+# promises the daemon resumes on a structured exit, but that resume is a
+# BOOT-TIME in-flight classifier: a lane that ARMED a chain and SETTLED is
+# classified `completed_before_kill`, so a chain dying later leaves landed+gated
+# work unlanded until somebody re-reads the chain by hand (measured: 7h20m on
+# one lane; 21 PRE-ANCESTRY MISS rows in the recent ledger).
+#
+# The durable path is the lib's own, the same one the swap-tail fan-out uses and
+# which reaches a SETTLED session. Best-effort by construction: a wake fault
+# must never change the chain's exit status. Only non-zero, non-usage exits
+# wake -- a usage error is the caller's typo, which it already sees.
+_chain_wake_arming_lane() { # $1 = exit code
+  local rc="$1" uuid="" chain_lib="" bin="" prof=""
+  case "$rc" in 0|2) return 0 ;; esac          # 0 = SWAPPED, 2 = usage
+  [ "${OC_SHIPCHAIN_NO_WAKE:-0}" = 1 ] && return 0
+  # HERMETICITY, and it must key on the ENVIRONMENT marker, not on argv.
+  # oc_is_selftest() reads OC_LOG_ARGS -- the invocation's own argument list --
+  # and a fixture child is launched as `bash "$SELF" --sha ... --branch feat`,
+  # which carries NO --selftest token. Measured the hard way on 2026-09-27: the
+  # argv-based guard let EVERY non-zero-exit leg of this file's selftest wake the
+  # arming lane for real, 8 live notifies into one lane's inbound stream in 13
+  # minutes, each one re-waking the lane that was debugging the leak.
+  # OC_SHIPCHAIN_SELFTEST is the canonical marker and it is INHERITED: line 293
+  # execs the selftest with it exported, so the fixture children carry it too.
+  # A leg that means to assert the wake's content opts in explicitly. The opt-in
+  # is a flag rather than "a stub binary was supplied" because with no stub a
+  # missing guard reaches the real /usr/local/bin/opencrabs, sends a live notify,
+  # and writes nothing to the leg's log -- the leg would pass while the
+  # protection was gone.
+  if [ "${OC_SHIPCHAIN_SELFTEST:-0}" = "1" ]; then
+    [ "${OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST:-0}" = 1 ] || return 0
+  fi
+  # A1b (owner order 2026-09-27): the SELF uuid comes from the environment, and
+  # OPENCRABS_SESSION_ID WINS over OC_ACTOR -- the latter is retired for the actor
+  # and a continuation doc can carry a stale one. The commit's Session-Id trailer
+  # is the last resort, not the first.
+  uuid="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
+  if [ -z "$uuid" ] && [ -n "${SHA:-}" ] && command -v git >/dev/null 2>&1; then
+    uuid="$(git -C "${FORK_REPO:-$HOME/opencrabs}" log -1 --format='%(trailers:key=Session-Id,valueonly)' "$SHA" 2>/dev/null | tr -d ' \n')"
+  fi
+  # only a real uuid: everything downstream keys on it, and a label would be a
+  # wake addressed to nobody.
+  case "$uuid" in
+    ????????-????-????-????-????????????) : ;;
+    *) return 0 ;;
+  esac
+  chain_lib="${OC_TOOLS_DIR:-${TOOLS_DIR:-}}/lib/oc-notify.sh"
+  [ -f "$chain_lib" ] || return 0
+  # shellcheck disable=SC1090
+  . "$chain_lib" 2>/dev/null || return 0
+  command -v oc_notify_session >/dev/null 2>&1 || return 0
+  bin="$(oc_notify_resolve_bin 2>/dev/null)" || return 0
+  prof="${OC_SHIPCHAIN_PROFILE:-ops}"
+  oc_notify_session "$bin" "$prof" "oc-ship-chain" "$uuid" \
+    "SHIP-CHAIN ${CHAIN:-?}: EXITED rc=$rc" \
+    "The chain armed by this lane has STOPPED with rc=$rc (not SWAPPED). The work may be landed but UNSHIPPED -- re-read the chain journal for ${SHA:-?} before re-arming, and note that a stale fix often needs only --gated-run after a rebase. This wake exists because a settled lane is not resumed by the boot classifier." >/dev/null 2>&1 || true
+}
+
 _chain_exit_handler() {
   local rc=$?
   if command -v release_ship_lock >/dev/null 2>&1; then
@@ -170,6 +228,9 @@ _chain_exit_handler() {
   fi
   if command -v journal_summary >/dev/null 2>&1; then
     journal_summary
+  fi
+  if command -v _chain_wake_arming_lane >/dev/null 2>&1; then
+    _chain_wake_arming_lane "$rc"
   fi
   if command -v oc_log_finish >/dev/null 2>&1; then
     oc_log_finish $rc
@@ -513,8 +574,25 @@ journal() {
         case "$rc" in
           143|137)
             printf '%s\n' "  cause: rc=$rc (SIGTERM/SIGKILL) — this chain was KILLED, most likely by a swap's cgroup teardown. Do NOT repair oc-ledger; RE-RUN the chain (LAW 17 now re-execs it outside the unit cgroup, so a re-run survives the next swap)." >&2 ;;
-          *)
+          2)
+            # rc 2 IS the vocabulary case and the advice is correct here and only
+            # here: oc-ledger:858 `die 2 "stamp: unknown kind ..."`. The #21 fix
+            # stopped at 143/137 and left this text as the catch-all, so it kept
+            # asserting a cause it had not established.
             printf '%s\n' "  fix: oc-ledger must accept kind 'shipchain' (see tools/state/oc-ledger KINDS). rc=$rc" >&2 ;;
+          4)
+            # rc 4 is with_lock's lock timeout (oc-ledger:603 `flock -w ... || die 4`).
+            # The stamp was NEVER ATTEMPTED, so nothing about the ledger's schema or
+            # vocabulary is in question. Measured 2026-09-27: ~12 processes queued on
+            # workers-ledger.json.lock during a ship storm, and a 2.7 GB state repo
+            # whose `git gc --auto` child INHERITS the lock fd (#655) can hold it for
+            # minutes — over 12x the wait the tool's own message documents.
+            printf '%s\n' "  cause: rc=4 — oc-ledger could not acquire the ledger lock within its wait budget, so the stamp was never attempted. The ledger's KINDS vocabulary is NOT in question; do not edit it. Re-run the chain, or raise the wait (OC_LEDGER_LOCK_WAIT). Contention, not a defect in the ledger." >&2 ;;
+          *)
+            # Cause-neutral. An unestablished cause printed as a confident remedy is
+            # worse than no remedy: it sends the operator to repair a component that
+            # is not broken, and the real cause stays unfixed.
+            printf '%s\n' "  cause: not established for rc=$rc — read oc-ledger's own message above; it names the real fault. Do NOT repair KINDS on the strength of this warning." >&2 ;;
         esac
       fi
     fi
@@ -1753,6 +1831,63 @@ EOF
   case "$OUT" in *"journaling FAILED"*) bad "journal-ok-no-false-alarm" ;; *) ok "journal-ok-no-false-alarm" ;; esac
   case "$OUT" in *"line(s) lost"*) bad "journal-ok-no-false-summary" ;; *) ok "journal-ok-no-false-summary" ;; esac
 
+  # 8b. (#664) the remedy must name the cause it can ESTABLISH, and no other.
+  # The #21 fix branched 143|137 correctly but left the KINDS hypothesis as the
+  # catch-all, so rc=4 — with_lock's lock timeout, where the stamp was never
+  # attempted — was answered with "oc-ledger must accept kind 'shipchain'", and a
+  # lane following it edits KINDS for nothing while the contention stays. Two
+  # lanes reported this against the same live rows (40427d4f, 462181e9).
+  cat > "$T/bin/state/oc-ledger" <<'EOF'
+#!/usr/bin/env bash
+printf 'oc-ledger: lock timeout on workers-ledger.json.lock after 90s\n' >&2
+exit 4
+EOF
+  chmod +x "$T/bin/state/oc-ledger"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(run_chain_plain --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "journal-rc4-nonfatal" "$RC" 0
+  case "$OUT" in *"cause: rc=4"*) ok "journal-rc4-names-lock" ;;
+    *) bad "journal-rc4-names-lock: $OUT" ;; esac
+  case "$OUT" in *"stamp was never attempted"*) ok "journal-rc4-says-never-attempted" ;;
+    *) bad "journal-rc4-says-never-attempted" ;; esac
+  # the discriminating negative: rc 4 must NOT print the KINDS remedy
+  case "$OUT" in *"must accept kind 'shipchain'"*) bad "journal-rc4-no-kinds-advice" ;;
+    *) ok "journal-rc4-no-kinds-advice" ;; esac
+
+  # 8c. rc 2 KEEPS the KINDS advice — the split must not throw away the case the
+  # advice is right for (oc-ledger:858 dies 2 on an unknown kind).
+  cat > "$T/bin/state/oc-ledger" <<'EOF'
+#!/usr/bin/env bash
+printf "oc-ledger: stamp: unknown kind 'shipchain' (v1.2 vocabulary — see header)\n" >&2
+exit 2
+EOF
+  chmod +x "$T/bin/state/oc-ledger"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(run_chain_plain --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  case "$OUT" in *"must accept kind 'shipchain'"*) ok "journal-rc2-keeps-kinds-advice" ;;
+    *) bad "journal-rc2-keeps-kinds-advice: $OUT" ;; esac
+  case "$OUT" in *"cause: not established"*) bad "journal-rc2-not-neutral" ;;
+    *) ok "journal-rc2-not-neutral" ;; esac
+
+  # 8d. an UNEXPECTED rc gets no asserted cause at all.
+  cat > "$T/bin/state/oc-ledger" <<'EOF'
+#!/usr/bin/env bash
+printf 'oc-ledger: something unrecognised\n' >&2
+exit 9
+EOF
+  chmod +x "$T/bin/state/oc-ledger"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(run_chain_plain --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  case "$OUT" in *"cause: not established for rc=9"*) ok "journal-rc9-cause-neutral" ;;
+    *) bad "journal-rc9-cause-neutral: $OUT" ;; esac
+  case "$OUT" in *"must accept kind 'shipchain'"*) bad "journal-rc9-no-kinds-advice" ;;
+    *) ok "journal-rc9-no-kinds-advice" ;; esac
+  case "$OUT" in *"cause: rc=4"*) bad "journal-rc9-not-rc4" ;;
+    *) ok "journal-rc9-not-rc4" ;; esac
+
   # 9-11. LEG1 gate rc 5 is NON-TERMINAL, never infra (defect fix 2026-09-11,
   # lane 4b4463d5). oc-prchecks rc 5 = "still in flight after --wait" with the
   # live run id on stdout; the old `*)` arm made it fatal, so a FRESH chain
@@ -1807,6 +1942,69 @@ EOF
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(GATE_MODE=norunid run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "gate-rc5-no-runid-rc6" "$RC" 6
+
+  # 11c. A structured NON-ZERO exit wakes the arming lane (#662). The header
+  # promises the daemon resumes on a structured exit, but that resume is a BOOT-
+  # TIME in-flight classifier: a lane that armed a chain and settled is logged
+  # completed_before_kill and never woken, so landed-but-unshipped work stalls
+  # until a human re-reads the chain. Measured: 21 PRE-ANCESTRY MISS rows;
+  # specimen 151d06227 / chain oc-ship-626-104449, unlanded 7h20m. The wake is on
+  # the TOOL side, so it holds whatever the daemon's classifier does or does not
+  # do. Stub binary records the call instead of notifying anything real.
+  cat > "$T/bin/opencrabs" <<'EOF'
+#!/usr/bin/env bash
+echo "NOTIFY-CALLED: $*" >> "${WAKELOG:-/dev/null}"
+exit 0
+EOF
+  chmod +x "$T/bin/opencrabs"
+  rm -f "$T/journal.log" "$T/wake.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(GATE_MODE=always OC_SHIPCHAIN_GATE_RESUMES=2 \
+    OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "wake-rc7-exit-code" "$RC" 7
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"EXITED rc=7"*) ok "wake-rc7-fires" ;;
+    *) bad "wake-rc7-fires: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"--sender oc-ship-chain"*) ok "wake-rc7-sender" ;;
+    *) bad "wake-rc7-sender" ;; esac
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"$OPENCRABS_SESSION_ID"*) ok "wake-rc7-targets-ambient-lane" ;;
+    *) bad "wake-rc7-targets-ambient-lane" ;; esac
+
+  # 11d. the opt-out suppresses, and the chain's own rc is UNCHANGED either way --
+  # a wake is a notification, never a verdict, and rc is the audit surface.
+  rm -f "$T/wake.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(GATE_MODE=always OC_SHIPCHAIN_GATE_RESUMES=2 OC_SHIPCHAIN_NO_WAKE=1 \
+    OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "wake-nowake-exit-code-unchanged" "$RC" 7
+  [ -s "$T/wake.log" ] && bad "wake-nowake-suppressed" || ok "wake-nowake-suppressed"
+
+  # 11e. SWAPPED (rc 0) must NOT wake -- the lane already sees the verdict, and a
+  # wake on every success would be the noise this tool's own fan-out was filed for.
+  rm -f "$T/wake.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(GATE_MODE=green \
+    OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "wake-green-rc0" "$RC" 0
+  [ -s "$T/wake.log" ] && bad "wake-green-no-wake" || ok "wake-green-no-wake"
+
+  # 11f. HERMETICITY, and it is DISCRIMINATING: a selftest that forgets the
+  # allow-flag must fire NOTHING. Were the guard absent, this leg would reach the
+  # real /usr/local/bin/opencrabs and notify this lane for real -- which is why
+  # the assertion is on the flag and not on a stub's absence.
+  rm -f "$T/wake.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(GATE_MODE=always OC_SHIPCHAIN_GATE_RESUMES=2 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "wake-hermetic-exit-code" "$RC" 7
+  [ -s "$T/wake.log" ] && bad "wake-hermetic-no-allow-flag" || ok "wake-hermetic-no-allow-flag"
 
   # 11. FREEZE GUARD (contract fix 2026-09-11, owner word via HQ): a REAL chain
   #     is blocked rc 3 while the freeze file is present, and the sanctioned

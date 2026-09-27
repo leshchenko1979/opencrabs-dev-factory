@@ -2058,6 +2058,49 @@ print("IN" if hits else "UNPINNED")'
     || bad "oc-issue-scope control: the naive shape did NOT read #531 as IN -- legs may be vacuous"
   rm -rf "$_sq_t"
 fi
+# ---- 81. SIGPIPE pipeline-form carrier guard (#660) -------------------------
+# The CLASS, not one instance: `printf ... | grep -q` under `set -o pipefail`
+# returns 141 (SIGPIPE) DESPITE a successful match, once the payload exceeds the
+# kernel's 64 KiB pipe buffer and grep exits before the writer finishes. #660
+# replaced 92 sites; FOUR came back within 36 minutes, in the same file, because
+# nothing carried the rule. This section IS the carrier.
+#
+# Measured (peer receipt, 60 trials/row, two runs): 8 KiB 0/60, 32 KiB 0-2/60,
+# 56 KiB 4-7/60, 64 KiB 33-48/60, 128 KiB 60/60; here-string form 0/60 at every
+# size. Every site standing today pipes a small payload and NONE can flip at its
+# current size -- the reason to forbid the form is that nothing stops a payload
+# from growing, not that it is failing now.
+#
+# The guard must be able to SEE its own class, or a clean result means nothing:
+# the canary below proves the detector fires on a planted site.
+# ---------------------------------------------------------------------------
+echo "== SIGPIPE pipeline-form guard (#660) =="
+
+# Exempt the `printf '%s\n...'` forms: they are already newline-terminated, so
+# the here-string replacement is a no-op for them, and the two live sites
+# (oc-lint-laws:179,180) are additionally [ -n ]-guarded so an empty payload
+# cannot reach the pattern. Exempt comments.
+_SG_HITS="$(grep -rnP "printf[^|]*\|\s*grep\s+-q" "$TOOLS_DIR" 2>/dev/null \
+  | grep -v '/tests/run.sh:' \
+  | grep -v ':[0-9]*: *#' \
+  | grep -v "printf '%s\\\\n" \
+  || true)"
+_SG_N="$(printf '%s\n' "$_SG_HITS" | grep -c . || true)"
+
+# The guard must be able to SEE its own class, or a clean result means nothing.
+_SG_CANARY="$(printf '%s\n' "printf '%s' \"\$x\" | grep -q y" \
+  | grep -cP "printf[^|]*\|\s*grep\s+-q" || true)"
+[ "$_SG_CANARY" = "1" ] \
+  && ok "SIGPIPE guard observes its own class (canary fires)" \
+  || bad "SIGPIPE guard cannot see the class it forbids (canary=$_SG_CANARY)"
+[ "$_SG_N" = "0" ] \
+  && ok "no printf-pipe-grep-q sites remain (use <<< or oc_has)" \
+  || bad "printf-pipe-grep-q sites present: $_SG_N (use <<< or oc_has)"
+
+if [ "$_SG_N" != "0" ]; then
+  printf '%s\n' "$_SG_HITS" | sed 's/^/      /' | head -20
+fi
+
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log

@@ -2661,13 +2661,13 @@ ACKEOF
   # stale tracking ref: make d believe it is strictly ahead
   git -C "$_p655dir/d" update-ref refs/remotes/origin/main "$(git -C "$_p655dir/d" rev-parse HEAD~1)"
   _p655out="$(bash -c '_OC_PUSH_TIMEOUT=20; oc_log_extra() { :; }; . '"$T"'/pm_fn.sh; push_mirror '"$_p655dir"'/d probe' 2>&1)"
-  printf '%s' "$_p655out" | grep -q '\[ahead .* behind .*\]' \
+  grep -q '\[ahead .* behind .*\]' <<< "$_p655out" \
     && ok || bad "push-rejection-discloses-the-relationship"
   # CONTROL, not a signal: asserts the failure is never SILENT. It must not key
   # on git's wording -- measured, the same divergence prints "non-fast-forward"
   # on one path and "fetch first" on the other, so a wording assertion reddens
   # on a git-version change rather than on a defect.
-  printf '%s' "$_p655out" | grep -q 'mirror push failed for probe rc=1' \
+  grep -q 'mirror push failed for probe rc=1' <<< "$_p655out" \
     && ok || bad "push-rejection-is-never-silent"
   chk "push-age-arm-mirror-caught-up" "$(loc_head)" "$(mir_head)"
 
@@ -3662,7 +3662,7 @@ SHIMEOF
   # mismatch, and it never changes the outcome.
   _a1o="$(OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.4 2>&1)"
   chk "a1b-other-uuid-warns" "true" \
-    "$(printf '%s' "$_a1o" | grep -q 'NOT the ambient session' && echo true || echo false)"
+    "$(grep -q 'NOT the ambient session' <<< "$_a1o" && echo true || echo false)"
   _a1o="$(OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.5 2>&1)"; _a1rc=$?
   chk "a1b-warned-ack-still-succeeds" 0 "$_a1rc"
   chk "a1b-warned-ack-wrote-the-other-lane" "0.9.5" \
@@ -3671,7 +3671,7 @@ SHIMEOF
   # non-session shell would emit the note and the warning would become noise.
   _a1o="$(OC_ACTOR=test-runner OPENCRABS_SESSION_ID=test-runner OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.6 2>&1)"
   chk "a1b-label-ambient-stays-silent" "true" \
-    "$(printf '%s' "$_a1o" | grep -q 'NOT the ambient session' && echo false || echo true)"
+    "$(grep -q 'NOT the ambient session' <<< "$_a1o" && echo false || echo true)"
   rm -rf "$A1T"
 
   echo "oc-ledger selftest: PASS=$P FAIL=$F"

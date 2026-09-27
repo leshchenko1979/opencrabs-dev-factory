@@ -45,6 +45,15 @@ oc_snap_guard() {
 
   _os_sd="${OC_TOOLS_DIR:-$(cd "$(dirname "$_os_tool")" && pwd)}" || return 0
   _os_sn="$(basename "$_os_tool")"
+  # The tool's path RELATIVE to the tools root. Since v0.4.254 the fleet is
+  # grouped into kind-based subdirs (tools/state/oc-ledger, tools/ship/oc-ship-chain),
+  # so the BASENAME alone names a path that does not exist in the mirror: the
+  # copy lands at $_os_mir/state/oc-ledger while a basename test looks for
+  # $_os_mir/oc-ledger, misses, and returns 0 with NO diagnostic -- the guard
+  # silently degrades to running direct, the exact exposure it exists to
+  # prevent (#664). Resolve the absolute path and strip the tools root.
+  _os_abs="$(cd "$(dirname "$_os_tool")" 2>/dev/null && pwd)/$(basename "$_os_tool")"
+  _os_rel="${_os_abs#"$_os_sd"/}"
   _os_mir="$_os_root/oc-snap-${_os_sn}-$$"
 
   mkdir -p "$_os_mir" 2>/dev/null || {
@@ -66,18 +75,23 @@ oc_snap_guard() {
     return 0
   }
 
-  [ -f "$_os_mir/$_os_sn" ] || { rm -rf "$_os_mir"; return 0; }
-  chmod +x "$_os_mir/$_os_sn" 2>/dev/null
+  [ -f "$_os_mir/$_os_rel" ] || {
+    rm -rf "$_os_mir"
+    printf 'oc-snap: mirror lacks %s (looked for %s) -- running direct (EXPOSED)\n' \
+      "$_os_rel" "$_os_mir/$_os_rel" >&2
+    return 0
+  }
+  chmod +x "$_os_mir/$_os_rel" 2>/dev/null
 
   # Universal verification hook: OC_SNAP_VERBOSE=1 proves, for ANY tool, that
   # this run came off an immutable copy — without adding selftest code to each.
   #   OC_SNAP_VERBOSE=1 bash tools/harvest/oc-prchecks --selftest 2>&1 | grep 'oc-snap:'
   [ -n "${OC_SNAP_VERBOSE:-}" ] && \
     printf 'oc-snap: running from %s (pid %s, tool %s)\n' \
-      "$_os_mir/$_os_sn" "$$" "$_os_sn" >&2
+      "$_os_mir/$_os_rel" "$$" "$_os_sn" >&2
 
   OC_SNAP_ROOT="$_os_root" OC_SNAP_DEPTH=$(( ${OC_SNAP_DEPTH:-0} + 1 )) \
-    exec bash "$_os_mir/$_os_sn" "$@"
+    exec bash "$_os_mir/$_os_rel" "$@"
 }
 
 # Reap mirrors whose owning process is gone. Trap-based cleanup cannot be used:
