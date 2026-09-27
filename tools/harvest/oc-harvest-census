@@ -1779,10 +1779,22 @@ if action == 'check':
             _anchor, _age, _scanned, _anchor_sha = set_soak_clock(
                 _set_for_clock, _by_iss, repo_path, swaps, now_ts, state_dir=st_dir)
             if _age is None:
-                print('NOTE(HELD_SET_SOAK): set soak clock UNRESOLVABLE -- no member '
-                      'commit of the set carries a deploy anchor (%d commit(s) '
-                      'scanned), so the 24h window cannot be shown to have started. '
-                      'This is NOT "fresh" and NOT clearance.' % _scanned)
+                # #634: an EMPTY set and an UNRESOLVABLE one are DIFFERENT states
+                # and must not share one output. With no members besides the
+                # target, nothing CAN reset the clock -- the leg is vacuously
+                # clear -- yet the hold-flavoured wording made a clean unit read
+                # as held (measured: #348/#155/#459/#526 all ELIGIBLE rc=0 with
+                # every gh relationship empty). Still disclosed, never silent
+                # (#563 discipline), but no longer a hold.
+                if not _set_for_clock:
+                    print('NOTE(HELD_SET_SOAK): the set has no members besides the '
+                          'target -- nothing can reset the set clock. VACUOUSLY '
+                          'CLEAR, not a hold; the target soak is leg 1 above.')
+                else:
+                    print('NOTE(HELD_SET_SOAK): set soak clock UNRESOLVABLE -- no member '
+                          'commit of the set carries a deploy anchor (%d commit(s) '
+                          'scanned), so the 24h window cannot be shown to have started. '
+                          'This is NOT "fresh" and NOT clearance.' % _scanned)
             elif _age < oc_claims.SOAK_HOURS:
                 refuse('REFUSED: Target %s cluster set {%s} youngest member swap is '
                        '%.1fh old (< 24h) [HELD_SET_SOAK: anchor %s] -- a member '
@@ -4066,12 +4078,45 @@ C601REOF
     OC_HARVEST_MOCK_PRS="$mock_prs" \
     OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
     run_engine "check" "mock/repo" "$fx_ur" "$fx_ur/mock_reg_ur.json" "600" "" 2>&1)" || rc=$?
-  if oc_has "$out" "set soak clock UNRESOLVABLE" \
-     && oc_has "$out" "NOT \"fresh\"" \
+  if oc_has "$out" "no members besides the target" \
+     && oc_has "$out" "VACUOUSLY" \
+     && ! oc_has "$out" "UNRESOLVABLE" \
      && ! oc_has "$out" "[HELD_SET_SOAK:"; then
-    ok "HELD_SET_SOAK: an unresolvable clock prints the NOTE, never fresh and never a silent clean"
+    ok "#634: an EMPTY set (no members besides the target) is disclosed as VACUOUSLY CLEAR, never as a hold"
   else
-    echo "  bad  - unresolvable clock must print the NOTE and not HELD_SET_SOAK ($out)"
+    echo "  bad  - an empty set must print the vacuous-clear note, not the unresolvable one ($out)"
+  fi
+
+  # (e2) #634: the GENUINE unresolvable case -- members EXIST but no anchor is
+  #      reachable. This is the DISCRIMINATING PAIR against (e): if both print
+  #      the same string, neither leg measures anything.
+  printf '{"600": [601]}\n' > "$setdir/rel_ur2.json"
+  local c601_noanchor="$setdir/c601_noanchor.json"
+  cat << 'C601NEOF' > "$c601_noanchor"
+[{"sha": "6010000cb0000000000000000000000000000001",
+  "short_sha": "6010001",
+  "subject": "fix(set): a relative with no reachable anchor (#601)",
+  "trailer": "leshchenko1979/opencrabs#601",
+  "commit_ts": 100000,
+  "files": ["src/set607/rel2.rs"]}]
+C601NEOF
+  rc=0
+  out_e2="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_RELATIONS="$setdir/rel_ur2.json" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$st_chain" OC_HARVEST_MOCK_COMMITS="$c601_noanchor" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$fx_ur" "$fx_ur/mock_reg_ur.json" "600" "" 2>&1)" || rc=$?
+  if oc_has "$out_e2" "set soak clock UNRESOLVABLE" \
+     && oc_has "$out_e2" "NOT \"fresh\"" \
+     && ! oc_has "$out_e2" "[HELD_SET_SOAK:"; then
+    ok "#634: a NON-empty set with no reachable anchor keeps the UNRESOLVABLE wording verbatim"
+  else
+    echo "  bad  - a non-empty set with no reachable anchor must keep the UNRESOLVABLE note ($out_e2)"
+  fi
+  if [ "$out" != "$out_e2" ]; then
+    ok "#634: the empty and unresolvable states are DIFFERENT outputs (the discriminating pair)"
+  else
+    echo "  bad  - empty and unresolvable must not share one output"
   fi
 
   # (f) UNREADABLE RELATIONS ARE NOT A FREE SET. An unreadable graph means the
