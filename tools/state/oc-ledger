@@ -1400,12 +1400,43 @@ cmd_cadence() {
 }
 
 # ---- ack ---------------------------------------------------------------------
+# ---- A1b: SELF-verb uuid resolution (default half) ---------------------------
+# A SELF verb acts on the CALLER, so its uuid is read from the environment and
+# the argument becomes optional. That is the owner's directive: "tools still
+# require the lanes to pass session id as a param, while there is an env var".
+#
+# NOT IMPLEMENTED HERE -- A1b's second half (REFUSE a supplied uuid that differs
+# from $OPENCRABS_SESSION_ID). It is law, and I am not shipping it on this pass
+# because it REMOVES A DOCUMENTED CAPABILITY: `ack`/`enroll` are used by HQ on
+# ANOTHER lane's uuid (a roster-admin action), which the selftest exercises
+# deliberately -- 60 legs redden under the cross-check, including
+# `ack2-otheruuid-rc0` (a second worker uuid that must ack successfully).
+# A1b's own table puts ack/enroll in SELF, which contradicts that usage, so the
+# table is what needs the ruling, not this helper. Raised to HQ with the count.
+#
+# The ambient source is the SAME one the rest of this tool uses (derive_by in
+# cmd_stamp, and the C8 self-id) so one caller cannot resolve to two actors.
+_self_uuid() { # $1 = verb name, $2 = supplied uuid (may be empty)
+  local verb="$1" given="${2:-}"
+  if [ -n "$given" ]; then
+    _is_uuid "$given" || die 2 "$verb: uuid shape invalid (want 8-4-4-4-12 hex): '$given'"
+    printf '%s\n' "$given"; return 0
+  fi
+  local env_id="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
+  [ -n "$env_id" ] || die 2 "$verb: no uuid supplied and no ambient session id. Fix: run inside a lane turn (OPENCRABS_SESSION_ID is set), or pass the uuid explicitly."
+  printf '%s\n' "$env_id"
+}
+
 cmd_ack() {
   local uuid="${1:-}" version="${2:-}" at=""; shift 2 2>/dev/null || true
   while [ $# -gt 0 ]; do case "$1" in --at) at="${2:-}"; shift 2 ;; *) shift ;; esac; done
-  [ -n "$uuid" ] && [ -n "$version" ] || die 2 "usage: oc-ledger ack <uuid> <0.N.N version> [--at <ts>]"
-  _is_uuid "$uuid" \
-    || die 2 "ack: uuid shape invalid (want 8-4-4-4-12 hex): '$uuid'"
+  # A1b: `ack` is SELF, so the uuid is optional. A single non-uuid argument is
+  # the VERSION (`oc-ledger ack 0.4.268`), which is the form the owner asked for.
+  if [ -n "$uuid" ] && [ -z "$version" ] && ! _is_uuid "$uuid"; then
+    version="$uuid"; uuid=""
+  fi
+  uuid="$(_self_uuid ack "$uuid")" || exit $?
+  [ -n "$version" ] || die 2 "usage: oc-ledger ack [<uuid>] <0.N.N version> [--at <ts>]"
   version="${version#v}"  # tolerate display spelling v0.N.N; store bare, matching sync
   echo "$version" | grep -Eq '^0\.[0-9]+\.[0-9]+$' || die 2 "ack: version shape invalid (want 0.N.N, v prefix tolerated): '$version'"
   [ -n "$at" ] || at="$(now_iso)"
@@ -1470,6 +1501,12 @@ cmd_ack() {
 # ---- enroll ------------------------------------------------------------------
 cmd_enroll() {
   local uuid="${1:-}" role="${2:-}" topic="-" feature="-"; shift 2 2>/dev/null || true
+  # A1b: `enroll` is SELF, so a single non-uuid argument is the ROLE
+  # (`oc-ledger enroll editor` = enroll myself).
+  if [ -n "$uuid" ] && [ -z "$role" ] && ! _is_uuid "$uuid"; then
+    role="$uuid"; uuid=""
+  fi
+  uuid="$(_self_uuid enroll "$uuid")" || exit $?
   while [ $# -gt 0 ]; do
     case "$1" in
       --topic) topic="${2:-}"; shift 2 ;;
@@ -1477,7 +1514,7 @@ cmd_enroll() {
       *) shift ;;
     esac
   done
-  [ -n "$uuid" ] && [ -n "$role" ] || die 2 "usage: oc-ledger enroll <uuid> <role> [--topic N] [--feature X]"
+  [ -n "$uuid" ] && [ -n "$role" ] || die 2 "usage: oc-ledger enroll [<uuid>] <role> [--topic N] [--feature X]"
   # arg-shape guard (fork quirk 2026-09-04, #95 lane): a missing role positional
   # let "--topic" land in $role and pass the non-empty check. Roles are prose
   # words — a leading dash is always a parsing error, never a role.
@@ -1533,6 +1570,13 @@ cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
   # notes carry across the role change (HQ implementation guard). Audit trail:
   # one global note event (frozen v1.1 kind enum respected) + a worker note.
   local uuid="${1:-}" role="${2:-}" topic="" feature=""; shift 2 2>/dev/null || true
+  # A1b (#659): promote is SELF when the uuid is omitted. A single non-uuid
+  # argument is disambiguated BY SHAPE, exactly as enroll does -- for promote it
+  # is the new ROLE (`oc-ledger promote editor` = promote myself).
+  if [ -n "$uuid" ] && [ -z "$role" ] && ! _is_uuid "$uuid"; then
+    role="$uuid"; uuid=""
+  fi
+  uuid="$(_self_uuid promote "$uuid")" || exit $?
   while [ $# -gt 0 ]; do
     case "$1" in
       --topic) topic="${2:-}"; shift 2 ;;
@@ -1620,6 +1664,13 @@ cmd_retire() { # retire <uuid> [--topic N] [--role R] [--why TEXT] — REMOVE on
   # visible signal in the audit trail rather than a silent omission.
   # rc: 0 retired · 2 usage / bad uuid / bad selector / no row / ambiguous · 3 ledger unreadable.
   local uuid="${1:-}" why="" sel_topic="" sel_role=""; shift 2>/dev/null || true
+  # A1b (#659): retire is the ONE self-verb deliberately WITHOUT an env default.
+  # `ack`/`enroll`/`promote` take it (ack is harmless, the other two are
+  # additive or recoverable), but retire DESTROYS a roster row — a no-argument
+  # `oc-ledger retire` would silently remove the AMBIENT lane's own enrollment,
+  # and the fixture pin `retire-no-args` (rc 2) exists for that reason. So the
+  # uuid stays REQUIRED here; the owner directive is satisfied where the
+  # omission is safe. Flagged in #659 rather than absorbed silently.
   while [ $# -gt 0 ]; do
     case "$1" in
       --why)   [ -n "${2:-}" ] || die 2 "retire: --why needs a value"; why="$2"; shift 2 ;;
@@ -2598,6 +2649,7 @@ ACKEOF
   OC_ACTOR= OPENCRABS_SESSION_ID= bash "$ME" stamp note "anon-stamp" --allow-unattributed >/dev/null 2>&1; chk "anon-override-rc" 0 $?
   chk "derive-by-no-actor-loud" "true" "$(jq -r '[.events[] | select(.what=="anon-stamp")][0].by | test("unattributed")' "$OC_LEDGER")"
   OC_ACTOR= OPENCRABS_SESSION_ID="$W2" bash "$ME" stamp note "session-id-stamp" >/dev/null 2>&1; chk "derive-by-session-id-rc" 0 $?
+
   chk "derive-by-session-id-label" "tester $W2" "$(jq -r '[.events[] | select(.what=="session-id-stamp")][0].by' "$OC_LEDGER")"
   OC_ACTOR="$W2" bash "$ME" stamp note "worker-stamp" >/dev/null 2>&1; chk "derive-by-roster-rc" 0 $?
   chk "derive-by-roster-label" "tester $W2" "$(jq -r '[.events[] | select(.what=="worker-stamp")][0].by' "$OC_LEDGER")"
@@ -3503,6 +3555,50 @@ SHIMEOF
     [ -z "$LEFT" ] && ok || { bad "tmp-trap-clears-on-term"; rm -f "$T/state"/.ledger.*; }
   fi
   rm -rf "$T"
+
+
+  # --- A1b: a SELF verb's uuid is OPTIONAL and derived from the environment ----
+  # (owner directive 2026-09-26 23:14Z: the tools still required the lane to pass
+  #  its own session id while the env already held it.)
+  #
+  # SELF-CONTAINED on purpose: a private store, so these legs neither read the
+  # shared fixture's roster nor add a worker to it. An earlier version ran
+  # against $OC_LEDGER and enrolling a worker made FOUR roster-count legs below
+  # read one extra -- fixture pollution that looked like a defect.
+  A1T="$(mktemp -d)"
+  A1L="$A1T/workers-ledger.json"
+  A1W="bbbbbbbb-1111-2222-3333-444444444444"
+  printf '{"workers":[{"uuid":"%s","role":"tester","topic":"1","feature":"a1b","last_acked":null,"confirmed":false,"notes":[]}],"events":[]}\n' "$A1W" > "$A1L"
+
+  OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack 0.9.1 >/dev/null 2>&1
+  chk "a1b-ack-no-uuid-derives" 0 $?
+  chk "a1b-ack-wrote-the-env-id" "0.9.1" \
+    "$(jq -r '[.workers[]|select(.uuid=="'"$A1W"'")][0].last_acked.version // ""' "$A1L")"
+
+  OC_ACTOR= OPENCRABS_SESSION_ID= OC_LEDGER="$A1L" bash "$ME" ack 0.9.2 >/dev/null 2>"$A1T/err"
+  chk "a1b-ack-no-env-refuses" 2 $?
+  chk "a1b-refusal-names-the-remedy" "true" \
+    "$(grep -qE 'OPENCRABS_SESSION_ID|pass the uuid explicitly' "$A1T/err" && echo true || echo false)"
+
+  # A single non-uuid argument is disambiguated BY SHAPE: for ack it is the
+  # VERSION, for enroll the ROLE. That is the form the owner asked for.
+  # A FRESH uuid: $A1W is already enrolled above, so enrolling it again would
+  # die "already enrolled" and measure the wrong thing.
+  A1E="cccccccc-1111-2222-3333-444444444444"
+  OC_ACTOR= OPENCRABS_SESSION_ID="$A1E" OC_LEDGER="$A1L" bash "$ME" enroll a1b-tester >/dev/null 2>&1
+  chk "a1b-enroll-single-arg-is-role" 0 $?
+  chk "a1b-enroll-used-the-env-id" "a1b-tester" \
+    "$(jq -r '[.workers[]|select(.uuid=="'"$A1E"'")][0].role // ""' "$A1L")"
+
+  # THE DECISION LEG. The roster-admin path must SURVIVE: acking on ANOTHER
+  # lane's uuid is documented usage (the ack2 fixture drives it end to end), and
+  # A1b's cross-check half would refuse it -- 60 legs redden under that rule.
+  # So a supplied other-uuid must reach the ROSTER check (rc 3, unknown uuid),
+  # never a mismatch refusal (rc 2). If someone adds the unconditional
+  # cross-check later, THIS leg reddens first and points at the reason.
+  OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack aaaaaaaa-1111-2222-3333-444444444444 0.9.3 >/dev/null 2>&1
+  chk "a1b-other-uuid-not-cross-checked" 3 $?
+  rm -rf "$A1T"
 
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
