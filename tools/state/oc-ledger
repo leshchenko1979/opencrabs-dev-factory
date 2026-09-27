@@ -600,8 +600,16 @@ with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
   # (sweep + commit) that also runs inside the hold.
   _OC_LOCK_WORST=$(( 2 * _OC_PUSH_TIMEOUT + 30 ))
   _OC_LOCK_WAIT="${OC_LEDGER_LOCK_WAIT:-$_OC_LOCK_WORST}"
-  flock -w "$_OC_LOCK_WAIT" 9 || die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_WAIT}s (holder worst case ${_OC_LOCK_WORST}s = 2x push bound ${_OC_PUSH_TIMEOUT}s + 30s non-push; raise with OC_LEDGER_LOCK_WAIT or lower OC_LEDGER_PUSH_TIMEOUT)"
-  "$@"; rc=$?
+  flock -w "$_OC_LOCK_WAIT" 9 || die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_WAIT}s (own worst case ${_OC_LOCK_WORST}s = 2x push bound ${_OC_PUSH_TIMEOUT}s + 30s non-push; a LONGER wait means a pre-#641 holder still holds it via an inherited fd — raise with OC_LEDGER_LOCK_WAIT)"
+  # #641 (measured 2026-09-27): `9>&-` is LOAD-BEARING, not tidiness. bash does not
+  # set close-on-exec on fds > 2, so a child spawned inside the lock INHERITS fd 9,
+  # and flock is released only when the LAST fd on the open file description closes.
+  # `git commit` inside this lock triggers `git gc --auto` -> repack -> pack-objects;
+  # those children outlive the bash parent and kept the lock for 19+ minutes on a
+  # 2.7 GB repo (three lanes timed out at 90s/180s/240s while it held), which is a
+  # fleet-wide claim/stamp stall. Closing the fd for the work bounds the hold to
+  # oc-ledger's own runtime, which is what the wait is derived from.
+  "$@" 9>&-; rc=$?
   exec 9>&-
   return $rc
 }

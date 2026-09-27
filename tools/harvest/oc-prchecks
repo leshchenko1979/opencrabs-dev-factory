@@ -17,6 +17,13 @@
 # the same carrier head, so this is a hard always-true gate for valid carrier
 # dispatches, not a per-input discriminator), with a -5s-buffered window floor
 # and LATEST-wins, all under the shared dispatch lock held through adoption.
+# #631 (2026-09-27): the lock does NOT make the newest run ours — it only
+# serializes dispatch+adopt, and a run created while we waited is another
+# lane's. Every run-list field is identical across concurrent dispatches
+# (all carry the carrier headSha), so the adopted run is now PINNED by the
+# 40-hex in its job name, `PR-lane gates (<sha>)`, via oc_job_sha, and refused
+# rc 4 on mismatch; a queued run whose jobs are not materialised journals
+# adoption_pin=unpinned rather than passing silently.
 # Cross-lane decoy adoption is impossible because the lock serializes
 # dispatch+adopt and the newest run in window is always this lane's own.
 #
@@ -74,6 +81,8 @@ set -e            # F-lens (HQ GO batch 2026-09-09): a bare-typo command like th
                   # is the #124 time-bomb class.
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-prchecks" "$@"; else oc_log_finish() { :; }; fi
+_OC_PATCH_LIB="$OC_TOOLS_DIR/lib/oc-patch.sh"   # #631: oc_job_sha for the adoption sha pin
+[ -f "$_OC_PATCH_LIB" ] && . "$_OC_PATCH_LIB"
 # Exit-honesty guard (n=1725 A, Triage verdict n=1721; field tools.log:3190,
 # 2026-09-06T18:22:17Z): a harness budget-kill of an in-flight watch journaled
 # exit 0 with NO verdict and NO signal extras — a success-shaped row for an
@@ -286,12 +295,14 @@ YEOF
     esac ;;
   *"run view"*"--json jobs"*)
     case "\$S" in
+      adopt_sha_foreign) printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
+      adopt_sha_own)     printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
       fmt_failed)  printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"failure"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;
       fmt_skipped) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"skipped"}]}]}\n' ;;
       job_failed)  printf '{"jobs":[{"name":"lint","conclusion":"failure","steps":[{"name":"cargo fmt","conclusion":"success"}]}]}\n' ;;
       fmt_gate_ok) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"success"},{"name":"Apply cargo fmt (fix mode)","conclusion":"skipped"},{"name":"Upload fmt-fix patch","conclusion":"skipped"}]}]}\n' ;;
       fmt_gate_failed) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"failure"}]}]}\n' ;;
-      *)           printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"success"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;
+      *)           printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"success"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;   # #631: real job names carry the tested sha
     esac ;;
   *"run view"*)
     case "\$S" in
@@ -320,6 +331,7 @@ do_selftest() {
   local pass=0 fail=0 SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   t_ok()  { pass=$((pass+1)); echo "selftest: $1  OK"; }
   t_bad() { fail=$((fail+1)); echo "selftest: $1 FAIL"; }
+  export OC_PRCHECKS_PIN_TRIES=1   # #631: shim answers instantly; no wait loop in tests
   run_t() { # $1=scenario $2..=args ; echoes rc in $T_RC, out in $T_OUT
     mk_shim "$D/gh" "$1"; shift
     # set -e survival (v0.4.124): negative-path scenarios EXPECT nonzero rc —
@@ -457,6 +469,17 @@ do_selftest() {
   if [ "$T_RC" -eq 4 ] && case "$T_OUT" in *"ADOPTION IDENTITY MISMATCH"*"branch=main"*) true ;; *) false ;; esac; then
     t_ok "adoption pin: adopted run on foreign branch -> rc 4, never watched (extra.adoption_pin=mismatch)"
   else t_bad "adoption pin mismatch (rc=$T_RC out=$T_OUT)"; fi
+  # --- #631: the adopted run must carry OUR sha in its job name -------------
+  # Run-list fields are identical across concurrent dispatches (all carry the
+  # carrier headSha), so nothing but the job name pins the tested sha.
+  run_t adopt_sha_foreign "$SHA"
+  if [ "$T_RC" -eq 4 ] && case "$T_OUT" in *"ADOPTION SHA MISMATCH"*) true ;; *) false ;; esac; then
+    t_ok "#631: adopted run pinning a FOREIGN sha -> 4 (refused; run-list fields cannot discriminate)"
+  else t_bad "#631 foreign-sha adoption (rc=$T_RC out=$T_OUT)"; fi
+  run_t adopt_sha_own "$SHA"
+  if [ "$T_RC" -eq 0 ] && case "$T_OUT" in *"VERDICT GREEN"*) true ;; *) false ;; esac; then
+    t_ok "#631: adopted run pinning OUR sha -> GREEN (pin does not block the own-run path)"
+  else t_bad "#631 own-sha adoption (rc=$T_RC out=$T_OUT)"; fi
   # C-A1 (lens C2 A1): the mismatch rc-4 carries a machine-readable SUPERSEDED
   # token so callers (and humans) never retry this id — 35-row retry storm
   # evidence, tools.log 2026-09-07. Retry cannot fix an identity mismatch.
@@ -516,6 +539,7 @@ do_selftest() {
   cf_run() { # $1=shim-scenario $2..=tool args ; OC_TOOLS_LOG=$CF_LOG wired, rc in T_RC, out in T_OUT
     local sc="$1"; shift
     GHDISPATCH_LOG="$D/gh-dispatch.log"; : > "$GHDISPATCH_LOG"; export GHDISPATCH_LOG
+    export OC_PRCHECKS_PIN_TRIES=1   # #631
     mk_shim "$D/gh" "$sc"
     T_OUT="$(OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 OC_TOOLS_LOG="$CF_LOG" \
       OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
@@ -1032,7 +1056,40 @@ RUN_URL="${RUN_URL:-}"; RUN_URL="https://github.com/$REPO/actions/runs/$RUN_ID"
     oc_log_extra "adoption_pin" "mismatch"
     exit 4
   fi
-  oc_log_extra "adoption_pin" "ok"
+  # #631 SHA PIN — the run-list fields CANNOT discriminate concurrent lanes:
+  # every workflow_dispatch run on the carrier carries the SAME headSha (the
+  # carrier ref, not the tested sha), so event+branch are satisfied by ANY lane's
+  # run and the selector's only remaining tie-break was recency under the lock.
+  # Measured 2026-09-27: three concurrent runs, every list field identical, while
+  # their `PR-lane gates (<sha>)` job names pinned THREE DIFFERENT shas — a chain
+  # adopted the newest and settled GREEN on a stranger's evidence (gate bypass).
+  # The job name is the identity carrier; verify it before watching.
+  if command -v oc_job_sha >/dev/null 2>&1; then
+    _pin_sha=""; _pin_try=0; _pin_max="${OC_PRCHECKS_PIN_TRIES:-4}"
+    while [ "$_pin_try" -lt "$_pin_max" ]; do
+      _pin_sha="$(oc_job_sha "$("$GH_BIN" run view "$RUN_ID" --repo "$REPO" --json jobs --jq '[.jobs[].name]|join(" ")' 2>/dev/null || true)" || true)"   # oc_job_sha is a pipeline: pipefail makes it non-zero on no-match
+      [ -n "$_pin_sha" ] && break
+      _pin_try=$((_pin_try + 1))
+      [ "$_pin_try" -lt "$_pin_max" ] && sleep 5
+    done
+    if [ -n "$_pin_sha" ] && [ -n "${SHA:-}" ] && [ "$_pin_sha" != "$SHA" ]; then   # ${SHA:-}: the resume path carries a run-id, not a sha
+      echo "$PROG: ADOPTION SHA MISMATCH: adopted run=$RUN_ID pins sha $_pin_sha but this lane is armed with $SHA — run-list fields cannot discriminate concurrent dispatches, so this is another lane's gate; refusing to watch a stranger's evidence (#631)." >&2
+      echo "$PROG: OC_PR_SUPERSEDED: run=$RUN_ID belongs to sha $_pin_sha — do NOT resume it; re-run this command to dispatch your own gate" >&2
+      oc_log_extra "adoption_pin" "sha-mismatch"
+      oc_log_extra "adoption_pin_sha" "$_pin_sha"
+      exit 4
+    fi
+    if [ -n "$_pin_sha" ]; then
+      oc_log_extra "adoption_job_sha" "$_pin_sha"
+      oc_log_extra "adoption_pin" "ok"
+    else
+      # queued run: jobs not materialised yet. Cannot discriminate — DISCLOSE,
+      # never a silent clean. (#631: this is the residual window.)
+      oc_log_extra "adoption_pin" "unpinned"
+    fi
+  else
+    oc_log_extra "adoption_pin" "unpinned"
+  fi
 }
 # C-F2 resume-skipped dispatch+adoption and the plain resume path re-attach to
 # a WITNESSED run (journal-matched by sha/ref) — the pin's target defect is
