@@ -1984,6 +1984,12 @@ def page_wrapper(body, expires_at, title):
             + "\n</body></html>\n")
 
 
+# The reason from the LAST renderer fault, kept outside the unified log so it
+# survives both the SystemExit that die() raises and a tree with no log at all.
+# Read by republish() to name the fault on the mutation's own output (#189).
+_LAST_RENDER_FAULT = None
+
+
 def build_page(entries, slug, expires_at, action):
     """The page body from a json-render spec, wrapped in the tested shell.
 
@@ -1992,9 +1998,11 @@ def build_page(entries, slug, expires_at, action):
     to state its own provenance, so the fallback was deleted rather than kept as
     a safety net. The fault exits non-zero with the reason on stderr and NOTHING
     is written, so the previous page stays serving instead of a 404."""
+    global _LAST_RENDER_FAULT
     spec = build_spec(entries, slug, expires_at, action)
     html_body, why = render_via_node(spec)
     if html_body is None:
+        _LAST_RENDER_FAULT = why
         oc_log_extra("publish_failed", why)
         die(4, "renderer fault: %s" % why)
     oc_log_extra("renderer", "json-render")
@@ -2157,22 +2165,40 @@ def read_pointer():
         return None
 
 
+def _note_publish_fault(why):
+    """Name a publish fault on the caller's own output, and never change rc.
+
+    A warning, not an error: the mutation SUCCEEDED and its work is on disk, so
+    a non-zero exit would report the caller's own success as a failure. The
+    warning goes to stderr so a caller parsing --json on stdout is unaffected."""
+    oc_log_extra("publish_failed", why)
+    sys.stderr.write(
+        "%s: warning: the page was NOT refreshed — %s\n" % (PROG, why))
+
+
 def republish(flags):
     """C4: refresh the page after a register mutation, BEST-EFFORT.
 
     A publish fault must never fail the mutation that triggered it — the
     mutation is the caller's work and the page is a convenience — so this
-    swallows the fault and records it in the unified log instead."""
+    returns None and the caller exits 0.
+
+    It must NOT swallow the fault in silence (#189). The unified log is not a
+    surface the caller reads: --no-log and the selftest both disable it, and a
+    tree that never set OC_TOOLS_LOG has no log at all — so a fault recorded
+    only there is a page that silently stops refreshing. The reason is named on
+    the mutation's OWN stderr instead, while the exit code stays 0."""
     if flags.get("--no-publish"):
         return None
     try:
         meta, _ = publish_page(quiet=True)
         return meta
     except SystemExit:
-        oc_log_extra("publish_failed", "SystemExit")
+        _note_publish_fault(
+            _LAST_RENDER_FAULT or "publish exited without naming a reason")
         return None
     except Exception as exc:
-        oc_log_extra("publish_failed", exc.__class__.__name__)
+        _note_publish_fault("%s: %s" % (exc.__class__.__name__, exc))
         return None
 
 
@@ -2880,10 +2906,42 @@ def selftest():
            "--no-publish suppresses the refresh (rc=%d)" % rc)
 
         # A publish fault must never fail the mutation that triggered it.
+        # --no-publish is the CONTROL: the fault path is never entered.
         rc, out, err = run("ask", "--factory", "f-broken-page-lane",
                            "--title", "t", "--description", "d", "--json",
                            "--no-publish")
         ck(rc == 0, "the mutation succeeds regardless of the page (rc=%d)" % rc)
+        ck("warning: the page was NOT refreshed" not in err,
+           "\u2026and --no-publish names no fault (the path is not entered)")
+
+        # #189: a publish fault during a MUTATION must be named on the caller's
+        # OWN stderr, and the mutation must still exit 0. A fault recorded only
+        # in the unified log is a page that silently stops refreshing -- the
+        # log is not a surface the caller reads (--no-log and this selftest
+        # both disable it, and a tree with no OC_TOOLS_LOG has no log at all).
+        _saved = env.get("OC_QUESTIONS_RENDER_DIR")
+        env["OC_QUESTIONS_RENDER_DIR"] = os.path.join(env["OC_QUESTIONS_DIR"],
+                                                      "no-such-build-dir")
+        try:
+            rc, out, err = run("ask", "--factory", "f-fault-lane",
+                               "--title", "t", "--description", "d", "--json")
+        finally:
+            if _saved is None:
+                env.pop("OC_QUESTIONS_RENDER_DIR", None)
+            else:
+                env["OC_QUESTIONS_RENDER_DIR"] = _saved
+        ck(rc == 0,
+           "a renderer fault does NOT fail the mutation (rc=%d)" % rc)
+        ck("warning: the page was NOT refreshed" in err,
+           "\u2026and the fault is NAMED on stderr (%r)" % err.strip()[-110:])
+        ck("page was NOT refreshed" not in out,
+           "\u2026and the warning never pollutes stdout (--json stays parseable)")
+        try:
+            json.loads(out)
+            stdout_ok = True
+        except ValueError:
+            stdout_ok = False
+        ck(stdout_ok, "\u2026so --json stdout still parses")
 
         # -- 8b2. the json-render page (owner order 2026-09-24: "rewrite for
         # json-render"). The page BODY is now a typed SPEC rendered by a Node
