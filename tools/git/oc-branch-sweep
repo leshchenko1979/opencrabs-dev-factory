@@ -120,7 +120,7 @@ cmd_sweep() {
       # readable reflog, so the hazard cannot hide in the fallback.
       local rl=""
       rl="$(git -C "$repo" reflog show --format='%gs' "refs/heads/$b" 2>/dev/null)"
-      if [ -n "$rl" ] && ! printf '%s\n' "$rl" | grep -qvE '^branch: Created from '; then
+      if [ -n "$rl" ] && ! grep -qvE '^branch: Created from ' <<< "$rl" ; then
         printf '%s\t%s\t%s\t%s\n' "$b" "UNSTARTED" "$tip" "report-only"
         continue
       fi
@@ -194,7 +194,7 @@ cmd_sweep() {
       # means an old ref, which stays MERGED.
       local rrl=""
       rrl="$(git -C "$repo" reflog show --format='%gs' "refs/remotes/$rb" 2>/dev/null)"
-      if [ -n "$rrl" ] && ! printf '%s\n' "$rrl" | grep -qvE '^branch: Created from '; then
+      if [ -n "$rrl" ] && ! grep -qvE '^branch: Created from ' <<< "$rrl" ; then
         rcls="UNSTARTED"
       else
         rcls="MERGED"

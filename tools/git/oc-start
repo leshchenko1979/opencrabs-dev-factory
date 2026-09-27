@@ -107,7 +107,7 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
   R 124 --branch noslash >/dev/null 2>&1; [ $? -eq 2 ] && t_ok "bad branch -> 2" || t_bad "bad branch"
   # 5. claim refused -> 3 + resume line names oc-ledger claim
   OUT="$(STUB_RC=3 R 125 --branch feat/refused-two 2>&1)"; RC=$?
-  if [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -q "CLAIM REFUSED"; then
+  if [ "$RC" -eq 3 ] && grep -q "CLAIM REFUSED" <<< "$OUT" ; then
     t_ok "claim-refused -> 3 + resume"
   else t_bad "claim-refused (rc=$RC)"; fi
   # 6. branch already exists -> 4, never clobbered
@@ -132,13 +132,13 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
   mkdir -p "$HOME/opencrabs-wt/oc-wt-mirror-t"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$D/wt-stub"; chmod +x "$D/wt-stub"
   OUT="$(OC_START_WT_BIN="$D/wt-stub" R 128 --branch feat/mirror-t 2>&1)"; RC=$?
-  if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "worktree=$HOME/opencrabs-wt/oc-wt-mirror-t"; then
+  if [ "$RC" -eq 0 ] && grep -q "worktree=$HOME/opencrabs-wt/oc-wt-mirror-t" <<< "$OUT" ; then
     t_ok "#429 mirror: STARTED names the oc-wt-prefixed tree"
   else t_bad "#429 mirror (rc=$RC; want worktree=$HOME/opencrabs-wt/oc-wt-mirror-t)"; fi
   # 9. #429 control: a task with NO tree anywhere still reports the path `add`
   #    creates — widening the resolver must not displace the ordinary case.
   OUT="$(OC_START_WT_BIN="$D/wt-stub" R 129 --branch feat/fresh-two 2>&1)"; RC=$?
-  if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "worktree=$HOME/opencrabs-wt/fresh-two"; then
+  if [ "$RC" -eq 0 ] && grep -q "worktree=$HOME/opencrabs-wt/fresh-two" <<< "$OUT" ; then
     t_ok "#429 control: untracked task reports the create path"
   else t_bad "#429 control (rc=$RC; want worktree=$HOME/opencrabs-wt/fresh-two)"; fi
 

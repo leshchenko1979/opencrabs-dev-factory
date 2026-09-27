@@ -276,7 +276,7 @@ EOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 241 --probe "echo probe-ok" --evidence "EVIDENCE-MARKER-409" 2>&1)" || rc=$?
   row241="$(grep 'issue=#241' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if printf '%s' "$row241" | grep -q "live_behavior=" && printf '%s' "$row241" | grep -q "evidence=EVIDENCE-MARKER-409"; then
+  if grep -q "live_behavior=" <<< "$row241" && grep -q "evidence=EVIDENCE-MARKER-409" <<< "$row241" ; then
     t_ok "probe AND evidence both land in the row (#409)"
   else
     t_bad "probe+evidence both land (rc=$rc row=$row241)"
@@ -342,7 +342,7 @@ MBEOF
   # The cut must also be a CHARACTER count, so the marker's two units agree:
   # `${#txt}` reports characters, so `of N chars` must match a character cut.
   row256="$(grep 'issue=#256' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if printf '%s' "$row256" | grep -q 'truncated at 6 of 50 chars'; then
+  if grep -q 'truncated at 6 of 50 chars' <<< "$row256" ; then
     t_ok "the truncation marker reports the CHARACTER count it actually cut (#588)"
   else
     t_bad "truncation marker units disagree (row=$row256)"
@@ -356,8 +356,8 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 OC_SMOKE_PROBE_CAP=400 \
     "$0" 257 --probe "$d/mbprobe" 2>&1)" || rc=$?
   row257="$(grep 'issue=#257' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if [ "$rc" -eq 0 ] && printf '%s' "$row257" | grep -q '✅✅✅' \
-     && ! printf '%s' "$row257" | grep -q 'truncated'; then
+  if [ "$rc" -eq 0 ] && grep -q '✅✅✅' <<< "$row257" \
+     && ! grep -q 'truncated' <<< "$row257" ; then
     t_ok "an unclipped multi-byte probe lands INTACT — no spurious marker (#588 control)"
   else
     t_bad "unclipped multi-byte probe (rc=$rc row=$row257)"
@@ -378,7 +378,7 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 244 --probe "echo probe-ok" 2>&1)" || rc=$?
   row244="$(grep 'issue=#244' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if printf '%s' "$row244" | grep -q "target=live-ops"; then
+  if grep -q "target=live-ops" <<< "$row244" ; then
     t_ok "no --target writes the deployment unit target=live-ops (#432)"
   else
     t_bad "default target= (rc=$rc row=$row244)"
@@ -389,7 +389,7 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 245 --probe "echo probe-ok" --target unit-x 2>&1)" || rc=$?
   row245="$(grep 'issue=#245' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if printf '%s' "$row245" | grep -q "target=unit-x"; then
+  if grep -q "target=unit-x" <<< "$row245" ; then
     t_ok "--target still overrides the deployment-unit default (#432)"
   else
     t_bad "--target override (rc=$rc row=$row245)"
@@ -410,7 +410,7 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 246 --probe "echo probe-ok" 2>&1)" || rc=$?
   row246="$(grep 'issue=#246' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if printf '%s' "$row246" | grep -q 'evidence="4-leg smoke pass: lineage=unverified '; then
+  if grep -q 'evidence="4-leg smoke pass: lineage=unverified ' <<< "$row246" ; then
     t_ok "PASS row keeps the pass clause; lineage reads unverified, never true (#306)"
   else
     t_bad "PASS default opening clause (rc=$rc row=$row246)"
@@ -425,8 +425,8 @@ MBEOF
   # claiming a pass". The leg count is not that property — #598 made the count
   # vary with whether leg 4 ran — so the assertion is on the verdict token and
   # on the absence of any pass claim, which is what the leg means.
-  if printf '%s' "$row247" | grep -qE 'evidence="[34]-leg smoke FAIL: ' \
-     && ! printf '%s' "$row247" | grep -q 'smoke pass'; then
+  if grep -qE 'evidence="[34]-leg smoke FAIL: ' <<< "$row247" \
+     && ! grep -q 'smoke pass' <<< "$row247" ; then
     t_ok "a FAIL row names its own verdict and never opens by claiming a pass (#436)"
   else
     t_bad "FAIL opening clause (rc=$rc row=$row247)"
@@ -437,7 +437,7 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 248 --probe "echo probe-ok" --lineage verified 2>&1)" || rc=$?
   row248="$(grep 'issue=#248' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if printf '%s' "$row248" | grep -q 'lineage=verified '; then
+  if grep -q 'lineage=verified ' <<< "$row248" ; then
     t_ok "a caller-supplied --lineage verified is what the row records (#306)"
   else
     t_bad "--lineage verified (rc=$rc row=$row248)"
@@ -449,7 +449,7 @@ MBEOF
     "$0" 249 --probe "echo probe-ok" --lineage failed 2>&1)" || rc=$?
   row249="$(grep 'issue=#249' "$d/state/smoke-verdicts.log" | tail -n 1)"
   v249="$(printf '%s' "$row249" | awk -F'\t' '{print $2}')"
-  if [ "$rc" -eq 1 ] && [ "$v249" = "FAIL" ] && printf '%s' "$row249" | grep -q 'lineage=failed'; then
+  if [ "$rc" -eq 1 ] && [ "$v249" = "FAIL" ] && grep -q 'lineage=failed' <<< "$row249" ; then
     t_ok "a caller-reported lineage FAIL forces the row to FAIL, not PASS (#306)"
   else
     t_bad "--lineage failed (rc=$rc verdict=$v249 row=$row249)"
@@ -477,9 +477,9 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 251 --evidence "no probe" 2>&1)" || rc=$?
   row251="$(grep 'issue=#251' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if [ "$rc" -eq 0 ] && printf '%s' "$row251" | grep -q '3-leg smoke pass: ' \
-     && printf '%s' "$row251" | grep -q 'behavioral=absent' \
-     && ! printf '%s' "$row251" | grep -q '4-leg smoke pass'; then
+  if [ "$rc" -eq 0 ] && grep -q '3-leg smoke pass: ' <<< "$row251" \
+     && grep -q 'behavioral=absent' <<< "$row251" \
+     && ! grep -q '4-leg smoke pass' <<< "$row251" ; then
     t_ok "a probe-less run records 3 legs and behavioral=absent, never a 4-leg claim (#598)"
   else
     t_bad "probe-less leg count (rc=$rc row=$row251)"
@@ -490,8 +490,8 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 252 --probe "echo probe-ok" 2>&1)" || rc=$?
   row252="$(grep 'issue=#252' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if [ "$rc" -eq 0 ] && printf '%s' "$row252" | grep -q '4-leg smoke pass: ' \
-     && printf '%s' "$row252" | grep -q 'behavioral=verified'; then
+  if [ "$rc" -eq 0 ] && grep -q '4-leg smoke pass: ' <<< "$row252" \
+     && grep -q 'behavioral=verified' <<< "$row252" ; then
     t_ok "a probed run keeps 4 legs and records behavioral=verified (#598 control)"
   else
     t_bad "probed leg count (rc=$rc row=$row252)"
@@ -502,7 +502,7 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 253 --probe "exit 4" 2>&1)" || rc=$?
   row253="$(grep 'issue=#253' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if [ "$rc" -eq 1 ] && printf '%s' "$row253" | grep -q 'behavioral=failed'; then
+  if [ "$rc" -eq 1 ] && grep -q 'behavioral=failed' <<< "$row253" ; then
     t_ok "a FAILED probe records behavioral=failed (#598)"
   else
     t_bad "failed probe behavioral (rc=$rc row=$row253)"
@@ -513,7 +513,7 @@ MBEOF
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 254 --behavioral na --evidence "structural N/A" 2>&1)" || rc=$?
   row254="$(grep 'issue=#254' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if [ "$rc" -eq 0 ] && printf '%s' "$row254" | grep -q 'behavioral=na'; then
+  if [ "$rc" -eq 0 ] && grep -q 'behavioral=na' <<< "$row254" ; then
     t_ok "a declared structural-N/A leg records behavioral=na and keeps 4 legs (#598)"
   else
     t_bad "behavioral na (rc=$rc row=$row254)"

@@ -140,7 +140,7 @@ REF_MATCH=0
 FEAT_MATCH=1
 if [ -n "$FEATURES" ]; then
   for f in $(printf '%s' "$FEATURES" | tr ',' ' '); do
-    printf '%s' "$E_FEAT" | grep -qF "$f" || { FEAT_MATCH=0; break; }
+    grep -qF "$f" <<< "$E_FEAT" || { FEAT_MATCH=0; break; }
   done
 fi
 [ "$FEAT_MATCH" = 1 ] || fail 4 "REF-MISMATCH: job embed features '$E_FEAT' missing requested '$FEATURES'"

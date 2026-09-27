@@ -82,7 +82,7 @@ do_selftest() {
   git -C "$F/w" push -q origin main
   OUT="$(OC_TOOLS_NOLOG=1 "$SELF" --repo "$F/w" 2>"$D/err2")"; RC=$?
   if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | awk '$1=="AHEAD" && $2==1 {f=1} END{exit !f}' \
-     && printf '%s\n' "$OUT" | grep -q "^C	[a-f0-9]\{7\}	fork-only change"; then
+     && grep -q "^C	[a-f0-9]\{7\}	fork-only change" <<< "$OUT" ; then
     t_ok "ahead-only -> 1 + AHEAD 1 + C row"
   else t_bad "ahead-only (rc=$RC out=$OUT)"; fi
   rm -rf "$F"
@@ -116,7 +116,7 @@ do_selftest() {
   echo v2 > "$F/w/f.txt"; git -C "$F/w" commit -qam "fork feature X (totally different message)"
   git -C "$F/w" push -q origin main
   OUT="$(OC_TOOLS_NOLOG=1 "$SELF" --repo "$F/w" 2>/dev/null)"; RC=$?
-  if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -q "^ABSORBED-CANDIDATE	"; then
+  if [ "$RC" -eq 1 ] && grep -q "^ABSORBED-CANDIDATE	" <<< "$OUT" ; then
     t_ok "patch-id absorbed pair -> ABSORBED-CANDIDATE row"
   else t_bad "absorbed pair (rc=$RC out=$OUT)"; fi
   rm -rf "$F"
@@ -127,7 +127,7 @@ do_selftest() {
   git -C "$F/w" reset -q --hard HEAD~1
   echo SOMETHING-ELSE > "$F/w/f.txt"; git -C "$F/w" commit -qam "fork different change"; git -C "$F/w" push -q origin main
   OUT="$(OC_TOOLS_NOLOG=1 "$SELF" --repo "$F/w" 2>/dev/null)"; RC=$?
-  if [ "$RC" -eq 1 ] && ! printf '%s\n' "$OUT" | grep -q "^ABSORBED-CANDIDATE"; then
+  if [ "$RC" -eq 1 ] && ! grep -q "^ABSORBED-CANDIDATE" <<< "$OUT" ; then
     t_ok "different diff -> no ABSORBED-CANDIDATE"
   else t_bad "non-absorbed false positive (rc=$RC)"; fi
   rm -rf "$F"

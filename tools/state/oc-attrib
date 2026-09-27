@@ -135,7 +135,7 @@ Issue-Ref: #1239'
   [ $? -eq 0 ] || { echo "selftest: nonzero exit" >&2; exit 1; }
   printf '%s\n' "$OUT" | awk -F'\t' '$1=="cccccccc-4444-5555-6666-777777777777"&&$2=="31789"&&$3=="plan-tool"&&$4=="#1239"{f=1} END{exit f?0:1}' \
     || { echo "selftest: mapped row wrong" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q '(unsigned)' || { echo "selftest: unsigned silently dropped" >&2; exit 1; }
+  grep -q '(unsigned)' <<< "$OUT" || { echo "selftest: unsigned silently dropped" >&2; exit 1; }
   printf '%s\n' "$OUT" | wc -l | grep -qx 2 || { echo "selftest: unexpected row count" >&2; exit 1; }
   # C2: --deployed composes prev_sha..deployed from markers; must equal explicit range
   R_FROM="$(git -C "$d" rev-parse HEAD~1)"; R_TO="$(git -C "$d" rev-parse HEAD)"
@@ -222,10 +222,10 @@ Session-Id: $S_NOVEL"
   nraw="$(printf '%s\n' "$OUT_RW" | wc -l)"; nnov="$(printf '%s\n' "$OUT_NV" | wc -l)"
   [ "$nraw" -eq 4 ] || { echo "selftest: #407 raw rows=$nraw want 4" >&2; exit 1; }
   [ "$nnov" -eq 2 ] || { echo "selftest: #407 --novel rows=$nnov want 2 (raw=$nraw)" >&2; exit 1; }
-  printf '%s\n' "$OUT_NV" | grep -q "$S_NOVEL" || { echo "selftest: #407 --novel dropped the NOVEL commit" >&2; exit 1; }
-  printf '%s\n' "$OUT_NV" | grep -q "$S_PRE"   || { echo "selftest: #407 --novel dropped a novel commit" >&2; exit 1; }
-  printf '%s\n' "$OUT_NV" | grep -q "$S_TWIN"  && { echo "selftest: #407 --novel KEPT the replayed twin (patch-id equivalence missed)" >&2; exit 1; }
-  printf '%s\n' "$OUT_NV" | grep -q "$S_EMPTY" && { echo "selftest: #407 --novel KEPT the empty commit" >&2; exit 1; }
+  grep -q "$S_NOVEL" <<< "$OUT_NV" || { echo "selftest: #407 --novel dropped the NOVEL commit" >&2; exit 1; }
+  grep -q "$S_PRE" <<< "$OUT_NV" || { echo "selftest: #407 --novel dropped a novel commit" >&2; exit 1; }
+  grep -q "$S_TWIN" <<< "$OUT_NV" && { echo "selftest: #407 --novel KEPT the replayed twin (patch-id equivalence missed)" >&2; exit 1; }
+  grep -q "$S_EMPTY" <<< "$OUT_NV" && { echo "selftest: #407 --novel KEPT the empty commit" >&2; exit 1; }
   # explicit --no-novel must restore the raw range exactly (parity, not a lookalike)
   OUT_NN="$("$0" --repo "$NR" --range "$NR_BASE..$NR_TIP" --no-novel)"
   [ "$OUT_NN" = "$OUT_RW" ] || { echo "selftest: #407 --no-novel != raw range" >&2; exit 1; }
@@ -246,8 +246,8 @@ Session-Id: $S_SIDE"
   OUT_M="$("$0" --repo "$NR" --range "$NR_BASE..$NR_MTIP" --novel 2>/dev/null)"
   nm="$(printf '%s\n' "$OUT_M" | wc -l)"
   [ "$nm" -eq 4 ] || { echo "selftest: #407 merge-passthrough rows=$nm want 4 (pre+novel+side+merge)" >&2; exit 1; }
-  printf '%s\n' "$OUT_M" | grep -q '(unsigned)' || { echo "selftest: #407 merge commit SILENTLY DROPPED by --novel" >&2; exit 1; }
-  printf '%s\n' "$OUT_M" | grep -q "$S_TWIN" && { echo "selftest: #407 twin survived in merge range" >&2; exit 1; }
+  grep -q '(unsigned)' <<< "$OUT_M" || { echo "selftest: #407 merge commit SILENTLY DROPPED by --novel" >&2; exit 1; }
+  grep -q "$S_TWIN" <<< "$OUT_M" && { echo "selftest: #407 twin survived in merge range" >&2; exit 1; }
   # --trailers-only is ALWAYS raw: oc-harvest-sweep Leg T must SEE empty commits
   # in order to report them MISSING a Session-Id.
   OUT_TN="$("$0" --repo "$NR" --range "$NR_BASE..$NR_TIP" --novel --trailers-only 2>"$d/tn407.err")"
@@ -259,7 +259,7 @@ Session-Id: $S_SIDE"
   # the failure text carries the discriminator, and dump the rows on a miss
   # (my #517/#614 work preserves them in battery-last-fail.log).
   ntn="$(printf '%s\n' "$OUT_TN" | wc -l)"
-  if ! printf '%s\n' "$OUT_TN" | grep -q "$S_EMPTY"; then
+  if ! grep -q "$S_EMPTY" <<< "$OUT_TN" ; then
     echo "selftest: #407 --trailers-only did not show the empty commit's trailer" >&2
     echo "  rows=$ntn raw_rows=$nraw  (equal => row present but trailer extracted EMPTY; less => genuinely DROPPED)" >&2
     printf '%s\n' "$OUT_TN" | sed 's/^/  | /' >&2

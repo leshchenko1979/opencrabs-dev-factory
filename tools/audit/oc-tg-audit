@@ -45,7 +45,7 @@ if [ "${1:-}" = "--selftest" ]; then
 EOF
   OUT="$("$0" u-guilty --date "$TODAY" --log-dir "$d")"; RC=$?
   [ $RC -eq 1 ] || { echo "selftest: guilty lane rc=$RC != 1" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q 'TOOL_ACCUM' || { echo "selftest: TOOL_ACCUM evidence missing" >&2; exit 1; }
+  grep -q 'TOOL_ACCUM' <<< "$OUT" || { echo "selftest: TOOL_ACCUM evidence missing" >&2; exit 1; }
   "$0" u-clean --date "$TODAY" --log-dir "$d" >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: clean lane not CLEAN" >&2; exit 1; }
   # other lane's violation must not contaminate
@@ -54,7 +54,7 @@ EOF
   grep -v 'TOOL_ACCUM' "$d/opencrabs.$TODAY" > "$d/opencrabs.2026-08-30"
   OUT="$("$0" u-guilty --date 2026-08-30 --log-dir "$d")"; RC=$?
   [ $RC -eq 1 ] || { echo "selftest: fallback Executing-tool evidence rc=$RC != 1" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q 'EXEC' || { echo "selftest: fallback evidence kind not labeled" >&2; exit 1; }
+  grep -q 'EXEC' <<< "$OUT" || { echo "selftest: fallback evidence kind not labeled" >&2; exit 1; }
   # missing log -> 3
   "$0" u-guilty --date 2026-08-29 --log-dir "$d" >/dev/null 2>&1
   [ $? -eq 3 ] || { echo "selftest: missing log != 3" >&2; exit 1; }

@@ -1724,12 +1724,12 @@ NSTUB
   # 21a. lineage-check verb: monotonic accept (fast path)
   out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LREW" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-monotonic-rc" $rc 0
-  printf '%s\n' "$out" | grep -qE '^verdict: +monotonic$' && pass=$((pass+1)) \
+  grep -qE '^verdict: +monotonic$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check monotonic verdict wrong: $out"; }
   # 21b. lineage-check verb: rewritten accept, twin named
   out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-rewritten-rc" $rc 0
-  printf '%s\n' "$out" | grep -qE '^verdict: +rewritten$' && pass=$((pass+1)) \
+  grep -qE '^verdict: +rewritten$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check rewritten verdict wrong: $out"; }
   check_has "lineage-check-rewritten-twin" "$out" "rewritten_twin:    $LREW"
   # 21b-json. machine-readable shape (reporters/lanes key on this)
@@ -1740,20 +1740,20 @@ NSTUB
   # 21c. lineage-check verb: genuinely absent change -> rc 2
   out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LSTALE" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-absent-rc" $rc 2
-  printf '%s\n' "$out" | grep -qE '^verdict: +absent$' && pass=$((pass+1)) \
+  grep -qE '^verdict: +absent$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check absent verdict wrong: $out"; }
   # 21d. NEGATIVE CONTROL: a rewrite whose content CHANGED is still refused —
   #      this is what proves acceptance keys on patch CONTENT, not on "some
   #      commit exists in the range"
   out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEG" 2>&1)"; rc=$?
   check_rc "lineage-check-negctrl-rc" $rc 2
-  printf '%s\n' "$out" | grep -qE '^verdict: +absent$' && pass=$((pass+1)) \
+  grep -qE '^verdict: +absent$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: tampered rewrite NOT refused (patch-id not content-sensitive): $out"; }
   # 21e. unknown (object not in this repo) is SKIPPED, not refused — preserves
   #      the pre-v0.4.151 "if both exist" behaviour
   out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-unknown-rc" $rc 2
-  printf '%s\n' "$out" | grep -qE '^verdict: +unknown$' && pass=$((pass+1)) \
+  grep -qE '^verdict: +unknown$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check unknown verdict wrong: $out"; }
   # 21f-21j. swap-execute E2E on the real fixture. NON-drill on purpose: the
   #          guard is skipped under --drill, so a drill case would assert nothing.

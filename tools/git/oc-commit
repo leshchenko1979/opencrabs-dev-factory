@@ -112,8 +112,8 @@ exit 3
   ( cd "$R" && echo r > l && git add l && OC_ISSUE_LOG_BIN="$STUB_FAIL" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: drill" --no-comment --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: --no-comment drill != 0" >&2; exit 1; }
   LOG="$(git -C "$R" log -1 --format=%B)"
-  printf '%s' "$LOG" | grep -q "Session-Id: f1c7c0de-0000-4000-8000-000000000149" || { echo "selftest: Session-Id trailer missing" >&2; exit 1; }
-  printf '%s' "$LOG" | grep -q "Issue-Ref: #149" || { echo "selftest: Issue-Ref #149 missing" >&2; exit 1; }
+  grep -q "Session-Id: f1c7c0de-0000-4000-8000-000000000149" <<< "$LOG" || { echo "selftest: Session-Id trailer missing" >&2; exit 1; }
+  grep -q "Issue-Ref: #149" <<< "$LOG" || { echo "selftest: Issue-Ref #149 missing" >&2; exit 1; }
   # 5. explicit --issue overrides derivation
   ( cd "$R" && echo w > i && git add i && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: override" --issue 42 --repo "$R" ) >/dev/null 2>&1
   git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: #42" || { echo "selftest: --issue override missing" >&2; exit 1; }

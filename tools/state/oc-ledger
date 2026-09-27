@@ -2450,8 +2450,8 @@ ACKEOF
   printf '# fixture with no TRACKED bullet\n' > "$T/auditskill/SKILL.md"
   export STATE_TRACKED_PATHS STATE_TRACKED_GLOB
   _aout="$(SKILL_DIR="$T/auditskill" bash -c '. '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
-  printf '%s' "$_aout" | grep -q 'SKIPPED' && ok || bad "state-tracked-audit-skip-note"
-  printf '%s' "$_aout" | grep -q 'NOT a clean result' && ok || bad "state-tracked-audit-skip-not-silent"
+  grep -q 'SKIPPED' <<< "$_aout" && ok || bad "state-tracked-audit-skip-note"
+  grep -q 'NOT a clean result' <<< "$_aout" && ok || bad "state-tracked-audit-skip-not-silent"
   [ "$(printf '%s' "$_aout" | grep -c '^state-tracked: WARN')" = "0" ] && ok || bad "state-tracked-audit-skip-no-warn"
   # (b) the discriminating half: a declared name the mechanism does NOT carry
   sed -n '/^  - \*\*TRACKED\*\* —/,/^  - \*\*GENERATED-IGNORED\*\*/p' "$SKILL_DIR/SKILL.md" > "$T/auditskill/SKILL.md"
@@ -2459,7 +2459,7 @@ ACKEOF
   grep -q 'bogus-new-record.json' "$T/auditskill/SKILL.md" && ok || bad "state-tracked-audit-fixture-injected"
   _bout="$(SKILL_DIR="$T/auditskill" bash -c '. '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
   [ "$(printf '%s' "$_bout" | grep -c '^state-tracked: WARN')" = "1" ] && ok || bad "state-tracked-audit-warns-once"
-  printf '%s' "$_bout" | grep -q "bogus-new-record.json" && ok || bad "state-tracked-audit-names-the-gap"
+  grep -q "bogus-new-record.json" <<< "$_bout" && ok || bad "state-tracked-audit-names-the-gap"
   # ---- #540: the INVERSE audit — tracked files NO commit path carries -------
   # state_tracked_audit runs declaration -> mechanism. This runs the other way:
   # tracked files that NEITHER the sweep list NOR the glossary names. Such a file
@@ -2473,8 +2473,8 @@ ACKEOF
   # (a) SKIP path: not a git repo -> a NOTE that SAYS it is not clean
   mkdir -p "$T/notgit"
   _sout="$(_scope "$T/notgit")"
-  printf '%s' "$_sout" | grep -q 'SKIPPED' && ok || bad "state-out-of-scope-skip-note"
-  printf '%s' "$_sout" | grep -q 'NOT a clean result' && ok || bad "state-out-of-scope-skip-not-silent"
+  grep -q 'SKIPPED' <<< "$_sout" && ok || bad "state-out-of-scope-skip-note"
+  grep -q 'NOT a clean result' <<< "$_sout" && ok || bad "state-out-of-scope-skip-not-silent"
   # (b) THE FINDING. Vacuous-guard first: the probe must be BOTH tracked AND
   #     dirty, or the assertion below would pass without the fix.
   mkdir -p "$T/state/archive-540probe"
@@ -2485,9 +2485,9 @@ ACKEOF
   [ "$(git -C "$T/state" status --porcelain -- archive-540probe/thing.txt)" != "" ] \
     && ok || bad "state-out-of-scope-probe-not-dirty"
   _sout="$(_scope "$T/state")"
-  printf '%s' "$_sout" | grep -q 'archive-540probe/thing.txt' \
+  grep -q 'archive-540probe/thing.txt' <<< "$_sout" \
     && ok || bad "state-out-of-scope-reports-dirty-out-of-scope"
-  printf '%s' "$_sout" | grep -q '^state-out-of-scope: WARN' \
+  grep -q '^state-out-of-scope: WARN' <<< "$_sout" \
     && ok || bad "state-out-of-scope-warns-on-dirty"
   # (c) AC3 — workers-ledger.json is staged by its OWN path and is deliberately
   #     absent from STATE_TRACKED_PATHS, so a list-only leg would falsely flag
@@ -2496,7 +2496,7 @@ ACKEOF
   [ "$(git -C "$T/state" status --porcelain -- workers-ledger.json)" != "" ] \
     && ok || bad "state-out-of-scope-ledger-probe-not-dirty"
   _sout="$(_scope "$T/state")"
-  printf '%s' "$_sout" | grep -q 'workers-ledger.json' \
+  grep -q 'workers-ledger.json' <<< "$_sout" \
     && bad "state-out-of-scope-false-positives-on-ledger" || ok
   git -C "$T/state" checkout -- workers-ledger.json
   # (d) the COUNT arm: an out-of-scope file that is TRACKED but NOT dirty is
@@ -2510,9 +2510,9 @@ ACKEOF
   git -C "$T/state" rm -q --cached archive-540probe/thing.txt 2>/dev/null
   git -C "$T/state" commit -q -m "probe: drop the dirty out-of-scope file (#540)"
   _sout="$(_scope "$T/state")"
-  printf '%s' "$_sout" | grep -q '^state-out-of-scope: WARN' \
+  grep -q '^state-out-of-scope: WARN' <<< "$_sout" \
     && bad "state-out-of-scope-warns-when-clean" || ok
-  printf '%s' "$_sout" | grep -q 'not a finding' \
+  grep -q 'not a finding' <<< "$_sout" \
     && ok || bad "state-out-of-scope-count-arm-labelled"
   # (e) the all-carried arm: no out-of-scope file at all -> the clean line, and
   #     it must still SAY what it checked rather than print nothing (a leg that
@@ -2521,7 +2521,7 @@ ACKEOF
   git -C "$T/state" rm -q --cached archive-540probe/keep.txt 2>/dev/null
   git -C "$T/state" commit -q -m "probe: drop the clean out-of-scope file (#540)"
   _sout="$(_scope "$T/state")"
-  printf '%s' "$_sout" | grep -q 'every one of' \
+  grep -q 'every one of' <<< "$_sout" \
     && ok || bad "state-out-of-scope-all-carried-arm"
   # 32c: mirror push (v0.4.50) — a configured origin receives branch + tags;
   # bare fixture remote stands in for GitHub (offline selftest rule)
@@ -2593,7 +2593,7 @@ ACKEOF
   for i in 1 2 3; do git -C "$T/state" commit -q --allow-empty -m "bl-$i"; done
   local _h0; _h0="$(mir_head)"
   local _o; _o="$(OC_LEDGER_PUSH_MIN=99 OC_LEDGER_PUSH_MAX_AGE=99999 bash "$ME" stamp note push-under 2>&1)"
-  chk "push-below-threshold-silent" "true" "$(printf '%s' "$_o" | grep -q 'mirror-due' && echo false || echo true)"
+  chk "push-below-threshold-silent" "true" "$(grep -q 'mirror-due' <<< "$_o" && echo false || echo true)"
   chk "push-below-threshold-mirror-unmoved" "$_h0" "$(mir_head)"
   chk "push-below-threshold-really-behind" "true" "$([ "$(mir_head)" != "$(loc_head)" ] && echo true || echo false)"
 
@@ -2601,7 +2601,7 @@ ACKEOF
   #     commit is exactly what crosses it.
   local _n; _n="$(git -C "$T/state" rev-list --count '@{u}..HEAD')"
   _o="$(OC_LEDGER_PUSH_MIN="$_n" OC_LEDGER_PUSH_MAX_AGE=99999 bash "$ME" stamp note push-threshold 2>&1)"
-  chk "push-commit-arm-announced" "true" "$(printf '%s' "$_o" | grep -q 'mirror-due: state backlog=' && echo true || echo false)"
+  chk "push-commit-arm-announced" "true" "$(grep -q 'mirror-due: state backlog=' <<< "$_o" && echo true || echo false)"
   chk "push-commit-arm-mirror-caught-up" "$(loc_head)" "$(mir_head)"
   # the push carries what THIS mutation wrote, not a stale tree
   chk "push-carries-this-mutation" "true" "$(git -C "$MIR2" show "refs/heads/$BR:workers-ledger.json" 2>/dev/null | grep -q 'push-threshold' && echo true || echo false)"
@@ -2610,7 +2610,7 @@ ACKEOF
   #     bound (MAX_AGE=0 makes any backlog qualify -- no sleep needed).
   git -C "$T/state" commit -q --allow-empty -m bl-age
   _o="$(OC_LEDGER_PUSH_MIN=99 OC_LEDGER_PUSH_MAX_AGE=0 bash "$ME" stamp note push-age 2>&1)"
-  chk "push-age-arm-announced" "true" "$(printf '%s' "$_o" | grep -q 'mirror-due: state backlog=.*newest .*s old' && echo true || echo false)"
+  chk "push-age-arm-announced" "true" "$(grep -q 'mirror-due: state backlog=.*newest .*s old' <<< "$_o" && echo true || echo false)"
   chk "push-age-arm-mirror-caught-up" "$(loc_head)" "$(mir_head)"
 
   # (d) NO origin -> silent no-op (never a line, never a failure)

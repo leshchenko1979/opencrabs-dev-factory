@@ -19,6 +19,24 @@ _oc_r="$(dirname "$0")"; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && ! { [ -f "
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 TOOLS_DIR="$OC_TOOLS_DIR"
+
+# ---- tree fingerprint: battery integrity (2026-09-27) ------------------------
+# The battery executes tools FROM THE WORKTREE, so a tool rewritten while the
+# run is in progress can be read MID-WRITE -- bash reads scripts incrementally,
+# and a tool with an embedded Python body then yields a MIXED generation whose
+# legs fail with jq type errors and count drifts. That is a red describing the
+# EDIT, not the tool. Measured 2026-09-27: two red receipts (16:22, 17:01) both
+# fell inside one lane's edit window, while two quiet runs read PASS (17:13,
+# 17:17). A concurrent writer cannot be prevented from here, so the receipt
+# STATES whether the tree moved under it instead of implying it did not.
+_battery_tree_fp() {
+  { find "$TOOLS_DIR" -maxdepth 2 -type f \
+      \( -name 'oc-*' -o -name '*.sh' -o -name '*.py' -o -name '*.mjs' \) \
+      -not -name '*.pre-*' -not -name '*.bak' -print0 2>/dev/null | sort -z | xargs -0 md5sum 2>/dev/null
+    md5sum "$0" 2>/dev/null
+  } | md5sum | awk '{print $1}'
+}
+BATTERY_FP_START="$(_battery_tree_fp)"
 PASS=0 FAIL=0
 # Battery stays silent in the unified tools log: every suite invocation is a
 # synthetic run, not fleet activity (KERNEL batch D0, 2026-08-28).
@@ -211,10 +229,13 @@ emit_summary() {
   local verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
   finalize_fail_log
   battery_capture_fail_rows
-  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s\n}\n' \
+  local _fpe _changed; _fpe="$(_battery_tree_fp)"
+  _changed=false; [ "$_fpe" = "$BATTERY_FP_START" ] || _changed=true
+  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s\n}\n' \
     "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" "$FAIL_LOG_FIELD" \
-    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" \
+    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" \
     > "$TOOLS_DIR/tests/battery-last.json"
+  [ "$_changed" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
   note ""
   note "=============================="
   note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE)"
@@ -800,10 +821,10 @@ Session-Id: 22222222-2222-2222-2222-222222222222"
     || bad "#407 RAW rows=$(printf '%s\n' "$RAW" | wc -l) want 3"
   [ "$(printf '%s\n' "$NOV" | wc -l)" -eq 1 ] && ok "#407 --novel keeps exactly the 1 novel commit" \
     || bad "#407 --novel rows=$(printf '%s\n' "$NOV" | wc -l) want 1 (raw=3)"
-  printf '%s\n' "$NOV" | grep -q "$S_NOVEL" && ok "#407 --novel keeps the novel commit" || bad "#407 --novel dropped the novel commit"
-  printf '%s\n' "$NOV" | grep -q "$S_REPLAY" && bad "#407 --novel KEPT the replayed twin (patch-id equivalence missed)" || ok "#407 --novel drops the replayed twin"
-  printf '%s\n' "$NOV" | grep -q "$S_EMPTY" && bad "#407 --novel KEPT the empty commit" || ok "#407 --novel drops the empty commit"
-  printf '%s\n' "$RAW" | grep -q "$S_REPLAY" && ok "#407 RAW still shows the replayed twin (filter is opt-in)" || bad "#407 RAW lost the replayed twin"
+  grep -q "$S_NOVEL" <<< "$NOV" && ok "#407 --novel keeps the novel commit" || bad "#407 --novel dropped the novel commit"
+  grep -q "$S_REPLAY" <<< "$NOV" && bad "#407 --novel KEPT the replayed twin (patch-id equivalence missed)" || ok "#407 --novel drops the replayed twin"
+  grep -q "$S_EMPTY" <<< "$NOV" && bad "#407 --novel KEPT the empty commit" || ok "#407 --novel drops the empty commit"
+  grep -q "$S_REPLAY" <<< "$RAW" && ok "#407 RAW still shows the replayed twin (filter is opt-in)" || bad "#407 RAW lost the replayed twin"
   grep -q "3 raw, 1 replayed, 1 empty, 1 contributing" "$d/nov.err" && ok "#407 stderr accounting names raw/replayed/empty/contributing" \
     || bad "#407 stderr accounting missing: $(cat "$d/nov.err" 2>/dev/null)"
   NN="$("$TOOLS_DIR/state/oc-attrib" --repo "$d" --range "$BASE..tip" --no-novel 2>/dev/null)"
@@ -1328,22 +1349,22 @@ NFSELF="$(bash "$TOOLS_DIR/state/oc-ledger" roster --live --role toolsmith 2>/de
 NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
   --title "t-battery" --text "dangling {{NOSUCH}} token" --dry-run 2>&1)" \
   && bad "fanout placeholder-guard: rc=0 on token leak" \
-  || { printf '%s' "$NFOUT" | grep -q "placeholder-token-survived" \
+  || { grep -q "placeholder-token-survived" <<< "$NFOUT" \
        && ok "fanout placeholder-guard: dangling token -> send ABORTed (law1)" \
        || bad "fanout placeholder-guard: aborted but no law1 receipt"; }
 # 61b. substitution: valid tokens -> DRY briefs, no ABORT, dead uuids skipped
 NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
   --title "t-battery" --text "v{{VERSION}} u{{UUID}}" --dry-run 2>&1)"
-printf '%s' "$NFOUT" | grep -q "placeholder-token-survived" \
+grep -q "placeholder-token-survived" <<< "$NFOUT" \
   && bad "fanout substitution: valid tokens ABORTed (substitution broken)" \
   || ok "fanout substitution: {{UUID}}/{{VERSION}} resolved, 0 ABORTs"
-printf '%s' "$NFOUT" | grep -qE "sent=[0-9]+ skipped=[0-9]+ failed=0" \
+grep -qE "sent=[0-9]+ skipped=[0-9]+ failed=0" <<< "$NFOUT" \
   && ok "fanout dry-run summary clean (dead targets skipped, none failed)" \
   || bad "fanout dry-run summary has failures"
 # 61c. roles filter: --roles toolsmith (self-excluded) -> sent=0
 NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
   --title "t" --text "x" --dry-run --roles toolsmith 2>&1)"
-printf '%s' "$NFOUT" | grep -q "sent=0" \
+grep -q "sent=0" <<< "$NFOUT" \
   && ok "fanout --roles filter respected" \
   || bad "fanout --roles filter leaked sends"
 # 61d. oc-notify-fanout internal selftest suite
@@ -2041,10 +2062,16 @@ fi
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
 battery_capture_fail_rows
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s\n}\n' \
+_tch=false
+_tch=false
+_tch=false
+_fp_tail="$(_battery_tree_fp)"
+[ "$_fp_tail" = "$BATTERY_FP_START" ] || _tch=true
+printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s\n}\n' \
   "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$FAIL_LOG_FIELD" \
-  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" \
+  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" \
   > "$TOOLS_DIR/tests/battery-last.json"
+[ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
 
 # ---- summary ----------------------------------------------------------------
 note ""

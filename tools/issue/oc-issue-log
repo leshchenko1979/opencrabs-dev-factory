@@ -208,7 +208,7 @@ else
     fi
   done
   if [ "$_read_ok" = "1" ]; then
-    if printf '%s\n' "$EXISTING" | grep -qF "$MARKER"; then
+    if grep -qF "$MARKER" <<< "$EXISTING" ; then
       rm -f "$BODY"
       echo "already posted: $FORK#$ISSUE carries an implementation comment for $FULL_SHA — nothing to do (idempotent; use --force to re-post)"
       _idem_emit skip

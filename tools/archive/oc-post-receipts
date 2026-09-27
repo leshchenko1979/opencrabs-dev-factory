@@ -83,7 +83,7 @@ send() {
   resolve_token || return 1
   resp="$(curl -s -X POST "$API/bot$TOKEN/sendMessage" \
     -d chat_id="$forum_chat" -d message_thread_id="$topic" --data-urlencode "text=$body")"
-  if ! printf '%s' "$resp" | grep -q '"ok":true'; then
+  if ! grep -q '"ok":true' <<< "$resp" ; then
     echo "oc-post-receipts: send to $topic failed: $(printf '%s' "$resp" | head -c 200)" >&2
     return 2
   fi

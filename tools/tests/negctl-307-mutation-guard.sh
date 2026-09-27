@@ -270,7 +270,7 @@ PYEOF
   first_bad="$(grep -m1 '^  bad  - ' "$outf" | sed 's/^  bad  - //')"
   if [ -z "$first_bad" ]; then
     bad "[$label] mutant rc=$rc_m but emitted no 'bad' leg — failure is not a leg"
-  elif printf '%s' "$first_bad" | grep -qF -- "$want_bad"; then
+  elif grep -qF -- "$want_bad" <<< "$first_bad" ; then
     ok "[$label] CAUGHT — first failure is the $want_ok leg"
     printf '%s\n' "         $first_bad" | cut -c1-150
   else

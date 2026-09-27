@@ -115,7 +115,7 @@ add_cit() { # $1=file $2=line $3=tool $4=flag
 citation_line() { # $1=file $2=line [$3=cited token]
   _cl="$(sed -n "$2p" "$1" 2>/dev/null)"
   # Word-level markers: a line that says a flag "does not exist" is citing it.
-  printf '%s' "$_cl" | grep -qE 'never existed|does not exist|no such|0 occurrences|zero occurrences|unavailable|is rejected|rejected with rc|silently ignored' && return 0
+  grep -qE 'never existed|does not exist|no such|0 occurrences|zero occurrences|unavailable|is rejected|rejected with rc|silently ignored' <<< "$_cl" && return 0
   # `phantom` is PROXIMITY-SCOPED (c24 J-1). Line-level matching let ANY line
   # containing the word suppress its own findings, and the live corpus carries
   # lines that discuss phantom CLAIMS, or the lint's own phantom-flag verdicts,
@@ -241,7 +241,7 @@ EOT
 
   # citations are counted and printable, just not failing
   run "$T/citation.md" --show-citations
-  if printf '%s' "$OUTP" | grep -qF "CITATION oc-good --resume"; then ok "citation is reported with --show-citations"; else bad "citation not reported with --show-citations"; fi
+  if grep -qF "CITATION oc-good --resume" <<< "$OUTP" ; then ok "citation is reported with --show-citations"; else bad "citation not reported with --show-citations"; fi
   run "$T/clean.md" --json
   if [ "$RC" = 0 ] && [ -z "$OUTP" ]; then ok "--json on a clean corpus is empty, rc 0"; else bad "--json clean (rc=$RC stdout=$OUTP)"; fi
 

@@ -90,10 +90,10 @@ EOF
   printf '{"ts":"%s","seq":1,"step":"auto-swap","exit":0,"sha":"aaaaaaa111111111111111111111111111111111","run_id":"123"}\n' "$OLD" > "$d/journal/swap-aaaaaaa-1788000000.jsonl"
   OUT="$("$SELF" --log "$d/tools.log" --journal-dir "$d/journal")"; RC=$?
   [ $RC -eq 1 ] || { echo "selftest: orphan present but rc=$RC" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q $'^ORPHANED\tccccccc' || { echo "selftest: ccccccc not ORPHANED" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q $'^SWAPPED\taaaaaaa' || { echo "selftest: aaaaaaa not SWAPPED" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q $'^IN-FLIGHT\tddddddd' || { echo "selftest: ddddddd not IN-FLIGHT" >&2; exit 1; }
-  printf '%s\n' "$OUT" | grep -q 'bbbbbbb' && { echo "selftest: failed dispatch bbbbbbb must be skipped" >&2; exit 1; }
+  grep -q $'^ORPHANED\tccccccc' <<< "$OUT" || { echo "selftest: ccccccc not ORPHANED" >&2; exit 1; }
+  grep -q $'^SWAPPED\taaaaaaa' <<< "$OUT" || { echo "selftest: aaaaaaa not SWAPPED" >&2; exit 1; }
+  grep -q $'^IN-FLIGHT\tddddddd' <<< "$OUT" || { echo "selftest: ddddddd not IN-FLIGHT" >&2; exit 1; }
+  grep -q 'bbbbbbb' <<< "$OUT" && { echo "selftest: failed dispatch bbbbbbb must be skipped" >&2; exit 1; }
   # all swapped -> 0
   printf '{"ts":"%s","seq":1,"step":"auto-swap","exit":0,"sha":"ccccccc333333333333333333333333333333333"}\n' "$OLD" > "$d/journal/swap-ccccccc-1788000100.jsonl"
   "$SELF" --log "$d/tools.log" --journal-dir "$d/journal" >/dev/null 2>&1
@@ -122,7 +122,7 @@ EOF
   export FAKE_GH_SHA FAKE_GH_TS
   # (a) RED build -> SUPERSEDED-BUILD-FAILED, rc 0 (discharged, no alarm)
   OUT3="$(FAKE_GH_MODE=red "$SELF" --log "$d/tools3.log" --journal-dir "$d/journal" 2>/dev/null)"; RC3=$?
-  printf '%s\n' "$OUT3" | grep -q $'^SUPERSEDED-BUILD-FAILED\tfffffff' \
+  grep -q $'^SUPERSEDED-BUILD-FAILED\tfffffff' <<< "$OUT3" \
     || { echo "selftest: RED carrier build not classified SUPERSEDED-BUILD-FAILED (got: $OUT3)" >&2; exit 1; }
   [ "$RC3" -eq 0 ] || { echo "selftest: RED carrier build raised the orphan alarm (rc=$RC3)" >&2; exit 1; }
   # (b) GREEN build, never swapped -> STILL ORPHANED rc 1

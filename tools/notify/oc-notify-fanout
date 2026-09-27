@@ -394,13 +394,13 @@ JSON
       bash "$0" --title T --text "brief {{UUID}}" --no-stamp --dry-run "$@" 2>&1
   }
   out="$(selfrun "$T/run-self-actor" "$L1")"
-  printf '%s' "$out" | grep -q "$L1" && chk 1 self-default-from-actor || chk 0 self-default-from-actor
-  printf '%s' "$out" | grep -q "SKIP $L3 .*SCOPE" && chk 0 self-others-still-processed || chk 1 self-others-still-processed
+  grep -q "$L1" <<< "$out" && chk 1 self-default-from-actor || chk 0 self-default-from-actor
+  grep -q "SKIP $L3 .*SCOPE" <<< "$out" && chk 0 self-others-still-processed || chk 1 self-others-still-processed
   out="$(selfrun "$T/run-self-incl" "$L1" --include-self)"
-  printf '%s' "$out" | grep -q "DRY $L1" && chk 0 self-include-self-flag || chk 1 self-include-self-flag
+  grep -q "DRY $L1" <<< "$out" && chk 0 self-include-self-flag || chk 1 self-include-self-flag
   out="$(selfrun "$T/run-self-flag" "$L2" --self "$L1")"
-  printf '%s' "$out" | grep -q "$L1" && chk 1 self-flag-overrides-actor || chk 0 self-flag-overrides-actor
-  printf '%s' "$out" | grep -q "SKIP $L2 .*SCOPE" && chk 0 self-flag-actor-not-self || chk 1 self-flag-actor-not-self
+  grep -q "$L1" <<< "$out" && chk 1 self-flag-overrides-actor || chk 0 self-flag-overrides-actor
+  grep -q "SKIP $L2 .*SCOPE" <<< "$out" && chk 0 self-flag-actor-not-self || chk 1 self-flag-actor-not-self
   rc="$(env -u OC_ACTOR -u OPENCRABS_SESSION_ID -u OC_FANOUT_SELF OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
     OC_FANOUT_LEDGER="$LEDG" OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_RUN_DIR="$T/run-self-none" \
     bash "$0" --title T --text "brief {{UUID}}" --no-stamp --dry-run >"$T/self-none.out" 2>&1; echo $?)"
@@ -412,7 +412,7 @@ JSON
     OC_NOTIFY_BIN="$T/fake-notify" OC_FANOUT_LEDGER="$LEDG" OC_FANOUT_FORUM_CHAT="$FORUM" \
     OC_FANOUT_SEND_TIMEOUT=5 OC_FANOUT_RUN_DIR="$T/run-self-sessid" FAKE_NOTIFY_LOG="$T/fake-notify-log" \
     bash "$0" --title T --text "brief {{UUID}}" --no-stamp --dry-run 2>&1)"
-  printf '%s' "$out" | grep -q "$L1" && chk 1 self-default-from-session-id || chk 0 self-default-from-session-id
+  grep -q "$L1" <<< "$out" && chk 1 self-default-from-session-id || chk 0 self-default-from-session-id
 
   # 3. Dry-run behaves identically for scope (no send attempted).
   rm -f "$T/fake-notify-log"; touch "$T/fake-notify-log"

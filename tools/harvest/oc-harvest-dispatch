@@ -2266,19 +2266,19 @@ EOF
     echo "  bad 11 - #305 expected exactly 1 active claim, got '$clos_n' ($clos_out)"
     return 1
   fi
-  if printf '%s' "$clos_out" | grep -q '"issue": 264'; then
+  if grep -q '"issue": 264' <<< "$clos_out" ; then
     echo "  ok 11b - #305: the surviving active claim is the foreign-mentioned #264"
   else
     echo "  bad 11b - #305 expected #264 to survive as active, got ($clos_out)"
     return 1
   fi
-  if ! printf '%s' "$clos_out" | grep -qE '"issue": (301|305|306)'; then
+  if ! grep -qE '"issue": (301|305|306)' <<< "$clos_out" ; then
     echo "  ok 11c - #305: own-completion, admin-sweep and short-form self-close all still close"
   else
     echo "  bad 11c - #305 expected #301/#305/#306 all closed, got ($clos_out)"
     return 1
   fi
-  if printf '%s' "$clos_out" | grep -q '"uuid": ""'; then
+  if grep -q '"uuid": ""' <<< "$clos_out" ; then
     echo "  bad 11d - #305 an author-less claim row surfaced as an active claim owned by the empty uuid"
     return 1
   else
@@ -2385,13 +2385,13 @@ print("NO_CLAIM")
 EOF
   local diff_out=""
   diff_out="$(run_engine "test-active-claims" "$diff_ledger" "none" 2>&1)"
-  if printf '%s' "$diff_out" | grep -q '"issue": 510'; then
+  if grep -q '"issue": 510' <<< "$diff_out" ; then
     echo "  ok 11g - #425: a same-lane close of a DIFFERENT issue leaves this claim OPEN"
   else
     echo "  bad 11g - #425 expected #510 to stay ACTIVE (the same lane closed a different issue), got ($diff_out)"
     return 1
   fi
-  if printf '%s' "$diff_out" | grep -q '"issue": 511'; then
+  if grep -q '"issue": 511' <<< "$diff_out" ; then
     echo "  bad 11h - #425 same-issue self-close control: #511 must be CLOSED, got ($diff_out)"
     return 1
   else

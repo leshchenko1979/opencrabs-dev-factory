@@ -322,19 +322,19 @@ while [ $# -gt 0 ]; do
       # writer to the row shape the fleet already writes by hand.
       LATE_SHA="x"; LATE_RUN=""; LATE_ACTOR=""; LATE_ISSUE=""; LATE_TARGET=""; LATE_EVIDENCE=""
       lb="$(build_late_block 2>/dev/null)"
-      printf '%s' "$lb" | grep -qF 'PASS-LATE-ENTRY' || { echo "selftest: late-entry verdict token wrong" >&2; exit 1; }
-      printf '%s' "$lb" | grep -qF "$(printf '\t')" || { echo "selftest: late-entry row is not tab-separated" >&2; exit 1; }
+      grep -qF 'PASS-LATE-ENTRY' <<< "$lb" || { echo "selftest: late-entry verdict token wrong" >&2; exit 1; }
+      grep -qF "$(printf '\t')" <<< "$lb" || { echo "selftest: late-entry row is not tab-separated" >&2; exit 1; }
       [ "$(printf '%s' "$lb" | wc -l)" = 0 ] || { echo "selftest: late-entry block is not a single line" >&2; exit 1; }
       LATE_SHA=abc; LATE_RUN=1; LATE_ACTOR=u; LATE_ISSUE='#1'; LATE_TARGET=t; LATE_EVIDENCE=e
       lb2="$(build_late_block 2>/dev/null)"
-      printf '%s' "$lb2" | grep -qF 'sha=abc' || { echo "selftest: late-entry sha not carried" >&2; exit 1; }
-      printf '%s' "$lb2" | grep -qF 'run=1' || { echo "selftest: late-entry run not carried" >&2; exit 1; }
-      printf '%s' "$lb2" | grep -qF 'issue=#1' || { echo "selftest: late-entry issue not carried" >&2; exit 1; }
-      printf '%s' "$lb2" | grep -qF 'evidence="e"' || { echo "selftest: late-entry evidence not quoted" >&2; exit 1; }
+      grep -qF 'sha=abc' <<< "$lb2" || { echo "selftest: late-entry sha not carried" >&2; exit 1; }
+      grep -qF 'run=1' <<< "$lb2" || { echo "selftest: late-entry run not carried" >&2; exit 1; }
+      grep -qF 'issue=#1' <<< "$lb2" || { echo "selftest: late-entry issue not carried" >&2; exit 1; }
+      grep -qF 'evidence="e"' <<< "$lb2" || { echo "selftest: late-entry evidence not quoted" >&2; exit 1; }
       LATE_RUN=""; LATE_ACTOR=""
       lb3="$(build_late_block 2>/dev/null)"
-      printf '%s' "$lb3" | grep -qF 'run=' && { echo "selftest: empty --run emitted as a value" >&2; exit 1; }
-      printf '%s' "$lb3" | grep -qF 'actor=' && { echo "selftest: empty --actor emitted as a value" >&2; exit 1; }
+      grep -qF 'run=' <<< "$lb3" && { echo "selftest: empty --run emitted as a value" >&2; exit 1; }
+      grep -qF 'actor=' <<< "$lb3" && { echo "selftest: empty --actor emitted as a value" >&2; exit 1; }
       LATE_SHA=""
       ( build_late_block >/dev/null 2>&1 ); [ $? -eq 2 ] || { echo "selftest: late-entry without --sha did not die 2" >&2; exit 1; }
       # misuse legs end-to-end: a rejected invocation exits 2 and writes NOTHING.
@@ -355,10 +355,10 @@ while [ $# -gt 0 ]; do
       PARK_DESC=""; ( build_park_block >/dev/null 2>&1 ); [ $? -eq 2 ] || { echo "selftest: park-owner-eye without desc did not die 2" >&2; exit 1; }
       PARK_DESC="check visual layout"; LATE_SHA="cafe1234"; PARK_ISSUE="#42"
       pb="$(build_park_block 2>/dev/null)"
-      printf '%s' "$pb" | grep -qF "PARKED-OWNER-EYE" || { echo "selftest: park row lacks verdict token" >&2; exit 1; }
-      printf '%s' "$pb" | grep -qF "sha=cafe1234" || { echo "selftest: park row lacks sha" >&2; exit 1; }
-      printf '%s' "$pb" | grep -qF "issue=#42" || { echo "selftest: park row lacks issue" >&2; exit 1; }
-      printf '%s' "$pb" | grep -qF 'evidence="check visual layout"' || { echo "selftest: park row lacks quoted evidence" >&2; exit 1; }
+      grep -qF "PARKED-OWNER-EYE" <<< "$pb" || { echo "selftest: park row lacks verdict token" >&2; exit 1; }
+      grep -qF "sha=cafe1234" <<< "$pb" || { echo "selftest: park row lacks sha" >&2; exit 1; }
+      grep -qF "issue=#42" <<< "$pb" || { echo "selftest: park row lacks issue" >&2; exit 1; }
+      grep -qF 'evidence="check visual layout"' <<< "$pb" || { echo "selftest: park row lacks quoted evidence" >&2; exit 1; }
       OC_DEPLOY_STATE_DIR="$d" "$0" --park-owner-eye "e2e visual" --sha bbeef --issue 10 --append-log "$d/park-ok.log" >/dev/null 2>&1 || { echo "selftest: park-owner-eye e2e failed" >&2; exit 1; }
       [ "$(wc -l < "$d/park-ok.log")" = 1 ] || { echo "selftest: park-owner-eye wrote != 1 line" >&2; exit 1; }
       grep -qF "PARKED-OWNER-EYE" "$d/park-ok.log" || { echo "selftest: park file lacks verdict token" >&2; exit 1; }
