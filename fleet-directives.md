@@ -456,6 +456,12 @@ When a topic binding is re-keyed mid-life — which happens on daemon restarts, 
 | an **existing** row naming a dead id | corrected by a later row under the ambient id — the ledger is append-only, so the stale row stays as the record and the correction travels beside it |
 | a continuation doc naming a session id | a **claim about the past**, never a source for a present-tense identity argument |
 
+**The re-key also orphans the ROSTER ENROLLMENT, and that half is NOT paid by the trailer (measured 2026-09-27).** `b53581f4` was enrolled (`n=1501 roster-enroll`), and the roster-hygiene sweep then **pruned it for being absent from the session DB** (`n=5146`: *"Pruned 11 phantom worker enrollments absent from session DB"*). So the re-keyed lane ends up absent from `workers[]` **entirely** and does not appear in `oc-ledger roster --live` — measured: 34 workers, **neither** the dead id nor the ambient id present. Two silent consequences: `oc-roster:258` marks a claim whose author is absent from the session DB as **PHANTOM** and excludes it from the live roster, and a dispatcher resolving a lane **by role cannot find it at all**.
+
+**So a re-key owes a SECOND amendment in the same turn as the trailer: re-enroll the ambient id** — `oc-ledger enroll <ambient-uuid> <role> [--topic N] [--feature X]`. The trailer amendment restores the lane's *return address*; the re-enrollment restores its *resolvability*. One without the other leaves the lane either unreachable or unfindable.
+
+**Correction to the premise that raised this** (lane 42a44908 asked whether claim attribution keys on roster): it does **not**. `oc_claims.py:355` matches the actor by prefix-stripped **string**, "so no roster lookup is needed here". The damage from a re-key is not to attribution — it is to **resolution**. A lane can hold perfectly-attributed claims and still be invisible to every role-based lookup.
+
 This is A1b's rule seen from the other side: A1b says a SELF uuid comes from the environment; A1c says what happens when the environment *moves*. The failure mode is identical — a remembered id beating the live one — and it is the reason a cold lane must re-read rather than re-use.
 ### A2 — A shift-length goal must fit its turn budget, and its death must notify
 
