@@ -25,6 +25,25 @@ this PR is the ONE sanctioned exception (completed features only).
 #                     (reply or a positive reaction = approval; silence is NOT consent).
 #                     File only on that approval.
 #       HIGH-TRUST -> proceed to step 0b; the 4-leg smoke PASS is the gate.
+#
+#     AN APPROVAL IS STAMPED, THEN READ — it does not live in the chat scroll
+#     (owner order 2026-09-26T23:50:45Z, landed 2026-09-27). A Telegram reply or
+#     reaction is the approval FORM; a ledger row is its DURABLE RECORD, and only
+#     the row is what another lane can find. Before filing under DEGRADED:
+#       READ FIRST (note the --n, see below):
+#         tools/state/oc-ledger events --n 3000 --kind note | grep -o 'FILING APPROVED: group [^—]*'
+#       An approval covering YOUR group => file, do NOT re-ask.
+#       None => request it in your topic, and THE MOMENT IT IS GIVEN, stamp it:
+#         tools/state/oc-ledger stamp note "FILING APPROVED: group #N + #M — owner <ts> (\"verbatim\")"
+#     The unit is the PR GROUP, not the issue — one approval covers every member and
+#     a member never needs its own tap. Prefix is canonical: `FILING APPROVED: group `.
+#
+#     WHY --n IS LOAD-BEARING ON THIS READ AND NOT COSMETICS: `events` is a TAIL with a
+#     ~20-row default window, so a bare `events --kind note` returns ZERO FILING APPROVED
+#     and ZERO MODE rows even when both exist (measured 2026-09-27: 1 MODE row on disk,
+#     0 hits on the bare read). An empty read is INDISTINGUISHABLE from "no approval
+#     exists", and a lane that draws that conclusion re-asks the owner — which is the
+#     defect this clause exists to remove. Same trap, same fix as the MODE read at v0.4.244.
 # 0b. FILING NOTICE: post the smoke-test EVIDENCE + the filing report in
 #    YOUR forum topic (what you drove, what you saw, run id + built sha + PR URL).
 
