@@ -2,6 +2,16 @@
 # =============================================================================
 # oc-questions — the Open Questions register (#547)
 #
+# DEPLOYMENT COPY. The instrument's SOURCE OF TRUTH is the meta-factory
+# template (agent-factories TEMPLATE/tools/questions, issue #165), which was
+# adopted out of THIS repo and then advanced there (#182 item 1, #183). This
+# file is the copy RUNNING IN PRODUCTION: the vpn answer backend resolves it
+# by name (backend.py enumerates the skill tools tree and takes the
+# exactly-one match), so its parameter layer -- PROG, RENDER_SRC, USAGE, the
+# tracker default and this header -- names OUR deployment. Everything else is
+# ported from the template; #632's per-question session filter survives here
+# and is the one behaviour this copy carries that the template does not.
+#
 # The sanctioned "blocked on you" channel (fleet-directives.md §Open Questions
 # register). A lane that needs an owner decision registers an ORDERED set of
 # questions in the same turn it parks; a renderer emits a card in the CALLING
@@ -41,9 +51,13 @@ _VERBS = ("ask", "answer", "amend", "withdraw", "list", "publish", "lint",
 
 DEFAULT_TTL_DAYS = 7
 
-# The fork issue tracker. Mechanical closure (C6) asks IT whether the thing a
-# question was about has moved; the answer is never inferred from prose.
-FORK_REPO = "leshchenko1979/opencrabs"
+# The issue tracker the mechanical-closure check (C6) asks whether the thing a
+# question was about has moved. The answer is never inferred from prose, so the
+# tracker has to be NAMED -- and which tracker is a FACTORY PARAMETER, not a law:
+# a factory that files its work units elsewhere gets no answer from this repo's
+# fork. Overridable per factory; the default is the tracker this instrument was
+# derived against, kept so a factory that shares it needs no configuration.
+FORK_REPO = os.environ.get("OC_QUESTIONS_TRACKER") or "leshchenko1979/opencrabs"
 ISSUE_RE = re.compile(r"#(\d{1,6})\b")
 # Every network or shell predicate is bounded. An unbounded probe inside a
 # register mutation would stall the caller's turn, which is the failure the
@@ -101,10 +115,50 @@ def page_slug(factory):
     One home: every caller derives the path from here."""
     return slugify(factory)
 
-# The slug used when the register holds no set to derive one from -- i.e. the
-# very first publish. A factory set is never auto-archived, so once one exists
-# the slug always comes from the register.
-DEFAULT_FACTORY = "opencrabs-dev"
+def _declared_slug():
+    """This factory's OWN slug, read from its `registry/fleet.json`.
+
+    The first publish has no set to derive a slug from, and the instrument used to
+    fall back to the slug of the factory it was WRITTEN for -- so a new factory's
+    very first page was published under another factory's name. A factory's slug is
+    already declared in `registry/fleet.json` (the file the lane resolver reads), so
+    it is read here rather than restated. Returns "" when the tree carries no
+    manifest, and the caller then requires `--factory` explicitly rather than
+    guessing.
+    """
+    try:
+        manifest = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "registry", "fleet.json")
+        with open(manifest, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    for record in data.get("factories") or []:
+        # A factory's own manifest declares ITS record; when a manifest carries
+        # several (this repo is one of the factories it names), the record whose
+        # `repo` is this tree is the one that describes us.
+        if record.get("repo") and os.path.realpath(record["repo"]) == os.path.realpath(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+            return str(record.get("slug") or "")
+    records = data.get("factories") or []
+    return str(records[0].get("slug") or "") if len(records) == 1 else ""
+
+
+# The slug used when the register holds no set to derive one from -- i.e. the very
+# first publish. A factory set is never auto-archived, so once one exists the slug
+# always comes from the register. Env override wins, then this factory's own declared
+# slug, then EMPTY -- and an empty value makes `ask` require `--factory` rather than
+# silently publishing under a name that is not the caller's.
+# ... THIS DEPLOYMENT's last resort. Our tree carries no `registry/fleet.json`,
+# so _declared_slug() returns "" here; the literal below names the factory that
+# OWNS this instrument, which is the same repo this deployment runs in -- so it
+# is a declared parameter, not the old blind fallback (that one applied before
+# the manifest was consulted, which is how a new factory's first page published
+# under another factory's name). The env var still wins, and a factory that
+# ships a manifest never reaches this link.
+DEFAULT_FACTORY = (os.environ.get("OC_QUESTIONS_FACTORY") or _declared_slug()
+                   or "opencrabs-dev")
 
 # The retired rotating-token shape (secrets.token_urlsafe(24) -> 32 chars).
 # Pruning keys on the SHAPE, not on "anything that is not the current slug", so
@@ -359,7 +413,14 @@ def question_return_address(entry, qid):
     return ((entry.get("session") or "").strip(),
             entry.get("lane") or "", None)
 
-
+# PORTED FROM THE INSTRUMENT'S HOME (#182 item 1). This function exists in
+# `oc-questions` -- the tool's home in the opencrabs-dev skill repo, where fork
+# #612 was fixed -- and was ABSENT from this copy, so the template shipped
+# without the fix: a `notify` with no `--qid` addressed the SET's session while
+# the body named the ASKING lane, so an answer could reach a lane that never
+# asked it. Direction: source -> template. The two copies differ in their own
+# names by design (PROG, RENDER_SRC, USAGE), so what converges is the union of
+# FUNCTIONS and BEHAVIOUR, never a byte-identical copy.
 def batch_return_address(entry):
     """(session, reason) for a notify that names NO --qid.
 
@@ -400,6 +461,21 @@ def batch_return_address(entry):
 # silently removed it from the live register — the opposite of the contract
 # ("a Clarify request ... never silently closes the question").
 CLOSED_STATUSES = ("answered", "withdrawn", "expired")
+
+# What an empty Clarify tap MEANS (#183, 2026-09-26). The owner's click is the
+# whole request — no payload is owed — but the transition must still carry
+# content the asking lane can act on (the 2026-09-25 defect was answer=None
+# behind "CLARIFY REQUESTED"). So the tool authors the click's meaning: a
+# statement of what the lane must do. It is TOOL-AUTHORED text, deliberately
+# not starting with "clarification requested" — the page's clarifyband and the
+# notify body both prepend that phrase themselves, and a duplicated lead would
+# render twice. Wording deliberately names the ACTION owed (restate, widen,
+# re-ask) so the receiving lane can act without guessing.
+CLARIFY_EMPTY_TEXT = (
+    "this question is unclear as written — restate it with wider context "
+    "and plainer language, then re-ask (owner's Clarify tap, no text "
+    "supplied)"
+)
 
 def question_is_closed(question):
     return question.get("status") in CLOSED_STATUSES
@@ -934,17 +1010,20 @@ def cmd_answer(argv):
         is_clarify = (str(choice).lower() == "clarify")
         text = (flags.get("--text") or "").strip()
         if is_clarify:
-            # AN EMPTY CLARIFY IS NOT A REQUEST (owner report 2026-09-25).
-            # Tapping Clarify with an empty box flipped status to "clarifying"
-            # and stored answer=None: a state change carrying no content, so the
-            # asking lane received "CLARIFY REQUESTED" with nothing to act on and
-            # the owner's real intent was lost. A clarify exists to ask a
-            # question; refuse one that asks nothing.
-            if not text:
-                die(2, "clarify requires --text: say what you want clarified "
-                       "(an empty Clarify tap records nothing)")
+            # AN EMPTY CLARIFY IS A COMPLETE REQUEST (#183, 2026-09-26,
+            # superseding the same-date refusal this block carried). Clarify
+            # means the ASKING LANE widens its own question and re-asks in
+            # clearer language; the owner's click says exactly that and owes
+            # no payload — demanding --text demanded specification from the
+            # wrong party. But the 2026-09-25 lesson underneath the old
+            # refusal still binds (process law, shape (a): a state transition
+            # must carry the content that justifies it): answer=None left the
+            # asking lane holding "CLARIFY REQUESTED" with nothing to act on.
+            # So when the owner supplies no text, the TOOL supplies the
+            # click's meaning; owner text, when present, is the request
+            # verbatim and wins.
             question["status"] = "clarifying"
-            question["answer"] = text
+            question["answer"] = text or CLARIFY_EMPTY_TEXT
             question["answer_kind"] = "clarify"
         else:
             options = question.get("options") or []
@@ -1877,10 +1956,15 @@ button{width:100%;margin:.35rem 0}
 }
 """
 
-def page_wrapper(body, expires_at):
+def page_wrapper(body, expires_at, title):
     """The page shell. Stays in Python deliberately: the noindex directive, the
     charset, the inline CSS and the TTL line are tested here and must not change
     just because the BODY is now rendered from a spec.
+
+    `title` is the BROWSER TAB's title, and the shell is its ONE home. The
+    spec's Page.title is a DIFFERENT surface -- the renderer emits it as the
+    <h1> inside the body -- so the two are not two homes for one fact: the tab
+    names the page and its open count, the heading names the page.
 
     The page is PERMANENT (owner order 2026-09-25), so the line says so rather
     than printing an expiry that no longer exists."""
@@ -1888,7 +1972,7 @@ def page_wrapper(body, expires_at):
     return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
             "<meta name=\"robots\" content=\"noindex, nofollow\">\n"
-            "<title>Open questions</title>\n"
+            f"<title>{html.escape(title)}</title>\n"
             # defer: the page is readable and submittable before htmx arrives,
             # and the attributes are inert if the file never loads.
             f'<script src="{HTMX_FILE}" defer></script>\n'
@@ -1914,7 +1998,12 @@ def build_page(entries, slug, expires_at, action):
         oc_log_extra("publish_failed", why)
         die(4, "renderer fault: %s" % why)
     oc_log_extra("renderer", "json-render")
-    return page_wrapper(html_body, expires_at)
+    # The tab title names the page AND how much is waiting on it, so a browser
+    # with several factory pages open says which one has questions (owner order
+    # 2026-09-26). The count is the OPEN QUESTIONS count, the same predicate the
+    # pointer publishes -- never len(entries), which counts sets.
+    title = "%s (%d) - Factory Open Questions" % (slug, open_question_count(entries))
+    return page_wrapper(html_body, expires_at, title)
 
 
 # Why the last vendoring attempt ended as it did. Recorded so the selftest can
@@ -2035,15 +2124,24 @@ def latest_page():
     return page_url(token), None
 
 
+def open_question_count(sets):
+    """Open QUESTIONS across `sets` — the ONE predicate the page title, the
+    pointer's `questions` field and `open_totals` all read.
+
+    NOT len(sets): that counts question SETS and is a different number. The live
+    register holds 3 open sets carrying 5 open questions, so a title built from
+    the set count would read (3) while the page renders 5."""
+    return sum(1 for s in sets for q in s.get("questions", [])
+               if not question_is_closed(q))
+
+
 def open_totals():
     """(open questions, open sets) across the WHOLE register — the number the
     owner asked ask to return."""
     with RegisterLock():
         data = read_register()
     sets = [s for s in data["sets"] if s.get("status") == "open"]
-    total = sum(1 for s in sets for q in s.get("questions", [])
-                if not question_is_closed(q))
-    return total, len(sets)
+    return open_question_count(sets), len(sets)
 
 
 def read_pointer():
@@ -2133,8 +2231,7 @@ def publish_page(set_id=None, action=None, prune=False, rotate=False, quiet=Fals
             "url": page_url(slug),
             "rotated_at": (created.replace(microsecond=0).isoformat()
                            if rotate else None),
-            "questions": sum(1 for e in entries for q in e.get("questions", [])
-                             if not question_is_closed(q))}
+            "questions": open_question_count(entries)}
     with open(os.path.join(directory, "meta.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=2)
 
@@ -2439,26 +2536,43 @@ def selftest():
            "an index with NO text still records the OPTION (%r/%r)"
            % (q4.get("answer"), q4.get("answer_kind")))
 
-        # -- 5b-2. an EMPTY clarify is refused, and the clarify STATE is visible
-        # (owner report 2026-09-25). Two halves of ONE report:
-        #   (i) tapping Clarify with an empty box recorded status=clarifying
-        #       with answer=None -- a state change carrying no content, so the
-        #       asking lane received "CLARIFY REQUESTED" with nothing to act on;
-        #   (ii) a clarifying question rendered IDENTICALLY to an open one, so
-        #       the owner reloaded and saw no change at all.
+        # -- 5b-2. an EMPTY clarify is a COMPLETE request (#183, 2026-09-26,
+        # superseding this probe's same-titled 2026-09-25 predecessor, which
+        # asserted the refusal rc=2). The property protected — unchanged in
+        # kind, changed in mechanism: a Clarify transition must carry CONTENT
+        # the asking lane can act on. The 2026-09-25 defect was answer=None
+        # behind "CLARIFY REQUESTED"; the remedy then was to refuse the tap.
+        # #183 ruled the remedy wrong: the owner owes no payload — the click
+        # IS the request — so the tool now supplies the click's meaning
+        # (CLARIFY_EMPTY_TEXT) when no --text comes. Owner text, when
+        # supplied, is the request verbatim and wins. Half (ii) of the same
+        # 2026-09-25 report stays: the clarifying state must be VISIBLE on
+        # the page, not rendered identically to an open one.
         rc, out, _ = run("ask", "--factory", set_id, "--title", "clarify guard",
                          "--description", "d", "--option", "A")
         ck(rc == 0, "a question is registered to test the clarify guard (rc=%d)" % rc)
         _cq = (get_set(set_id) or {}).get("questions", [{}])[-1].get("qid")
         rc, out, err = run("answer", set_id, _cq, "clarify")
-        ck(rc == 2, "an EMPTY clarify is refused rc=2 (rc=%d)" % rc)
-        ck("clarify requires --text" in (err or out),
-           "\u2026naming the remedy (%r)" % (err or out).strip()[:70])
-        ck((get_set(set_id) or {}).get("questions", [{}])[-1].get("status") == "open",
-           "\u2026and the question is left OPEN, never half-transitioned")
+        ck(rc == 0, "an EMPTY clarify is ACCEPTED rc=0 (rc=%d, err=%r)"
+           % (rc, (err or "").strip()[:70]))
+        _gq = (get_set(set_id) or {}).get("questions", [{}])[-1]
+        ck(_gq.get("status") == "clarifying",
+           "\u2026the tap alone transitions the question to clarifying "
+           "(status=%r)" % (_gq.get("status"),))
+        ck(bool((_gq.get("answer") or "").strip()),
+           "\u2026and the transition CARRIES content, never answer=None "
+           "(answer=%r)" % (_gq.get("answer"),))
+        ck(_gq.get("answer") == CLARIFY_EMPTY_TEXT,
+           "\u2026naming the click's meaning via the tool default")
+        ck(_gq.get("answer_kind") == "clarify",
+           "\u2026with answer_kind=clarify")
         rc, out, _ = run("answer", set_id, _cq, "clarify", "--text", "which option?")
         ck(rc == 0, "a clarify WITH text is still accepted (rc=%d)" % rc)
-        ck((get_set(set_id) or {}).get("questions", [{}])[-1].get("status")
+        _gq2 = (get_set(set_id) or {}).get("questions", [{}])[-1]
+        ck(_gq2.get("answer") == "which option?",
+           "\u2026and OWNER text WINS over the tool default when supplied "
+           "(answer=%r)" % (_gq2.get("answer"),))
+        ck(_gq2.get("status")
            == "clarifying", "\u2026and records the clarifying state")
         rc, out, _ = run("publish", "--json")
         _uidir = json.loads(out)["path"]
@@ -2778,6 +2892,53 @@ def selftest():
         rc, out, _ = run("publish", "--json")
         page = json.loads(out)
         body = open(os.path.join(page["path"], "index.html"), encoding="utf-8").read()
+        # The BROWSER TAB title names the page and how much is waiting on it
+        # (owner order 2026-09-26), so a browser with several factory pages open
+        # says which one has questions. Read from the RENDERED page, not the
+        # source: the title is emitted by the shell, and only the artifact shows
+        # whether the derivation reached it.
+        _t = re.search(r"<title>([^<]*)</title>", body)
+        ck(_t is not None, "the page carries a <title>")
+        ck(_t.group(1) == "%s (%d) - Factory Open Questions"
+           % (page["slug"], page["meta"]["questions"]),
+           "the tab title is '<slug> (<n>) - Factory Open Questions' (%r)"
+           % (_t.group(1),))
+        # NON-VACUITY, in a fixture BUILT to distinguish the two counts: ONE
+        # open set holding TWO open questions. The assertion above cannot see
+        # the difference, because the main fixture happens to hold exactly one
+        # question per set -- sets and questions are both 9 there, so a title
+        # built from the set count would satisfy it. len(sets) is the tempting
+        # wrong answer: it is the count build_page already holds.
+        _count_store = os.path.join(root, "count-store")
+        os.makedirs(_count_store, exist_ok=True)
+        with open(os.path.join(_count_store, "open.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"sets": [{
+                "id": "f-count-lane", "status": "open", "lane": "Count Lane",
+                "asked_at": None,
+                "questions": [
+                    {"qid": "c1", "title": "one", "status": "open",
+                     "lane": "Count Lane", "asked_at": None},
+                    {"qid": "c2", "title": "two", "status": "open",
+                     "lane": "Count Lane", "asked_at": None}]}]}, fh)
+        _saved_dir = env["OC_QUESTIONS_DIR"]
+        env["OC_QUESTIONS_DIR"] = _count_store
+        try:
+            rc, out, err = run("publish", "--json")
+            ck(rc == 0, "a one-set/two-question register publishes (rc=%d)" % rc)
+            _p = json.loads(out)
+            ck(len(_p["meta"]["sets"]) == 1 and _p["meta"]["questions"] == 2,
+               "\u2026and the fixture distinguishes them (sets=%d questions=%d)"
+               % (len(_p["meta"]["sets"]), _p["meta"]["questions"]))
+            _html = open(os.path.join(_p["path"], "index.html"),
+                         encoding="utf-8").read()
+            _t2 = re.search(r"<title>([^<]*)</title>", _html)
+            ck(_t2 is not None
+               and _t2.group(1).endswith("(2) - Factory Open Questions"),
+               "the tab counts OPEN QUESTIONS, never sets (%r)"
+               % (_t2.group(1) if _t2 else None,))
+        finally:
+            env["OC_QUESTIONS_DIR"] = _saved_dir
         # Owner question 2026-09-24: the answer form should swap inline instead
         # of navigating. htmx breaks "no <script> at all", but the property that
         # mattered was NO CLIENT-SIDE LOGIC OF OUR OWN -- so the assertion
@@ -3437,6 +3598,10 @@ def selftest():
            "notify --qid q2 resolves q2's OWN lane, not the set's (%r)"
            % out.strip()[:110])
 
+        # PORTED WITH batch_return_address (#182 item 1, direction source ->
+        # template): the function above had no probe here, and a gate that has
+        # only ever seen good input has not been shown to reject bad input.
+        #
         # NO --qid: one body carrying several lanes' answers cannot have ONE
         # destination. Pre-fix the destination fell back to the SET's session
         # while the body named the ASKING lane, so the answer reached a lane
@@ -3524,6 +3689,10 @@ USAGE = """oc-questions — the Open Questions register (#547)
            TOTAL and the page URL -- there is no card.
   answer   <set-id> <qid> <choice-index|clarify> [--text T] [--via card|page|cli]
            [--no-publish]
+           clarify with NO --text is a COMPLETE request (#183): the owner's
+           click alone asks the lane to restate the question in wider context
+           and clearer language — the tool supplies that meaning; --text adds
+           the owner's own wording and wins when present
   withdraw --set <id> --qid <qid> [--text REASON] [--no-publish] [--json]
            retracts a question that has become moot; the set stays open
   amend    --set <id> --qid <qid> [--title T] [--description D]
