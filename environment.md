@@ -8,7 +8,7 @@ Re-homed from `SKILL.md §Shared environment facts` by cycle `20260925-c24` lens
 the always-loaded router carried 103 lines the BUDGET RULE does not assign to it
 (`hard rules, ontology/glossary, tool-table purpose-only rows, role routing, load paths`).
 The facts are unchanged; only their load path moved. **The hard rules among them — the
-local-cargo ban and `gh -R` — are stated in `SKILL.md §Hard rules` and bind regardless.**
+local-cargo ban and `gh -R` — are stated in `SKILL.md §Shared environment facts (all roles)` and bind regardless.**
 
 ## Environment facts (all roles)
 
