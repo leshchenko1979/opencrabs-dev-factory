@@ -119,10 +119,19 @@ DORMANT_CLAIM_HOURS = 24.0
 
 
 def claim_activity(claim, state_dir, now_ts):
-    """Return (age_hours, dormant) from the target session DB, fail-open."""
+    """Return (age_hours, dormant, phantom) from the target session DB, fail-open.
+
+    phantom=True means the DB was READ successfully and holds NO row for the
+    holder - #404's predicate (`known_ids` at oc-roster:244): a claim author the
+    session DB has never seen. That is a KNOWN state, not an unknown one, and it
+    is kept distinct from an unreadable DB so the fence can tell them apart: a
+    phantom can never finish OR release its claim, so fencing on it is a hold no
+    legitimate action clears (#653). Measured discriminator: a no-row query is
+    rc=0 with EMPTY stdout; an unreadable DB is rc=3.
+    """
     uuid = claim.get('uuid', '')
     if not uuid:
-        return None, False
+        return None, False, False
     db_path = os.environ.get('OC_LEDGER_DB') or os.path.join(
         os.path.dirname(state_dir), 'opencrabs.db')
     sqlite_tool = os.path.join(_TOOLS_DIR, 'lib', 'oc_sqlite')
@@ -131,17 +140,21 @@ def claim_activity(claim, state_dir, now_ts):
         result = subprocess.run([sqlite_tool, db_path, sql], capture_output=True,
                                 text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
-        return None, False
-    if result.returncode != 0 or not result.stdout.strip():
-        return None, False
+        return None, False, False
+    if result.returncode != 0:
+        # UNREADABLE: a transient read fault must never clear a fence.
+        return None, False, False
+    if not result.stdout.strip():
+        # READABLE, NO ROW: the holder is a phantom (#404). Known, not unknown.
+        return None, False, True
     try:
         updated = int(result.stdout.strip().splitlines()[0].split('|')[0])
         if updated > 10 ** 12:
             updated //= 1000
         age = max(0.0, (now_ts - updated) / 3600.0)
-        return age, age >= DORMANT_CLAIM_HOURS
+        return age, age >= DORMANT_CLAIM_HOURS, False
     except (TypeError, ValueError):
-        return None, False
+        return None, False, False
 
 
 def load_swap_history(state_dir):
@@ -1240,11 +1253,31 @@ def member_ready(iss, commits_by_issue, repo_path, swaps, st_dir,
         if t and t > swapped_ts:
             swapped_ts = t
     smoke_ts = get_issue_smoke_pass_ts(int(iss), st_dir)
+    # #654: a HARVESTED member can never satisfy the smoke leg. Its fork smoke
+    # row was never owed -- the harvest IS the completion -- so demanding one
+    # held the whole cluster forever, and no legitimate action could clear it.
+    # Measured: #119 CLOSED, upstream PR adolfousier/opencrabs#1481 MERGED, fork
+    # merge a0f581752 an ancestor of main, and ZERO rows carry `issue=#119` in
+    # smoke-verdicts.log (read by the structured field, not a substring -- the
+    # prose form false-positives on cross-references, per #415). The harvest is
+    # the acceptance evidence for such a member, and the verdict SAYS so rather
+    # than dropping the member from the set, which would hide it.
+    _harvest_pr = None
+    try:
+        _hit = issue_map.get(int(iss)) if issue_map else None
+        if _hit and _hit.get('state') == 'MERGED':
+            _harvest_pr = _hit.get('pr')
+    except (TypeError, ValueError, NameError):
+        _harvest_pr = None
     missing = []
     if not swapped_ts:
         missing.append('not swapped')
-    if not smoke_ts:
+    if not smoke_ts and not _harvest_pr:
         missing.append('not smoked')
+    if not missing and _harvest_pr:
+        # Disclosure, not a bare verdict: the reader can see that the smoke leg
+        # was satisfied by the HARVEST, not by a fork smoke row.
+        return True, 'swapped+smoked(harvested:PR #%s)' % _harvest_pr
     if not missing and _widened:
         # Disclosure, not a bare verdict: the reader can see WHICH evidence made
         # this member ready, so a main-resident anchor is never mistaken for a
@@ -1620,7 +1653,20 @@ if action == 'check':
                 _seen_fences.add(_fkey)
                 overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])
                 c_uuid = claim.get('uuid', '')[:8]
-                claim_age, claim_dormant = claim_activity(claim, st_dir, now_ts)
+                claim_age, claim_dormant, claim_phantom = claim_activity(claim, st_dir, now_ts)
+                if claim_phantom:
+                    # #653 / #404: the holder is a uuid the session DB has never
+                    # seen. It can never finish or release this claim, so fencing
+                    # on it is a permanent hold no legitimate action clears - and
+                    # #404 forbids a phantom from entering a freeze list at all.
+                    # Disclosed, not silent: the reader must see WHY the fence was
+                    # skipped, and the remedy is a ledger release, not a wait.
+                    print('NOTE(HELD_IN_FLIGHT_LANE): skipped - claim #%s is held by %s..., '
+                          'a claim author the session DB has never seen (#404 phantom). '
+                          'No lane can finish or release it; the fence is not applied. '
+                          'Remedy: oc-ledger unclaim %s (or re-enroll the lane).'
+                          % (c_iss or '?', c_uuid, c_uuid))
+                    continue
                 age_note = ' holder_age=unknown' if claim_age is None else ' holder_age=%.1fh%s' % (claim_age, ' DORMANT' if claim_dormant else '')
                 advisory = ' ADVISORY: review/release dormant holder claim' if claim_dormant else ''
                 refuse('REFUSED: Target %s touches files of active lane %s claim #%s [HELD_IN_FLIGHT_LANE: %s]%s%s' % (target, c_uuid, c_iss or '?', overlap_sample, age_note, advisory))
@@ -1752,7 +1798,7 @@ if action == 'check':
                   'A set verdict is NOT claimed.' % target_iss)
         else:
             _by_iss = build_commits_by_issue(commits)
-            _unready, _unreadable = [], []
+            _unready, _unreadable, _harvest_notes = [], [], []
             for _m in sorted(_set_members):
                 if _m == target_iss:
                     # HQ ruling 2026-09-26 (n=11674): THE TARGET IS EXCLUDED FROM
@@ -1766,6 +1812,13 @@ if action == 'check':
                 _rdy, _why = member_ready(_m, _by_iss, repo_path, swaps, st_dir)
                 if not _rdy:
                     _unready.append((_m, (_st.get('state') or '?').lower(), _why))
+                elif _why and 'harvested:' in _why:
+                    # #654: DISCLOSE, never a bare verdict. This member's
+                    # smoke leg was satisfied by its HARVEST, not by a fork
+                    # smoke row -- and a ready member prints no `_why`
+                    # anywhere else, so without this line the disclosure
+                    # would be unreachable dead code.
+                    _harvest_notes.append('#%d (%s)' % (_m, _why))
             if _unready:
                 _detail = ', '.join('#%d(%s, %s)' % (m, st, why) for m, st, why in _unready)
                 refuse('REFUSED: Target %s cluster set {%s} has %d UNREADY member(s) '
@@ -1779,6 +1832,11 @@ if action == 'check':
                 print('NOTE(HELD_SET): %d set member(s) could not be read (%s) -- the '
                       'set verdict above is INCOMPLETE, never a clean one.'
                       % (len(_unreadable), ', '.join('#%d' % m for m in _unreadable)))
+            if _harvest_notes:
+                print('NOTE(HELD_SET): %d member(s) are ready VIA THEIR HARVEST, not '
+                      'via a fork smoke row: %s. The harvest is the acceptance '
+                      'evidence for such a member (#654).'
+                      % (len(_harvest_notes), ', '.join(_harvest_notes)))
             # The clock walks the SET, not the target: the target's own 24h
             # soak is leg 1 above, and including it here would make a fresh
             # target block the very set it is the subject of. A RELATIVE
@@ -4360,6 +4418,96 @@ C602MEOF
     ok "#625: a main-resident but unsmoked member names ONLY the missing half (swapped resolved, not a bare GH state)"
   else
     echo "  bad  - #625 disclosure leg expected '#602' + 'not smoked' and NOT 'not swapped'; got rc=$rc ($out)"
+  fi
+
+  # ---- #653: THE PHANTOM-HOLDER FENCE (#404 predicate) --------------------
+  # A claim whose holder has NO sessions row can never finish or release it, so
+  # fencing on it is a permanent hold no legitimate action clears -- and #404
+  # forbids a phantom from entering a freeze list at all. Measured live on
+  # #396: claim #583 held by b53581f4 (0 sessions rows; control 42a44908 = 1),
+  # holder_age=unknown, no advisory, no clearance clock.
+  #
+  # Fixture: target #500's fences are #600 (holder 11111111, REAL) and #704
+  # (holder 33333333). Two session DBs decide which is which, so the pair below
+  # is decided by the phantom predicate ALONE and not by the fixture.
+  local mock_653_one="$setdir/mock_653_one.db" mock_653_both="$setdir/mock_653_both.db"
+  _mksess() { # $1 = db path, $2.. = uuids to enrol
+    _db="$1"; shift
+    python3 -c 'import sqlite3,sys; db=sys.argv[1]; now=int(sys.argv[2]); con=sqlite3.connect(db); con.execute("create table sessions (id text, updated_at integer)"); [con.execute("insert into sessions values (?,?)", (u, now-3600)) for u in sys.argv[3:]]; con.commit(); con.close()' "$_db" "$OC_HARVEST_NOW_TS" "$@"
+  }
+  _mksess "$mock_653_one"  "11111111-2222-3333-4444-555555555555"
+  _mksess "$mock_653_both" "11111111-2222-3333-4444-555555555555" "33333333-4444-5555-6666-777777777777"
+
+  # (a) THE PHANTOM FENCE IS SKIPPED, AND SAYS WHY. Only 11111111 is known, so
+  #     #704's holder is a phantom: its fence must not apply, and the reader
+  #     must be told why rather than meeting a bare silence.
+  rc=0
+  out="$(OC_LEDGER_DB="$mock_653_one" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
+  _fc="$(printf '%s\n' "$out" | grep -c '^REFUSED.*HELD_IN_FLIGHT_LANE' || true)"
+  if [ "$rc" -eq 1 ] && [ "$_fc" -eq 1 ] && oc_has "$out" "claim #600" \
+     && oc_has "$out" "#404 phantom" && oc_has "$out" "oc-ledger unclaim"; then
+    ok "#653: a phantom holder's fence is SKIPPED with the #404 note and the remedy; the real holder still fences"
+  else
+    echo "  bad  - #653 expected rc=1, exactly 1 fence (#600), the '#404 phantom' note and the remedy; got rc=$rc count=$_fc ($out)"
+    return 1
+  fi
+
+  # (b) CONTROL, and the leg that gives (a) meaning: with BOTH holders known,
+  #     nothing is skipped and both fences apply. If (b) also passed, nothing
+  #     above was decided by the phantom predicate.
+  rc=0
+  out="$(OC_LEDGER_DB="$mock_653_both" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
+  _fc="$(printf '%s\n' "$out" | grep -c '^REFUSED.*HELD_IN_FLIGHT_LANE' || true)"
+  if [ "$rc" -eq 1 ] && [ "$_fc" -eq 2 ] && ! oc_has "$out" "#404 phantom"; then
+    ok "#653 control: with both holders known, both fences apply and no phantom note appears"
+  else
+    echo "  bad  - #653 control expected rc=1, 2 fences, no phantom note; got rc=$rc count=$_fc ($out)"
+    return 1
+  fi
+
+  # ---- #654: A HARVESTED MEMBER SATISFIES THE SMOKE LEG -------------------
+  # A harvested member's fork smoke row was never owed -- the harvest IS the
+  # completion -- so demanding one held the whole cluster forever. Measured:
+  # #119 CLOSED, upstream PR adolfousier/opencrabs#1481 MERGED, fork merge
+  # a0f581752 an ancestor of main, and ZERO rows carry `issue=#119`.
+  local mock_prs_harv="$setdir/mock_prs_harv.json"
+  printf '%s\n' '[{"number": 1481, "title": "fix(set): a harvested member", "state": "MERGED", "headRefName": "leshchenko1979/fix/set-602", "mergedAt": "2026-09-10T00:00:00Z", "body": "Fixes leshchenko1979/opencrabs#602"}]' > "$mock_prs_harv"
+
+  # (a) THE SET IS READY, AND THE REASON IS DISCLOSED. #602 is swapped through
+  #     the main-resident index and has NO smoke row, so pre-#654 the set was
+  #     held forever. The disclosure must NAME the harvest: a bare "ready"
+  #     would hide that the acceptance evidence is the harvest, not a smoke row.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_602" OC_HARVEST_MOCK_ISSUE_STATE="$st_602" \
+    OC_HARVEST_MOCK_COMMITS="$c600" OC_HARVEST_MOCK_MAIN_COMMITS="$c602_main" \
+    OC_HARVEST_MOCK_PRS="$mock_prs_harv" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if ! oc_has "$out" "[HELD_SET:" && oc_has "$out" "ready VIA THEIR HARVEST" \
+     && oc_has "$out" "harvested:PR #1481"; then
+    ok "#654: a swapped+harvested member satisfies the smoke leg, disclosed as harvested:PR #1481"
+  else
+    echo "  bad  - #654 expected the set READY with the 'harvested:PR #1481' disclosure; got rc=$rc ($out)"
+    return 1
+  fi
+
+  # (b) CONTROL: the SAME member with NO merged upstream PR still refuses
+  #     'not smoked'. This is what proves (a) was decided by the harvest and
+  #     not by the smoke leg being dropped.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_602" OC_HARVEST_MOCK_ISSUE_STATE="$st_602" \
+    OC_HARVEST_MOCK_COMMITS="$c600" OC_HARVEST_MOCK_MAIN_COMMITS="$c602_main" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "[HELD_SET:" && oc_has "$out" "not smoked" \
+     && ! oc_has "$out" "ready VIA THEIR HARVEST"; then
+    ok "#654 control: without a merged upstream PR the same member still refuses 'not smoked'"
+  else
+    echo "  bad  - #654 control expected rc=1 '[HELD_SET:' + 'not smoked' and no harvest note; got rc=$rc ($out)"
+    return 1
   fi
 
   # (d) THE SOAK CLOCK SCANS THE WIDENED COMMITS. Pre-fix the clock printed

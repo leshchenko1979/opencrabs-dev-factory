@@ -671,6 +671,74 @@ def flag_list(flags, name):
     return value if isinstance(value, list) else [value]
 
 
+def resolve_recommendation(raw, options, where):
+    """#652: resolve --recommended to (index, label), or die 2.
+
+    Accepts EITHER a 0-based index OR an option label, because the alternative
+    is forcing the caller to compute an array index — which fleet-directives.md
+    LLM Ergonomics item 1 forbids outright ("Never force an agent to compute,
+    track, or predict numeric array indices ... Prefer semantic anchors").
+    Measured cost of not doing so: lane 6630dc9a passed --recommended 1 meaning
+    "first option"; both stored index 1, which is the SECOND option, so the
+    owner's page pre-checked the radio OPPOSING the question's own prose for
+    4h26m (q24/q25, amended_at 13:04:41Z / 13:05:07Z against asked 08:38:28Z,
+    amend_count 1 each — the lane's own correction is the evidence).
+
+    Precedence is deliberate: an all-digit value is an INDEX (so an option
+    literally named "1" stays reachable), then an exact label, then a leading
+    letter A/B/C. Anything else is REFUSED naming the options — never silently
+    fallen back to an index, which is how the original wrong-base landed.
+    Returns (index, label) so every caller can ECHO what it resolved; the
+    stored value stays the index, so no existing question is reinterpreted.
+    """
+    if raw is None:
+        return None, None
+    if isinstance(raw, bool) or (not isinstance(raw, int) and not isinstance(raw, str)):
+        die(2, f"{where}: recommended must be an integer index or an option label")
+    if not options:
+        die(2, f"{where}: recommended is set but the question carries no options "
+               f"— there is nothing to recommend")
+    if isinstance(raw, int):
+        index = raw
+    elif re.fullmatch(r"[0-9]+", raw.strip()):
+        index = int(raw.strip())
+    else:
+        text = raw.strip()
+        index = None
+        for i, o in enumerate(options):
+            if o == text:
+                index = i
+                break
+        if index is None:
+            # A bare letter is the most natural semantic anchor ("--recommended
+            # Y"), so it is accepted with OR without a separator. Measured twice:
+            # the first cut required a separator and refused a bare "Y"; the
+            # second mapped the letter to its ALPHABET POSITION (ord('Y')-65 = 24)
+            # and so refused options labelled X/Y with "recommended 24 is outside
+            # options (0..1)". The letter must be matched against the options' own
+            # leading letters, which is what a reader means by "Y".
+            m = re.match(r"^([A-Za-z])(?:\s*[).:-]|\s*$)", text)
+            if m:
+                want = m.group(1).upper()
+                hits = [i for i, o in enumerate(options)
+                        if re.match(r"^[A-Za-z](?:\s*[).:-]|\s*$)", o)
+                        and o[0].upper() == want]
+                if len(hits) == 1:
+                    index = hits[0]
+                elif len(hits) > 1:
+                    die(2, f"{where}: recommended letter {want!r} is ambiguous — "
+                           f"options {hits} all start with it. Pass the full label.")
+        if index is None:
+            die(2, f"{where}: recommended {text!r} matches no option and is not "
+                   f"a 0-based index. Options: "
+                   + "; ".join(f"[{i}] {o!r}" for i, o in enumerate(options)))
+    if not 0 <= index < len(options):
+        die(2, f"{where}: recommended {index} is outside options "
+               f"(0..{len(options) - 1}): "
+               + "; ".join(f"[{i}] {o!r}" for i, o in enumerate(options)))
+    return index, options[index]
+
+
 def normalise_questions(raw):
     """Validate and normalise the ordered question array. Order is the contract
     (#547: 'questions[] in call order'), so nothing here reorders."""
@@ -690,16 +758,8 @@ def normalise_questions(raw):
         if not isinstance(options, list):
             die(2, f"question {position}: options must be an array")
         options = [str(o) for o in options]
-        recommended = item.get("recommended")
-        if recommended is not None:
-            if not isinstance(recommended, int) or isinstance(recommended, bool):
-                die(2, f"question {position}: recommended must be an integer index")
-            if not options:
-                die(2, f"question {position}: recommended is set but the question "
-                       f"carries no options — there is nothing to recommend")
-            if not 0 <= recommended < len(options):
-                die(2, f"question {position}: recommended {recommended} is outside "
-                       f"options (0..{len(options) - 1})")
+        recommended, _rec_label = resolve_recommendation(
+            item.get("recommended"), options, f"question {position}")
         out.append({
             "qid": f"q{position}",
             "title": title,
@@ -734,7 +794,9 @@ def questions_from_flags(flags):
             "title": flags.get("--title", ""),
             "description": flags.get("--description", ""),
             "options": flag_list(flags, "--option"),
-            "recommended": int(flags["--recommended"]) if "--recommended" in flags else None,
+            "recommended": resolve_recommendation(
+                flags.get("--recommended"), flag_list(flags, "--option"),
+                "question 1")[0],
             "clarify": "--no-clarify" not in flags,
         }]
     die(2, "supply --questions-file, --questions-json, or --title/--description")
@@ -846,6 +908,15 @@ def cmd_ask(argv):
         # the surface now; the caller needs the count and the link.
         print(f"registered {len(questions)} question(s) in {factory} "
               f"(lane {lane}, ttl {ttl_days}d)")
+        # ECHO WHAT WAS RESOLVED, not just that something was. The index is
+        # invisible to the caller otherwise, and a wrong base then surfaces only
+        # on the OWNER'S PAGE, pre-checked (#652). This line is the leg that
+        # catches it; the selftest cannot, because it round-trips the raw index.
+        for q in entry.get("questions", []):
+            ri = q.get("recommended")
+            opts = q.get("options") or []
+            if ri is not None and 0 <= ri < len(opts):
+                print(f"  {q.get('qid')} recommended [{ri}]: {opts[ri]}")
         print(f"{total} open question(s) across {sets} factory set(s)")
         if page:
             print(f"page {page}")
@@ -1142,15 +1213,11 @@ def cmd_amend(argv):
             question["options"] = options if isinstance(options, list) else [options]
             changed.append("options")
         if flags.get("--recommended") is not None:
-            try:
-                index = int(flags["--recommended"])
-            except (TypeError, ValueError):
-                die(2, "--recommended must be an integer index")
-            count = len(question.get("options") or [])
-            if not 0 <= index < count:
-                die(2, f"--recommended {index} is outside 0..{max(count - 1, 0)}")
+            index, rec_label = resolve_recommendation(
+                flags["--recommended"], question.get("options") or [],
+                f"{set_id}/{qid}")
             question["recommended"] = index
-            changed.append("recommended")
+            changed.append(f"recommended={index} ({rec_label})")
 
         # The whole point: the question becomes ANSWERABLE again.
         was = question.get("status")
@@ -3245,6 +3312,108 @@ def selftest():
         rc, _, _ = run("amend", "--set", am_set, "--qid", "nope", "--title", "t")
         ck(rc == 1, "amend on an unknown qid is rc=1 (rc=%d)" % rc)
 
+        # -- 8c2. #652: --recommended was a 0-BASED INDEX whose base is stated
+        # nowhere, and the tool never echoed what it resolved. Lane 6630dc9a
+        # passed --recommended 1 meaning "first option"; q24 and q25 both stored
+        # index 1, which is the SECOND option, so the owner's page pre-checked
+        # the radio OPPOSING the question's own prose for 4h26m (asked
+        # 08:38:28Z, amended 13:04:41Z / 13:05:07Z, amend_count 1 each = the
+        # lane's own correction). The selftest could not catch it: leg 8c above
+        # asserts recommended == 1, so a RAW INDEX ROUND-TRIPS and a wrong base
+        # is indistinguishable. fleet-directives.md LLM Ergonomics item 1
+        # forbids exactly this ("Never force an agent to compute, track, or
+        # predict numeric array indices ... Prefer semantic anchors").
+        OPTS = ["A - one", "B - two", "C - three"]
+        def _ask_json(factory, rec):
+            """ask --json -> (rc, set_id_or_None, stdout, stderr). The JSON form
+            is used for RECORD assertions; the echo assertion below uses the
+            human form, because --json prints no echo line by design."""
+            args = ["ask", "--factory", factory, "--json",
+                    "--title", "Which approach?",
+                    "--description", "Three ways"]
+            for o in OPTS:
+                args += ["--option", o]
+            if rec is not None:
+                args += ["--recommended", rec]
+            rc, out, err = run(*args)
+            sid = None
+            try:
+                sid = json.loads(out)["set"]
+            except Exception:
+                pass
+            return rc, sid, out, err
+        # (a) A LABEL, the INDEX IT MEANS, and a BARE LETTER all resolve to the
+        #     SAME stored index.
+        rc_l, sid_l, _, _ = _ask_json("f-652-label", "B - two")
+        rc_i, sid_i, _, _ = _ask_json("f-652-index", "1")
+        rc_y, sid_y, _, _ = _ask_json("f-652-letter", "B")
+        li = get_set(sid_l)["questions"][0]["recommended"]
+        ii = get_set(sid_i)["questions"][0]["recommended"]
+        yi = get_set(sid_y)["questions"][0]["recommended"]
+        ck(rc_l == 0 and rc_i == 0 and rc_y == 0 and li == 1 and ii == 1 and yi == 1,
+           "#652 label / index / bare letter resolve to the SAME stored index "
+           "(label=%r index=%r letter=%r)" % (li, ii, yi))
+        # (b) THE ECHO — the leg that actually catches a wrong base. The record
+        #     cannot, because a wrong-base index is a VALID index.
+        rc_e, out_e, err_e = run("ask", "--factory", "f-652-echo",
+                                 "--title", "Which approach?",
+                                 "--description", "Three ways",
+                                 "--option", OPTS[0], "--option", OPTS[1],
+                                 "--option", OPTS[2], "--recommended", "B - two")
+        ck("q1 recommended [1]: B - two" in out_e,
+           "#652 ask echoes the RESOLVED LABEL, not just that something was set "
+           "(got: %r)" % [l for l in out_e.splitlines() if "recommend" in l])
+        # (c) A bare letter maps to the OPTIONS' OWN letters, not the alphabet.
+        #     Measured twice building this: requiring a separator refused a bare
+        #     "Y", and ord('Y')-65 produced "recommended 24 is outside options
+        #     (0..1)".
+        rc_c, out_c, err_c = run("ask", "--factory", "f-652-xy",
+                                        "--title", "T", "--description", "d",
+                                        "--option", "X - one",
+                                        "--option", "Y - two",
+                                        "--recommended", "Y", "--json")
+        ck(rc_c == 0 and get_set(json.loads(out_c)["set"])["questions"][0]["recommended"] == 1,
+           "#652 a bare letter maps to the OPTION letter (rc=%d %s)"
+           % (rc_c, (err_c or out_c).strip()[:90]))
+        # (d) An UNMATCHABLE label is REFUSED naming the options. It must NOT
+        #     fall back to an index — that is how the original wrong base landed
+        #     silently.
+        rc_d, out_d, err_d = run("ask", "--factory", "f-652-bad",
+                                    "--title", "T", "--description", "d",
+                                    "--option", "A - one",
+                                    "--recommended", "bounded acquire loop")
+        ck(rc_d == 2 and "matches no option" in err_d and "[0] 'A - one'" in err_d,
+           "#652 an unmatchable label is rc=2 and NAMES THE OPTIONS (rc=%d %s)"
+           % (rc_d, err_d.strip()[:100]))
+        # (e) An AMBIGUOUS letter is refused rather than silently first-matched.
+        rc_f, out_f, err_f = run("ask", "--factory", "f-652-amb",
+                                    "--title", "T", "--description", "d",
+                                    "--option", "A - one", "--option", "A - two",
+                                    "--recommended", "A")
+        ck(rc_f == 2 and "ambiguous" in err_f,
+           "#652 an ambiguous letter is rc=2, not silently the first match "
+           "(rc=%d %s)" % (rc_f, err_f.strip()[:90]))
+        # (f) CONTROL — an index is still an index, so no stored question is
+        #     re-based by this change. Without it, (a) cannot tell "label and
+        #     index agree" from "the resolver returns 1 for everything".
+        rc_g, sid_g, _, _ = _ask_json("f-652-ctrl", "0")
+        ck(rc_g == 0 and get_set(sid_g)["questions"][0]["recommended"] == 0,
+           "#652 control: index 0 still stores 0 (rc=%d)" % rc_g)
+        # (g) amend takes the same forms and NAMES the resolved option — the
+        #     clarify return leg is where a wrong base hurt most.
+        rc_h, out_h, err_h = run("amend", "--set", sid_l, "--qid", "q1",
+                                 "--recommended", "C - three")
+        ck(rc_h == 0 and "recommended=2 (C - three)" in out_h,
+           "#652 amend accepts a label and NAMES the resolved option (rc=%d %s)"
+           % (rc_h, (out_h or err_h).strip()[:100]))
+        # (h) THE BASE, IN THE HELP TEXT. The defect was discoverable only by
+        #     trial, on the owner's page.
+        rc_k, help_out, _ = run("--help")
+        ck("0-BASED" in help_out,
+           "#652 --help states the base, so the caller never guesses it")
+        ck("LABEL" in help_out or "label" in help_out,
+           "#652 --help documents the label form")
+
         # -- 8d. C6: mechanical closure. The register used to close only on an
         # explicit answer or TTL, so questions outlived the thing they asked
         # about. "Never guess" is the contract: an unreadable predicate SKIPS.
@@ -3736,7 +3905,11 @@ USAGE = """oc-questions — the Open Questions register (#547)
 
   ask      --factory <KEY> [--session <id>]
            [--questions-file F | --questions-json J |
-            --title T --description D [--option O]... [--recommended N]]
+            --title T --description D [--option O]...
+                              [--recommended N | --recommended LABEL]]
+           --recommended is 0-BASED when numeric ([0] is the FIRST option) or
+           an option's own label / leading letter (A, B, C...). The resolved
+           option is echoed, so the base never has to be guessed.
            [--ttl-days N] [--subject S] [--no-clarify] [--close-when CMD]
            [--no-publish] [--json]
            --factory is REQUIRED: the factory key IS the standing set id,
@@ -3754,7 +3927,9 @@ USAGE = """oc-questions — the Open Questions register (#547)
   withdraw --set <id> --qid <qid> [--text REASON] [--no-publish] [--json]
            retracts a question that has become moot; the set stays open
   amend    --set <id> --qid <qid> [--title T] [--description D]
-           [--option O]... [--recommended N] [--clear-options]
+           [--option O]... [--recommended N | --recommended LABEL]
+           [--clear-options]
+           --recommended takes the same 0-based-index-or-label form as ask
            the CLARIFY return leg: edits the question and reopens it
   notify   --set <id> | --lane <NAME> [--qid Q] [--mode turn-end|interrupt|quiet]
            [--dry-run] [--json]        the RETURN PATH: delivers the answer to

@@ -974,6 +974,7 @@ battery_receipt() { echo "$SKILL_DIR/tools/tests/battery-last.json"; }
 # routing OPEN ("routes to the Toolsmith") for work that had already closed.
 c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
   local v="$1" anchor anchor_t anchor_e spans entry range c sha subj refs named missing="" skipped=0 selfids="" selfskip=0 self_id
+  local bump_e bump_v range_after="" bounded_note="" 
   # The anchor is the previous SYNC commit. The pattern must name the SYNC FORM
   # this tool's own tail writes ("skill v<ver>: oc-ledger sync — <why>"), not
   # the bare '^skill v' prefix: that prefix also heads bump-only commits
@@ -992,15 +993,72 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
     echo "sync: NOTE — C8 naming check SKIPPED: no previous 'skill v<ver>: oc-ledger sync' commit is derivable, so the bundled range is unverifiable. This is NOT a clean result and NOT a finding." >&2
     return 0
   fi
-  # LEDGER CROSS-CHECK (v0.4.243). The ledger is authoritative for which
-  # versions published, and it carries versions that minted NO commit at all
-  # (v0.4.239: ledger row n=10349 exists, zero commits carry the subject), so
-  # git alone cannot see a skipped window. Skill-bump rows newer than this
-  # anchor enumerate exactly the versions published since the previous sync;
-  # any of them means the anchor did not land on the immediately-previous
-  # version and the range STRADDLES windows. Say so — a range read as one
-  # window misreports which release a bundled commit shipped in.
+  # LEDGER BOUND on the range (#651), then LEDGER CROSS-CHECK (v0.4.243). The
+  # ledger is authoritative for which versions published, and it carries
+  # versions that minted NO commit at all (v0.4.239: ledger row n=10349 exists,
+  # zero commits carry the subject), so git alone cannot see a skipped window.
+  #
+  # #651: the same blindness recurs whenever a LANE authors the version commit,
+  # because its subject is "skill v0.4.267: Duty 4+6 cycle ..." and does not
+  # contain ": oc-ledger sync"; the sync then finds a clean tree, mints the
+  # skill-bump row and commits nothing. Measured at the v0.4.268 sync: rows for
+  # v0.4.266 (06:54:57Z) and v0.4.267 (08:46:55Z) exist, NEITHER has a sync
+  # commit, so the subject predicate returned 782dca68 (the v0.4.265 sync) and
+  # the range spanned 51 commits where the true window was 13 — 10 of them
+  # already named in the 266/267 entries, re-flagged as unnamed by a WARN
+  # reading three windows at once. Twice in 48 hours (v0.4.239, then 266/267),
+  # and it fires on every lane-authored bump.
+  #
+  # The bound is a DATE, not a replacement anchor. Re-anchoring to a commit
+  # ("the newest commit at or before the bump instant") was measured and gives
+  # the same count here — 13 — but it leaves the range's meaning dependent on
+  # where that commit happens to sit: any commit made between it and the bump
+  # instant belongs to the PREVIOUS window and is still swept in. Bounding with
+  # --after=@<newest unpublished row> keeps the subject anchor (so ancestry is
+  # well defined) and excludes the earlier windows by construction.
+  #
+  # It fires ONLY when the anchor is stale. At the current HEAD the newest row
+  # (v0.4.268, 13:02:29Z) is OLDER than its sync commit (3a627c13, 13:02:32Z),
+  # so stale is False and no bound is applied. Measured, an unconditional bound
+  # would have narrowed a correct 1-commit range against the wrong instant.
   anchor_t="$(git -C "$SKILL_DIR" log -1 --format=%cI "$anchor" 2>/dev/null || true)"
+  if [ -n "$anchor_t" ] && [ -f "$LEDGER" ]; then
+    anchor_e="$(date -u -d "$anchor_t" +%s 2>/dev/null || echo 0)"
+    # Newest skill-bump row as (epoch, version), normalised to epoch BEFORE the
+    # comparison: the commit arrives as "...+00:00" and the row as "...Z", and
+    # 'Z' (0x5A) sorts ABOVE '+' (0x2B), so a string compare reads a row stamped
+    # in the SAME SECOND as newer than the commit that follows it. Same trap the
+    # spans comparison below already fixes; same reason.
+    bump_e="$(jq -r '[.events[]? | select(.kind == "skill-bump") | (.t // "")
+                     | select(. != "")] | sort | last // empty' "$LEDGER" 2>/dev/null)"
+    bump_v="$(jq -r '[.events[]? | select(.kind == "skill-bump")
+                     | [(.t // ""), ((.what // "") | split(" ")[0])]
+                     | select(.[0] != "" and .[1] != "")] | sort_by(.[0]) | last // ["",""]
+                     | .[1]' "$LEDGER" 2>/dev/null)"
+    if [ -n "$bump_e" ] && [ -n "$bump_v" ]; then
+      bump_e="$(date -u -d "$bump_e" +%s 2>/dev/null || echo 0)"
+      # The bound must never sit PAST HEAD. A skill-bump row stamped later than
+      # every commit in the repo would filter the range to EMPTY, and an empty
+      # range makes this check verify nothing while still printing a note that
+      # reads like a correction — the silent-clean shape (#485), reached from the
+      # opposite direction. Measured: the selftest's own stale-condition leg
+      # injects rows at 2099, and an unguarded bound emptied the range there and
+      # reddened five C8 legs. Degrade to the subject anchor and SAY so; never
+      # bound into nothing.
+      head_e="$(git -C "$SKILL_DIR" log -1 --format=%ct HEAD 2>/dev/null || echo 0)"
+      if [ "$bump_e" -gt "$anchor_e" ] && [ "$bump_e" -le "$head_e" ]; then
+        range_after="--after=@$bump_e"
+        bounded_note="$bump_v@$(date -u -d "@$bump_e" +%FT%TZ)"
+      elif [ "$bump_e" -gt "$head_e" ]; then
+        echo "sync: NOTE — C8 naming: skill-bump row $bump_v is stamped $(date -u -d "@$bump_e" +%FT%TZ), AFTER every commit in the repo ($(date -u -d "@$head_e" +%FT%TZ)), so the range is NOT bounded to it — a bound past HEAD would empty the range and read as a clean check. The subject anchor is kept and the straddle is disclosed instead (#651)." >&2
+      fi
+    fi
+  fi
+  # Skill-bump rows newer than the anchor enumerate the versions published since
+  # the previous sync. When the ledger bound above fired, the range is already
+  # restricted to commits after the newest of them, so the straddle is CORRECTED
+  # rather than merely disclosed — and the note says which, because a reader
+  # must be able to tell a bounded range from an unbounded one.
   if [ -n "$anchor_t" ] && [ -f "$LEDGER" ]; then
     # NORMALISE BOTH SIDES TO EPOCH before comparing. The two timestamps arrive
     # in DIFFERENT ISO forms — the commit as "...+00:00", the ledger row as
@@ -1018,7 +1076,11 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
           [ "$re" -gt "$anchor_e" ] && printf '%s\n' "$rv"
         done | sort -u | tr '\n' ' ' | sed 's/ *$//')"
     if [ -n "$spans" ]; then
-      echo "sync: NOTE — C8 naming: the range spans MORE THAN ONE version window. Skill-bump rows newer than the anchor ($spans) published without an intervening sync commit, so a commit listed below may belong to an earlier window than this one." >&2
+      if [ -n "$range_after" ]; then
+        echo "sync: NOTE — C8 naming: the range is BOUNDED to commits after $bounded_note. Skill-bump rows newer than the subject anchor ($spans) published without an intervening sync commit, so the anchor alone would have swept $range_after's earlier windows in; they are excluded by the bound (#651)." >&2
+      else
+        echo "sync: NOTE — C8 naming: the range spans MORE THAN ONE version window. Skill-bump rows newer than the anchor ($spans) published without an intervening sync commit, so a commit listed below may belong to an earlier window than this one." >&2
+      fi
     fi
   fi
   # The entry BODY: from its header to the next '## v' header. Version dots are
@@ -1031,21 +1093,21 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
     f { print }
   ' "$SKILL_DIR/CHANGELOG.md" 2>/dev/null || true)"
   # Every NON-SYNC commit the sync bundles (hq.md:57), newest first.
-  range="$(git -C "$SKILL_DIR" log --format='%h %s' --no-merges "$anchor"..HEAD 2>/dev/null || true)"
+  range="$(git -C "$SKILL_DIR" log --format='%h %s' --no-merges "$anchor"..HEAD $range_after 2>/dev/null || true)"
   [ -n "$range" ] || return 0
   # The syncing session's own commits, by Session-Id trailer. Built in ONE git
   # call (a per-commit read would be one process per commit on every sync).
   # OC_ACTOR wins when set, matching how the rest of this tool derives actors.
   self_id="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
   if [ -n "$self_id" ]; then
-    selfids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Session-Id,valueonly)' --no-merges "$anchor"..HEAD 2>/dev/null \
+    selfids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Session-Id,valueonly)' --no-merges "$anchor"..HEAD $range_after 2>/dev/null \
       | awk -v id="$self_id" 'NF>1 && index($0, id)>0 { printf "%s ", $1 }' || true)"
   fi
   # Commits carrying an Issue-Ref TRAILER -- the machine-readable statement that
   # a commit IS the work for an issue, as opposed to a subject that merely
   # MENTIONS one in prose. The trailer is the contract every commit carries;
   # a subject is free text. Same one-git-call idiom as selfids above.
-  refids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Issue-Ref,valueonly)' --no-merges "$anchor"..HEAD 2>/dev/null \
+  refids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Issue-Ref,valueonly)' --no-merges "$anchor"..HEAD $range_after 2>/dev/null \
     | awk 'NF>1 { printf "%s ", $1 }' || true)"
   while IFS= read -r c; do
     [ -n "$c" ] || continue
@@ -1998,6 +2060,104 @@ PAYLOAD
   C8I="$(c8sync 0.4.9)"
   case "$C8I" in *"unnamed: $C8ISHA"*) bad "c8-prose-mention-still-listed ($C8ISHA)" ;; *) ok ;; esac
   case "$C8I" in *"skipped as made by THIS syncing session"*) ok ;; *) bad "c8-prose-mention-skip-undisclosed" ;; esac
+  # ------------------------------------------------------------------
+  # #651 — THE LEDGER BOUND ON THE C8 RANGE.
+  # The subject anchor cannot see a bump whose version commit is LANE-authored
+  # ("skill v0.4.4: Duty 4+6 cycle ..."), because it does not carry the
+  # ": oc-ledger sync" form; the sync then finds a clean tree, mints the
+  # skill-bump row and commits nothing. Measured at the real v0.4.268 sync:
+  # rows for v0.4.266 and v0.4.267 exist with NO sync commit, the subject
+  # predicate returned the v0.4.265 sync, and the range spanned 51 commits where
+  # the true window was 13. Each arm gets its OWN fixture dirs, because leg (e)
+  # above seeds the shared C8D ledger with 2099 rows on purpose and a bound leg
+  # reading it would measure that pollution instead of its own condition.
+  c8mk() { # $1 = dir suffix. Prints nothing; creates $T/c8$1/{skill,state}
+    local x="$T/c8$1"
+    mkdir -p "$x/skill/tools/tests" "$x/state"
+    printf 'name: fixture\nversion: 0.4.1\n---\n' > "$x/skill/SKILL.md"
+    printf '# fixture changelog\n' > "$x/skill/CHANGELOG.md"
+    printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$x/skill/tools/tests/battery-last.json"
+    printf '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}\n' > "$x/state/workers-ledger.json"
+    for r in "$x/skill" "$x/state"; do
+      git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+      git -C "$r" add -A; git -C "$r" commit -q -m base
+    done
+    printf '%s' "$x"
+  }
+  c8commit() { # $1 = dir  $2 = subject  $3 = iso date ("" = now)
+    local d="$1" s="$2" dt="$3"
+    if [ -n "$dt" ]; then
+      GIT_AUTHOR_DATE="$dt" GIT_COMMITTER_DATE="$dt" git -C "$d" commit -q --allow-empty -m "$s"
+    else
+      git -C "$d" commit -q --allow-empty -m "$s"
+    fi
+  }
+  # (j) THE BOUND FIRES AND CORRECTS. A lane-authored bump mints a skill-bump row
+  #     at 09:00 with no sync commit; three earlier-window commits sit behind the
+  #     subject anchor. Without the bound all four are swept in; with it only the
+  #     true-window commit is listed, the straddle is CORRECTED (so the old
+  #     disclosure note must go quiet), and the correction is named.
+  C8J="$(c8mk j)"
+  c8commit "$C8J/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  for i in 1 2 3; do
+    c8commit "$C8J/skill" "fix(tools): #77$i earlier window" "2026-09-27T07:0$i:00 +0000"
+  done
+  c8commit "$C8J/skill" "skill v0.4.4: Duty 4+6 cycle — lane authored, no sync commit" "2026-09-27T09:00:00 +0000"
+  printf 'n\n' > "$C8J/skill/true.txt"; git -C "$C8J/skill" add -A
+  GIT_AUTHOR_DATE="2026-09-27T09:30:00 +0000" GIT_COMMITTER_DATE="2026-09-27T09:30:00 +0000" \
+    git -C "$C8J/skill" commit -q -m "fix(tools): #780 the true window"
+  C8JSHA="$(git -C "$C8J/skill" rev-parse --short HEAD)"
+  jq '.events += [{n: 9101, t: "2026-09-27T09:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.4 — lane-authored bump"}]' \
+    "$C8J/state/workers-ledger.json" > "$C8J/wl.tmp" && mv "$C8J/wl.tmp" "$C8J/state/workers-ledger.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8J/skill/SKILL.md"
+  printf '\n## v0.4.2\nc8 receipt names nothing\n' >> "$C8J/skill/CHANGELOG.md"
+  C8JO="$(OC_LEDGER="$C8J/state/workers-ledger.json" OC_SKILL_DIR="$C8J/skill" \
+    OC_DEPLOY_STATE_DIR="$C8J/state" bash "$ME" sync --version 0.4.2 --why selftest-651 2>&1 || true)"
+  case "$C8JO" in *"BOUNDED to commits after v0.4.4"*) ok ;; *) bad "c8-651-bound-note-missing" ;; esac
+  case "$C8JO" in *"unnamed: $C8JSHA"*) ok ;; *) bad "c8-651-true-window-commit-lost ($C8JSHA)" ;; esac
+  case "$C8JO" in *"#771 earlier window"*|*"#772 earlier window"*|*"#773 earlier window"*)
+      bad "c8-651-earlier-window-still-swept" ;; *) ok ;; esac
+  case "$C8JO" in *"MORE THAN ONE version window"*)
+      bad "c8-651-straddle-note-should-be-suppressed-when-corrected" ;; *) ok ;; esac
+  # (k) CONTROL — THE BOUND MUST NOT FIRE WHEN THE ANCHOR IS FRESH. The newest
+  #     skill-bump row is OLDER than the anchor commit, so stale is False. An
+  #     unconditional bound would narrow a correct range against the wrong
+  #     instant; measured, it widened a 1-commit range to 2 and would
+  #     double-report the previous window's work.
+  C8K="$(c8mk k)"
+  jq '.events += [{n: 9201, t: "2026-09-27T05:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.1 — old row"}]' \
+    "$C8K/state/workers-ledger.json" > "$C8K/wl.tmp" && mv "$C8K/wl.tmp" "$C8K/state/workers-ledger.json"
+  c8commit "$C8K/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  printf 'k\n' > "$C8K/skill/k.txt"; git -C "$C8K/skill" add -A
+  git -C "$C8K/skill" commit -q -m "fix(tools): #790 the only bundled commit"
+  C8KSHA="$(git -C "$C8K/skill" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8K/skill/SKILL.md"
+  printf '\n## v0.4.2\nc8 receipt names nothing\n' >> "$C8K/skill/CHANGELOG.md"
+  C8KO="$(OC_LEDGER="$C8K/state/workers-ledger.json" OC_SKILL_DIR="$C8K/skill" \
+    OC_DEPLOY_STATE_DIR="$C8K/state" bash "$ME" sync --version 0.4.2 --why selftest-651k 2>&1 || true)"
+  case "$C8KO" in *"BOUNDED to commits after"*)
+      bad "c8-651-bound-fired-on-fresh-anchor" ;; *) ok ;; esac
+  case "$C8KO" in *"unnamed: $C8KSHA"*) ok ;; *) bad "c8-651-fresh-anchor-range-broken ($C8KSHA)" ;; esac
+  # (l) THE PAST-HEAD GUARD. A row stamped after EVERY commit in the repo would
+  #     filter the range to EMPTY, and an empty range reads as a clean check
+  #     while verifying nothing (#485's shape from the opposite direction). The
+  #     bound must be refused, the subject anchor kept, and the refusal said.
+  #     This is not hypothetical: leg (e) above injects exactly such rows.
+  C8L="$(c8mk l)"
+  c8commit "$C8L/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  printf 'l\n' > "$C8L/skill/l.txt"; git -C "$C8L/skill" add -A
+  git -C "$C8L/skill" commit -q -m "fix(tools): #791 the bundled commit"
+  C8LSHA="$(git -C "$C8L/skill" rev-parse --short HEAD)"
+  jq '.events += [{n: 9301, t: "2099-01-01T00:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.9 — future row"}]' \
+    "$C8L/state/workers-ledger.json" > "$C8L/wl.tmp" && mv "$C8L/wl.tmp" "$C8L/state/workers-ledger.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8L/skill/SKILL.md"
+  printf '\n## v0.4.2\nc8 receipt names nothing\n' >> "$C8L/skill/CHANGELOG.md"
+  C8LO="$(OC_LEDGER="$C8L/state/workers-ledger.json" OC_SKILL_DIR="$C8L/skill" \
+    OC_DEPLOY_STATE_DIR="$C8L/state" bash "$ME" sync --version 0.4.2 --why selftest-651l 2>&1 || true)"
+  case "$C8LO" in *"AFTER every commit in the repo"*) ok ;; *) bad "c8-651-past-head-guard-note-missing" ;; esac
+  case "$C8LO" in *"BOUNDED to commits after"*)
+      bad "c8-651-bound-applied-past-head-would-empty-the-range" ;; *) ok ;; esac
+  case "$C8LO" in *"unnamed: $C8LSHA"*) ok ;; *) bad "c8-651-past-head-guard-emptied-the-range" ;; esac
   # 23-26: ack (v0.4.55: full 0.N.N shape — the old N.N regex could never
   # record a real skill version, which broke the reload convention's ack step)
   bash "$ME" ack short-uuid 0.4.2 >/dev/null 2>&1; chk "ack-bad-uuid" 2 $?
