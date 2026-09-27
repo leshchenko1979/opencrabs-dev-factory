@@ -162,8 +162,8 @@ Editors live in a Telegram forum group: one topic = one editor = one live sessio
   (`src/channels/telegram/mod.rs:51`) — an append-only INSERT into
   `channel_messages`, never a read-modify-write — so parallel renames cannot
   clobber each other, and a rename keys on `thread_id`, so session bindings are
-  unaffected. The live name for a thread is the NEWEST row for that `thread_id`,
-  not any row: the table is append-only and retains every historical name.
+  unaffected. The live name for a thread is the NEWEST row for that `thread_id`, not any row: the table is append-only and retains every historical name.
+  **THE NAME SOURCE IS `channel_messages.topic_name` AND ONLY THAT. `sessions.title` is a bind-time label that does NOT follow a rename (measured 2026-09-27, this lane: two registry lane-corrections I declared "from live bindings" read `sessions.title` and were stale — t34653 declared `Compaction visibility` after the topic was renamed `Memory: Compaction` at 10:43Z, and t30090 declared a string that returns 0 rows box-wide for `topic_name LIKE '%channel-ownership%'`), and `session_bindings` carries NO name column at all, so it cannot be a topic source in either direction. Never re-type a topic name either: emit the carry from the row, per §Never author a literal from a rendered output.**
 
 - Every Editor commit carries a git trailer: `Session-Id: <full session uuid>`
   (`git commit --trailer "Session-Id: <uuid>"`). FULL uuid — the 8-char display
