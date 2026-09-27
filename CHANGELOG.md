@@ -1,5 +1,31 @@
 # Changelog — opencrabs-dev
 
+## v0.4.268 — the registry attestation that shipped two defects, and the two mechanisms behind them
+
+**WHAT THIS VERSION RECORDS.** The 2026-09-27 registry re-attestation was written back and pushed by the Delegate (`2fe7ee3`), and **two defects in my own payload survived into it** — one caught by the Delegate's byte-fidelity guard, one it structurally could not catch. Both are now corrected, and both mechanisms are attributed by measurement rather than hypothesis.
+
+**DEFECT 1 — a payload I declared "byte-unchanged and carried forward verbatim" degraded two non-ASCII characters.** `U+2014 EM DASH` in t51188 became `U+002D -`, and `U+1F50D` (the 🔍 my own naming law puts on probes) was stripped from t51714. **The Delegate's two hypotheses are both refuted by measurement:** the sent message carries **7 em-dashes in my prose and 0 inside any lane topic**, while the fragment holds exactly 1 of each — so the transport, the JSON and the locale (`C.UTF-8`, verified) all carried non-ASCII fine, and `ensure_ascii` is reversible and restores both. **Only the lanes array — the one part I typed out from a rendered read instead of emitting from the file — lost the two glyphs, and it lost precisely and only the 2 of 37 entries carrying non-ASCII.** Transcription changes no array length and is invisible on a render, which is why "looks like a faithful copy" is the failure state and not an exemption from it. Landed in `AGENTS.md` §Never author a literal INTO SOURCE from a rendered tool output as a **second dimension** of the existing rule: a carry must be produced from the source object, and **never declare entries "byte-unchanged" — compute a per-entry digest**, because a verbatim claim is an assertion about bytes and an entry count is not one.
+
+**DEFECT 2 — two of my five lane corrections were WRONG, and the Delegate's guard could not have caught them.** Re-checked all five against the only table that can name a topic:
+
+| Thread | Declared (mine) | Live newest | |
+|---|---|---|---|
+| t42311 | `Core: Goal Loop` | `Core: Goal Loop` | OK |
+| t49643 | `Skills` | `Skills` | OK |
+| t30679 | `Telegram: Throttling` | `Telegram: Throttling` | OK |
+| **t34653** | `Compaction visibility` | **`Memory: Compaction`** (renamed 10:43:11Z) | **WRONG** |
+| **t30090** | `#19 channel-ownership PRs` | **`Telegram: Push`** | **WRONG** |
+
+**One mechanism, not two:** I read the name from `sessions.title`, a **bind-time label that does not follow a Telegram rename**, instead of `channel_messages.topic_name`. Decisive check: `topic_name LIKE '%channel-ownership%'` returns **0 rows box-wide**, so that string was never t30090's topic name; and `session_bindings` carries **no name column at all**, so it cannot be a topic source in either direction. The Delegate's two candidate explanations (the local table lags / the rename did not land) are both wrong — I read a **different object** and presented it as a live topic read. Landed in `SKILL.md` beside the existing rule rather than as a new section: that rule already said *"the live name for a thread is the NEWEST row for that `thread_id`, not any row"*, and **I violated it anyway — which is why the sharpening names the TABLE confusion and not only row staleness.** `SKILL.md` 499 → 498 lines, the 500-line router budget held, `oc-lint-laws` rc=0.
+
+**WHY THE GUARD MISSED DEFECT 2, and the leg it should gain.** The Delegate's byte-fidelity guard validates *carry fidelity* — that entries declared untouched are byte-identical — and it correctly aborted on the two degraded entries. It cannot validate *declaration correctness*, because a declared field is taken on my word by design. Proposed leg: for any `lanes` correction, require the declared name to appear as that thread's newest `channel_messages.topic_name` on the member's own profile DB, and red it otherwise. Three of my five would have passed; two would not have.
+
+**CORRECTED PAYLOAD SENT** for re-apply: `{"thread_id":34653,"topic":"Memory: Compaction"}` and `{"thread_id":30090,"topic":"Telegram: Push"}`. Stated limit so the reader does not over-trust them: `channel_messages` records names the daemon **observed**, so a rename nobody has seen since would not appear — this is the best local read, not Telegram's authority.
+
+**Bundled and named (C8):** `75b2a3e8` (this lane — the topic-name source-table law) · `9475ca59` `oc-issue-dispatch` — a zero affinity score is the ABSENCE of a match, not a weak one (#639), and the batch is now ordered by best-available affinity (#647) · `7bfc6b62` (this lane — the Duty-T5 root backstop scoped to POST-GATE issues, 92.8 % permanently-red → 16.1 % actionable, with its predicate named) · `e5e16d3b` the census soak anchor gains its third state, unresolvable, shared with dispatch (#413) · `fbadece8` (this lane — `oc-root.sh` terminates on a bare relative `$0`, c25 finding H-2: every verb hung, unbounded) · `c844d726` (this lane — the 7 Duty-4 c25 law-side items) · `0ddd9e1d` a publish fault is named on the caller stderr, porting the #189 leg (#644) — **the meta-factory's re-sync gap is closed by this commit** · `bde15783` (this lane — C8 naming) · `e1425560` pin the adopted gate run by job-name sha, and stop the ledger lock fd leaking into children (#631, #640) · `eb7afb09` the runtime-artifacts sweeper (auto-skipped, no issue ref).
+
+**LOC:** 3667 → **3679** (+12; `harvest.md` 383 → 393, `upstream-merge-runbook.md` 470 → 472), measured over the 8-file corpus with the stated predicate `sum(1 for _ in open(f, encoding='utf-8'))` — LINES READ, not `wc -l`, which differs when a file lacks a trailing newline. Anchor `1c882a0a` reproduces the v0.4.267 entry's 3667 exactly. Battery **288 pass / 0 fail**, receipt 12:40:17Z, newer than every artifact it covers.
+
 ## v0.4.267 — Duty 4+6 cycle 20260927-c25: 92 findings across 11 lenses, and two HIGHs were this lane's own
 
 **THE CYCLE.** Duty 4 and Duty 6 were run together on owner order. Duty 4 polled **33 lanes** (`sent=33 skipped=1 failed=0`, ledger `n=12211`) and dispositioned **42 submissions from 21 lanes**; Duty 6 ran **11/11 lenses** against corpus hash `c936be0e6b991f81` (14 files / 202 sections), gate `OK (11 persisted, 0 waived, 0 unreceipted)`.
