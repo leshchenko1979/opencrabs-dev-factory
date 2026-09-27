@@ -136,41 +136,30 @@ Bump propagation mechanics (B-F4 v0.4.96 — moved out of the table cell):
 
 ## Duty 4 — Poll workers for skill input (Direct Persistence & Ledger Intake)
 
-Cadence: STANDING — after every FIVE shipped version bumps (shared trigger
-with Duty 6), on owner request, or when incidents cluster without a rule.
+**MOVED 2026-09-27.** The intake contract — the channels a proposal arrives on, the closure
+determination, the validation triple-check, the per-lens census and the checkable completion
+formula — now lives at `docs/instruments/review-rotation.md` **in the meta-factory repo
+(`/root/agent-factories/`), NOT resolvable from this skill tree**. The executable is
+`tools/review.py` (verb `intake`); its state schema is `docs/review-cycle.schema.json`.
+Authored by the Review Rotation instrument lane (owner order 2026-09-27). Do not restate the
+contract here — a second copy is the drift this carve removed.
 
-**Zero Session Notify Law for Worker Proposals (owner order 2026-09-11):**
-Workers do NOT submit Duty 4 proposals via `session_notify` to HQ. Inbound notify
-floods pollute HQ's context window, accelerate context compactions, and duplicate
-the freeze-ACK anti-pattern. Workers write proposals directly to disk in the
-cycle review directory (`~/.opencrabs/profiles/ops/opencrabs-dev/reviews/<cycle-id>/proposals/<session-uuid>.md`)
-or record them onto the ledger via `oc-ledger stamp proposal "ADD|CHANGE <rule> in <file+section> BECAUSE <evidence>"`.
+What STAYS at this factory, because it is process law about US and not about the instrument:
 
-1. Live roster FIRST (`session_search` / `oc-ledger roster --live`, same turn).
-2. Broadcast poll notification via `oc-notify-fanout`: instruct non-dormant editors
-   to write proposals directly to disk (`$REVIEW_DIR/proposals/<uuid>.md`) or append to the ledger.
-   Proposals must use strict format: `ADD|CHANGE <rule> in <file+section> BECAUSE <gap actually hit>`
-   with dates and evidence. Workers NEVER edit skill files themselves.
-3. Intake & Closure Determination:
-   - **Mechanical State Check**: HQ reads the submissions in a single batch turn from disk (`ls $REVIEW_DIR/proposals/`)
-     and ledger events (`oc-ledger events --kind proposal`).
-     **Window-safe read:** `events` counts `--n` rows back from the NEWEST (default 20 — see the `--n N` usage note under `oc-ledger events`), so a
-     **kind-filtered** read is safe — the filter runs BEFORE windowing and cannot be starved by unrelated rows. A
-     **marker-prefix** read over `--kind note` is NOT safe: by cycle close the `note` tail no longer holds the proposals,
-     and `rc=0` WITH rows reads as "none submitted" (the false-negative class, reported by lane `1a63f103`). For the
-     historical `duty4-proposal` note-mirrors (n=3555/3556/3557/3558) use a sufficient window —
-     `oc-ledger events --kind note --n 500 | grep duty4-proposal`, or `--since <cycle-start>`. Disk channel #1
-     (`ls $REVIEW_DIR/proposals/`) is authoritative and always current.
-   - **Quorum / Window**: All active lanes have written their file/ledger entry OR a bounded window
-     (e.g. 15–30 minutes / post-harvest boundary) expires. Lanes that submit nothing are treated as having no gaps.
-4. Validate every proposal three ways BEFORE reporting: disk truth (rule may
-   already exist), live/log evidence (gap must have really happened), coherence
-   with existing gates.
-5. Consolidated verdict table to the owner; **HQ lands every ACCEPTED proposal itself — in its entirety, in the cycle's version batch, with NO design gate, NO plan card and NO owner approval (owner order 2026-09-25: findings "not wasted but fixed in their entirety", human gate removed from the Duty 4/6 fixing process). The verdict table is the RECORD of what was decided and landed, not a request, and it does not wait.** Every accepted proposal lands, or the cycle is incomplete; a proposal whose fix belongs to another owner (daemon/carrier source, upstream repo, `tools/**` code) is ROUTED to that owner and recorded as routed. Canon: `fleet-directives.md §Discussion links + fix-approval gate` (the Duty 4/6 EXCEPTION bullet).
-6. Convergence beats volume: several workers burning independently on the same
-   gap is stronger signal than any single proposal — merge them into one rule.
-- **Checkable Completion Formula**: `DONE = poll fanout dispatched + submissions read from reviews/<cycle-id>/proposals/ and oc-ledger events --kind proposal + verdict recorded in review state + PER-LENS CENSUS present in the verdict (step 7).` The census is a NAMED section of `VERDICT.md`, one row per lens, not a prose summary — a verdict that omits it is INCOMPLETE (Duty-6 c25 I-3: it was specified at step 7 and produced by no cycle).
-
+- **Cadence: STANDING** — after every FIVE shipped version bumps (shared trigger with Duty 6),
+  on owner request, or when incidents cluster without a rule.
+- **Zero Session Notify Law for Worker Proposals (owner order 2026-09-11):** workers do NOT
+  submit Duty 4 proposals via `session_notify` to HQ — inbound notify floods pollute HQ's
+  context window, accelerate compactions and duplicate the freeze-ACK anti-pattern. Workers
+  write proposals to `$REVIEW_DIR/proposals/<session-uuid>.md` or record them on the ledger via
+  `oc-ledger stamp proposal "ADD|CHANGE <rule> in <file+section> BECAUSE <evidence>"`.
+  Workers NEVER edit skill files themselves.
+- **The channels are DECLARED, not inferred.** The cycle declares the proposal directory and the
+  ledger kind it reads; the instrument REFUSES on an undeclared or absent channel rather than
+  reading nothing and reporting clean.
+- **HQ lands every ACCEPTED proposal itself — in its entirety, in the cycle's version batch**
+  (owner order 2026-09-25), with NO design gate, NO plan card and NO owner approval; a fix whose
+  owner is elsewhere is ROUTED to that owner and recorded as routed.
 ## Duty 5 — Procedure rulings (decision 6)
 
 On protocol disputes — role boundaries, exception clauses, gate semantics —
@@ -183,112 +172,44 @@ precedents behind it are in `CHANGELOG.md`.
 
 ## Duty 6 — Periodic subagent skill review
 
-Cadence: after every FIVE shipped version bumps, on owner request, or when an
-incident suggests drift.
+Cadence: after every FIVE shipped version bumps, on owner request, or when an incident suggests
+drift. The cadence is COMPUTED from the ledger, never narrated — see
+`docs/instruments/review-rotation.md` and the section below.
 
-Method:
-0. **Cycle State Durability & Step-0 Recovery** (v0.4.170, owner order 2026-09-13; **instrumentation schema FROZEN v0.4.227**, HQ ruling 2026-09-20 answering lane `ef83024b`):
-   Every Duty 4+6 cycle maintains a machine-readable state file at `reviews/<cycle-id>/state.json` (under `$OC_DEV_STATE`).
-   **THE FROZEN SCHEMA IS VALIDATED, not merely declared (Duty-6 c25 I-7).** Three cycles broke it three ways with nothing catching it: c24 wrote `status: COMPLETE` (not in the enum), invented the lens key `brainscrub` (the register says `brain-scrub`), and c25 added `corpus_hash` outside the ruled key set. Cycle open/close MUST therefore assert: `status ∈ {IN_PROGRESS, COMPLETED}`, every key ⊆ the ruled set, every lens key drawn from the `oc-review-persist` register, and `proposals` POPULATED from the intake directory in the same step that writes the manifest (c22 wrote 57; c23/c24/c25 all wrote `[]` against 41 real submissions). **TWO `reviews/` ROOTS EXIST AND ONLY ONE IS LIVE (v0.4.258, from Duty-6 cycle `20260925-c24` finding D-F5).**
-   The **state-repo root** (`~/.opencrabs/profiles/ops/opencrabs-dev/reviews/`) is CANONICAL — it holds the live
-   cycles and is what `$OC_DEV_STATE` resolves to. The **skill-repo root**
-   (`~/.opencrabs/profiles/ops/skills/opencrabs-dev/reviews/`) is FROZEN EVIDENCE: keep it, never sweep it,
-   never write a new cycle into it. Measured 2026-09-25: 26 cycle dirs live vs 13 frozen, and **three cycle ids
-   exist in BOTH roots** (`20260915-c17`, `20260915-c18`, `20260919-c21`) — so a cycle id alone does not
-   identify a root, and a sweep keyed on the id would hit the frozen copy. **Always pass `--dir` explicitly:**
-   `oc-review-persist`'s own `DEFAULT_DIR` is the SKILL root, which diverges from this law (routed to the
-   Toolsmith as a `tools/**` defect) — a run without `--dir` writes evidence to the frozen tree.
-   **FROZEN SCHEMA — these five field names are law. Instrument against them; do NOT invent parallel spellings.**
-   `{ "cycle_id": "<id>", "cadence": "<cadence-string>", "started_at": "<ts>", "ended_at": "<ts|null>", "duration_review_min": <num|null>, "duration_cycle_min": <num|null>, "status": "IN_PROGRESS|COMPLETED", "proposals": [...], "lenses": { "<lens>": { "status": "PENDING|COMPLETED", "report_path": "...", "verdict": "..." } }, "codification_plan": [...] }`
+**MOVED 2026-09-27.** The review contract — step-0 recovery, the frozen state schema and its
+field rules, the anchored boundary matching, the read-only sub-agent reviewers, the family
+split, persist-first write-through, the validation triple-check, the reviewer-performance loop
+and the lens census — now lives at `docs/instruments/review-rotation.md` **in the meta-factory
+repo (`/root/agent-factories/`), NOT resolvable from this skill tree**. The executable is
+`tools/review.py` (`step0` · `brief` · `record` · `waive` · `verify` · `compile` · `cadence` ·
+`close` · `migrate`); the state schema is `docs/review-cycle.schema.json`, EMITTED by
+`review.py schema` and never hand-kept. Authored by the Review Rotation instrument lane
+(owner order 2026-09-27). Do not restate the contract here — a second copy is the drift this
+carve removed.
 
-   | Field | Rule it encodes |
-   |---|---|
-   | `cycle_id` | **ONE canonical id, minted ONCE at cycle init and written into BOTH stores** — `state.json` AND a ledger row at cycle open — validated on write so the two cannot diverge. Kills the disk-vs-ledger id drift (`20260919-c21` vs `20260919-cycle`) and the negative span that id normalisation manufactured. |
-   | `duration_review_min` | Review start → reports persisted. **This is the number the owner asked for.** |
-   | `duration_cycle_min` | Cycle start → cadence close stamp. What existed before, previously mislabelled as *the* duration. |
-   | `ended_at` | Explicit terminal timestamp. **NEVER `updated_at`** — 6 of 13 state files never advanced it and two showed a 0.0-min span, so a reader could not tell "finished" from "untouched". |
-   | `status` | Terminal ENUM, exactly `IN_PROGRESS \| COMPLETED`. Never free text (`COMPLETED` / `VALIDATED` / `reports_persisted` / `intake_complete` were all observed, plus a contradiction where `state.json` read `IN_PROGRESS` while the ledger close row already existed). |
+What STAYS at this factory:
 
-   **Two matching rules bind the step-8 close stamp** (same ruling):
-   - The cadence-reset stamp is matched as an **ANCHORED whole-row pattern** — `^v<digits>.<digits>.<digits> ACCEPTED` — never a loose substring.
-   - A note that withholds an END for a cycle **must BEGIN with the literal token `WITHHELD:`**, so a loose grep cannot harvest an END from a row whose whole point is that no END was written.
-
-   Before spawning reviewers or codifying findings, HQ initializes `state.json`.
-   **Step-0 Recovery Mandate:** After ANY context compaction or session restart during Duty 4+6, HQ must first check for an existing `reviews/<cycle-id>/state.json` before re-querying proposals, re-spawning reviewers, or re-drafting plans. Reading `state.json` restores the exact cycle state, preventing redundant tool calls or loss of completed work across compactions.
-
-   **Mechanical corpus pack at cycle open** (owner directive 2026-09-25, TRIAL; lane `ef83024b` instrument). Before spawning reviewers, run the law-corpus pack keyed to the SAME cycle id, so the mechanical evidence exists before any lens is briefed:
-
-   `python3 ~/.opencrabs/profiles/ops/projects/jev-bloat-review/pilot/pack.py --cycle-id <cycle-id> --cycle-opened-at <started_at> --corpus-root <skill dir> --reviews-root <state dir>/reviews --exclude CHANGELOG.md`
-
-   Evidence lands at `reviews/<cycle-id>/evidence/`. **Record the corpus hash the pack prints — a report is valid only for that hash.** A re-run of the SAME cycle id is byte-identical by construction (the open instant is an input, never the wall clock). Called by **ABSOLUTE PATH for the trial**: its module set is 9+ files in a project dir, so routing it into `tools/` is a separate decision, not a packaging detail.
-
-   **Coverage limit, stated so it is not assumed:** the pack reads top-level `*.md` only, so `tools/docs/RC-CONTRACT.md`, `tools/docs/HEALTH-CHECKS.md` and `tools/docs/HEALTH-CLASSES.md` (~139 KB of law) are OUTSIDE the corpus until the manifest leg lands. **The excluded law is ASSIGNED, not left to whoever remembers (Duty-6 c25 I-6):** `tools/docs/RC-CONTRACT.md` → the **J** lens (its rules are state-derivable); `tools/docs/HEALTH-CHECKS.md` + `HEALTH-CLASSES.md` → the **F** lens (they govern the tool sweep); `docs/instruments/*.md` (meta-factory repo, not resolvable from this skill) → read by **HQ** at step 5 when a finding names an instrument clause. A cycle whose record does not say who read them records the gap as an ACCEPTED dated exclusion instead. **A missing or failing pack is REPORTED, never silently skipped** — the lenses then run on semantic evidence only, and the cycle record says so.
-1. Reviewers are READ-ONLY SUB-AGENTS (spawn read_only=true, allow_nested=false),
-   one per lens (A/B/C/D/E/F/G/H/I/J + standing brain-scrub); they NEVER edit skill files. Duty-6 reviews
-   are ALWAYS sub-agent work, never HQ-only inline reading. Same-day
-   second passes of one lens suffix the report name (`-run2`) and split scopes
-   (`B2`/`A2`) — the lens catalog (review-lenses.md) is unchanged by that;
-   family map letters stay A–J. Findings
-   must carry verbatim quotes; HQ verifies every accepted quote against
-   disk before acting. Hollow report → ONE retry with the prompt narrowed to
-   that single lens; a second hollow result unlocks inline fallback, which
-   must be flagged as such in the review record.
-2. Split lenses for independence by family (DOCS=A,B,G · TOOLS=C,E,F ·
-   MECHANICAL=J · ARTIFACTS=D+H · META=I) — letters keep chronological birth order (stable
-   report/persist keys, not an ordering). FULL LENS CATALOG: `review-lenses.md`
-   (same dir as this file) — read it before spawning reviewers; each brief
-   names the lens scope and evidence format, and the briefs that carry an exclusion
-   clause state it (C, E). **The cycle's mechanical slice is passed in the SPAWN
-   PROMPT, not carried by this catalogue** — the catalogue is cycle-invariant, while
-   the slice (the sentence-match, near-title and dead-reference legs for that family's
-   files, with the corpus hash) comes from `reviews/<cycle-id>/evidence/`. Layer 2
-   (semantic mechanisation) is **REPORT-ONLY** — it never
-   creates or routes a finding: its gate failed a pre-registered test (precision 0.111 (n=66, the pre-registered trial population; bars 0.70/0.40) /
-   recall 0.126 against bars 0.70 / 0.40, n=66). A reviewer that validates a mechanisation
-   opportunity must name the tool owner AND the command, never the idea alone.
-
-3. PERSISTENCE (persist-first write-through, owner law 2026-09-08, v0.4.116):
-   the SPAWN PROMPT instructs each reviewer to write its FULL report to
-   the cycle report dir (e.g. `/tmp/duty6/`, `/tmp/duty6-c2/` —
-   cycle-suffixed) as `lens-<X>.md` before finishing — the reviewer's own
-   file write is the PRIMARY copy; HQ's persist step
-   (`oc-review-persist <lens> @<file>`, re-read-verified + sha256-indexed)
-   becomes a VERIFIED COPY (byte-count + sha check), never the only copy.
-   A report existing only in push-transit does not count as delivered.
-   Fallback (write-less reviewers, demonstrated 4/4 cycle-2): a read-only
-   reviewer cannot write files — HQ's persist-on-receipt
-   (`oc-review-persist`, byte-count + sha256 verified) counts as delivery
-   when the reviewer toolset has no file-write capability; the report text
-   arrives in the spawn-result push and is persisted verbatim.
-4. HQ VALIDATES every finding with the poll triple-check (disk truth /
-   evidence / coherence): ACCEPT · KERNEL (already covered) · REJECT (reason
-   recorded, never silently dropped).
-5. **HQ lands EVERY accepted finding in its entirety — mechanical AND semantic — as ONE version batch, with NO design gate, NO plan card and NO owner approval (owner order 2026-09-25: findings "not wasted but fixed in their entirety", human gate removed from the Duty 4/6 fixing process).** Nothing is deferred to the owner as a "proposal": the fix shape is HQ's decision, and the verdict table is the RECORD of what landed, not a request. **COMPLETENESS IS THE CHECK:** the verdict MUST enumerate every finding by ID and assert that the partition sums to the census count — an accepted finding with no landed home is a cycle-completion FAILURE, never a scheduling choice. A finding whose fix belongs to another owner (daemon/carrier source, upstream repo, `tools/**` code) is ROUTED to that owner and recorded as routed. This does NOT widen HQ's authority: scope stays this factory's law surface, and the owner-gated actions in `AGENTS.md` remain gated. Canon: `fleet-directives.md §Discussion links + fix-approval gate` (the Duty 4/6 EXCEPTION bullet).
-6. Verdict table posts to owner topic 30220; registry notes updated.
-7. **Reviewer-performance loop:** after every pass, HQ folds
-   reviewer-execution lessons into the lens briefs and tool guarantees.
-   Examples: compaction amnesia → identity-guard clause in the prompt;
-   mis-scope → narrower lens brief; hollow reports → sharper evidence-format
-   requirement; failed spot-checks → tighter citation rule. Edits ship with
-   the next version batch, attributed to the reviewer that produced the
-   evidence. PLUS THE LENS CENSUS (v0.4.81): every consolidated verdict
-   appends a per-lens census computed from the already-persisted reports —
-   yield (findings accepted), overlap (convergence with another lens), cost
-   (spawns/waves lost). Standing triggers, owner-gated: clean x2 cycles →
-   automate the lens's mechanical half or shrink the brief; convergence with
-   another lens x2 → merge or sharpen the boundary; object list stale at
-   spawn → re-brief BEFORE spawning. Anti-rules: no lens-per-incident
-   (incidents become rules/proposals, not lenses); no auto-growth. Lenses
-   are quality dimensions (stable, few); objects change every batch and are
-   re-derived from the skill root at spawn time.
-8. **Duty-6 Ledger Cadence Reset Stamp (owner order 2026-09-15):** Upon completing the cycle (reports persisted, master verdict written, codifications applied or planned), HQ **MUST explicitly stamp the cycle close note** onto the ledger:
-   `tools/state/oc-ledger stamp note "v<version> ACCEPTED — Duty 6 Cycle <cycle-id> closed" --by "hq <uuid>"`
-   This stamps the mechanical boundary recognized by `oc-ledger cadence` (`^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED`), resetting the review cadence counter from `FIRE` back to `0/5 WAIT`. Without this stamp, `oc-ledger cadence` will fail to reset and will continuously report overdue review cycles.
-- **Checkable Completion Formula**: `DONE = every catalog lens persisted via oc-review-persist (assert `./tools/state/oc-review-persist check-cycle reviews/<cycle-id>` rc 0 — the tool derives the lens set from the catalog AT GATE TIME; NEVER hardcode the count here) + receipts logged in skill-review-index.log + master verdict compiled in reviews/<cycle-id>/VERDICT.md + review manifest marked COMPLETED in reviews/<cycle-id>/state.json + oc-ledger stamp note "v<version> ACCEPTED — Duty 6 Cycle <id> closed" executed (resetting cadence to 0/5 WAIT).`
-
-Rationale: HQ authors most rules — author-blindness is structural.
-Independent subagent eyes keep the set honest, and **HQ's own completeness check keeps it whole** — the owner gate was REMOVED from the Duty 4/6 fixing process on 2026-09-25, so the reviewers' findings are landed in their entirety rather than triaged down to what an owner happened to approve.
-
+- **HQ lands EVERY accepted finding in its entirety — mechanical AND semantic — as ONE version
+  batch**, with NO design gate, NO plan card and NO owner approval (owner order 2026-09-25:
+  findings "not wasted but fixed in their entirety"). Nothing is deferred to the owner as a
+  "proposal". A finding whose fix belongs to another owner is ROUTED and recorded as routed.
+  Scope stays this factory's law surface; the owner-gated actions in `AGENTS.md` remain gated.
+- **The verdict table posts to owner topic 30220**; registry notes updated.
+- **The ledger cadence reset stamp is ours and is mandatory** — see the section below. Without
+  it the counter never resets and continuously reports overdue cycles.
+- **Two `reviews/` roots exist and only one is live.** The STATE-repo root
+  (`~/.opencrabs/profiles/ops/opencrabs-dev/reviews/`) is canonical and is what `$OC_DEV_STATE`
+  resolves to; the skill-repo root is FROZEN EVIDENCE — keep it, never sweep it, never write a
+  new cycle into it, and always pass `--dir` explicitly.
+- **The corpus pack is a TRIAL, not this instrument** — it runs by absolute path from its own
+  project dir, and its routing into `tools/` is a separate decision.
+- **KEY-SET CLOSURE STAYS HERE (Duty-6 c25 I-7, measured 2026-09-27).** The `status` enum is
+  mechanically carried (`review.py schema` emits `enum: [IN_PROGRESS, COMPLETED, ABANDONED]`,
+  enforced as `LIFECYCLE_STATES`), but **the "every key ⊆ the ruled set" rule is carried
+  NOWHERE** — the emitted schema has no top-level `additionalProperties`, so an unknown key such
+  as c25's `corpus_hash` is accepted. Until the instrument closes that, a cycle open/close must
+  assert key-set closure by hand. Stated because a carve must not delete a live rule that has no
+  mechanical carrier.
 ## Duty 7 — RETIRED (owner order 2026-09-14, v0.4.176)
 
 Duty 7 and the centralized Idea Box coordination queue are RETIRED; feedback routes directly to the
@@ -323,8 +244,21 @@ Long-running commands (>60s, test batteries, carrier/CI waits, heavy audits) MUS
 
 ## Cadence boundary is stamped at review consolidation
 
-`oc-ledger cadence` = count of `skill-bump` events since the last BOUNDARY event. **The boundary predicate is a `kind=note` row whose text BEGINS `<version> ACCEPTED`** — the tool's own regex is `^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED` (the `cmd_cadence` arm in `tools/state/oc-ledger`, `^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED`), taken as the MAX `n`; `review-battery` and legacy `skill-review*` rows are consulted **only when NO note close exists at all**, which is the pre-close-epoch fallback the v1.1 KINDS vocabulary can no longer produce — known drift, do not stamp those. **Consequence, and it is the whole point of this paragraph: the close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `oc-ledger stamp review-battery`.** This section prescribed the `review-battery` form until v0.4.243, and following it literally would have silently FAILED to reset the counter while the stamp itself returned success — a green receipt on a boundary that never moved (found by Duty 4 cycle `20260922-c22`: the prose was stale, the tool was right). Lesson 2026-09-01: the Duty 4+6 verdict was consolidated but never stamped → counter read 24/5 FIRE on stale data. Rule: every consolidated review verdict ends with the boundary stamp BEFORE reporting the cadence state; never narrate a cadence reading without confirming the boundary row exists.
+`oc-ledger cadence` = count of `skill-bump` events since the last BOUNDARY event. **The boundary
+predicate is a `kind=note` row whose text BEGINS `<version> ACCEPTED`** — the tool's regex is
+`^v[0-9]+\.[0-9]+\.[0-9]+ ACCEPTED`, taken as the MAX `n`.
 
+**The close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT
+`oc-ledger stamp review-battery`.** This section prescribed the `review-battery` form until
+v0.4.243, and following it literally silently FAILED to reset the counter while the stamp itself
+returned success — a green receipt on a boundary that never moved (found by Duty 4 cycle
+`20260922-c22`: the prose was stale, the tool was right). Rule: every consolidated review verdict
+ends with the boundary stamp BEFORE reporting the cadence state; never narrate a cadence reading
+without confirming the boundary row exists.
+
+**The predicate's mechanics are the instrument's** — `review.py cadence`, and
+`docs/instruments/review-rotation.md` for the two anchored matching rules. What stays here is the
+STAMP, the ledger it lands on and the close ordering above.
 ## Rule-text provenance — CHANGELOG at ship time
 
 Rule text carries NO biography — provenance (date, origin quote, war story)
