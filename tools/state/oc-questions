@@ -786,8 +786,16 @@ def cmd_list(argv):
     entries = data["sets"]
     if "--all" not in flags:
         entries = [s for s in entries if s.get("status") == "open"]
-    if flags.get("--session"):
-        entries = [s for s in entries if s.get("session") == flags["--session"]]
+    # Filter on the QUESTION's own session, falling back to the set's (#632).
+    # The set's `session` is the CREATOR's id (provenance): a standing factory
+    # set is created once by one lane and then asked into by many, so a
+    # set-level filter compares the CREATOR against the caller and returns zero
+    # lanes -- every question in the set invisible to its own author. This
+    # mirrors question_return_address, the same per-question rule the notify
+    # verb already uses. Cost of the old behaviour, measured: a lane using
+    # `list` as its "have I already asked?" check saw 0 open, filed a duplicate,
+    # and put two questions for one issue on the owner's page.
+    want_session = (flags.get("--session") or "").strip()
 
     # Group by LANE, not by set (owner order 2026-09-25): one standing factory
     # set holds questions from many lanes, so the SET is not the unit a reader
@@ -795,6 +803,11 @@ def cmd_list(argv):
     lanes = {}
     for entry in entries:
         for question in entry.get("questions", []):
+            if want_session:
+                q_session = (question.get("session")
+                             or entry.get("session") or "").strip()
+                if q_session != want_session:
+                    continue
             lane = question.get("lane") or entry.get("lane") or "unknown"
             lanes.setdefault(lane, []).append((entry, question))
 
@@ -3289,6 +3302,50 @@ def selftest():
         ck(_fj.get("open_questions") == sum(r["open"] for r in _fj.get("lanes", [])),
            "list --lane --json: open_questions agrees with the lanes it shows "
            "(pre-fix it carried the fleet total beside a filtered lanes[])")
+
+        # ---- #632: `list --session` filters the QUESTION's session, not the
+        # SET's. The fixture already holds the discriminating shape -- ONE set
+        # with q1 from session_a and q2 from session_b -- and the SET's own
+        # session is session_a (its creator). So a set-level filter makes
+        # session_b's own question invisible to session_b, and makes
+        # session_a's read return the WHOLE set. Both directions asserted:
+        # a fixture where the quantity is zero measures nothing.
+        _lane_b = None
+        for _q in _qs:
+            if _q.get("session") == session_b:
+                _lane_b = _q.get("lane")
+        ck(_lane_b is not None,
+           "fixture: the set holds a question asked by the SECOND session "
+           "(so the filter has two sessions to tell apart)")
+        rc, out, _ = run("list", "--session", session_b)
+        _hdr_b = out.strip().splitlines()[0] if out.strip() else ""
+        ck(rc == 0 and _hdr_b.startswith("1 open question(s) across 1 lane(s)"),
+           "list --session shows a lane the QUESTION's session asked for "
+           "(want 1 open / 1 lane, got %r)" % _hdr_b)
+        ck(_lane_b and re.search(r"^%s \u2014 1 open" % re.escape(_lane_b), out, re.M),
+           "\u2026and it is that session's OWN lane (%r), not the set creator's"
+           % _lane_b)
+        ck(session_a not in out,
+           "\u2026the set CREATOR's questions are not shown to the other session")
+        # Assert WHICH LANES appear, not a count: the fixture's session_a asks
+        # across many earlier legs, so an exact number here measures the
+        # fixture's history rather than the filter. The discriminating property
+        # is that the creator sees ONLY its own lane -- pre-fix this returned
+        # every lane in the set (2 here), which is the defect.
+        rc, out, _ = run("list", "--session", session_a)
+        _hdr_a = out.strip().splitlines()[0] if out.strip() else ""
+        ck(rc == 0 and _hdr_a.endswith("across 1 lane(s)"),
+           "list --session scopes to the CREATOR's own lane only "
+           "(want 1 lane, got %r -- pre-fix this returned every lane in the "
+           "set)" % _hdr_a)
+        ck(_lane_b and not re.search(r"^%s \u2014 " % re.escape(_lane_b), out, re.M),
+           "\u2026and the OTHER session's lane is absent from it (%r)"
+           % _lane_b)
+        rc, out, _ = run("list", "--session", "deadbeef-0000-0000-0000-000000000000")
+        _hdr_x = out.strip().splitlines()[0] if out.strip() else ""
+        ck(rc == 0 and _hdr_x.startswith("0 open question(s) across 0 lane(s)"),
+           "list --session control: an unrelated session sees nothing (%r)"
+           % _hdr_x)
 
         # The page: ONE section per LANE, each with a STABLE anchor.
         rc, out, _ = run("publish", "--json")

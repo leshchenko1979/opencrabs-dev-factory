@@ -1185,7 +1185,27 @@ elif action == 'vet':
     upstream_repo = sys.argv[5]
     as_json = sys.argv[6] == 'true'
     
-    res = vet_candidate(candidate, repo_path, base_ref, upstream_repo)
+    # (#628) OC_HARVEST_MOCK_PRS -- the PR check must be MOCKABLE on the vet
+    # path. Without it every vet leg made a LIVE gh-pr-list call, so upstream
+    # activity decided the selftest: leg 4e's fixture uses the real issue #403,
+    # and upstream PR #1760 (opened 2026-09-27) referenced it, so the gate at
+    # :812 refused BEFORE the smoke-verdicts path the leg exists to test and the
+    # fleet battery went red on an unmodified tool (verified: git diff against
+    # origin/main on this file was empty, and the same leg read PASS 40 min
+    # earlier). Consistent with the four existing hooks -- OC_HARVEST_MOCK_DEPLOYED_TS,
+    # _HIERARCHY, _ISSUE_STATE, _LEDGER -- rather than a fifth variant.
+    # UNSET -> live call, unchanged; production behaviour is untouched.
+    _mock_prs = None
+    _mp_path = os.environ.get('OC_HARVEST_MOCK_PRS')
+    if _mp_path:
+        try:
+            with open(_mp_path) as _f:
+                _mock_prs = json.load(_f)
+        except Exception as _e:
+            print(f'oc-harvest-dispatch: WARNING -- OC_HARVEST_MOCK_PRS={_mp_path} unreadable ({_e}); falling back to the LIVE PR lookup', file=sys.stderr)
+            _mock_prs = None
+
+    res = vet_candidate(candidate, repo_path, base_ref, upstream_repo, mock_prs=_mock_prs)
     if as_json:
         print(json.dumps(res, indent=2))
     else:
@@ -1436,6 +1456,13 @@ cmd_selftest() {
   printf '{"manual_records": []}\n' > "$OC_HARVEST_REGISTRY_FILE"
 
   local mock_repo="$st_dir/repo"
+  # (#628) hermetic PR check for every `vet` leg below. An EMPTY list is the
+  # right fixture: no leg expects the ALREADY_MERGED_UPSTREAM_PR refusal (it
+  # appears once in this file, in production at :824, and no leg asserts it), so
+  # an empty mock leaves each leg testing the path it was written for. Without
+  # this the legs made live calls and upstream state decided the battery.
+  export OC_HARVEST_MOCK_PRS="$st_dir/mock_prs_vet.json"
+  printf '[]\n' > "$OC_HARVEST_MOCK_PRS"
   mkdir -p "$mock_repo"
   git -C "$mock_repo" init -q -b main
   git -C "$mock_repo" config user.email "test@example.com"
@@ -1725,6 +1752,30 @@ EOF
     echo "  bad 4e - vet rebased feat with changed patch-id expected rc=0 APPROVED via smoke-verdicts.log (#292), got rc=$rc ($out)"
     return 1
   fi
+
+  # 4f-628. (#628) The PR mock DECIDES -- proving the vet path consults
+  # OC_HARVEST_MOCK_PRS rather than the live upstream. Same call as 4e (which
+  # APPROVED under the empty mock), but the mock now names #403, so the gate at
+  # :824 must refuse BEFORE the smoke-verdicts anchor that made 4e pass. Without
+  # this leg the hook is unproven: an empty mock that is never read looks
+  # identical to one that works.
+  # Shape matters: check_upstream_pr accepts a fork-qualified ref in body/title,
+  # an "Original issue:" line, or a fork-space head branch -- a BARE "#403" is
+  # deliberately NOT a route since #415 (GitHub appends PR numbers to squashed
+  # subjects, which mapped into fork-issue space). So the mock carries a
+  # fork-qualified body ref, the same form a real upstream PR would.
+  printf '[{"number": 1760, "state": "OPEN", "title": "mock upstream PR", "mergedAt": null, "headRefName": "fix/403-mock", "body": "Fixes leshchenko1979/opencrabs#403"}]\n' > "$OC_HARVEST_MOCK_PRS"
+  rc=0
+  out="$(run_engine "vet" "$shifted_sha" "$rebase_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "UPSTREAM_PR"; then
+    echo "  ok 4f-628 - #628 the PR mock DECIDES: a mock naming the issue refuses where the empty mock approved"
+  else
+    echo "  bad 4f-628 - #628 expected rc=1 + an upstream-PR refusal from the mock, got rc=$rc ($out)"
+    printf '[]\n' > "$OC_HARVEST_MOCK_PRS"
+    return 1
+  fi
+  # Restore the empty mock so no later leg inherits the fixture.
+  printf '[]\n' > "$OC_HARVEST_MOCK_PRS"
   # 4f. Design B defect 1 (#415): the #292 smoke fallback is a WEAKER anchor than a
   # resolved swap and may fire ONLY when the swap path yielded nothing. It can only
   # ever move the anchor EARLIER, so letting it override a correct swap value can

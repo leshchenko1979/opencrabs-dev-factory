@@ -1060,7 +1060,11 @@ def set_soak_clock(member_issues, commits_by_issue, repo_path, swaps, now_ts,
     anchor_sha = ''
     scanned = 0
     for iss in sorted(member_issues):
-        for c in commits_by_issue.get(int(iss), []):
+        # #625: a harvested member's commits are not in the fork-only delta, so
+        # the clock must read the widened index too or it silently ignores the
+        # very members the readiness predicate now accepts.
+        _mcs, _ = member_commits(iss, commits_by_issue, repo_path)
+        for c in _mcs:
             scanned += 1
             sha = c.get('sha', '')
             # The commit's OWN deployed_ts is the first source, exactly as the
@@ -1112,6 +1116,95 @@ for p in prs:
 issue_map, pr_entries = parse_issue_map(prs)
 
 
+_MAIN_COMMITS_CACHE = {}
+
+
+def get_main_resident_commits(repo_path):
+    """Every commit resident on origin/main, as commit dicts -- the FULL history,
+    not the fork-only delta.
+
+    #625. A HARVESTED member's commits leave the fork-only range
+    (`adolfousier/main..origin/main`) because harvesting moves them into
+    `adolfousier/main`. member_ready() derived `swapped_ts` only from that range,
+    so once a member was harvested its anchor became unreachable and the swapped
+    leg refused it PERMANENTLY -- unresolvable by any legitimate action, since
+    the very act of harvesting is what broke it. Measured on #119: upstream PR
+    adolfousier/opencrabs#1481 MERGED, fork merge a0f581752 an ancestor of main,
+    and `git log adolfousier/main..origin/main` carries 0 commits for it while
+    full history carries 5.
+
+    The swap-journal path cannot substitute: measured at the same instant, 293
+    distinct auto-swap shas exist and only 44 intersect origin/main, and #119's
+    own journal sha (64bca902) is NOT on main -- it was squashed by the very
+    harvest that deployed it.
+
+    Walked once per repo and memoised, and consulted ONLY when the fork-only
+    index holds nothing for the member, so the common path is unchanged. Cost
+    measured: one full walk is 2455 commits.
+
+    Keyed on the Issue-Ref TRAILER via the same oc_claims.parse the delta walk
+    uses -- never `--grep`, which matches prose mentions (measured: `--grep=#119`
+    returns 0e74d6bf, a commit that only names #119 in text).
+    """
+    mock = os.environ.get("OC_HARVEST_MOCK_MAIN_COMMITS", "")
+    if mock and os.path.exists(mock):
+        with open(mock) as f:
+            return json.load(f)
+    key = os.path.abspath(repo_path or "")
+    if key in _MAIN_COMMITS_CACHE:
+        return _MAIN_COMMITS_CACHE[key]
+    commits = []
+    if repo_path and os.path.isdir(repo_path):
+        cmd = [
+            "git", "-C", repo_path, "log", "origin/main",
+            "--format=%H%x1f%h%x1f%s%x1f%(trailers:key=Issue-Ref,valueonly,separator=%x2c)%x1f%ct",
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+        except Exception:
+            res = None
+        if res is not None and res.returncode == 0:
+            for line in res.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split("\x1f")
+                if len(parts) < 5:
+                    continue
+                try:
+                    cts = int(parts[4]) if parts[4].strip().isdigit() else 0
+                except Exception:
+                    cts = 0
+                commits.append({
+                    "sha": parts[0], "short_sha": parts[1],
+                    "subject": parts[2], "trailer": parts[3].strip(),
+                    "commit_ts": cts,
+                })
+    _MAIN_COMMITS_CACHE[key] = commits
+    return commits
+
+
+def member_commits(iss, commits_by_issue, repo_path):
+    """A member's commits, and whether the FULL-history widening decided.
+
+    Returns (commits, widened). `widened` is True only when the fork-only delta
+    held nothing and the main-resident index supplied the commits -- so a caller
+    can disclose WHICH evidence made the member ready. The two are not the same
+    claim: a swap-journal anchor says the content shipped in a deployed binary;
+    main residency says the content landed on main. For a harvested member the
+    second is the reachable one, and a reader must be able to tell them apart.
+    """
+    try:
+        n = int(iss)
+    except Exception:
+        return [], False
+    cs = commits_by_issue.get(n, [])
+    if cs:
+        return cs, False
+    idx = build_commits_by_issue(get_main_resident_commits(repo_path))
+    got = idx.get(n, [])
+    return (got, True) if got else ([], False)
+
+
 def member_ready(iss, commits_by_issue, repo_path, swaps, st_dir,
                  mock_deployed_ts=None):
     """Is this set member READY? ready = swapped AND smoked.
@@ -1134,9 +1227,16 @@ def member_ready(iss, commits_by_issue, repo_path, swaps, st_dir,
     can say which condition failed rather than print a bare GH state.
     """
     swapped_ts = 0
-    for c in commits_by_issue.get(int(iss), []):
+    _cs, _widened = member_commits(iss, commits_by_issue, repo_path)
+    for c in _cs:
         t = c.get('deployed_ts') or get_commit_deploy_ts(
             c.get('sha', ''), repo_path, swaps, mock_deployed_ts, st_dir)
+        if not t and _widened:
+            # The widened path supplies main residency, not a swap anchor: the
+            # member's own commits are on origin/main, so the content landed.
+            # Anchor on the newest such commit, matching the max() the delta
+            # path already uses for the soak clock.
+            t = c.get('commit_ts') or 0
         if t and t > swapped_ts:
             swapped_ts = t
     smoke_ts = get_issue_smoke_pass_ts(int(iss), st_dir)
@@ -1145,6 +1245,11 @@ def member_ready(iss, commits_by_issue, repo_path, swaps, st_dir,
         missing.append('not swapped')
     if not smoke_ts:
         missing.append('not smoked')
+    if not missing and _widened:
+        # Disclosure, not a bare verdict: the reader can see WHICH evidence made
+        # this member ready, so a main-resident anchor is never mistaken for a
+        # deployed-binary one.
+        return True, 'swapped+smoked(main-resident)'
     return (not missing), ('+'.join(missing) if missing else 'swapped+smoked')
 
 
@@ -3816,10 +3921,14 @@ sys.exit(0 if json.load(sys.stdin)["summary"]["open_fix_titled"]==2 else 1)
   local rel_empty="$setdir/rel_empty.json" rel_one="$setdir/rel_one.json" \
         rel_chain="$setdir/rel_chain.json" st_open="$setdir/st_open.json" \
         st_mixed="$setdir/st_mixed.json" st_chain="$setdir/st_chain.json"
+  # #625 fixtures: a member reached only through the main-resident index.
+  local rel_602="$setdir/rel_602.json" st_602="$setdir/st_602.json"
   printf '{"600": []}\n'                                  > "$rel_empty"
   printf '{"600": [601]}\n'                               > "$rel_one"
+  printf '{"600": [602]}\n'                               > "$rel_602"
   printf '{"600": [601], "601": [602]}\n'                 > "$rel_chain"
   printf '{"600": {"state": "open"}}\n'                   > "$st_open"
+  printf '{"600": {"state": "closed"}, "602": {"state": "open"}}\n' > "$st_602"
   printf '{"600": {"state": "closed"}, "601": {"state": "open"}}\n'  > "$st_mixed"
   printf '{"600": {"state": "closed"}, "601": {"state": "closed"}, "602": {"state": "open"}}\n' > "$st_chain"
 
@@ -4005,6 +4114,156 @@ C601REOF
     ok "clusters view: an uncomputed set clock is DISCLOSED, never rendered as clean"
   else
     echo "  bad  - clusters view must disclose the uncomputed clock"
+  fi
+
+
+  # ---- 27b. HARVESTED-MEMBER ANCHOR RESOLUTION (#625) --------------------
+  # A harvested member's commits LEAVE the fork-only delta, because harvesting
+  # moves them into adolfousier/main. member_ready() derived swapped_ts only
+  # from that delta, so the member's anchor became unreachable BY THE VERY ACT
+  # OF HARVESTING IT and the set refused forever.
+  #
+  # Live specimen, measured 2026-09-27: #119 -- upstream PR adolfousier/
+  # opencrabs#1481 MERGED, fork merge a0f581752 an ancestor of main, and
+  #   git log adolfousier/main..origin/main  (Issue-Ref #119) -> 0 commits
+  #   git log origin/main                    (full history)   -> 5 commits
+  # `check 396` therefore refused [HELD_SET: #119(closed, not swapped+not
+  # smoked)] with the set clock printing "0 commit(s) scanned", and stamping a
+  # smoke row could not clear it: the swapped half was unresolvable by any
+  # legitimate action. The swap-journal path cannot substitute either -- 293
+  # distinct auto-swap shas exist, only 44 intersect origin/main, and #119's own
+  # journal sha (64bca902) is NOT on main (squashed by the harvest that
+  # deployed it).
+  #
+  # Fixture shape: #601 is SMOKED (the PASS row above) but has NO commit in the
+  # delta index, only in the main-resident one. So `swapped` is reachable ONLY
+  # through the widening, which is what makes leg (b) a real control.
+  local c601_main="$setdir/c601_main.json" c602_main="$setdir/c602_main.json"
+  cat << 'C601MEOF' > "$c601_main"
+[{"sha": "6010000mb000000000000000000000000000000",
+  "short_sha": "6010000",
+  "subject": "fix(set): a relative, harvested upstream (#601)",
+  "trailer": "leshchenko1979/opencrabs#601",
+  "commit_ts": 100000,
+  "files": ["src/set607/rel.rs"]}]
+C601MEOF
+  cat << 'C602MEOF' > "$c602_main"
+[{"sha": "6020000mb000000000000000000000000000000",
+  "short_sha": "6020000",
+  "subject": "fix(set): a relative, harvested, NOT smoked (#602)",
+  "trailer": "leshchenko1979/opencrabs#602",
+  "commit_ts": 100000,
+  "files": ["src/set607/rel2.rs"]}]
+C602MEOF
+
+  # (a) THE WIDENING CARRIES THE MEMBER. Delta holds only #600; the main-resident
+  #     index holds #601; #601 is smoked -> READY, so nothing holds the set.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_one" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c600" OC_HARVEST_MOCK_MAIN_COMMITS="$c601_main" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if ! oc_has "$out" "[HELD_SET:"; then
+    ok "#625: a harvested member resolves its anchor via the main-resident index and no longer holds the set"
+  else
+    echo "  bad  - #625 a harvested+smoked member still held the set; got rc=$rc ($out)"
+  fi
+
+  # (b) THE CONTROL, and the leg that gives (a) meaning. Same fixture WITHOUT
+  #     the main-resident index: the member must read "not swapped". If (b)
+  #     also passed, nothing above was decided by the widening -- that is the
+  #     vacuous-green shape this session has paid for repeatedly.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_one" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c600" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "not swapped"; then
+    ok "#625 control: without the main-resident index the same member reads 'not swapped' (so (a) was decided by the widening)"
+  else
+    echo "  bad  - #625 control expected rc=1 + 'not swapped', got rc=$rc ($out)"
+  fi
+
+  # (c) THE REFUSAL STILL NAMES THE MISSING HALF. #602 is main-resident but has
+  #     NO smoke row, so `swapped` resolves through the widening and only
+  #     `not smoked` remains -- a bare GH state would hide which condition
+  #     failed, and the reporter could not act on it.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_602" OC_HARVEST_MOCK_ISSUE_STATE="$st_602" \
+    OC_HARVEST_MOCK_COMMITS="$c600" OC_HARVEST_MOCK_MAIN_COMMITS="$c602_main" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if oc_has "$out" "#602" && oc_has "$out" "not smoked" && ! oc_has "$out" "not swapped"; then
+    ok "#625: a main-resident but unsmoked member names ONLY the missing half (swapped resolved, not a bare GH state)"
+  else
+    echo "  bad  - #625 disclosure leg expected '#602' + 'not smoked' and NOT 'not swapped'; got rc=$rc ($out)"
+  fi
+
+  # (d) THE SOAK CLOCK SCANS THE WIDENED COMMITS. Pre-fix the clock printed
+  #     "0 commit(s) scanned" for exactly this population -- the second half of
+  #     the reported symptom. The clock reads the same members the predicate
+  #     now accepts, or it silently ignores them.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_one" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c600" OC_HARVEST_MOCK_MAIN_COMMITS="$c601_main" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if ! oc_has "$out" "0 commit(s) scanned"; then
+    ok "#625: the set soak clock scans the widened commits (no 'UNRESOLVABLE -- 0 commit(s) scanned' for a harvested member)"
+  else
+    echo "  bad  - #625 the soak clock still reports 0 commits scanned; got rc=$rc ($out)"
+  fi
+
+  # (e) FALLBACK, NEVER REPLACEMENT. When the delta DOES hold the member, the
+  #     main-resident index must not override it. Load-bearing for the soak
+  #     clock, which takes the MAX anchor over members: a widened twin that is
+  #     newer would move the anchor and flip a clear set to held. Here the
+  #     delta anchor is ancient (deployed_ts 100000 -> clock clear) while the
+  #     main-resident twin sits ~1h before NOW_TS -> if it were consulted,
+  #     HELD_SET_SOAK. A first version of this leg used rel_empty and passed
+  #     BOTH ways for an unrelated reason (the target is excluded from its own
+  #     set since #607, so the set was empty no matter what) -- a decorative
+  #     leg. This shape can only pass if the precedence order is right.
+  local c601_delta="$setdir/c601_delta.json" c601_recent="$setdir/c601_recent.json"
+  cat << 'C601DEOF' > "$c601_delta"
+[{"sha": "6010000cd000000000000000000000000000000",
+  "short_sha": "6010000",
+  "subject": "fix(set): a relative, in the delta (#601)",
+  "trailer": "leshchenko1979/opencrabs#601",
+  "commit_ts": 100000,
+  "deployed_ts": 100000,
+  "files": ["src/set607/rel.rs"]}]
+C601DEOF
+  cat << 'C601REOF' > "$c601_recent"
+[{"sha": "6010000cr000000000000000000000000000000",
+  "short_sha": "6010000",
+  "subject": "fix(set): a recent main-resident twin (#601)",
+  "trailer": "leshchenko1979/opencrabs#601",
+  "commit_ts": 1790000000,
+  "files": ["src/set607/rel.rs"]}]
+C601REOF
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 \
+    OC_HARVEST_MOCK_RELATIONS="$rel_one" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601_delta" OC_HARVEST_MOCK_MAIN_COMMITS="$c601_recent" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  # Assert the STATE, not a token: the disclosure note is labelled
+  # NOTE(HELD_SET_SOAK) even when the clock is CLEAR, so searching that string
+  # absent matches the note and reddens a correct run. The two anchors are
+  # distinguishable by their age: the delta commit (deployed_ts 100000) reads
+  # ">= 24h" (clear); a consulted twin (commit_ts 1790000000, NOW_TS
+  # 1790003600) would read 1.0h and REFUSE. So a green run must be rc=0 AND
+  # carry the clear-disclosure suffix.
+  if [ "$rc" -eq 0 ] && oc_has "$out" ">= 24h"; then
+    ok "#625: the main-resident index is a FALLBACK -- a member present in the delta keeps its own anchor (clock reads the ancient delta age, not the newer twin's)"
+  else
+    echo "  bad  - #625 the widened twin overrode the delta anchor; got rc=$rc ($out)"
   fi
 
   echo "selftest: ${ok_n}/${ok_n} OK"
