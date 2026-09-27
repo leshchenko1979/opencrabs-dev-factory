@@ -388,40 +388,17 @@ def fmt_hours(h):
 # Refusing is kept deliberately: the failure is one-directional, and an anchor
 # that cannot be resolved must never produce an APPROVE.
 def classify_soak_anchor(commit_sha, commit_ts, repo_path, swaps, now_ts):
-    # Resolve ONE soak anchor -> (state, age_hours_or_None, anchor_fields).
-    #
-    # The legacy no-swap-history fallback is preserved: with an EMPTY swap
-    # journal the commit timestamp is the only anchor that exists, so it is used
-    # directly rather than reported as unresolved.
-    d_ts = get_commit_deploy_ts(commit_sha, repo_path, swaps)
-    if not d_ts and not swaps and not os.environ.get('OC_HARVEST_MOCK_DEPLOYED_TS'):
-        d_ts = commit_ts
-    if d_ts > 0:
-        age_hours = (now_ts - d_ts) / 3600.0
-        state = 'fresh' if age_hours < oc_claims.SOAK_HOURS else 'soaked'
-        return state, max(0.0, age_hours), oc_claims.soak_anchor_fields(commit_sha, d_ts)
-    return 'unresolved', None, oc_claims.soak_anchor_fields(commit_sha, 0)
+    # The predicate lives in tools/lib/oc_claims.py so the census cannot drift
+    # from it (#413). This wrapper only binds the local resolver.
+    return oc_claims.classify_soak_anchor(
+        commit_sha, commit_ts,
+        lambda sha, ts: get_commit_deploy_ts(sha, repo_path, swaps),
+        swaps, now_ts)
 
 
 def soak_unresolved_note(commit_ts, now_ts):
-    # Why an unresolved anchor carries no schedule, and what the commit date says.
-    #
-    # The commit timestamp is an UPPER BOUND on the true age, never an anchor:
-    # the content cannot have deployed before the commit existed, but it may
-    # have deployed at any point since -- so a 19-day-old commit is NOT evidence
-    # that the 24h window has passed.
-    if commit_ts and commit_ts > 0:
-        bound = ('''the commit timestamp %s is an UPPER BOUND on the true age (%s old), not an '''
-                 '''anchor -- its content may have deployed at any point since'''
-                 % (oc_claims.fmt_iso_ts(commit_ts), fmt_hours((now_ts - commit_ts) / 3600.0)))
-    else:
-        bound = '''the commit timestamp is unreadable, so not even an upper bound is available'''
-    return ('''no resolvable deploy anchor (not an ancestor of any journaled swap, and neither the '''
-            '''patch-id twin nor the smoke anchor resolved it); %s; no eligible_at: there is no '''
-            '''schedule to give until the anchor resolves''' % bound)
-
-
-
+    # One home for the disclosure (#413): tools/lib/oc_claims.py.
+    return oc_claims.soak_unresolved_note(commit_ts, now_ts)
 def load_manual_records(st_dir):
     # #564: the hand-settled registry -- the SAME file the census consults, read
     # the same way. The predicate that decides WHICH row covers a target lives in

@@ -1538,15 +1538,20 @@ if action == 'check':
         c_sha = mc.get('sha', '')
         is_feat = subj.startswith('feat') or 'feat/' in target.lower()
         if is_feat:
-            d_ts = mc.get('deployed_ts') or get_commit_deploy_ts(c_sha, repo_path, swaps, mc.get('deployed_ts'))
-            if not d_ts and not swaps and not os.environ.get('OC_HARVEST_MOCK_DEPLOYED_TS'):
-                d_ts = mc.get('commit_ts', 0)
-            if d_ts > 0:
-                age_hours = (now_ts - d_ts) / 3600.0
-            else:
-                age_hours = 0.0
-            if age_hours < oc_claims.SOAK_HOURS:
-                refuse('REFUSED: Target %s is within 24h feature soak window (age: %.1fh < 24h, commit %s: %s) %s' % (target, max(0.0, age_hours), mc.get('short_sha', '')[:7], subj[:50], oc_claims.soak_anchor_fields(c_sha, d_ts)))
+            # #413: THREE states, not two. 'unresolved' must never be reported
+            # as a fresh commit with age 0.0h -- that asserted a false age and
+            # carried no schedule (#415's triple). Shared predicate, one home
+            # in tools/lib/oc_claims.py, so this tool and oc-harvest-dispatch
+            # (the #563 fix) cannot drift.
+            _state, _age, _fields = oc_claims.classify_soak_anchor(
+                c_sha, mc.get('commit_ts', 0),
+                lambda sha, ts: get_commit_deploy_ts(sha, repo_path, swaps, mc.get('deployed_ts')),
+                swaps, now_ts)
+            if _state == 'unresolved':
+                refuse('REFUSED: Target %s is within the 24h feature soak window [SOAK_ANCHOR_UNRESOLVED] (commit %s: %s) %s; %s' % (target, mc.get('short_sha', '')[:7], subj[:50], _fields, oc_claims.soak_unresolved_note(mc.get('commit_ts', 0), now_ts)))
+                break
+            if _state == 'fresh':
+                refuse('REFUSED: Target %s is within 24h feature soak window (age: %.1fh < 24h, commit %s: %s) %s' % (target, _age, mc.get('short_sha', '')[:7], subj[:50], _fields))
                 break
 
     # 2. SUBSYSTEM COHESION & DEPENDENT SOAK CHECK (HELD_DEPENDENT_SOAK)
@@ -1558,18 +1563,22 @@ if action == 'check':
             oc_sha = oc.get('sha', '')
             if oc_subj.startswith('feat'):
                 # Check if this other feat is in soak window
-                oc_d_ts = oc.get('deployed_ts') or get_commit_deploy_ts(oc_sha, repo_path, swaps, oc.get('deployed_ts'))
-                if not oc_d_ts and not swaps and not os.environ.get('OC_HARVEST_MOCK_DEPLOYED_TS'):
-                    oc_d_ts = oc.get('commit_ts', 0)
-                oc_age_hours = (now_ts - oc_d_ts) / 3600.0 if oc_d_ts > 0 else 0.0
-                if oc_age_hours < oc_claims.SOAK_HOURS:
+                # #413: same three-state predicate as site 1 (shared home).
+                _ostate, _oage, _ofields = oc_claims.classify_soak_anchor(
+                    oc_sha, oc.get('commit_ts', 0),
+                    lambda sha, ts: get_commit_deploy_ts(sha, repo_path, swaps, oc.get('deployed_ts')),
+                    swaps, now_ts)
+                if _ostate != 'soaked':
                     # Check file overlap
                     oc_files = set(get_affected_files_for_commits([oc], repo_path))
                     overlap = target_files.intersection(oc_files)
                     substantive_overlap = filter_substantive_overlap(overlap)
                     if substantive_overlap:
                         overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])
-                        refuse('REFUSED: Target %s touches files of soaking feature %s (age: %.1fh < 24h) [HELD_DEPENDENT_SOAK: %s] %s' % (target, oc.get('short_sha', '')[:7], max(0.0, oc_age_hours), overlap_sample, oc_claims.soak_anchor_fields(oc_sha, oc_d_ts)))
+                        if _ostate == 'unresolved':
+                            refuse('REFUSED: Target %s touches files of soaking feature %s [HELD_DEPENDENT_SOAK: %s] [DEPENDENT_SOAK_ANCHOR_UNRESOLVED] %s; %s' % (target, oc.get('short_sha', '')[:7], overlap_sample, _ofields, oc_claims.soak_unresolved_note(oc.get('commit_ts', 0), now_ts)))
+                        else:
+                            refuse('REFUSED: Target %s touches files of soaking feature %s (age: %.1fh < 24h) [HELD_DEPENDENT_SOAK: %s] %s' % (target, oc.get('short_sha', '')[:7], _oage, overlap_sample, _ofields))
                         # Keep evaluating every overlapping feature; refuse() aggregates
                         # this leg and the caller retains rc=1.
 
@@ -2800,6 +2809,112 @@ EOF
     ok "check dependent soak unit -> REFUSED HELD_DEPENDENT_SOAK exit 1"
   else
     echo "  bad  - check dependent soak unit expected rc=1 HELD_DEPENDENT_SOAK, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3b-UR. #413: the UNRESOLVABLE twin of 3b. Same shape as the #563 specimen:
+  #        a feat commit whose deploy anchor cannot be resolved while a swap
+  #        journal IS present -- so the legacy commit_ts fallback cannot fire and
+  #        the old code set age_hours = 0.0, refusing while PRINTING A FALSE AGE
+  #        and carrying no schedule. The commit is 278h old, so "0.0h" was not
+  #        merely imprecise, it inverted the fact.
+  #        MUTATION KILL: restore `age_hours = 0.0` on the d_ts==0 path and this
+  #        leg sees "age: 0.0h" with no SOAK_ANCHOR_UNRESOLVED class.
+  local fx_ur413="$selftest_tmp/ur413_state"
+  mkdir -p "$fx_ur413/oc-deploy/journal"
+  printf '{"step":"auto-swap","sha":"deadbeef4130000000000000000000000000000","ts":"2026-09-01T00:00:00Z"}\n' \
+    > "$fx_ur413/oc-deploy/journal/swap-413.jsonl"
+  # st_dir is dirname(registry_file) -- the registry must sit INSIDE the fixture
+  # dir or the swap journal above is never read and the anchor resolves via the
+  # commit_ts fallback instead of staying unresolvable.
+  printf '{"manual_records": []}\n' > "$fx_ur413/mock_reg_413.json"
+  local c305="$selftest_tmp/c305.json"
+  cat << 'C305EOF' > "$c305"
+[{"sha": "3050000cb0000000000000000000000000000000",
+  "short_sha": "3050000",
+  "subject": "feat(unshipped): an unshipped feature whose anchor cannot resolve (#305)",
+  "trailer": "leshchenko1979/opencrabs#305",
+  "commit_ts": 1789000000,
+  "files": ["src/unshipped/x.rs"]}]
+C305EOF
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_COMMITS="$c305" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$fx_ur413" "$fx_ur413/mock_reg_413.json" "305" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "SOAK_ANCHOR_UNRESOLVED" \
+     && oc_has "$out" "UPPER BOUND" && ! oc_has "$out" "age: 0.0h"; then
+    ok "#413: an UNRESOLVABLE feature anchor refuses as SOAK_ANCHOR_UNRESOLVED with no false 0.0h age"
+  else
+    echo "  bad  - #413 expected rc=1 SOAK_ANCHOR_UNRESOLVED + UPPER BOUND and no 'age: 0.0h', got rc=$rc ($out)"
+    return 1
+  fi
+  # ...and its RESOLVED-FRESH control still reports a REAL age (the fix must not
+  # collapse the other way: a resolvable anchor keeps its own refusal, with its
+  # own number rather than a hardcoded 0.0). Anchor 1790000000 with
+  # now=1790003600 is 1.0h old.
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_COMMITS="$c305" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    OC_HARVEST_MOCK_DEPLOYED_TS=1790000000 \
+    run_engine "check" "mock/repo" "$fx_ur413" "$fx_ur413/mock_reg_413.json" "305" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "within 24h feature soak window" \
+     && oc_has "$out" "1.0h" && ! oc_has "$out" "SOAK_ANCHOR_UNRESOLVED"; then
+    ok "#413 CONTROL: a RESOLVED fresh anchor reports its real 1.0h age, not UNRESOLVED"
+  else
+    echo "  bad  - #413 control expected the ordinary 1.0h soak refusal, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3b-SK. #413 third state: the anchor RESOLVES but OLD -> soaked -> NO refusal.
+  #        This is what keeps the three-state predicate honest: an implementation
+  #        that refused on every non-fresh state would pass the two legs above
+  #        and fail this one.
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_COMMITS="$c305" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    OC_HARVEST_MOCK_DEPLOYED_TS=1789000000 \
+    run_engine "check" "mock/repo" "$fx_ur413" "$fx_ur413/mock_reg_413.json" "305" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && ! oc_has "$out" "soak window"; then
+    ok "#413: a RESOLVED-but-OLD anchor is SOAKED -- eligible, never refused"
+  else
+    echo "  bad  - a soaked anchor must be eligible, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3c-UR. #413 site 2: the DEPENDENT soak is unresolvable -- a mature fix
+  #        overlaps an unshipped feat whose anchor cannot resolve. The old code
+  #        reported it as "age: 0.0h < 24h" and held forever.
+  #        MUTATION KILL: restore `oc_age_hours = 0.0` on the 0 path and this leg
+  #        sees the false age with no DEPENDENT_SOAK_ANCHOR_UNRESOLVED class.
+  local c405="$selftest_tmp/c405.json"
+  cat << 'C405EOF' > "$c405"
+[{"sha": "4050000cb0000000000000000000000000000000",
+  "short_sha": "4050000",
+  "subject": "fix(dependent): mature fix touching an unshipped feat file (#405)",
+  "trailer": "leshchenko1979/opencrabs#405",
+  "commit_ts": 100000,
+  "deployed_ts": 100000,
+  "files": ["src/dep/y.rs"]},
+ {"sha": "4060000cb0000000000000000000000000000000",
+  "short_sha": "4060000",
+  "subject": "feat(dep): an unshipped dependency whose anchor cannot resolve (#406)",
+  "trailer": "leshchenko1979/opencrabs#406",
+  "commit_ts": 1789000000,
+  "files": ["src/dep/y.rs"]}]
+C405EOF
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_COMMITS="$c405" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$fx_ur413" "$fx_ur413/mock_reg_413.json" "405" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "DEPENDENT_SOAK_ANCHOR_UNRESOLVED" \
+     && ! oc_has "$out" "age: 0.0h"; then
+    ok "#413 site 2: an UNRESOLVABLE dependent anchor refuses under its own class, no false age"
+  else
+    echo "  bad  - #413 site 2 expected rc=1 DEPENDENT_SOAK_ANCHOR_UNRESOLVED and no 'age: 0.0h', got rc=$rc ($out)"
     return 1
   fi
 

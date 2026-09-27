@@ -168,6 +168,59 @@ def soak_anchor_fields(anchor_commit, anchor_ts):
         fmt_iso_ts(ts + SOAK_SECONDS if ts > 0 else 0))
 
 
+
+def fmt_hours(h):
+    """Hours at one decimal — the unit every soak message quotes."""
+    return "%.1fh" % h
+
+
+def classify_soak_anchor(commit_sha, commit_ts, resolve_fn, swaps, now_ts):
+    """Resolve ONE soak anchor -> (state, age_hours_or_None, anchor_fields).
+
+    THREE states, not two. ``resolve_fn(sha, ts)`` returns the deploy anchor or
+    0, and 0 means EITHER "the deploy is genuinely just now" OR "nothing could
+    be resolved at all" — collapsing the second into the first is the defect:
+    ``age_hours = 0.0`` refused an unresolvable anchor while PRINTING A FALSE
+    AGE and carrying no schedule, defeating the #415 triple's whole purpose.
+
+    The legacy no-swap-history fallback is preserved: with an EMPTY swap
+    journal the commit timestamp is the only anchor that exists, so it is used
+    directly rather than reported as unresolved.
+
+    Refusing on ``unresolved`` is kept deliberately — the failure is
+    one-directional, and an anchor that cannot be resolved must never produce
+    an APPROVE. The caller carries the class in its own verdict prefix, so rc
+    does not change and no consumer breaks.
+    """
+    d_ts = resolve_fn(commit_sha, commit_ts)
+    if not d_ts and not swaps and not os.environ.get("OC_HARVEST_MOCK_DEPLOYED_TS"):
+        d_ts = commit_ts
+    if d_ts and d_ts > 0:
+        age_hours = (now_ts - d_ts) / 3600.0
+        return ("fresh" if age_hours < SOAK_HOURS else "soaked",
+                max(0.0, age_hours), soak_anchor_fields(commit_sha, d_ts))
+    return "unresolved", None, soak_anchor_fields(commit_sha, 0)
+
+
+def soak_unresolved_note(commit_ts, now_ts):
+    """Why an unresolved anchor carries no schedule, and what the commit date says.
+
+    The commit timestamp is an UPPER BOUND on the true age, never an anchor:
+    the content cannot have deployed before the commit existed, but it may have
+    deployed at any point since — so a 19-day-old commit is NOT evidence that
+    the 24h window has passed.
+    """
+    if commit_ts and commit_ts > 0:
+        bound = ("the commit timestamp %s is an UPPER BOUND on the true age (%s old), "
+                 "not an anchor -- its content may have deployed at any point since"
+                 % (fmt_iso_ts(commit_ts), fmt_hours((now_ts - commit_ts) / 3600.0)))
+    else:
+        bound = "the commit timestamp is unreadable, so not even an upper bound is available"
+    return ("no resolvable deploy anchor (not an ancestor of any journaled swap, and neither "
+            "the patch-id twin nor the smoke anchor resolved it); %s; no eligible_at: there "
+            "is no schedule to give until the anchor resolves" % bound)
+
+
 #: The only event kinds that can close a claim (v1 vocabulary).
 CLOSING_KINDS = ("close", "confirm", "reject", "done", "unclaim")
 
