@@ -33,6 +33,23 @@ local-cargo ban and `gh -R` — are stated in `SKILL.md §Hard rules` and bind r
   in this corpus already carries `-R` (14 sites) — this bullet states the RULE they were
   silently following. The environment fix (`gh repo set-default`) rewrites shared repo
   config and is the OWNER's call, never a lane's.
+- **A `--branch` filter and a `headSha` scan are BLIND to a PR-lane sha BY
+  CONSTRUCTION (editor lane 95bec69b + triage, 2026-09-27 — three lanes, one day,
+  two of them reaching the same false "never gated").** `pr-checks.yml` is
+  `workflow_dispatch`, so on EVERY run `headBranch` is `ci/quick-build-linux` and
+  `headSha` is the **CARRIER head** — never the `-f ref=` input. The gated sha lives
+  in the **JOB NAME ONLY**:
+  `gh run view <id> --json jobs --jq '.jobs[].name'` →
+  `gate / PR-lane gates (64b906b274aecfeba6803564f3a49740cbf883f1)`.
+  **A zero from either blind query is NOT evidence the ref was never gated** — it is
+  an instrument that cannot register the class. Read the job name. `oc-prchecks`
+  self-documents the caveat (`headSha is the carrier head, not the dispatch input`),
+  so the tool is not the defect — **believing the blind zero is.**
+- **Before quoting ANY counter as a clearing receipt, state the mechanism by which
+  the alleged event would REACH it.** A `workflow_dispatch` run's `headSha` cannot
+  carry a PR-lane sha at all, so its zero is structural, not exculpatory. Same family
+  as the `gh` default-repo trap above: both return a confident answer for a class
+  they are blind to, and both were believed.
 - **The skill glob GATE matches PATHS, not intent (v0.4.243, cycle
   `20260922-c22`).** A skill whose `SKILL.md` declares a `globs:` frontmatter key
   guards its own topic: any tool call whose harvested path tokens match one of

@@ -100,18 +100,12 @@ stamp the dispatch + receipt id via oc-ledger.
    waiting on it — a dispatch that fired on the wrong ref wastes the whole
    wait. oc-prchecks headSha adoption enforces this for its own runs; the
    check covers hand-dispatched `gh workflow run` uses.
-   **THE TWO OBVIOUS QUERIES ARE BLIND TO A PR-LANE SHA BY CONSTRUCTION
-   (editor lane 95bec69b, 2026-09-27 — three lanes, one day):**
-   `gh run list --branch <pr-branch>` returns EMPTY always, and a `headSha`
-   scan returns EMPTY always, because `pr-checks.yml` is `workflow_dispatch`
-   ⇒ on every run `headBranch` is `ci/quick-build-linux` and `headSha` is the
-   **CARRIER head**, never the `-f ref=` input. A zero from either is **not
-   evidence the ref was never gated** — it is an instrument that cannot
-   register the class, and reading it as absence produced a false "never
-   gated" in two lanes' durable records plus a withdrawn correction against a
-   correct claim. **Read the JOB NAME.** `oc-prchecks` self-documents the
-   caveat (`headSha is the carrier head, not the dispatch input`), so the tool
-   is not the defect — believing the blind zero is.
+   **The two obvious queries are BLIND to a PR-lane sha by construction** —
+   `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a
+   `workflow_dispatch` run carries the CARRIER head. Read the sha out of the
+   **JOB NAME**. Full clause and the general counter rule:
+   `environment.md §Shared environment facts` (it binds every role that checks a
+   gate, not editors only).
 6. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
 7. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
 8. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated/lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
