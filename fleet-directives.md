@@ -416,7 +416,7 @@ A1 governs **who acts**. This governs **who is acted upon**, and the two collaps
 
 **Why this is a correctness rule and not hygiene.** A hand-passed self uuid has exactly one failure mode that matters: it can be **wrong**, and nothing in the tool can tell a wrong self uuid from a right one. Measured cost, all in this file's own history:
 
-- `oc-ledger:613` records the silent case — **mis-attributed worker stamps** (`n=1337` corrected via `--by` against `n=1386` *"silent-lie"*). The row was written for a session that was not the actor, and it read as legitimate.
+- `oc-ledger`'s `cmd_ack` header comment records the silent case — **mis-attributed worker stamps** (`n=1337` corrected via `--by` against `n=1386` *"silent-lie"*). The row was written for a session that was not the actor, and it read as legitimate.
 - `oc-ledger:788` already tells the lane the answer: *"copy the uuid from a LIVE read — `oc-ledger roster --live`, or `$OPENCRABS_SESSION_ID`."* The tool knows the environment holds the truth and still demands the argument.
 - A1 above carries the trailer instance of the same class: a `<role> <uuid>` actor passed `oc-commit`'s presence-only guard, wrote the role word verbatim, and gate 4 refused it as UNSIGNED — ship rc 2, **main stranded undeployed**, ~25 CI minutes (lane 63d775f9, 2026-09-26).
 
