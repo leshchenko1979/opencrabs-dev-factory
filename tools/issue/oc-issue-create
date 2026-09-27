@@ -40,19 +40,28 @@ SELF="$0"
 FORK_REPO="leshchenko1979/opencrabs"
 REPO_PATH="${OC_ISSUE_CREATE_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_ISSUE_CREATE_GH:-gh}"
+UPSTREAM_SLUG="${OC_ISSUE_CREATE_UPSTREAM:-adolfousier/opencrabs}"
+UPSTREAM_REMOTE="${OC_ISSUE_CREATE_UPSTREAM_REMOTE:-adolfousier}"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: oc-issue-create [--parent <N>] [--no-parent <reason>] [--propose-parent]
+usage: oc-issue-create [--parent <N>] [--root <upstream:obj>] [--no-parent <reason>]
+                       [--propose-parent]
                        [--repo <slug>] [--repo-path <dir>] [--dry-run] [--selftest]
                        [--] <gh issue create flags...>
 
 Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
 
   --parent <N>        set the parent AT CREATION (gh issue create --parent)
+  --root <obj>        declare an UPSTREAM-INHERITED surface (upstream-rooted):
+                      upstream:<sha|PR|path> in adolfousier/opencrabs. The object
+                      must RESOLVE; an unresolvable root is REFUSED, because it
+                      is --no-parent in better clothes. Recorded as the first
+                      comment (`root: <obj>`), never as an orphan.
   --no-parent <why>   file anyway, recording the declaration as the first
                       comment. The gate forbids a SILENT default, not a
-                      declared one.
+                      declared one. Last resort -- prefer --root when the
+                      surface is upstream-inherited.
   --propose-parent    compute and print candidate parents only; file nothing
   --repo <slug>       override the target repo (default leshchenko1979/opencrabs)
   --repo-path <dir>   override the git checkout used for blame (default ~/opencrabs)
@@ -77,7 +86,7 @@ USAGE
 }
 
 # ---- arg parsing: ours vs gh's ----------------------------------------------
-PARENT=""; NO_PARENT=""; NO_PARENT_SET=0; PROPOSE=0; DRY=0; SELFTEST=0
+PARENT=""; NO_PARENT=""; NO_PARENT_SET=0; ROOT=""; ROOT_SET=0; PROPOSE=0; DRY=0; SELFTEST=0
 REPO_SLUG="$FORK_REPO"; PASSTHRU=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,6 +96,8 @@ while [ $# -gt 0 ]; do
     --parent=*) PARENT="${1#--parent=}"; shift ;;
     --no-parent) [ $# -ge 2 ] || { echo "oc-issue-create: --no-parent needs a reason" >&2; usage; }; NO_PARENT="$2"; NO_PARENT_SET=1; shift 2 ;;
     --no-parent=*) NO_PARENT="${1#--no-parent=}"; NO_PARENT_SET=1; shift ;;
+    --root) [ $# -ge 2 ] || { echo "oc-issue-create: --root needs a value" >&2; usage; }; ROOT="$2"; ROOT_SET=1; shift 2 ;;
+    --root=*) ROOT="${1#--root=}"; ROOT_SET=1; shift ;;
     --propose-parent) PROPOSE=1; shift ;;
     --repo) [ $# -ge 2 ] || usage; REPO_SLUG="$2"; shift 2 ;;
     --repo=*) REPO_SLUG="${1#--repo=}"; shift ;;
@@ -205,6 +216,16 @@ case "$1 $2" in
   "issue list")   cat "$OC_STUB_ISSUES" ;;
   "issue create") echo "https://github.com/leshchenko1979/opencrabs/issues/4242" ;;
   "issue comment") exit 0 ;;
+  # --root resolution (#646): DISCRIMINATE, so an unresolvable root is testable.
+  # A stub that answered 0 for everything would make the refusal leg vacuous.
+  api) case "$3" in
+         */commits/5d326aa12*|*/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*) echo "5d326aa12"; exit 0 ;;
+         *) exit 1 ;;
+       esac ;;
+  pr)  case "$3" in
+         1662|1700) echo '{"number":'"$3"'}'; exit 0 ;;
+         *) exit 1 ;;
+       esac ;;
   *) exit 0 ;;
 esac
 STUB
@@ -221,6 +242,9 @@ JSN
   }
   has() { # has <label> <file> <pattern>
     if grep -qE "$3" "$2"; then echo "  ok   - $1"; else echo "  FAIL - $1"; fails=$((fails+1)); fi
+  }
+  hasnt() { # hasnt <label> <file> <pattern> -- the absence leg, with a real counter
+    if grep -qE "$3" "$2"; then echo "  FAIL - $1 (pattern present: $3)"; fails=$((fails+1)); else echo "  ok   - $1"; fi
   }
 
   # --- gate behaviours -------------------------------------------------------
@@ -241,6 +265,35 @@ JSN
   bash "$SELF" --propose-parent --title "fix(telegram): x" >"$T/o6" 2>&1
   chk "--propose-parent files nothing" 0 $?
   has "…and proposes by scope"            "$T/o6" "#11"
+
+  # --- #646: --root (the upstream-rooted declaration channel) ----------------
+  # Before this, an upstream-inherited fix had NO declaration channel: the gate
+  # offered --parent (wrong: there is no fork parent) or --no-parent (which files
+  # it AS AN ORPHAN, the mislabel the clause forbids). The law names --root in
+  # five sites and the tool implemented zero.
+  bash "$SELF" --title "fix(tools): root-pr" --body x --root upstream:1662 --dry-run >"$T/o7" 2>&1
+  chk "fix + --root (PR) passes the gate" 0 $?
+  has "…and the root is recorded"          "$T/o7" 'root: 1662'
+  has "…and NOT as an orphan"              "$T/o7" '^ *\(then comment: root:'
+  hasnt "…and does not claim orphanhood"   "$T/o7" 'no parent derivable' 
+
+  bash "$SELF" --title "fix(tools): root-sha" --body x --root upstream:5d326aa12 --dry-run >"$T/o8" 2>&1
+  chk "fix + --root (sha) passes"            0 $?
+  has "…and a sha root is recorded"        "$T/o8" 'root: 5d326aa12'
+
+  # DISCRIMINATING: an unresolvable root must REFUSE. The law says it is
+  # "--no-parent in better clothes", so accepting it would satisfy the letter of
+  # the gate while defeating it. The stub DISCRIMINATES (see its api/pr arms) --
+  # a stub answering 0 for everything would make this leg vacuous.
+  bash "$SELF" --title "fix(tools): root-bad" --body x --root upstream:no/such/path.xyz >"$T/o9" 2>&1
+  chk "fix + UNRESOLVABLE --root REFUSES" 3 $?
+  has "…and names the resolve requirement"  "$T/o9" 'does not RESOLVE'
+  has "…and cites the law clause"           "$T/o9" 'better clothes'
+
+  bash "$SELF" --title "fix(tools): root-and-parent" --body x --parent 10 --root upstream:1662 --dry-run >"$T/o10" 2>&1
+  chk "--parent + --root together pass"      0 $?
+  has "…and the parent still reaches gh"   "$T/o10" 'parent.*10'
+  has "…and the root is still recorded"    "$T/o10" 'root: 1662'
 
   # --- trap controls: each check can only pass if the trap is AVOIDED ---------
   # (a) `git blame -s` ABBREVIATES, so a 40-hex match finds nothing. The control
@@ -317,6 +370,42 @@ if [ "$PROPOSE" = 1 ]; then
   exit 0
 fi
 
+# ---- the root resolver --------------------------------------------------------
+# The law (SKILL.md:474-481, triage.md:201, editor.md:231, upstream-merge-runbook.md:312)
+# names `--root upstream:<sha|PR|path>` for an upstream-inherited surface. The same clause
+# says the object MUST RESOLVE, "or the flag is --no-parent in better clothes" -- so an
+# unresolvable root is refused rather than recorded as a declaration.
+#
+# Accepted, all normalised to an `upstream:` prefix when the caller omits it:
+#   upstream:<7-40 hex>   a commit in adolfousier/opencrabs
+#   upstream:<digits>     a PR number there
+#   upstream:<path>       a tracked path on that repo's main
+root_kind() { # $1 = value -> echoes sha|pr|path, or nothing
+  case "$1" in
+    */*|*.*) printf 'path' ;;
+    ''|*[!0-9a-fA-F]*) : ;;                       # has non-hex, non-slash -> unknown
+    *[a-fA-F]*) [ ${#1} -ge 7 ] && printf 'sha' ;;  # carries a hex letter -> a sha
+    *) [ ${#1} -ge 7 ] && printf 'sha' || printf 'pr' ;;
+  esac
+}
+
+root_resolves() { # $1 = value (with or without upstream:). rc 0 = resolves
+  local v kind
+  v="${1#upstream:}"
+  v="${v#adolfousier/opencrabs}"
+  kind="$(root_kind "$v")"
+  case "$kind" in
+    sha)  "$GH_BIN" api "repos/$UPSTREAM_SLUG/commits/$v" --jq .sha >/dev/null 2>&1 ;;
+    pr)   "$GH_BIN" pr view "$v" -R "$UPSTREAM_SLUG" --json number >/dev/null 2>&1 ;;
+    path) if [ -d "$REPO_PATH/.git" ]; then
+            git -C "$REPO_PATH" cat-file -e "$UPSTREAM_REMOTE/main:$v" 2>/dev/null
+          else
+            "$GH_BIN" api "repos/$UPSTREAM_SLUG/contents/$v?ref=main" --jq .path >/dev/null 2>&1
+          fi ;;
+    *)    return 1 ;;
+  esac
+}
+
 # ---- the gate ----------------------------------------------------------------
 if [ -z "$TITLE" ]; then
   echo "oc-issue-create: no --title supplied; gh would prompt, which this wrapper" >&2
@@ -324,7 +413,7 @@ if [ -z "$TITLE" ]; then
   exit 2
 fi
 
-if is_fix_title "$TITLE" && [ -z "$PARENT" ] && [ "$NO_PARENT_SET" = 0 ]; then
+if is_fix_title "$TITLE" && [ -z "$PARENT" ] && [ "$NO_PARENT_SET" = 0 ] && [ "$ROOT_SET" = 0 ]; then
   cat >&2 <<REFUSAL
 oc-issue-create: REFUSED — nothing filed.
 
@@ -342,14 +431,41 @@ REFUSAL
   print_scope_candidates "$TITLE"
   cat >&2 <<ESCAPE
 
-  ESCAPE HATCH — either name the parent, or declare that none applies:
-    oc-issue-create --parent <N> ...              # set it AT CREATION
-    oc-issue-create --no-parent "<reason>" ...    # file anyway; the reason is
+  ESCAPE HATCH — name the parent, or declare the origin:
+    oc-issue-create --parent <N> ...              # a fork feature issue
+    oc-issue-create --root upstream:<sha|PR|path> # the surface is upstream-
+                                                 # inherited (upstream-rooted).
+                                                 # The object must RESOLVE.
+    oc-issue-create --no-parent "<reason>" ...    # last resort; the reason is
                                                  # recorded as the first comment
   A legitimate orphan bug is never blocked: the gate forbids a SILENT default,
   not a DECLARED one.
 ESCAPE
   exit 3
+fi
+
+# ---- validate a declared root --------------------------------------------------
+# Only reached when ROOT_SET=1 and no parent was given. An unresolvable root is
+# refused: recording it would satisfy the letter of the gate while defeating it.
+if [ "$ROOT_SET" = 1 ]; then
+  if ! root_resolves "$ROOT"; then
+    cat >&2 <<ROOTFAIL
+oc-issue-create: REFUSED — nothing filed.
+
+  --root was supplied but the object does not RESOLVE.
+    root: $ROOT
+    kind: $(root_kind "${ROOT#upstream:}" || true)
+
+  LAW: "The --root object must RESOLVE, or the flag is --no-parent in better clothes"
+  (SKILL.md:474-481, triage.md:201, editor.md:231). An unresolvable root is NOT
+  a declaration: recording it would satisfy the letter of the gate while
+  defeating it.
+
+  Tried against $UPSTREAM_SLUG (main). If the object exists elsewhere, say so
+  with --no-parent "<reason>" and record the provenance there instead.
+ROOTFAIL
+    exit 3
+  fi
 fi
 
 # ---- create ------------------------------------------------------------------
@@ -361,6 +477,7 @@ if [ "$DRY" = 1 ]; then
   echo "oc-issue-create --dry-run:"
   printf ' %q' "${CMD[@]}"; echo
   [ "$NO_PARENT_SET" = 1 ] && echo "  (then comment: no parent derivable: $NO_PARENT)"
+  [ "$ROOT_SET" = 1 ] && echo "  (then comment: root: ${ROOT#upstream:})"
   exit 0
 fi
 
@@ -378,6 +495,19 @@ if [ -n "$NUM" ]; then
   echo "oc-issue-create: created #$NUM"
   oc_log_extra "issue=$NUM"
   oc_log_extra "parent=${PARENT:-none}"
+  [ "$ROOT_SET" = 1 ] && oc_log_extra "root=$ROOT"
+  if [ "$ROOT_SET" = 1 ]; then
+    BODY_FILE="$(mktemp)"
+    printf 'root: %s\n' "${ROOT#upstream:}" > "$BODY_FILE"
+    if "$GH_BIN" issue comment "$NUM" -R "$REPO_SLUG" --body-file "$BODY_FILE" >/dev/null 2>&1; then
+      echo "oc-issue-create: recorded the root declaration on #$NUM"
+    else
+      echo "oc-issue-create: WARN — created #$NUM but the root declaration" >&2
+      echo "  could NOT be recorded. Add it by hand; the gate's contract is that" >&2
+      echo "  silence is impossible, so an unrecorded declaration is a breach." >&2
+    fi
+    rm -f "$BODY_FILE"
+  fi
   if [ "$NO_PARENT_SET" = 1 ]; then
     BODY_FILE="$(mktemp)"
     printf 'no parent derivable: %s\n' "$NO_PARENT" > "$BODY_FILE"
