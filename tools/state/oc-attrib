@@ -204,9 +204,15 @@ Session-Id: $S_PRE"
   [ "$NR_REPLAY" != "$NR_TWIN" ] || { echo "selftest: fixture broken — replay reproduced the original sha, so there is NO twin" >&2; exit 1; }
   [ "$(git -C "$NR" show "$NR_REPLAY" | git patch-id --stable | cut -d' ' -f1)" = "$(git -C "$NR" show "$NR_TWIN" | git patch-id --stable | cut -d' ' -f1)" ] \
     || { echo "selftest: fixture broken — replay is not patch-id-equivalent to the twin" >&2; exit 1; }
+  # (#650) This was the fixture's ONLY unchecked git rc. If the empty commit
+  # fails to build, four legs later the trailers-only grep misses and the
+  # message blames the tool for dropping a commit that was never created.
   git -C "$NR" commit -q --allow-empty -m "chore: sign tip
 
-Session-Id: $S_EMPTY"
+Session-Id: $S_EMPTY" \
+    || { echo "selftest: fixture broken -- the empty commit could not be created" >&2; exit 1; }
+  [ -n "$(git -C "$NR" log -1 --format=%B | grep -F "$S_EMPTY")" ] \
+    || { echo "selftest: fixture broken -- tip commit carries no Session-Id trailer" >&2; exit 1; }
   nmk novel.txt novel "genuinely new
 
 Session-Id: $S_NOVEL"
@@ -246,7 +252,25 @@ Session-Id: $S_SIDE"
   # in order to report them MISSING a Session-Id.
   OUT_TN="$("$0" --repo "$NR" --range "$NR_BASE..$NR_TIP" --novel --trailers-only 2>"$d/tn407.err")"
   grep -q "no effect with --trailers-only" "$d/tn407.err" || { echo "selftest: #407 --novel+--trailers-only did not warn" >&2; exit 1; }
-  printf '%s\n' "$OUT_TN" | grep -q "$S_EMPTY" || { echo "selftest: #407 --trailers-only dropped the empty commit (must stay RAW)" >&2; exit 1; }
+  # (#650) An ABSENT grep match has two mechanisms and the old text blamed one of
+  # them: either the row is gone (a real dropping bug), or the row is PRESENT and
+  # its trailer extracted empty -- :316 renders that as "(unsigned)", so the grep
+  # for $S_EMPTY misses while nothing was dropped. Assert the ROW COUNT first so
+  # the failure text carries the discriminator, and dump the rows on a miss
+  # (my #517/#614 work preserves them in battery-last-fail.log).
+  ntn="$(printf '%s\n' "$OUT_TN" | wc -l)"
+  if ! printf '%s\n' "$OUT_TN" | grep -q "$S_EMPTY"; then
+    echo "selftest: #407 --trailers-only did not show the empty commit's trailer" >&2
+    echo "  rows=$ntn raw_rows=$nraw  (equal => row present but trailer extracted EMPTY; less => genuinely DROPPED)" >&2
+    printf '%s\n' "$OUT_TN" | sed 's/^/  | /' >&2
+    if [ "$ntn" -eq "$nraw" ]; then
+      echo "selftest: #407 --trailers-only extracted the empty commit's trailer as EMPTY (row survived; the extraction is at fault, not the filter)" >&2
+    else
+      echo "selftest: #407 --trailers-only dropped the empty commit (must stay RAW)" >&2
+    fi
+    exit 1
+  fi
+  [ "$ntn" -eq "$nraw" ] || { echo "selftest: #407 --trailers-only rows=$ntn != raw rows=$nraw (must be byte-identical in count)" >&2; exit 1; }
   # FAIL-OPEN: a single-ref range carries no baseline -> filter DISABLED, loud
   # warning, raw output. Never a silent empty result.
   OUT_SR="$("$0" --repo "$NR" --range main --novel 2>"$d/sr407.err")"
