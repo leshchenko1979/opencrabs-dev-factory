@@ -989,6 +989,9 @@ def cluster_links(files_by_cluster):
 # VERDICTS, never of the edge sets.
 
 _REL_CACHE = {}
+# #675: the PARSED relation parts, so the blocker leg can read the DECLARED
+# dependency edge alone -- the union loses which edge an issue came from.
+_REL_PARTS_CACHE = {}
 
 def get_issue_relations(issue_num, fork_repo, mock_file=None):
     """DIRECT gh relatives of an issue: parent, sub-issues, blockedBy, blocking.
@@ -1007,6 +1010,11 @@ def get_issue_relations(issue_num, fork_repo, mock_file=None):
             with open(mock_file) as f:
                 loaded = json.load(f)
             rec = loaded.get(str(key), loaded.get(key))
+            # #675: `parts` must be BOUND on every path -- the list form below
+            # cannot name which edge an issue came from, so its blockedBy edge is
+            # genuinely UNKNOWN (None), never silently empty. Leaving it unbound
+            # would be the NameError class this file has already been bitten by.
+            parts = None
             if isinstance(rec, dict):
                 rels = set()
                 par = rec.get('parent')
@@ -1016,6 +1024,7 @@ def get_issue_relations(issue_num, fork_repo, mock_file=None):
                     for n in (rec.get(k) or []):
                         if isinstance(n, int):
                             rels.add(n)
+                parts = {'blockedBy': [x for x in (rec.get('blockedBy') or []) if isinstance(x, int)]}
             elif isinstance(rec, list):
                 rels = {int(n) for n in rec if str(n).isdigit()}
         except Exception:
@@ -1036,12 +1045,31 @@ def get_issue_relations(issue_num, fork_repo, mock_file=None):
                     for n in ((d.get(k) or {}).get('nodes') or []):
                         if isinstance(n.get('number'), int):
                             rels.add(n['number'])
+                parts = {'blockedBy': [x['number'] for x in ((d.get('blockedBy') or {}).get('nodes') or [])
+                                       if isinstance(x.get('number'), int)]}
             except Exception:
                 rels = None
         # rc != 0 -> rels stays None (unreadable, NOT empty)
     rels = None if rels is None else {n for n in rels if n != key}
     _REL_CACHE[key] = rels
+    # #675: the PARSED parts, kept beside the union. `None if rels is None`
+    # because an unreadable graph has no parts either -- absence of evidence.
+    _REL_PARTS_CACHE[key] = None if rels is None else parts
     return rels
+
+def get_blocked_by(issue_num, fork_repo, mock_file=None):
+    """The issue's DECLARED blockedBy edges alone (#675), or None unreadable.
+
+    Scoped to blockedBy deliberately: a blocker is a dependency the unit cannot
+    be completed without, whereas a sibling in the same cluster may legitimately
+    be fork-only. Returns None (never []) when the graph could not be read.
+    """
+    key = int(issue_num)
+    get_issue_relations(key, fork_repo, mock_file)
+    parts = _REL_PARTS_CACHE.get(key)
+    if parts is None:
+        return None
+    return sorted(parts.get('blockedBy') or [])
 
 
 def cluster_set(iss, fork_repo, mock_file=None):
@@ -1929,6 +1957,83 @@ if action == 'check':
               % (repo_path or 'the repo path'))
     else:
         print('NOTE(HELD_BASE_RED): cut-base %s carries no BASE-RED marker.' % _cr_base[:12])
+
+    # 6. DECLARED BLOCKER NOT UPSTREAM (#675) -- HELD_DEPENDENCY_NOT_UPSTREAM
+    #
+    # HELD_SET above asks the WRONG QUESTION of a relative: member_ready tests
+    # swapped+smoked, i.e. "has it LANDED on fork origin/main?". It never asks
+    # whether the relative's SUBSTANCE exists UPSTREAM. A relative that landed
+    # fork-only therefore reads READY, HELD_SET passes, and ELIGIBLE is a false
+    # green on PORTABILITY -- measured live: #458 reads ELIGIBLE while its
+    # dependency #226 introduced DEFAULT_MAX_INLINE_TOOL_BYTES and
+    # resolve_skill_path, neither of which exists on adolfousier/main, so the
+    # port went RED on clippy (run 36401057836); #513 needs #295 and #645 needs
+    # #487, the same shape.
+    #
+    # ELIGIBLE is an UNHARVESTED claim, never a portability claim. This leg
+    # narrows the gap for the ONE edge that decides portability without a build
+    # -- a DECLARED blocker. The universal case ("does this fix compile
+    # upstream") stays the CI gate's job, because the census must not build.
+    #
+    # The upstream ref is named literally: `base_ref` is bound ONLY inside the
+    # gate-4 block above, so reaching for it here would be the NameError this
+    # file has already been bitten by (see the `clusters --clock` note).
+    _dep_branch = 'adolfousier/main'
+    if target_iss is not None:
+        _blockers = get_blocked_by(target_iss, 'leshchenko1979/opencrabs',
+                                   os.environ.get('OC_HARVEST_MOCK_RELATIONS'))
+        _up_mock = os.environ.get('OC_HARVEST_MOCK_UPSTREAM_ISSUES')
+        _up_set = None
+        if _up_mock is not None:
+            try:
+                _up_set = {int(x) for x in json.loads(_up_mock)}
+            except Exception:
+                _up_set = None
+        if _blockers is None:
+            print('NOTE(HELD_DEPENDENCY_NOT_UPSTREAM): the declared-blocker graph for '
+                  '#%d is UNREADABLE -- this leg did NOT run, and no portability '
+                  'verdict is claimed beyond the UNHARVESTED one.' % target_iss)
+        elif _up_set is None and not ref_exists(_dep_branch, repo_path):
+            # Fail-open, disclosed: without the upstream ref the leg cannot
+            # decide, and an undecidable leg must never refuse (the cost of a
+            # false refusal is a blocked clean harvest).
+            print('NOTE(HELD_DEPENDENCY_NOT_UPSTREAM): upstream ref %s is ABSENT from '
+                  '%s, so each declared blocker\'s upstream presence could NOT be '
+                  'read -- this leg did NOT run.' % (_dep_branch, repo_path or 'the repo path'))
+        elif _blockers:
+            _by_iss_dep = build_commits_by_issue(commits)
+            _dep_unup, _dep_unreadable = [], []
+            for _b in _blockers:
+                _bst = get_issue_live_state(_b, mock_file=mock_issue_state)
+                if _bst is None:
+                    _dep_unreadable.append(_b)
+                    continue
+                _brdy, _bwhy = member_ready(_b, _by_iss_dep, repo_path, swaps, st_dir)
+                if not _brdy:
+                    # Not landed at all -- HELD_SET and the per-unit legs own that.
+                    continue
+                if _up_set is not None:
+                    _b_up = _b in _up_set
+                else:
+                    _bcs, _ = member_commits(_b, _by_iss_dep, repo_path)
+                    _b_up = any(check_ancestor(c.get('sha', ''), _dep_branch, repo_path)
+                                for c in _bcs if c.get('sha')) if _bcs else False
+                if not _b_up:
+                    _dep_unup.append(_b)
+            if _dep_unup:
+                refuse('REFUSED: Target %s declares blocker(s) %s that have LANDED '
+                       'fork-only and are NOT present in %s [HELD_DEPENDENCY_NOT_UPSTREAM] '
+                       '-- the unit is UNHARVESTED but NOT PORTABLE: its fix depends on '
+                       'substance upstream does not carry, so the port cannot resolve '
+                       'there. This verdict is about PORTABILITY; the UNHARVESTED claim '
+                       'is separate and unchanged.' % (
+                           target, ', '.join('#%d' % b for b in _dep_unup), _dep_branch))
+            if _dep_unreadable:
+                print('NOTE(HELD_DEPENDENCY_NOT_UPSTREAM): %d declared blocker(s) could '
+                      'not be read (%s) -- the verdict above is INCOMPLETE, never a '
+                      'clean one.' % (len(_dep_unreadable),
+                                      ', '.join('#%d' % b for b in _dep_unreadable)))
+
 
     # #493: EVERY leg has now been evaluated, so the full applying set is printed
     # above rather than the first one to fire. rc is unchanged (1 on any
@@ -4313,6 +4418,60 @@ C601EOF
     ok "HELD_SET: 1-hop only -- an unready GRAND-relative does NOT hold (no transitive closure)"
   else
     echo "  bad  - HELD_SET must not close transitively; grand-relative #602 refused ($out)"
+  fi
+
+  # (#675) DECLARED BLOCKER NOT UPSTREAM -- the leg HELD_SET cannot be. #601 is
+  # READY (swapped+smoked), so HELD_SET deliberately does NOT hold this set;
+  # what decides here is whether the blocker's SUBSTANCE is upstream. Both
+  # directions are asserted, because a leg that can only refuse is a rule that
+  # blocks clean harvests.
+  local rel_blocked="$setdir/rel_blocked.json"
+  printf '{"600": {"blockedBy": [601]}}\n' > "$rel_blocked"
+
+  # (e) the blocker LANDED fork-only -> REFUSED, naming the blocker.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_blocked" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_UPSTREAM_ISSUES='[]' \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_DEPENDENCY_NOT_UPSTREAM" && oc_has "$out" "#601" \
+     && ! oc_has "$out" "[HELD_SET:"; then
+    ok "#675: a fork-only DECLARED blocker refuses as unportable, and HELD_SET alone would not (blocker is READY)"
+  else
+    echo "  bad  - #675 expected rc=1 HELD_DEPENDENCY_NOT_UPSTREAM naming #601 with no [HELD_SET:, got rc=$rc ($out)"
+  fi
+
+  # (e2) CONTROL -- the SAME fixture with the blocker upstream-present stays
+  #      ELIGIBLE. Without this the leg could be refusing everything.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_blocked" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_UPSTREAM_ISSUES='[601]' \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && ! oc_has "$out" "HELD_DEPENDENCY_NOT_UPSTREAM"; then
+    ok "#675 control: an upstream-present declared blocker leaves the unit ELIGIBLE"
+  else
+    echo "  bad  - #675 control expected rc=0 ELIGIBLE, got rc=$rc ($out)"
+  fi
+
+  # (e3) the LIST-form relations file cannot name the blockedBy edge, so the leg
+  #      must DISCLOSE that it did not run -- never read an unknown edge as an
+  #      empty one (the absence-of-evidence discipline).
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_one" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "600" "" 2>&1)" || rc=$?
+  # Assert the STATE, never the token: the disclosure NOTE itself carries
+  # "HELD_DEPENDENCY_NOT_UPSTREAM", so a bare token test matches its own label
+  # and cannot tell a disclosure from a refusal. Discriminate on the forms.
+  if [ "$rc" -eq 0 ] && oc_has "$out" "NOTE(HELD_DEPENDENCY_NOT_UPSTREAM)" \
+     && ! oc_has "$out" "REFUSED:"; then
+    ok "#675: a list-form relations file discloses no blockedBy edge and never refuses on the unknown"
+  else
+    echo "  bad  - #675 list-form edge must disclose and not refuse; got rc=$rc ($out)"
   fi
 
   # (d) SET SOAK CLOCK -- the youngest member's swap under 24h holds the set.
