@@ -1593,6 +1593,12 @@ cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
   # notes carry across the role change (HQ implementation guard). Audit trail:
   # one global note event (frozen v1.1 kind enum respected) + a worker note.
   local uuid="${1:-}" role="${2:-}" topic="" feature=""; shift 2 2>/dev/null || true
+  # -h|--help is answered BEFORE the role-shape disambiguation below: with
+  # `promote --help` the single argument would be read as a ROLE, so the old
+  # path died rc 2 ("role looks like a flag") and this verb's own usage was
+  # unreachable — the one verb without a help arm (#686).
+  case "$uuid" in -h|--help) echo "usage: oc-ledger promote <uuid> <new-role> [--topic N] [--feature X]"; exit 0 ;; esac
+  case "$role" in -h|--help) echo "usage: oc-ledger promote <uuid> <new-role> [--topic N] [--feature X]"; exit 0 ;; esac
   # A1b (#659): promote is SELF when the uuid is omitted. A single non-uuid
   # argument is disambiguated BY SHAPE, exactly as enroll does -- for promote it
   # is the new ROLE (`oc-ledger promote editor` = promote myself).
@@ -2335,6 +2341,28 @@ ACKEOF
   chk "promote-event" "true" "$(jq -r '[.events[] | select(.by == "oc-ledger promote")] | last | .what | startswith("promoted 22222222")' "$OC_LEDGER")"
   bash "$ME" promote aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee tester2 >/dev/null 2>&1; chk "promote-ack-carries-rc" 0 $?
   chk "promote-ack-carries" "0.4.3" "$(jq -r '.workers[0].last_acked.version' "$OC_LEDGER")"
+  # #686: this verb's own usage was UNREACHABLE. `promote --help` reads the
+  # single argument as a ROLE, so the old path died rc 2 ("role looks like a
+  # flag") and promote was the one verb with no help arm. Both forms must answer
+  # usage at rc 0.
+  _o686="$(bash "$ME" promote --help 2>&1)"; chk "promote-help-rc" 0 $?
+  case "$_o686" in *"usage: oc-ledger promote <uuid> <new-role>"*) ok "promote-help-text" ;; *) bad "promote-help-text: $_o686" ;; esac
+  _o686="$(bash "$ME" promote 22222222-2222-2222-2222-222222222222 --help 2>&1)"; chk "promote-help-uuid-rc" 0 $?
+  # #686: the reconcile REMEDY the tool EMITS must be a form that RUNS. The old
+  # string named `promote --uuid <u>` while the verb takes the uuid POSITIONALLY
+  # (:1616), so the remedy died rc 2 "uuid shape invalid: '--uuid'" -- a lane
+  # reading it, trusting it and running it had no next step. POSITIVE: the
+  # positionally-correct shape PARSES. Unchanged role/topic stops at the
+  # 'nothing to change' guard, so this leg asserts reachability, not mutation.
+  _o686="$(bash "$ME" promote 22222222-2222-2222-2222-222222222222 toolsmith --topic 39171 2>&1)"; _r686=$?
+  chk "remedy-shape-rc" 2 $_r686
+  case "$_o686" in *"uuid shape invalid"*) bad "remedy-shape: uuid NOT parsed -- $_o686" ;; *) ok "remedy-shape: uuid parsed (positional form reaches the guard)" ;; esac
+  case "$_o686" in *"nothing to change"*) ok "remedy-shape reached the nothing-to-change guard" ;; *) bad "remedy-shape: did not reach guard -- $_o686" ;; esac
+  # CONTROL: the OLD emitted shape must still be REJECTED, or the leg above
+  # would pass on any string that happens to reach the guard.
+  _o686="$(bash "$ME" promote --uuid 22222222-2222-2222-2222-222222222222 --topic 39171 2>&1)"
+  case "$_o686" in *"uuid shape invalid"*) ok "remedy-control: old --uuid form is still rejected" ;; *) bad "remedy-control: old form unexpectedly accepted -- $_o686" ;; esac
+  chk "remedy-no-mutation" "toolsmith" "$(jq -r '.workers[1].role' "$OC_LEDGER")"
   # 29c: retire (HQ ASK 2026-09-11) — the REMOVAL half of the roster lifecycle.
   # enroll creates, promote mutates, retire drops the row so the uuid leaves
   # `oc-ledger roster` + `oc-roster` and loses signing (the sign gate keys on
@@ -3371,7 +3399,24 @@ EOF
   OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role TESTER --live --reconcile > "$T/rec.out" 2> "$T/rec.err"
   chk "reconcile-rc" 0 $?
   grep -q "BINDING-MISMATCH" "$T/rec.err" && grep -q "stored=42 live=55555" "$T/rec.err" && ok || bad "reconcile-names-the-drift"
-  grep -q "promote --uuid $W2 --topic 55555" "$T/rec.err" && ok || bad "reconcile-names-the-remedy"
+  # #686: the remedy must RUN, not merely be NAMED. This leg used to assert the
+  # string `promote --uuid $W2 --topic 55555` -- pinning the DEFECT as spec --
+  # while the verb takes the uuid POSITIONALLY, so that exact form died rc 2
+  # "uuid shape invalid: '--uuid'". A lane reading it, trusting it and running
+  # it had no next step. Now: name the runnable form, then EXECUTE it.
+  grep -q "promote $W2 tester --topic 55555" "$T/rec.err" && ok || bad "reconcile-names-the-remedy"
+  # Run the emitted remedy against a COPY of the fixture ledger, so the shared
+  # fixture keeps stored=42 for the legs below.
+  _remedy="$(sed -n 's/.*reconcile with: oc-ledger //p' "$T/rec.err" | head -1)"
+  if [ -n "$_remedy" ]; then
+    cp "$OC_LEDGER" "$T/ledger-remedy.json"
+    _ro="$(OC_LEDGER="$T/ledger-remedy.json" bash "$ME" $_remedy 2>&1)"; _rr=$?
+    chk "reconcile-remedy-runs" 0 $_rr
+    case "$_ro" in *"uuid shape invalid"*) bad "reconcile-remedy-runs: uuid NOT parsed -- $_ro" ;; *) ok "reconcile-remedy-runs: uuid parsed" ;; esac
+    chk "reconcile-remedy-applied" "55555" "$(jq -r '.workers[] | select(.uuid == "'"$W2"'") | .topic_id | tostring' "$T/ledger-remedy.json")"
+  else
+    bad "reconcile-remedy-runs: no remedy line emitted"
+  fi
   grep -q "1 BINDING-MISMATCH row(s)" "$T/rec.err" && ok || bad "reconcile-counts-the-drift"
   # The CLEAN case must say so explicitly -- an empty result must never read as
   # "no such data" (the class this whole cycle is closing).
@@ -4341,7 +4386,7 @@ cmd_roster() { # oc-ledger roster [--role <substr>] [--live] [--json]
        | select($lt != null and $lt != "")
        | (($w.topic_id // "") | tostring) as $st
        | select($st != "" and $st != $lt)
-       | "BINDING-MISMATCH uuid=\($u[0:8]) role=\($w.role // "-") stored=\($st) live=\($lt) -- reconcile with: oc-ledger promote --uuid \($u) --topic \($lt)"' "$LEDGER")"
+       | "BINDING-MISMATCH uuid=\($u[0:8]) role=\($w.role // "-") stored=\($st) live=\($lt) -- reconcile with: oc-ledger promote \($u) \($w.role // "editor") --topic \($lt)"' "$LEDGER")"
     if [ "$drift_n" -eq 0 ]; then
       printf '%s\n' "roster --reconcile: 0 BINDING-MISMATCH over the live-bound rows" >&2
     else
