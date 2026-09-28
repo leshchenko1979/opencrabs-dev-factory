@@ -42,6 +42,20 @@ PASS=0 FAIL=0
 # synthetic run, not fleet activity (KERNEL batch D0, 2026-08-28).
 export OC_TOOLS_NOLOG=1
 export OC_ACTOR="test-runner"
+# ---- battery timing instrumentation (owner order 2026-09-28) ----------------
+# The owner asked whether --jobs actually parallelises; the answer was readable
+# NOWHERE. No per-section timing existed (the only date +%s in this file is a
+# leg, not the driver), and a run's chunk transcripts are removed at the end of
+# that same run -- so a 20-minute wall was unfalsifiable: "one greedy section"
+# and "a throttle that never releases" predict the same wall, and neither had a
+# receipt. These fields report what the driver DID: per-section wall time, its
+# offset within the run (the wave structure), the aggregate wall, and the
+# MAXIMUM CONCURRENCY OBSERVED -- the direct test of whether the pool ever held
+# --jobs sections at once.
+BATTERY_T0="$(date +%s%N)"
+BATTERY_WALL_MS=0
+BATTERY_SECTIONS_JSON='[]'
+BATTERY_SECTIONS_TSV=""
 
 # ---- helpers ---------------------------------------------------------------
 note()  { printf '%s\n' "$*"; }
@@ -225,20 +239,118 @@ print(json.dumps(lines[:cap]))' "$FAIL_LOG" "$FAIL_ROWS_CAP" 2>/dev/null)"
 finalize_fail_log() {
   if [ "$FAIL" -eq 0 ]; then rm -f "$FAIL_LOG"; FAIL_LOG_FIELD=""; else FAIL_LOG_FIELD="$FAIL_LOG_REL"; fi
 }
+# ---- timing collection (see the defaults block at the top of this prelude) --
+battery_collect_timing() { # $1 = section count, $2 = per-chunk dir ($PT)
+  local nch="$1" pt="$2" k s e
+  BATTERY_SECTIONS_TSV="$pt/timing.tsv"
+  : > "$BATTERY_SECTIONS_TSV" 2>/dev/null || BATTERY_SECTIONS_TSV=""
+  for k in $(seq 1 "$nch"); do
+    [ -s "$pt/$k.ms" ] || continue
+    read -r s e < "$pt/$k.ms" 2>/dev/null || continue
+    case "${s:-}" in ''|*[!0-9]*) continue ;; esac
+    case "${e:-}" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\t%s\t%s\t%s\n' "$k" "$s" "$e" "$(( e - s ))" >> "$BATTERY_SECTIONS_TSV"
+  done
+  BATTERY_SECTIONS_JSON="$(battery_timing_json "$BATTERY_SECTIONS_TSV" "$0")"
+  [ -n "$BATTERY_SECTIONS_JSON" ] || BATTERY_SECTIONS_JSON='[]'
+  return 0
+}
+
+# Emits the receipt's `timing` object. max_concurrency is the peak overlap of
+# the section intervals -- the direct answer to "did the pool ever actually
+# hold $JOBS sections?", which a duration-sum cannot answer.
+battery_timing_json() {
+  python3 - "$1" "$2" <<'OC_TIMING_JSON' 2>/dev/null
+import json, sys
+rows = []
+try:
+    for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+        p = line.rstrip("\n").split("\t")
+        if len(p) < 4:
+            continue
+        try:
+            rows.append((int(p[0]), int(p[1]), int(p[2]), int(p[3])))
+        except ValueError:
+            continue
+except OSError:
+    pass
+titles, n = {}, 0
+try:
+    for line in open(sys.argv[2], encoding="utf-8", errors="replace"):
+        if line.startswith("# ---- ") and line[7:8].isdigit():
+            n += 1
+            titles[n] = line[7:].strip()
+except OSError:
+    pass
+events = []
+for k, s, e, d in rows:
+    events.append((s, 1))
+    events.append((e, -1))
+events.sort()
+depth = peak = 0
+for _, delta in events:
+    depth += delta
+    if depth > peak:
+        peak = depth
+slow = [{"n": k, "ms": d, "start_ms": s, "end_ms": e, "title": titles.get(k, "")}
+        for k, s, e, d in sorted(rows, key=lambda r: -r[3])[:10]]
+print(json.dumps({"max_concurrency": peak, "section_count": len(rows),
+                  "sum_ms": sum(r[3] for r in rows), "slowest": slow}))
+OC_TIMING_JSON
+}
+
+# Transcript half: one summary line plus the slowest few, so the wall time is
+# attributable from the run's OWN output instead of from a separate experiment.
+battery_timing_lines() {
+  [ "${BATTERY_WALL_MS:-0}" -gt 0 ] 2>/dev/null || return 0
+  note "  timing: wall=$(( BATTERY_WALL_MS / 1000 ))s  jobs=${JOBS:-?}  mode=${BATTERY_MODE:-?}"
+  [ -s "${BATTERY_SECTIONS_TSV:-}" ] || return 0
+  python3 - "$BATTERY_SECTIONS_TSV" <<'OC_TIMING_SHOW' 2>/dev/null || return 0
+import sys
+rows = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    p = line.rstrip("\n").split("\t")
+    if len(p) < 4:
+        continue
+    try:
+        rows.append((int(p[0]), int(p[1]), int(p[2]), int(p[3])))
+    except ValueError:
+        continue
+if not rows:
+    raise SystemExit
+events = []
+for k, s, e, d in rows:
+    events.append((s, 1))
+    events.append((e, -1))
+events.sort()
+depth = peak = 0
+for _, delta in events:
+    depth += delta
+    if depth > peak:
+        peak = depth
+longest = max(rows, key=lambda r: r[3])
+print("  sections: %d  sum=%ds  max-concurrency=%d  longest=%ds (#%d)"
+      % (len(rows), sum(r[3] for r in rows) // 1000, peak,
+         longest[3] // 1000, longest[0]))
+print("  slowest: " + "  ".join("#%d=%ds" % (k, d // 1000)
+                               for k, s, e, d in sorted(rows, key=lambda r: -r[3])[:6]))
+OC_TIMING_SHOW
+}
 emit_summary() {
   local verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
   finalize_fail_log
   battery_capture_fail_rows
   local _fpe _changed; _fpe="$(_battery_tree_fp)"
   _changed=false; [ "$_fpe" = "$BATTERY_FP_START" ] || _changed=true
-  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s\n}\n' \
+  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
     "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" "$FAIL_LOG_FIELD" \
-    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" \
+    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
     > "$TOOLS_DIR/tests/battery-last.json"
   [ "$_changed" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
   note ""
   note "=============================="
   note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE)"
+  battery_timing_lines
   note "=============================="
   [ "$FAIL" -eq 0 ] || note "tests FAILED (nonzero exit below)"
   return $(( FAIL > 0 ? 1 : 0 ))
@@ -249,10 +361,17 @@ if [ "${BATTERY_IN_CHUNK:-0}" = "0" ] && [ "$JOBS" -gt 1 ]; then
   PT="$(mktemp -d -t oc-battery-pt.XXXXXX)"
   RUN_SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
   for k in $(seq 1 "$NCH"); do
-    ( bash "$RUN_SCRIPT" --chunk "$k" > "$PT/$k.log" 2>&1 ) &
+    # Each child records its own [start,end] as ms offsets from the PARENT's
+    # clock, so the receipt shows the wave structure and the critical path.
+    ( _bs="$(date +%s%N)"
+      bash "$RUN_SCRIPT" --chunk "$k" > "$PT/$k.log" 2>&1
+      _be="$(date +%s%N)"
+      printf '%s %s\n' "$(( (_bs - BATTERY_T0) / 1000000 ))" "$(( (_be - BATTERY_T0) / 1000000 ))" > "$PT/$k.ms" 2>/dev/null ) &
     while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 0.05; done
   done
   wait
+  BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
+  battery_collect_timing "$NCH" "$PT"
   PASS=0; FAIL=0
   for k in $(seq 1 "$NCH"); do
     [ -f "$PT/$k.log" ] && cat "$PT/$k.log"
@@ -2200,9 +2319,10 @@ _tch=false
 _tch=false
 _fp_tail="$(_battery_tree_fp)"
 [ "$_fp_tail" = "$BATTERY_FP_START" ] || _tch=true
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s\n}\n' \
+BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
+printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
   "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$FAIL_LOG_FIELD" \
-  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" \
+  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
   > "$TOOLS_DIR/tests/battery-last.json"
 [ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
 
@@ -2210,6 +2330,7 @@ printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verd
 note ""
 note "=============================="
 note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict)"
+battery_timing_lines
 note "=============================="
 [ "$FAIL" -eq 0 ] || note "tests FAILED (nonzero exit below)"
 [ "$FAIL" -eq 0 ]
