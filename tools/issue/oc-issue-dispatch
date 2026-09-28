@@ -1059,6 +1059,14 @@ def role_owned_domains(lane):
     """
     return set(ROLE_DOMAINS.get((lane.get("raw") or {}).get("role"), ()))
 
+def lane_domains_for(lane):
+    """Every domain a lane touches: its feature PROSE unioned with its ROLE.
+
+    ONE predicate, shared by score_affinity's arithmetic and select_best_lane's
+    domain gate (#668) -- a second copy is what lets the two disagree.
+    """
+    return _domains_for_text(lane.get("feature", "").lower()) | role_owned_domains(lane)
+
 def owner_candidate_for(lane, issue_domains):
     """True when this lane's ROLE owns one of the issue's domains (fork #342).
 
@@ -1094,11 +1102,9 @@ def score_affinity(issue, lane):
     # Identify which domains the issue and lane touch. The issue half is shared
     # with select_best_lane's owner-candidacy test, so it lives in ONE place.
     issue_domains = detect_issue_domains(issue)
-    lane_domains = _domains_for_text(feature)
-
     # Role-owned domains are part of the lane's IDENTITY, not of its prose.
     owned = role_owned_domains(lane)
-    lane_domains |= owned
+    lane_domains = lane_domains_for(lane)
 
     # If lane is specialized in domain(s) that directly conflict with the issue
     # e.g., lane is dedicated to mermaid or photo rendering, but issue is pure db/persistence
@@ -1191,6 +1197,18 @@ def select_best_lane(issue, candidate_lanes, allow_fallback=False):
     best_score, best_lane = scored[0]
     if best_score < 0 and not allow_fallback:
         return None
+    # (#668) A POSITIVE score is NOT evidence of a domain match. The +3 leg in
+    # score_affinity scores feature PROSE against the issue text, so a lane that
+    # shares only vocabulary banks a positive total with ZERO domain intersection
+    # -- measured at source: {notify, telegram} issue vs lane prose "demoted-host
+    # guard" gives lane_domains set() and score 6. The sign guards below cannot
+    # see that (they reject < 0, and == 0 only when the issue has domains), so
+    # the intersection is enforced HERE, where both sets are already in scope.
+    # Scoped to domain-bearing issues for the same reason the == 0 arm is: an
+    # issue no domain covers would otherwise be unroutable rather than queued.
+    if issue_domains and not allow_fallback:
+        if not issue_domains.intersection(lane_domains_for(best_lane)):
+            return None
     if best_score == 0 and not allow_fallback:
         # (#639 Wire C) A ZERO score is the ABSENCE of an affinity match, not a
         # weak one. Dispatching on it hands the unit to a lane that will refuse
@@ -2029,6 +2047,34 @@ def run_selftest():
     assert_eq("--force overrides the zero-affinity refusal",
               select_best_lane(issue_db, [lane_mermaid, lane_generic], allow_fallback=True)["uuid"],
               "lane-generic-1")
+
+    # Test 3d (#668): domain intersection is a GATE, not a score component. A
+    # POSITIVE score built purely from feature PROSE used to satisfy both sign
+    # guards above -- they reject only < 0, or == 0 with domains set -- so a lane
+    # with ZERO domain intersection won on vocabulary alone. Reproduced at
+    # source: issue domains {notify, telegram}, lane prose "demoted-host guard"
+    # yields lane_domains set() and score 6, and this call dispatched to it.
+    issue_464 = {"number": 464, "labels": [],
+                 "title": "fix(telegram): the notify guard drops topics",
+                 "body": "notify guard eviction in the demoted-host path"}
+    lane_prose_only = {"uuid": "lane-prose-only", "class": "ACTIVE", "is_busy": False,
+                       "feature": "demoted-host guard"}
+    _d464 = detect_issue_domains(issue_464)
+    assert_true("#668 precondition: the fixture issue HAS domains", bool(_d464))
+    assert_true("#668 precondition: the lane has ZERO domain intersection",
+                not _d464.intersection(lane_domains_for(lane_prose_only)))
+    assert_true("#668 precondition: the prose score is POSITIVE -- the defect's entry",
+                score_affinity(issue_464, lane_prose_only) > 0)
+    assert_true("#668: a prose-only POSITIVE score must NOT win the lane",
+                select_best_lane(issue_464, [lane_prose_only]) is None)
+    lane_464_real = {"uuid": "lane-464-real", "class": "ACTIVE", "is_busy": False,
+                     "feature": "telegram notify delivery"}
+    assert_eq("#668 control: a domain-matching lane still routes",
+              select_best_lane(issue_464, [lane_prose_only, lane_464_real])["uuid"],
+              "lane-464-real")
+    assert_eq("#668: --force still overrides the prose-only refusal",
+              select_best_lane(issue_464, [lane_prose_only], allow_fallback=True)["uuid"],
+              "lane-prose-only")
 
     # Test 3c: role-owned domain beats prose (fork #342 sufficiency leg). A lane that
     # OWNS tools/** must win a tools/ issue even when its feature prose never names the
