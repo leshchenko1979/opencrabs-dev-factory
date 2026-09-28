@@ -2102,6 +2102,96 @@ if [ "$_SG_N" != "0" ]; then
 fi
 
 
+# ---- 82. shell-quoting guard: python3 engine fences (#670) ------------------
+# CLASS: a python body fenced so the SHELL interprets it.
+#   ARM A  a -c body opened with a DOUBLE quote -- a backtick inside it runs
+#          command substitution, so the body's own text becomes shell input.
+#   ARM B  a heredoc that feeds python3 whose DELIMITER IS UNQUOTED -- $VAR and
+#          backticks expand inside the body before python ever sees it.
+# Both have cost real work here: a backtick inside a -c body ran a phantom
+# "harvest: command not found", and an unquoted heredoc carrying a doubled
+# triple-quote closed the enclosing shell string and destroyed 1607 lines of a
+# tool (2026-09-18). The fleet measures 0 sites today, so this section is a
+# CARRIER, not a sweep: the first new site reddens here instead of surfacing as
+# a phantom command in production.
+#
+# BLIND SPOT, stated rather than implied: $VAR and $(cmd) inside a DOUBLE-quoted
+# body are NOT detected. They cannot be told apart from a shell argument that
+# FOLLOWS the closing quote without a full parser, and a rule that guessed
+# would fire on this tree's 28 legitimate one-line -c calls. Arm A therefore
+# keys on the BACKTICK, which is unambiguous inside a double-quoted body and is
+# the form the incident took; arm B keys on the delimiter being unquoted.
+section "shell-quoting guard (python3 -c / heredoc fences)"
+SQD="$(mktemp -d)"
+cat > "$SQD/scan.py" <<'SQSCANEOF'
+import os, re, sys
+
+def scan_file(p):
+    try:
+        text = open(p, encoding='utf-8', errors='replace').read()
+    except OSError:
+        return []
+    out = []
+    # ARM A: a DOUBLE-quoted python3 -c body carrying a backtick.
+    for m in re.finditer(r'python3\s+-c\s+"', text):
+        i = m.end()
+        while i < len(text):
+            c = text[i]
+            if c == '\\':
+                i += 2
+                continue
+            if c == '`':
+                out.append((p, 'ARM-A: backtick inside a double-quoted python3 -c body'))
+                break
+            if c == '"':
+                break
+            i += 1
+    # ARM B: a heredoc feeding python3 whose delimiter is UNQUOTED. The
+    # delimiter must be a bare word, so a quoted one does not match by
+    # construction -- which is what separates the hazard from the safe form.
+    for m in re.finditer(r'python3\b[^\n]*?<<-?\s*([A-Za-z_][A-Za-z0-9_]*)', text):
+        out.append((p, 'ARM-B: unquoted heredoc (delimiter %s) feeds python3' % m.group(1)))
+    return out
+
+target = sys.argv[1]
+if os.path.isdir(target):
+    files = []
+    for dp, dn, fn in os.walk(target):
+        dn[:] = [d for d in dn if d not in ('__pycache__', '.git')]
+        files.extend(os.path.join(dp, f) for f in fn)
+else:
+    files = [target]
+for f in sorted(files):
+    for p, msg in scan_file(f):
+        print('%s: %s' % (p, msg))
+SQSCANEOF
+# CANARY, built by INTERPOLATION. This file lives under tools/, so the live
+# scan reads it: a hazard written literally here would be found as a REAL site
+# and the leg would false-positive against its own canary. The backtick comes
+# from its octal escape and the heredoc delimiters from %s, so no literal
+# hazard text exists in this file.
+SQ_BT="$(printf '\140')"
+printf 'python3 -c "print(%sdate%s)"\n' "$SQ_BT" "$SQ_BT" > "$SQD/hazard.sh"
+printf 'python3 - "$@" <<%s\nprint(1)\nPYEOF\n' "PYEOF" >> "$SQD/hazard.sh"
+printf "python3 -c 'print(1)'\n" > "$SQD/safe.sh"
+printf 'python3 - "$@" <<%s\nprint(1)\nPYEOF\n' "'PYEOF'" >> "$SQD/safe.sh"
+SQ_HAZ="$(python3 "$SQD/scan.py" "$SQD/hazard.sh" 2>&1)"
+SQ_SAFE="$(python3 "$SQD/scan.py" "$SQD/safe.sh" 2>&1)"
+case "$SQ_HAZ" in *ARM-A*) ok "shell-quoting: backtick in a double-quoted -c body is SEEN" ;;
+  *) bad "shell-quoting: ARM A cannot fire (canary unseen: $SQ_HAZ)" ;; esac
+case "$SQ_HAZ" in *ARM-B*) ok "shell-quoting: an unquoted heredoc feeding python3 is SEEN" ;;
+  *) bad "shell-quoting: ARM B cannot fire (canary unseen: $SQ_HAZ)" ;; esac
+[ -z "$SQ_SAFE" ] && ok "shell-quoting: the SAFE fence forms stay green (control)" \
+  || bad "shell-quoting: the control fired on safe forms: $SQ_SAFE"
+SQ_LIVE="$(python3 "$SQD/scan.py" "$TOOLS_DIR" 2>&1)"
+if [ -z "$SQ_LIVE" ]; then
+  ok "shell-quoting: no hazard site in the fleet"
+else
+  bad "shell-quoting: $(printf '%s' "$SQ_LIVE" | wc -l) hazard site(s):
+$(printf '%s' "$SQ_LIVE" | head -5)"
+fi
+rm -rf "$SQD"
+
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
 battery_capture_fail_rows
