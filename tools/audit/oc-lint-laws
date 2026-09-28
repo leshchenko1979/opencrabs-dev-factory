@@ -138,11 +138,25 @@ citation_line() { # $1=file $2=line [$3=cited token]
 }
 
 flag_known() { # $1=tool src  $2=flag
+  # STRICT: the flag must be ACCEPTED by the tool, in ANY of the shapes real
+  # CLIs use to accept one. The original single arm-regex (`^\s*--flag\)`)
+  # demanded the flag BE the whole case arm, and measured NINE false positives
+  # on the live corpus (#685) -- a permanently-red linter is one every lane
+  # learns to ignore, and a real phantom then hides inside the noise. One flag
+  # legitimately arrived that way (RC-CONTRACT.md:43 `--uuid`), and it was
+  # invisible among the eight wrong ones.
+  #   (1) bare case arm         --role)
+  #   (2) alternation arm       --role|--role=*)                  [oc-roster:73]
+  #   (3) inline cmp / argparse [ "$1" = "--help" ] / add_argument("--auto")
+  # Each leg has a NEGATIVE control in the selftest, so this cannot degrade to
+  # "accept everything".
   if [ "$STRICT" = 1 ]; then
-    grep -qE "^[[:space:]]*$2\)" "$1" 2>/dev/null
-  else
-    grep -qF -- "$2" "$1" 2>/dev/null
+    grep -qE "^[[:space:]]*$2\)" "$1" 2>/dev/null && return 0
+    grep -qE "^[[:space:]]*[^#]*$2[|=]" "$1" 2>/dev/null && return 0
+    grep -qE "(\(|,|=)[[:space:]]*[\"']$2[\"']" "$1" 2>/dev/null && return 0
+    return 1
   fi
+  grep -qF -- "$2" "$1" 2>/dev/null
 }
 
 dispatches() { grep -qE '^[[:space:]]*[a-z][a-z0-9-]*\)' "$1" 2>/dev/null; }
@@ -198,6 +212,23 @@ case "$1" in
 esac
 EOT
 
+  # #685: the three flag shapes the original arm-regex could not see. One mock
+  # per shape, so the leg that covers it fails for exactly one reason.
+  cat > "$T/tools/oc-alt" <<'EOT'
+usage: oc-alt [--role <r>]
+case "$1" in
+  --role|--role=*) shift ;;
+esac
+EOT
+  cat > "$T/tools/oc-inline" <<'EOT'
+usage: oc-inline [--help]
+if [ "${1:-}" = "--help" ]; then exit 0; fi
+EOT
+  cat > "$T/tools/oc-argparse" <<'EOT'
+usage: oc-argparse [--auto]
+    p.add_argument("--auto", action="store_true")
+EOT
+
   printf 'Recover with `oc-good --resume <id>` before re-running the chain.\n'            > "$T/planted-flag.md"
   printf 'Then `oc-good propose --alpha` writes the ledger row.\n'                        > "$T/planted-verb.md"
   printf 'Run `oc-nope --alpha` to do the thing.\n'                                       > "$T/unknown-tool.md"
@@ -207,6 +238,13 @@ EOT
   printf 'Dispatches `oc-good` (`cargo test --locked --all-features`).\n'                 > "$T/cargo-span.md"
   printf '`oc-good`'"'"'s `--gamma` flag is rejected with rc 2.\n'                        > "$T/possessive.md"
   printf 'Do not forget to run `oc-good --bogus` before you start.\n'                     > "$T/weak-negation.md"
+  # #685: one fixture per newly-covered flag shape, plus its negative control.
+  printf 'Resolve the lane with `oc-alt --role editor`.\n'                              > "$T/alt-arm.md"
+  printf 'Ask `oc-inline --help` for the usage line.\n'                                 > "$T/inline-cmp.md"
+  printf 'Run `oc-argparse --auto` overnight.\n'                                         > "$T/argparse-flag.md"
+  printf 'Then `oc-alt --no-such-flag` would be wrong.\n'                               > "$T/neg-alt.md"
+  printf 'Then `oc-inline --no-such-flag` would be wrong.\n'                            > "$T/neg-inline.md"
+  printf 'Then `oc-argparse --no-such-flag` would be wrong.\n'                          > "$T/neg-argparse.md"
   # c24 J-1: the `phantom` marker is PROXIMITY-SCOPED. Line-level matching let
   # any line containing the word suppress its own findings -- measured on the
   # live corpus, 4 law lines were suppressed by the bare word alone, and
@@ -232,12 +270,36 @@ EOT
   run "$T/prox-real.md";     chk "a DISTANT 'phantom' word does NOT suppress"  1 "PHANTOM-FLAG oc-good --resume"
   run "$T/prox-citation.md"; chk "an ADJACENT 'phantom' still suppresses"      0 "" "PHANTOM-FLAG"
 
+  # #685 NEGATIVE CONTROLS: the widened predicate must NOT accept a flag the
+  # tool does not implement. One per newly-covered shape; if the fix ever
+  # degrades to "accept everything", these three redden and it does not ship.
+  # The non-strict form of each control, plus its --strict twin: the strict
+  # branch is the one with the live false positives, so the discriminator has
+  # to hold THERE, not only on the substring branch.
+  run "$T/neg-alt.md";       chk "NEG: absent flag on an alt-arm tool"  1 "PHANTOM-FLAG oc-alt --no-such-flag"
+  run "$T/neg-inline.md";    chk "NEG: absent flag on an inline tool"   1 "PHANTOM-FLAG oc-inline --no-such-flag"
+  run "$T/neg-argparse.md";  chk "NEG: absent flag on an argparse tool" 1 "PHANTOM-FLAG oc-argparse --no-such-flag"
+  run "$T/neg-alt.md" --strict;      chk "NEG(strict): absent flag on an alt-arm tool"  1 "PHANTOM-FLAG oc-alt --no-such-flag"
+  run "$T/neg-inline.md" --strict;   chk "NEG(strict): absent flag on an inline tool"   1 "PHANTOM-FLAG oc-inline --no-such-flag"
+  run "$T/neg-argparse.md" --strict; chk "NEG(strict): absent flag on an argparse tool" 1 "PHANTOM-FLAG oc-argparse --no-such-flag"
+
   # --- the checks that must stay SILENT (the false-positive wall) ----------
   run "$T/clean.md";       chk "clean corpus -> rc 0"                 0 "" ""
   run "$T/prose.md";       chk "prose mention -> rc 0"                0 "" "PHANTOM"
   run "$T/citation.md";    chk "documented-absent flag -> rc 0"       0 "" "PHANTOM-FLAG"
   run "$T/cargo-span.md";  chk "foreign tool flag in another span"    0 "" "PHANTOM"
   run "$T/possessive.md";  chk "possessive is not a tool name"        0 "" "UNKNOWN-TOOL"
+
+  # #685: a flag accepted through an ALTERNATION arm, an INLINE comparison, or
+  # an ARGPARSE declaration is a KNOWN flag. Each is paired with a negative
+  # control below -- without them this fix degrades to "accept everything".
+  # #685: --strict is MANDATORY on these three. Without it flag_known takes the
+  # substring branch, which finds the flag inside `--role|--role=*)` by plain
+  # text and passes under BOTH predicates -- measured: 24/0 with the old
+  # single-arm predicate installed, i.e. the legs asserted nothing.
+  run "$T/alt-arm.md" --strict;       chk "alternation arm is a KNOWN flag (strict)"      0 "" "PHANTOM-FLAG"
+  run "$T/inline-cmp.md" --strict;    chk "inline [ x = --flag ] is KNOWN (strict)"       0 "" "PHANTOM-FLAG"
+  run "$T/argparse-flag.md" --strict; chk "argparse add_argument is KNOWN (strict)"       0 "" "PHANTOM-FLAG"
 
   # citations are counted and printable, just not failing
   run "$T/citation.md" --show-citations
