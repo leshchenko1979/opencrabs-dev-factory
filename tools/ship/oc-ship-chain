@@ -258,6 +258,12 @@ usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF"; ex
 die() { printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 SHA=""; BRANCH=""; ISSUE=""; REPO=""; DRY=0; NOLEDGER=0; GATED_SHA=""; GATED_RUN=""
+# #672: set when NO leg runs in this chain and the gate is carried forward from an
+# earlier run. The banner must not then claim a mode that never ran.
+GATE_CARRIED_FORWARD=""
+# #672: the docs-only SKIP is a third no-leg path -- same false banner (`FAST`
+# claims fmt+clippy ran when nothing ran).
+GATE_SKIPPED_DOCS=""
 FAST=0
 # LEG1 gate budget (defect fix 2026-09-11, lane 4b4463d5). The PR-lane gate on
 # this box takes ~30 min end-to-end; oc-prchecks' own --wait default is 600 s,
@@ -766,8 +772,10 @@ fi
 # already-exported name keeps the export attribute — so a `GATE_MODE=green`
 # fixture handed the stub "FAST" and the stub answered rc 7 (4 legs red,
 # 2026-09-20). A bare name is not a private name in a shell.
-printf 'oc-ship-chain: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
-journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
+# #672: the banner is DELIBERATELY NOT printed here. It is printed after LEG1
+# resolves the gate (see the block before leg 2): in the --gated-sha /
+# --gated-run paths no leg runs and the gate is CARRIED FORWARD, so a banner
+# derived from FAST_GATE alone states the opposite of the truth.
 
 if [ "$DRY" = "1" ]; then
   echo "DRY-RUN $CHAIN: pre-flight ok (sha=$SHA branch=$BRANCH) — no legs executed"
@@ -804,6 +812,7 @@ if [ -z "$GATED_RUN" ] && [ -z "$GATED_SHA" ] && [ "${OC_SHIPCHAIN_NO_DOCS_SKIP:
   # indistinguishable from a passed gate. Journal line + ledger row both carry
   # the sha and the reason, so an auditor can tell a skip from a green run.
   journal "GATE-SKIPPED-DOCS sha=$SHA reason=every-changed-path-is-markdown-and-none-is-compiled-into-the-binary paths=${DOCS_ONLY_FLAT%,}"
+  GATE_SKIPPED_DOCS="1"
   printf 'oc-ship-chain: LEG1 GATE SKIPPED for %s — docs-only commit, no changed path is include_str!/include_bytes!-compiled (paths: %s). Owner ruling 2026-09-12 11:04Z; force the gate with OC_SHIPCHAIN_NO_DOCS_SKIP=1.\n' "$SHA" "${DOCS_ONLY_FLAT%,}" >&2
 elif [ -n "$GATED_RUN" ]; then
   # Verify specific run ID passed explicitly (or watch/resume it if still in flight)
@@ -812,6 +821,7 @@ elif [ -n "$GATED_RUN" ]; then
   case "$RUN_INFO" in
     "completed success success")
       journal "LEG1 gate pre-verified GREEN (gh run: $GATED_RUN completed success on $SHA)"
+      GATE_CARRIED_FORWARD="1"
       ;;
     "in_progress"*|"queued"*)
       journal "LEG1 gate run $GATED_RUN is still $RUN_INFO — attaching via oc-prchecks resume"
@@ -820,7 +830,7 @@ elif [ -n "$GATED_RUN" ]; then
       GATE_RC=$?
       set -e
       case "$GATE_RC" in
-        0) journal "LEG1 gate GREEN (resumed run $GATED_RUN)" ;;
+        0) journal "LEG1 gate GREEN (resumed run $GATED_RUN)"; GATE_CARRIED_FORWARD="1" ;;
         3) journal "LEG1 gate RED (resumed run $GATED_RUN)"; printf '%s\n' "$GATE_OUT"; die "GATE-RED" 4 ;;
         5) journal "LEG1 gate run $GATED_RUN still in flight after budget"; printf '%s\n' "$GATE_OUT"; die "gate still in flight (run=$GATED_RUN) — wait for it, then re-run: oc-ship-chain --sha $SHA --branch $BRANCH --gated-run $GATED_RUN" 7 ;;
         *) journal "LEG1 gate resume failed rc=$GATE_RC"; printf '%s\n' "$GATE_OUT"; die "gate resume failed" 6 ;;
@@ -854,6 +864,7 @@ EOF_JOBNAMES
           if [ -n "$REBASED_FROM" ]; then
             journal "LEG1 gated-run $GATED_RUN matched by CONTENT: job sha $REBASED_FROM is a content-identical rebase of $SHA (same patch-id) — carrying the gate forward"
             printf 'oc-ship-chain: LEG1 gate carried forward — run %s was gated on %s, a content-identical rebase of %s (same patch-id; Duty-4 n=2520).\n' "$GATED_RUN" "$REBASED_FROM" "$SHA" >&2
+            GATE_CARRIED_FORWARD="1"
           fi
           ;;
       esac
@@ -885,6 +896,7 @@ elif [ -n "$GATED_SHA" ]; then
     if command -v oc_same_patch >/dev/null 2>&1 && oc_same_patch "$FORK_REPO" "$GATED_SHA" "$SHA"; then
       journal "LEG1 gated-sha $GATED_SHA is a content-identical rebase of $SHA (same patch-id) — carrying the gate forward"
       printf 'oc-ship-chain: LEG1 gate carried forward — %s was gated, %s is a content-identical rebase (same patch-id; Duty-4 n=2520).\n' "$GATED_SHA" "$SHA" >&2
+      GATE_CARRIED_FORWARD="1"
     else
       die "--gated-sha ($GATED_SHA) does not match --sha ($SHA) and is not a content-identical rebase (patch-id differs or is uncomputable)" 2
     fi
@@ -910,6 +922,9 @@ elif [ -n "$GATED_SHA" ]; then
   done
 
   if [ -n "$MATCHED_RUN" ]; then
+    # #672: NO leg runs on this path either -- the chain only VERIFIED an
+    # existing run. Without this the banner claimed the FAST dispatch mode.
+    GATE_CARRIED_FORWARD="1"
     if [ "${MATCHED_SHA:-$SHA}" != "$SHA" ]; then
       printf 'oc-ship-chain: LEG1 gate carried forward — run %s was gated on %s, a content-identical rebase of %s (same patch-id; Duty-4 n=2520).\n' "$MATCHED_RUN" "$MATCHED_SHA" "$SHA" >&2
     fi
@@ -998,6 +1013,26 @@ else
     *) journal "LEG1 gate INFRA rc=$GATE_RC"; printf '%s\n' "$GATE_OUT"; die "gate infra rc=$GATE_RC" 6 ;;
   esac
 fi
+
+# #672: THE TRUTHFUL GATE-MODE BANNER, printed only once the gate is RESOLVED.
+# In the --gated-sha / --gated-run paths NO leg runs in this chain: the gate is
+# carried forward from an earlier run, and that run's job name carries no mode
+# marker (measured: `gate / PR-lane gates (<sha>)` only), so the carried mode
+# is not readable from it either. Claiming "FAST ... the all-features TEST leg
+# does NOT run" over a borrowed FULL run is therefore a false evidence claim --
+# and the detached log this prints to is exactly what a lane cites as its LEG3
+# receipt (measured 2026-09-28, lane c2ba4ef2: --gated-sha printed FAST while
+# carrying run 36401057885 forward, whose "Run tests" step ran 9970 passed / 0
+# failed). CARRIED-FORWARD states only what is true: no leg ran HERE.
+if [ "$GATE_SKIPPED_DOCS" = "1" ]; then
+  SHIP_GATE_MODE="SKIPPED-DOCS"
+  SHIP_GATE_NOTE="the gate did NOT run in THIS chain -- docs-only commit (owner ruling 2026-09-12); this chain is NOT CI-gate evidence"
+elif [ "$GATE_CARRIED_FORWARD" = "1" ]; then
+  SHIP_GATE_MODE="CARRIED-FORWARD"
+  SHIP_GATE_NOTE="no gate leg ran in THIS chain; the gate was carried forward from an earlier run (see the LEG1 line above for its id and patch-id)"
+fi
+printf 'oc-ship-chain: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
+journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
 
 # ---- leg 2: issue-log (mandatory when --issue is given) -------------------
 # Defect fix 2026-09-19 (lane d18ce16a report, fork #361). This leg invoked
@@ -1671,6 +1706,18 @@ EOF
   RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
   check_rc "gated-sha-green" "$RC" 0
   grep -q "LEG1 gate pre-verified GREEN (gh run 11111" "$T/journal.log" && ok "journal-gated-sha" || bad "journal-gated-sha"
+  # (#672) THE BANNER MUST NOT CLAIM A MODE THAT NEVER RAN. NO gate leg runs on
+  # the --gated-sha path, so the mode is CARRIED-FORWARD. Before #672 the banner
+  # was computed from FAST_GATE alone and printed "GATE MODE = FAST ... the
+  # all-features TEST leg does NOT run" over a gate BORROWED from an earlier
+  # run whose test leg may well have run (measured 2026-09-28, lane c2ba4ef2:
+  # --gated-sha printed FAST while carrying run 36401057885 forward, whose "Run
+  # tests" step ran 9970 passed / 0 failed). The detached log this prints to is
+  # exactly what a lane cites as its LEG3 receipt, so the false mode was a false
+  # evidence claim rather than a cosmetic one.
+  case "$OUT" in *"GATE MODE = CARRIED-FORWARD"*) ok "gate-mode-gated-sha-carried-forward" ;; *) bad "gate-mode-gated-sha-carried-forward: $OUT" ;; esac
+  case "$OUT" in *"GATE MODE = FAST"*) bad "gate-mode-gated-sha-claims-fast (no leg ran)" ;; *) ok "gate-mode-gated-sha-does-not-claim-fast" ;; esac
+  grep -q "GATE MODE CARRIED-FORWARD" "$T/journal.log" && ok "gate-mode-journal-carried-forward" || bad "gate-mode-journal-carried-forward"
   # 5b. Duty-4 n=2520: a METADATA-ONLY rebase rewrites the sha while the patch
   # is unchanged, so strict sha equality voided a GREEN gate by construction
   # (measured 2026-09-25: ONE patch, THREE shas, THREE full ~25-min gates). The
