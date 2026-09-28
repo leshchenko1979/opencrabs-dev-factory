@@ -1209,6 +1209,14 @@ selftest_impl() {
   # the same trailer every editor commit carries (SKILL.md §Session-notify
   # loop). Test 12 proves oc-ship-chain defaults OC_ACTOR from it.
   FIXTURE_SESSION="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  # The identity the WAKE fixture lends the chain through the ENVIRONMENT. A
+  # selftest must never read the CALLER's identity: tools/tests/run.sh:44
+  # exports OC_ACTOR="test-runner" (label-shaped by design) and no
+  # OPENCRABS_SESSION_ID, so an ambient read made the wake legs assert the
+  # LAUNCHER rather than the mechanism -- and a BARE ambient expansion under
+  # set -u aborted the whole selftest, dropping 84 of 194 legs behind one
+  # unbound-variable line (#667). The legs lend their own uuid and assert THAT.
+  LEG_UUID="11111111-2222-3333-4444-555555555555"
   ok()   { PASS=$((PASS+1)); echo "ok $1"; }
   bad()  { FAIL=$((FAIL+1)); echo "FAIL $1"; }
   check_rc() { [ "$2" = "$3" ] && ok "$1 (rc=$2)" || bad "$1 (want rc=$3 got $2)"; }
@@ -1961,6 +1969,7 @@ EOF
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(GATE_MODE=always OC_SHIPCHAIN_GATE_RESUMES=2 \
+    OPENCRABS_SESSION_ID="$LEG_UUID" \
     OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-rc7-exit-code" "$RC" 7
@@ -1968,8 +1977,8 @@ EOF
     *) bad "wake-rc7-fires: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"--sender oc-ship-chain"*) ok "wake-rc7-sender" ;;
     *) bad "wake-rc7-sender" ;; esac
-  case "$(cat "$T/wake.log" 2>/dev/null)" in *"$OPENCRABS_SESSION_ID"*) ok "wake-rc7-targets-ambient-lane" ;;
-    *) bad "wake-rc7-targets-ambient-lane" ;; esac
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"$LEG_UUID"*) ok "wake-rc7-targets-env-lane" ;;
+    *) bad "wake-rc7-targets-env-lane" ;; esac
 
   # 11d. the opt-out suppresses, and the chain's own rc is UNCHANGED either way --
   # a wake is a notification, never a verdict, and rc is the audit surface.
@@ -1977,6 +1986,7 @@ EOF
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(GATE_MODE=always OC_SHIPCHAIN_GATE_RESUMES=2 OC_SHIPCHAIN_NO_WAKE=1 \
+    OPENCRABS_SESSION_ID="$LEG_UUID" \
     OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-nowake-exit-code-unchanged" "$RC" 7
@@ -1988,6 +1998,7 @@ EOF
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(GATE_MODE=green \
+    OPENCRABS_SESSION_ID="$LEG_UUID" \
     OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-green-rc0" "$RC" 0
@@ -2001,6 +2012,7 @@ EOF
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(GATE_MODE=always OC_SHIPCHAIN_GATE_RESUMES=2 \
+    OPENCRABS_SESSION_ID="$LEG_UUID" \
     OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-hermetic-exit-code" "$RC" 7
