@@ -15,6 +15,8 @@
 #       - Exits 1 (REFUSED) if matching unit is within 24h feature soak window.
 #       - Exits 1 (REFUSED) if matching unit touches files of an unharvested/soaking feature (HELD_DEPENDENT_SOAK).
 #       - Exits 1 (REFUSED) if matching unit touches files of an active in-flight lane (HELD_IN_FLIGHT_LANE).
+#       - Exits 1 (REFUSED) if the BASE tip the unit is cut from carries a
+#         BASE-RED marker written by oc-pr-fault-scope (HELD_BASE_RED, #630).
 #       - Exits 0 (ELIGIBLE) if unit is confirmed UNHARVESTED.
 #       - Exits 2 on usage / bad arguments.
 #       - Exits 3 on API/git failure.
@@ -65,7 +67,7 @@ usage() {
   cat <<EOF
 Usage:
   $PROG scan [--repo <path>] [--upstream <owner/repo>] [--json]
-  $PROG check <issue-number-or-slug> [--repo <path>] [--subject <text>]
+  $PROG check <issue-number-or-slug> [--repo <path>] [--subject <text>] [--base <ref>]
   $PROG record --unit <slug> --pr <number> [--issue <N>] [--state-file <path>]
   $PROG purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
   $PROG sync [--repo <path>] [--state-file <path>]
@@ -81,7 +83,7 @@ Usage:
 
 Exit codes:
   0: ELIGIBLE / Clean / Success / --help
-  1: REFUSED (already MERGED, IN_FLIGHT upstream, SOAK, HELD_DEPENDENT_SOAK, HELD_IN_FLIGHT_LANE) / Finding
+  1: REFUSED (already MERGED, IN_FLIGHT upstream, SOAK, HELD_DEPENDENT_SOAK, HELD_IN_FLIGHT_LANE, HELD_BASE_RED) / Finding
   2: Usage error
   3: Git or GitHub API failure
 EOF
@@ -89,7 +91,7 @@ EOF
 }
 
 # --- Core Python Engine (Deterministic Parsing & Matching) ---
-run_engine() {
+run_engine() { # argv[7] = optional cut-base pin for the #630 base-red leg ('' = resolve)
   python3 - "$@" <<'OCPY'
 import sys, os, json, re, subprocess, argparse, time, datetime, glob
 
@@ -104,6 +106,17 @@ try:
     import oc_claims
 except ImportError as _oc_err:  # pragma: no cover - fail loud, never guess
     sys.stderr.write('oc-harvest-census: cannot import tools/lib/oc_claims.py (%s)\n' % _oc_err)
+    sys.exit(3)
+
+# #630: the BASE-RED marker store. `oc-pr-fault-scope` DECIDES BASE-FAULT -- the
+# failure sits in the base the unit is cut from, not in the unit -- and until
+# #630 that decision was only PRINTED, so no later run could read it. Sharing
+# ONE module with the writer is what keeps the key from drifting between the
+# two ends.
+try:
+    import oc_base_red
+except ImportError as _oc_err:  # pragma: no cover
+    sys.stderr.write('oc-harvest-census: cannot import tools/lib/oc_base_red.py (%s)\n' % _oc_err)
     sys.exit(3)
 
 def parse_iso_ts(ts_str):
@@ -1101,6 +1114,9 @@ registry_file = sys.argv[4]
 target = sys.argv[5] if len(sys.argv) > 5 else ''
 # #365: argv[6] = a declared subject (cmd_check --subject). Empty when not given.
 declared_subject = sys.argv[6] if len(sys.argv) > 6 else ''
+# #630: argv[7] = the cut-base PIN (cmd_check --base). Empty = resolve the base
+# the unit would be cut from, which is `oc-wt add`'s documented default.
+base_pin = sys.argv[7] if len(sys.argv) > 7 else ''
 mock_prs = os.environ.get('OC_HARVEST_MOCK_PRS')
 mock_commits = os.environ.get('OC_HARVEST_MOCK_COMMITS')
 mock_ledger = os.environ.get('OC_HARVEST_MOCK_LEDGER')
@@ -1875,6 +1891,45 @@ if action == 'check':
         print('NOTE(HELD_SET): the target is not an issue (sha/slug), so no cluster '
               'set exists to evaluate -- this leg did NOT run.')
 
+    # #630: BASE-RED -- read the CONTEXT the unit is cut from, not only the unit.
+    # Every leg above reads the UNIT; none reads the base tip's lint state, so a
+    # unit could be certified "clean to branch and gate" while the base under it
+    # fails the gate on content the unit does not touch. Measured by Triage
+    # 2026-09-27 on #458/#513: upstream #1726 added a macOS-only symbol whose
+    # dead-code lint is a hard error under the Linux fork gate, so two lanes were
+    # told "clean to branch and gate" and two ~30 min gates were avoided BY HAND.
+    # `oc-pr-fault-scope` already decides that case (BASE-FAULT); #630 gives the
+    # decision a store and this leg answers from it.
+    #
+    # EXACT sha match, never ancestor-or-equal: a marker recorded for a base the
+    # fork has since advanced past says nothing about the CURRENT base, and
+    # refusing on it would block a clean unit (acceptance criterion 4). An
+    # advanced base is therefore a MISS -- deliberately fail-open, because the
+    # cost of a miss is a re-run while the cost of a false refusal is a blocked,
+    # clean harvest. Placed ABOVE the `if refusals:` block below, which is the
+    # ONLY exit that enforces a collected refusal (#493).
+    # ONE resolver (tools/lib/oc_base_red.resolve_base). A private copy of this
+    # ladder here would be the drift defect the store exists to keep out: if the
+    # two ends disagree on WHICH sha a unit is cut from, the reader silently
+    # never matches the writer.
+    _cr_base = oc_base_red.resolve_base(
+        repo_path, (base_pin or '').strip() or os.environ.get('OC_CENSUS_BASE', '').strip())
+    _cr_rec = oc_base_red.lookup(st_dir, _cr_base) if _cr_base else None
+    if _cr_rec:
+        refuse('REFUSED: Target %s is cut from base %s, which carries a BASE-RED marker '
+               '[HELD_BASE_RED: %s] -- the gate fails there on content OUTSIDE this '
+               "unit's own diff, so branching and gating it would spend a gate run on "
+               'a base fault. Wait for the base to advance (or for the base fault to '
+               'be fixed) and re-check.' % (target, _cr_base[:12], oc_base_red.describe(_cr_rec)))
+    elif not _cr_base:
+        # Disclosed, never silent (#563 discipline): a leg that did NOT run must
+        # say so, or a reader cannot tell a clean base from an unread one.
+        print('NOTE(HELD_BASE_RED): cut-base UNRESOLVED (no --base pin, and no '
+              'origin/main or main in %s), so the base lint state was NOT read.'
+              % (repo_path or 'the repo path'))
+    else:
+        print('NOTE(HELD_BASE_RED): cut-base %s carries no BASE-RED marker.' % _cr_base[:12])
+
     # #493: EVERY leg has now been evaluated, so the full applying set is printed
     # above rather than the first one to fire. rc is unchanged (1 on any
     # refusal), and the ELIGIBLE arms below stay unreachable when a refusal
@@ -2185,9 +2240,14 @@ cmd_scan() {
 
 cmd_check() {
   local target=""
+  # #630: the cut-base PIN. Empty = resolve origin/main (the base `oc-wt add`
+  # cuts from). The token exists so the selftest can drive the leg hermetically,
+  # without a live fork checkout.
+  CHECK_BASE_REF=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) REPO="$2"; shift 2 ;;
+      --base) CHECK_BASE_REF="$2"; shift 2 ;;
       --subject) DECLARED_SUBJECT="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       -*) usage ;;
@@ -2204,7 +2264,7 @@ cmd_check() {
   if [ -z "$target" ]; then
     usage
   fi
-  run_engine "check" "$UPSTREAM_REPO" "$REPO" "$REGISTRY_FILE" "$target" "$DECLARED_SUBJECT"
+  run_engine "check" "$UPSTREAM_REPO" "$REPO" "$REGISTRY_FILE" "$target" "$DECLARED_SUBJECT" "${CHECK_BASE_REF:-}"
 }
 
 cmd_record() {
@@ -2806,6 +2866,56 @@ EOF
     ok "check unharvested unit -> ELIGIBLE exit 0"
   else
     echo "  bad  - check unharvested unit expected rc=0, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3e. #630 BASE-RED: the leg reads the CONTEXT, so all four arms are asserted.
+  #     The store lives in the state dir (dirname of the registry), which for
+  #     these legs is $selftest_tmp; the base is lent as a full sha so the leg
+  #     needs no live checkout.
+  BASE_SHA="1111111111111111111111111111111111111111"
+  OTHER_SHA="2222222222222222222222222222222222222222"
+  rm -f "$selftest_tmp/base-red.json"
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "200" "" "$BASE_SHA" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE"; then
+    ok "base-red: no marker -> ELIGIBLE (behaviour unchanged)"
+  else
+    echo "  bad  - base-red absent store expected rc=0 ELIGIBLE, got rc=$rc ($out)"
+    return 1
+  fi
+  # A marker for a DIFFERENT (superseded) base must NOT refuse (criterion 4),
+  # and the disclosure must say the leg RAN rather than staying silent.
+  printf '{"markers": {"%s": {"sha": "%s", "run": "555", "pr": "42", "failing_files": ["src/a.rs"], "recorded_at": "2026-09-27T00:00:00Z"}}}\n' \
+    "$OTHER_SHA" "$OTHER_SHA" > "$selftest_tmp/base-red.json"
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "200" "" "$BASE_SHA" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && oc_has "$out" "carries no BASE-RED marker"; then
+    ok "base-red: marker for a SUPERSEDED base does not refuse"
+  else
+    echo "  bad  - base-red stale marker expected rc=0 ELIGIBLE + disclosure, got rc=$rc ($out)"
+    return 1
+  fi
+  # A marker keyed on THIS base must refuse, naming the sha, the run and the file.
+  printf '{"markers": {"%s": {"sha": "%s", "run": "555", "pr": "42", "failing_files": ["src/a.rs"], "recorded_at": "2026-09-27T00:00:00Z"}}}\n' \
+    "$BASE_SHA" "$BASE_SHA" > "$selftest_tmp/base-red.json"
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "200" "" "$BASE_SHA" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_BASE_RED" && oc_has "$out" "$(printf '%s' "$BASE_SHA" | cut -c1-12)" && oc_has "$out" "run 555"; then
+    ok "base-red: cut-base marker -> REFUSED HELD_BASE_RED naming sha+run"
+  else
+    echo "  bad  - base-red hit expected rc=1 HELD_BASE_RED naming the sha and run, got rc=$rc ($out)"
+    return 1
+  fi
+  # The unresolved-base disclosure: no pin, no checkout -> the leg says it did
+  # NOT run rather than reading as a clean base.
+  rm -f "$selftest_tmp/base-red.json"
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "200" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "cut-base UNRESOLVED"; then
+    ok "base-red: unresolved cut-base is DISCLOSED, not silent"
+  else
+    echo "  bad  - base-red unresolved expected rc=0 + disclosure, got rc=$rc ($out)"
     return 1
   fi
 

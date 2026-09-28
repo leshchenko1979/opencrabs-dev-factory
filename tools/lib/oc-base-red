@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-base-red — CLI over the BASE-RED marker store (#630).
+#
+# Sits in tools/lib/ because the store is SHARED CODE: two fleet tools consume
+# it (tools/harvest/oc-pr-fault-scope WRITES, tools/harvest/oc-harvest-census
+# READS), and the BASE RESOLVER below is the single owner of "which sha is a
+# unit cut from" — two private copies of that guess is precisely the drift
+# defect lib/oc-wt-resolve.sh exists to prevent.
+#
+# `tools/lib/` is excluded from the fleet `--help` sweep by name (run.sh
+# section 60, the `*/lib/*` arm), because the lib holds sourced helpers rather
+# than fleet executables.
+#
+# The store itself — its shape, its exact-sha match rule and its eviction — is
+# owned by tools/lib/oc_base_red.py. This file is a thin dispatcher and must
+# never grow a second copy of the store's semantics.
+#
+# Usage:
+#   oc-base-red record --state-dir D --sha S [--run R] [--pr N] \
+#                      [--failing-files a,b] [--repo PATH]
+#   oc-base-red resolve --repo PATH [--base REF]     # prints the cut-base sha
+#   oc-base-red show   --state-dir D [--sha S]
+#   oc-base-red clear  --state-dir D --sha S
+#   oc-base-red --help | -h        (exit 0)
+#
+# Exit: 0 ok · 2 usage · 3 store write failed.
+# =============================================================================
+set -u
+set -o pipefail
+
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0 ;;
+esac
+
+_LIB="$(cd "$(dirname "$0")" && pwd)"
+# The same variable oc-ledger uses for this directory, so a harness that
+# redirects the ledger's state (as its own selftest does) redirects this store
+# too. One name, one meaning.
+_OCP_STATE="${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
+
+exec python3 -c '
+import sys, os, json
+_lib, _def_state = sys.argv[1], sys.argv[2]
+sys.path.insert(0, _lib)
+import oc_base_red
+
+args = sys.argv[3:]
+def opt(name, default=None):
+    if name in args:
+        i = args.index(name)
+        return args[i + 1] if i + 1 < len(args) else default
+    return default
+
+cmd = args[0] if args and not args[0].startswith("-") else "show"
+sd = opt("--state-dir", _def_state)
+
+if cmd == "record":
+    sha = opt("--sha", "")
+    if not sha:
+        sys.stderr.write("oc-base-red: record needs --sha\n"); sys.exit(2)
+    try:
+        rec = oc_base_red.record(
+            sd, sha,
+            run=opt("--run"), pr=opt("--pr"),
+            failing_files=[f for f in (opt("--failing-files") or "").split(",") if f],
+            repo=opt("--repo"))
+    except Exception as e:
+        sys.stderr.write("oc-base-red: store write failed (%s)\n" % e); sys.exit(3)
+    print(json.dumps(rec, sort_keys=True))
+    sys.exit(0)
+
+if cmd == "resolve":
+    # Empty output is a RESULT, not an error: the caller must disclose that the
+    # base was unresolved rather than read silence as a clean base.
+    print(oc_base_red.resolve_base(opt("--repo", ""), opt("--base", "")))
+    sys.exit(0)
+
+if cmd == "show":
+    sha = opt("--sha", "")
+    if sha:
+        rec = oc_base_red.lookup(sd, sha)
+        print(json.dumps(rec, sort_keys=True) if rec else "NO MARKER for %s" % sha)
+    else:
+        print(json.dumps(oc_base_red.load(sd), indent=2, sort_keys=True))
+    sys.exit(0)
+
+if cmd == "clear":
+    sha = opt("--sha", "")
+    if not sha:
+        sys.stderr.write("oc-base-red: clear needs --sha\n"); sys.exit(2)
+    print("removed %s" % sha if oc_base_red.remove(sd, sha) else "no marker for %s" % sha)
+    sys.exit(0)
+
+sys.stderr.write("usage: oc-base-red record|resolve|show|clear [--state-dir D] [--sha S] ...\n")
+sys.exit(2)
+' "$_LIB" "$_OCP_STATE" "$@"

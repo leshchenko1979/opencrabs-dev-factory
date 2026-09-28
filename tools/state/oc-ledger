@@ -246,7 +246,7 @@ _is_uuid() { # $1 -> rc 0 iff a canonical 8-4-4-4-12 lowercase-hex uuid
 #   path and lived ONLY on vpn with no version control, so a bad edit there was
 #   unrecoverable; the snapshot is the revert path, and it is TRACKED rather than
 #   generated because it changes only when someone updates it from vpn.
-STATE_TRACKED_PATHS="tools.log baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions"
+STATE_TRACKED_PATHS="tools.log baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions base-red.json"
 # The harvest-state class (v0.4.237, HQ ruling 2026-09-22) is a SEPARATE
 # variable: it carries glob metacharacters and must reach git QUOTED and
 # DIRECTLY — an unquoted expansion pathname-expands against the CALLER's cwd.

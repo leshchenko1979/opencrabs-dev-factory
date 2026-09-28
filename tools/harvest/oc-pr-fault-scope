@@ -55,6 +55,25 @@ cmd_scope() {
     oc_log_extra verdict IN-SCOPE
     return 0
   fi
+  # #630: PERSIST the decision. Until now it was only PRINTED, so no later run
+  # could read it -- which is how oc-harvest-census certified #458/#513 "clean to
+  # branch and gate" while the base under them failed the gate on content their
+  # own diffs never touched. The key is the base the unit would be CUT FROM, from
+  # the SAME resolver the reader uses (lib/oc-base-red), so the key cannot drift
+  # between the two ends. Best-effort by design: a writer failure must never
+  # change this tool's verdict or its rc.
+  _br_sha="$("${OC_TOOLS_DIR:-.}/lib/oc-base-red" resolve \
+              --repo "${OC_BASE_REPO:-$HOME/opencrabs}" 2>/dev/null || true)"
+  if [ -n "$_br_sha" ]; then
+    "${OC_TOOLS_DIR:-.}/lib/oc-base-red" record --sha "$_br_sha" --run "$run" --pr "$pr" \
+      --failing-files "$(printf '%s' "$fail_files" | tr '\n' ',' | sed 's/,$//')" \
+      --repo "${OC_BASE_REPO:-$HOME/opencrabs}" >/dev/null 2>&1 || true
+    printf 'BASE-RED recorded for base %s (run %s) — oc-harvest-census will refuse a unit cut from it\n' \
+      "$(printf '%s' "$_br_sha" | cut -c1-12)" "$run"
+  else
+    printf 'BASE-RED NOT recorded: no cut-base resolvable in %s (set OC_BASE_REPO to the fork checkout)\n' \
+      "${OC_BASE_REPO:-$HOME/opencrabs}"
+  fi
   printf 'BASE-FAULT: PR #%s clean — run %s fails outside the PR diff, do NOT chase\nfailing files:\n%s\n' "$pr" "$run" "$fail_files"
   oc_log_extra verdict BASE-FAULT
   return 1
@@ -66,6 +85,23 @@ cmd_selftest() {
   T="$(mktemp -d)"
   ok() { P=$((P+1)); }; bad() { F=$((F+1)); echo "  FAIL selftest - $*" >&2; }
   chk() { [ "$2" = "$3" ] && ok || bad "$1 (want $2 got $3)"; }
+  # #630: a HERMETIC store and base. The BASE-RED writer must never touch the
+  # live state dir from a test: a fixture marker keyed on the real fork main
+  # would refuse every unit cut from it, which is exactly the false-refusal the
+  # exact-sha rule exists to bound. OC_DEV_STATE redirects the store (the same
+  # variable oc-ledger uses) and OC_BASE_REPO names a throwaway checkout, so the
+  # recorded base sha is a real one from a repo this test owns.
+  export OC_DEV_STATE="$T/state"
+  mkdir -p "$T/repo"
+  git -C "$T/repo" init -q -b main 2>/dev/null \
+    || { git -C "$T/repo" init -q; git -C "$T/repo" symbolic-ref HEAD refs/heads/main; }
+  git -C "$T/repo" config user.email t@t
+  git -C "$T/repo" config user.name t
+  echo base > "$T/repo/base.txt"
+  git -C "$T/repo" add -A
+  git -C "$T/repo" commit -qm base
+  BASE_FIXTURE="$(git -C "$T/repo" rev-parse HEAD)"
+  export OC_BASE_REPO="$T/repo"
   # gh shims: canned pr diff + run log
   printf '#!/bin/sh\ncase " $* " in *" pr diff "*) printf "src/brain/tools/pr_file.rs\nREADME.md\n" ;; *" run view "*) printf "error[E0308]: mismatched types\\n --> src/brain/tools/pr_file.rs:120:5\\n" ;; *) exit 1 ;; esac\n' > "$T/gh-inscope.sh"
   printf '#!/bin/sh\ncase " $* " in *" pr diff "*) printf "docs/plan.md\n" ;; *" run view "*) printf "error[E0308]: mismatched types\\n --> src/delivery/flow.rs:120:5\\n" ;; *) exit 1 ;; esac\n' > "$T/gh-basefault.sh"
@@ -74,6 +110,30 @@ cmd_selftest() {
   local ME="$0"
   bash "$ME" 42 --run 1000 --gh "$T/gh-inscope.sh" >/dev/null 2>&1; chk "in-scope-rc0" 0 $?
   bash "$ME" 42 --run 1000 --gh "$T/gh-basefault.sh" >/dev/null 2>&1; chk "base-fault-rc1" 1 $?
+  # #630: the BASE-FAULT decision is PERSISTED, keyed on the cut-base sha, with
+  # its provenance (run + the failing file). Before #630 it was only printed, so
+  # the census could certify a unit "clean to branch and gate" off a base that
+  # fails the gate.
+  if [ -f "$T/state/base-red.json" ] \
+     && grep -q "$BASE_FIXTURE" "$T/state/base-red.json" \
+     && grep -q '"run": "1000"' "$T/state/base-red.json" \
+     && grep -q 'src/delivery/flow.rs' "$T/state/base-red.json"; then
+    ok "base-fault persisted, keyed on the base sha with run + failing file"
+  else
+    bad "base-fault not persisted (store: $(cat "$T/state/base-red.json" 2>/dev/null || echo ABSENT))"
+  fi
+  # The IN-SCOPE arm must record NOTHING: that failure is the PR's own, and a
+  # marker there would refuse an unrelated, clean unit.
+  rm -f "$T/state/base-red.json"
+  bash "$ME" 42 --run 1000 --gh "$T/gh-inscope.sh" >/dev/null 2>&1
+  [ -f "$T/state/base-red.json" ] && bad "in-scope arm recorded a base-red marker" \
+    || ok "in-scope arm records nothing"
+  # A BASE-FAULT with no resolvable base must DISCLOSE that it was not recorded
+  # rather than fail silently.
+  rm -rf "$T/state" "$T/repo"
+  OUT_NB="$(bash "$ME" 42 --run 1000 --gh "$T/gh-basefault.sh" 2>&1)"; RC_NB=$?
+  [ "$RC_NB" -eq 1 ] && case "$OUT_NB" in *"BASE-RED NOT recorded"*) ok "unresolvable base is disclosed" ;;
+    *) bad "unresolvable base not disclosed: $OUT_NB" ;; esac
   bash "$ME" 42 --gh "$T/gh-inscope.sh" >/dev/null 2>&1; chk "missing-run-rc2" 2 $?
   bash "$ME" 42 --run 1000 --gh "$T/gh-dead.sh" >/dev/null 2>&1; chk "gh-dead-rc3" 3 $?
   rm -rf "$T"
