@@ -385,6 +385,25 @@ AFFINITY_KEYWORDS = {
     # hardcoded set that does not include `goal`, so a non-goal issue can still
     # be dumped on this lane; adding a domain to this table does not reach it.
     "goal": ["(goal):", "goal-subsystem"],
+
+    # The provider/stream subsystem (Triage patrol 2026-09-28T17:00Z, finding 1).
+    # Chosen by MEASUREMENT, same method as `goal`/`plan` above. Ground truth =
+    # the fix surface RESOLVES under `src/brain/provider/` OR to
+    # `src/brain/agent/service/helpers.rs` (the 60s handshake wall) -- 10 open
+    # issues: #269 #346 #378 #421 #423 #488 #512 #680 #681 #682.
+    #   (provider): ........... fires 5,  precision 100%, recall 50%
+    #   + handshake ........... fires 6,  precision 100%, recall 60%
+    #   + provider-subsystem .. fires 6,  precision 100%, recall 60% (0 issue fires)
+    #   + retry_policy ........ fires 6,  precision 100%, recall 60% (no gain)
+    #   + fallback ............ fires 12, precision  42% -- REJECTED, prose
+    #   + bare "provider" ..... fires 7,  precision  71% -- REJECTED, measures English
+    # Two tokens, one per side -- the `goal`/`plan` shape: `(provider):` is how
+    # an ISSUE declares the domain, `provider-subsystem` is how the LANE does.
+    # The live defect this fixes: #680/#681/#682 and #488 sit on that wall and
+    # `oc-issue-dispatch <n> --dry-run` returns "Could not resolve target lane
+    # with matching domain affinity" for every one of them -- the surface was
+    # UNDECLARABLE, so no lane could ever be matched to it.
+    "provider": ["(provider):", "handshake", "provider-subsystem"],
 }
 
 # Role-owned domains (fork #342, Design I step 18 -- sufficiency leg). A lane's
