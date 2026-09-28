@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.268
+version: 0.4.269
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -251,7 +251,8 @@ probe hygiene, and the single-sided-probe sufficiency ruling — are canonical a
     (the deploy audit trail `oc-deploy recover-receipt` reads) · the lane
     `*-state.md` records · `reviews/` · `evidence/` · `tools.log` ·
     `smoke-verdicts.log` · `deployed.sha`/`.meta.json` · `baseline.json` ·
-    `fanout.state` · markers (`pacemakers-off`).
+    `fanout.state` · `base-red.json` (the BASE-RED marker store, #630) ·
+    markers (`pacemakers-off`).
   - **GENERATED-IGNORED** — the generated class: `.bak`/`.bak-*` sidecars ·
     `.ledger.*` temps · `__pycache__/` · `*.pyc` · `*.lock`. Never committed,
     reaped on the hygiene cadence WITH a keep-window (a sidecar taken while its
