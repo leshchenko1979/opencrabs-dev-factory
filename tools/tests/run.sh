@@ -1972,58 +1972,7 @@ R614_N="$(grep -cE '^ *printf .*"fail_rows": %s' "$SELF_ABS")"
   || bad "a receipt writer is missing fail_rows ($R614_N of 2 printf lines)"
 rm -rf "$R614"
 
-# ---- 76. oc-questions (Open Questions register, #547) ------------------------
-# Owner-commissioned fleet instrument. The register is the ONLY sanctioned
-# "blocked on you" channel, so the two properties that make it trustworthy are
-# pinned in its own --selftest: concurrent `ask` calls lose NEITHER set (the
-# flock + atomic-replace cycle), and a multi-question set keeps CALL order with
-# PER-QUESTION recommendations. A Clarify action must not close the question —
-# the first version keyed the idempotence guard on "not open", which made a
-# clarified question unanswerable forever AND archived its whole set.
-section "oc-questions (Open Questions register)"
-run_selftest oc-questions
-"$TOOLS_DIR/state/oc-questions" --bogus >/dev/null 2>&1; [ $? -eq 2 ] \
-  && ok "unknown verb -> 2 (usage)" || bad "unknown verb -> expected 2"
-"$TOOLS_DIR/state/oc-questions" --help >/dev/null 2>&1; [ $? -eq 0 ] \
-  && ok "oc-questions --help rc=0" || bad "oc-questions --help failed"
-# The store must be injectable: a tool that defaulted into the skill repo would
-# have the battery commit a register.
-QDIR="$(mktemp -d)"
-# The lane is resolved from the asking session's OWN binding, so the fixture
-# needs a real session DB -- and an UNBOUND session is refused by design.
-python3 - "$QDIR/sessions.db" <<'PYDB'
-import sqlite3, sys
-c = sqlite3.connect(sys.argv[1])
-c.executescript("""
-create table session_bindings (session_id text primary key, channel text not null,
-  chat_id text not null, thread_id integer, updated_at integer not null default 0);
-create table channel_messages (id text primary key, channel text not null,
-  channel_chat_id text not null, topic_name text, created_at integer not null,
-  thread_id text);
-""")
-c.execute("insert into session_bindings (session_id,channel,chat_id,thread_id,updated_at)"
-          " values (?,?,?,?,0)",
-          ("00000000-0000-0000-0000-000000000000", "telegram", "-100", 1))
-c.execute("insert into channel_messages (id,channel,channel_chat_id,topic_name,"
-          "created_at,thread_id) values (?,?,?,?,?,?)",
-          ("m1", "telegram", "-100", "probe lane", 1, "1"))
-c.commit()
-PYDB
-OC_QUESTIONS_DIR="$QDIR/store" OC_QUESTIONS_DB="$QDIR/sessions.db" \
-  OPENCRABS_SESSION_ID="00000000-0000-0000-0000-000000000000" \
-  "$TOOLS_DIR/state/oc-questions" ask --factory probe --title t --description d \
-  >/dev/null 2>&1
-[ -f "$QDIR/store/open.json" ] && ok "OC_QUESTIONS_DIR override honoured (store is injectable)" \
-  || bad "store override ignored — the selftest would write the real register"
-# --lane was REMOVED (owner order 2026-09-25): the lane is derived from the
-# session's binding, so a caller cannot label itself.
-OC_QUESTIONS_DIR="$QDIR/store" OC_QUESTIONS_DB="$QDIR/sessions.db" \
-  OPENCRABS_SESSION_ID="00000000-0000-0000-0000-000000000000" \
-  "$TOOLS_DIR/state/oc-questions" ask --factory probe --lane x --title t --description d \
-  >/dev/null 2>&1
-[ $? -eq 2 ] && ok "oc-questions REJECTS the removed --lane flag" \
-  || bad "removed --lane flag was accepted"
-rm -rf "$QDIR"
+# ---- 76. (retired) the meta factory's questions tool is tested THERE -------
 # ---- 77. lib/oc-root.sh resolver coherence (F-L1/F-L2) -----------------------
 # Two defects HQ's lens F found in the v0.4.255 regroup's wake, both the
 # "green over a surface it cannot see" class:
