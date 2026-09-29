@@ -68,6 +68,20 @@ asserts a collision that repo does not have — the qualifier's **referent is
 absent** there — so the change is **WRONG** upstream, not merely unnecessary. A
 close comment cites **n=13688** as the ground; n=13678 stands for the facts.
 
+**BUNDLED AND NAMED (C8).** This publishing window carries the receipt correction
+itself (`98fcce2e`, this lane) and — landing between the two syncs, so the
+v0.4.269 sync's range swept it — the Toolsmith's `3b8eaf2b` (**#701**):
+`harvest-registry.json` added to `STATE_TRACKED_PATHS`, the state file
+`oc-harvest-census record` writes that **no sweep ever staged** and which had
+therefore accumulated dirty indefinitely. Carrying it in the whitelist is what
+makes a TRACKED artifact durable, so the fix adds a membership assertion **and** a
+behavioural control — a dirty LISTED file is committed, an unlisted one is **not** —
+proving the sweep is selective rather than trusted to be.
+
+**LOC.** `triage.md` 408 → **454** (+46: the exemption and, in this window, the
+receipt correction); `SKILL.md` 496 → **496** (frontmatter only). Measured with the
+stated predicate `sum(1 for _ in open(f, encoding='utf-8'))` — LINES READ.
+
 ## v0.4.269 — the law and the tool disagreed about UNPINNED, and the tool was right
 
 **WHAT THIS VERSION RECORDS.** Triage reported a law-vs-tool divergence on the tier order: `triage.md:53` said *"UNPINNED takes NO tier … so the tiers are total over the 133 resolvable issues and **silent about the 48 UNPINNED**"*, while `oc-issue-scope` deliberately pins the opposite in its own selftest (`:207`, *"and fix-typed UNPINNED reads P2 (deprioritised, never excluded)"*). **The two halves of one paragraph contradicted each other** — the same paragraph already delegates authority to the tool (*"read it from the tool, do not re-derive it"*).
