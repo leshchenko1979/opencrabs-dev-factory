@@ -246,7 +246,7 @@ _is_uuid() { # $1 -> rc 0 iff a canonical 8-4-4-4-12 lowercase-hex uuid
 #   path and lived ONLY on vpn with no version control, so a bad edit there was
 #   unrecoverable; the snapshot is the revert path, and it is TRACKED rather than
 #   generated because it changes only when someone updates it from vpn.
-STATE_TRACKED_PATHS="tools.log baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions base-red.json"
+STATE_TRACKED_PATHS="tools.log baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions base-red.json harvest-registry.json"
 # The harvest-state class (v0.4.237, HQ ruling 2026-09-22) is a SEPARATE
 # variable: it carries glob metacharacters and must reach git QUOTED and
 # DIRECTLY — an unquoted expansion pathname-expands against the CALLER's cwd.
@@ -2597,6 +2597,38 @@ ACKEOF
   # guards -- the same shape as the claim-closure duplication in #441).
   chk "state-tracked-single-source" "1" "$(grep -c '^STATE_TRACKED_PATHS=' "$ME")"
   chk "state-sweep-fn-single-source" "1" "$(grep -c '^state_sweep_tracked()' "$ME")"
+
+  # #701: harvest-registry.json is written by `oc-harvest-census record` and IS
+  # tracked in the state repo, but it was absent from the whitelist -- so the
+  # sweep never staged it and it accumulated dirty forever (measured: it sat
+  # modified across many sweeps). The whitelist is the ONLY thing that makes a
+  # TRACKED artifact durable, so membership gets an assertion AND a behavioural
+  # control: a dirty listed file is committed, an unlisted dirty file is not.
+  grep -qw harvest-registry.json <<<"$STATE_TRACKED_PATHS" \
+    && ok || bad "state-tracked-carries-harvest-registry"
+  # behavioural: build a throwaway repo, dirty one LISTED and one UNLISTED file,
+  # and prove the sweep is selective rather than committing the whole worktree.
+  _sweepd="$T/sweep701"; rm -rf "$_sweepd"; mkdir -p "$_sweepd"
+  git -C "$_sweepd" init -q 2>/dev/null
+  git -C "$_sweepd" config user.email t@t; git -C "$_sweepd" config user.name t
+  printf '{}\n' > "$_sweepd/harvest-registry.json"
+  printf 'unlisted\n' > "$_sweepd/not-carried.txt"
+  git -C "$_sweepd" add -A 2>/dev/null; git -C "$_sweepd" commit -q -m base 2>/dev/null
+  printf '{"registries":[]}\n' > "$_sweepd/harvest-registry.json"
+  printf 'dirty\n' > "$_sweepd/not-carried.txt"
+  awk '/^state_sweep_tracked\(\)/,/^}$/' "$ME" > "$T/sweep_fn.sh"
+  eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
+  eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
+  ( export STATE_TRACKED_PATHS STATE_TRACKED_GLOB
+    . "$T/sweep_fn.sh"
+    state_sweep_tracked "$_sweepd" "selftest #701" ) >/dev/null 2>&1
+  _subj="$(git -C "$_sweepd" log -1 --format=%s 2>/dev/null)"
+  case "$_subj" in
+    *harvest-registry.json*) ok ;;
+    *) bad "state-sweep-commits-harvest-registry (subject=$_subj)" ;;
+  esac
+  [ "$(git -C "$_sweepd" status --porcelain -- not-carried.txt)" != "" ] \
+    && ok || bad "state-sweep-still-selective (an unlisted file must NOT be committed)"
 
   # #524 (HQ durability gap, 2026-09-23): every ledger mutation COMMITS via
   # git_state_commit and NOTHING pushed, so off-box durability rode irregular
