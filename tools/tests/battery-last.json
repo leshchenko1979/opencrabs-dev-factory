@@ -1,14 +1,14 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-09-29T08:49:06Z",
+  "ts": "2026-09-29T09:24:35Z",
   "pass": 292,
-  "fail": 1,
-  "verdict": "FAIL",
+  "fail": 0,
+  "verdict": "PASS",
   "mode": "parallel jobs=4",
-  "fail_log": "tools/tests/battery-last-fail.log",
-  "fail_rows": ["  FAIL - oc-deploy --help wrote a SHELL DIAGNOSTIC to stderr: /tmp/oc-snap-oc-deploy-2139933/ship/oc-deploy: line 3034: justificatio"],
+  "fail_log": "",
+  "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "wall_ms": 773033,
-  "timing": {"max_concurrency": 4, "section_count": 53, "sum_ms": 2705560, "slowest": [{"n": 24, "ms": 491567, "start_ms": 28279, "end_ms": 519846, "title": "11. oc-ledger (KERNEL C1\u2013C5 + item-2(b) commit-pending sweep) ---------"}, {"n": 30, "ms": 387628, "start_ms": 126223, "end_ms": 513851, "title": "17. lens-F coverage batch (v0.4.72, F8: tools the battery never ran) ---"}, {"n": 38, "ms": 274050, "start_ms": 498954, "end_ms": 773004, "title": "64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)"}, {"n": 33, "ms": 235657, "start_ms": 285400, "end_ms": 521057, "title": "61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)"}, {"n": 23, "ms": 234296, "start_ms": 22866, "end_ms": 257162, "title": "10. oc-deploy -----------------------------------------------------------"}, {"n": 40, "ms": 215925, "start_ms": 520003, "end_ms": 735928, "title": "68. oc-harvest-dispatch (automated harvest order dispatcher)"}, {"n": 31, "ms": 137787, "start_ms": 163187, "end_ms": 300974, "title": "18. oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z) -----------"}, {"n": 34, "ms": 114476, "start_ms": 301047, "end_ms": 415523, "title": "62. oc-health (owner-ordered hourly health & cleanliness sweep, 2026-09-11)"}, {"n": 26, "ms": 91364, "start_ms": 34640, "end_ms": 126004, "title": "13. oc-prchecks (KERNEL C5 \u2014 one-command PR lint gate) ----------------"}, {"n": 29, "ms": 69165, "start_ms": 93845, "end_ms": 163010, "title": "16. lens-C tool builds (v0.4.58, owner Go 2026-08-31 04:20Z) -----------"}]}
+  "wall_ms": 740227,
+  "timing": {"max_concurrency": 4, "section_count": 53, "sum_ms": 2265848, "slowest": [{"n": 24, "ms": 394293, "start_ms": 27206, "end_ms": 421499, "title": "11. oc-ledger (KERNEL C1\u2013C5 + item-2(b) commit-pending sweep) ---------"}, {"n": 38, "ms": 318593, "start_ms": 421557, "end_ms": 740150, "title": "64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)"}, {"n": 30, "ms": 317152, "start_ms": 130293, "end_ms": 447445, "title": "17. lens-F coverage batch (v0.4.72, F8: tools the battery never ran) ---"}, {"n": 23, "ms": 257082, "start_ms": 21612, "end_ms": 278694, "title": "10. oc-deploy -----------------------------------------------------------"}, {"n": 31, "ms": 158493, "start_ms": 161588, "end_ms": 320081, "title": "18. oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z) -----------"}, {"n": 33, "ms": 130040, "start_ms": 300745, "end_ms": 430785, "title": "61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)"}, {"n": 40, "ms": 124223, "start_ms": 430886, "end_ms": 555109, "title": "68. oc-harvest-dispatch (automated harvest order dispatcher)"}, {"n": 26, "ms": 94908, "start_ms": 35217, "end_ms": 130125, "title": "13. oc-prchecks (KERNEL C5 \u2014 one-command PR lint gate) ----------------"}, {"n": 34, "ms": 63631, "start_ms": 320171, "end_ms": 383802, "title": "62. oc-health (owner-ordered hourly health & cleanliness sweep, 2026-09-11)"}, {"n": 29, "ms": 63090, "start_ms": 98309, "end_ms": 161399, "title": "16. lens-C tool builds (v0.4.58, owner Go 2026-08-31 04:20Z) -----------"}]}
 }
