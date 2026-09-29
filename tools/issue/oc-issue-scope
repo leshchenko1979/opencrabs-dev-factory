@@ -178,6 +178,37 @@ b387b = ('This is the same defect class as `tools/lib/oc-notify.sh` accepting th
          'retired mode. Source: `src/tests/x.rs`.')
 ck('ANALOGY does not eat a following fix surface', 'src/tests/x.rs' in claims(b387b, T))
 
+# VICTIM is not a surface claim (#678). #530's body names `oc-start` ONLY as the
+# thing a false defect was filed against; its real surface is the src/** render
+# path. The polarity window (30 chars) does not see this frame -- neither `not`
+# nor `never` is in "filing a false defect against" -- so the fallback resolved
+# tools/git/oc-start, bucketed an src/** unit INTO the factory tier, and its
+# domains ({notify, telegram, skills, db, mermaid}) contain no `tools`, so the
+# lane that owns tools/** could never match: a dispatchable unit turned
+# unroutable. Measured: the frame appears in 7 of 209 corpus bodies.
+# NOTE the token is `oc-notify`, NOT #530's `oc-start`: the selftest's index T
+# carries only four fixture pairs, so `oc-start` would resolve to nothing and
+# these legs would pass WITHOUT the gate -- the vacuous-leg trap. `oc-notify` IS
+# in T, so the gate is the only thing that can suppress it.
+b530 = ('Cost observed today: this lane came one step from filing a '
+        '**false defect against `oc-notify`**, because the claim text rendered a '
+        'branch name that does not exist.')
+ck('VICTIM: the token is the REPORTED-AGAINST object, not a surface claim',
+   claims(b530, T) == [])
+ck('  and that body is not bucketed IN on it', bucket(b530, T)[0] != 'IN')
+# DISCRIMINATOR: the identical sentence with the frame REMOVED must claim, so
+# the leg above cannot be satisfied by a body that simply names nothing live.
+b530_noframe = ('Cost observed today: this lane came one step from touching '
+                '`oc-notify`, because the claim text rendered a branch name.')
+ck('VICTIM control: the same sentence WITHOUT the frame still claims',
+   any(t.startswith('tools/') for t in claims(b530_noframe, T)))
+ck('victim demotes ONLY the attached object (gap 14)', ns['VICTIM_GAP'] == 14)
+# The frame must not eat a REAL surface sitting right after it: the attached
+# object is demoted, a later claim is not.
+b530b = ('One step from filing a false defect against `oc-notify`. Fix: `tools/tests/run.sh`.')
+ck('VICTIM does not eat a following fix surface',
+   any(t.startswith('tools/tests/') for t in claims(b530b, T)))
+
 ck('resolution: a bare prefix naming nothing is not evidence', claims('see tools/nope/here.sh', T) == [])
 ck('UNPINNED: no path token at all', bucket('nothing to see here', T)[0] == 'UNPINNED')
 ck('UNPINNED: token resolves nowhere', bucket('see tools/nope/x.sh', T)[0] == 'UNPINNED')
@@ -349,6 +380,21 @@ ANALOG = re.compile(r'(?i)\b(same\s+\w*\s*(?:defect\s+)?class\s+as|same\s+as|'
 # surface follows the analogy closely, a 90-char window suppressed BOTH, so the
 # fixture lost its src claim and the tool read the body as having no claim at all.
 ANALOG_GAP = 8
+# #678: a path named as the VICTIM of a defect report is not the SURFACE. The
+# polarity gate (NEG, above) reads the 30 chars before a token, but #530's frame
+# is "filing a **false defect against `oc-start`**" -- neither `not` nor `never`
+# is in it, so the token passed, resolved to tools/git/oc-start, and bucketed the
+# whole unit INTO the factory tier while its real surface is src/**. Measured on
+# a real corpus read: the frame is RARE AND EXPLICIT -- 7 of 209 bodies carry it,
+# and only #530 and #455 have a tool token adjacent, both naming the tool in
+# exactly this reporting sense. Same shape as ANALOG directly above: suppress
+# only the token the frame ATTACHES to, never a lookback window (a window is
+# measurably wrong here -- it suppressed an unrelated real claim in the fixture
+# that motivated ANALOG_GAP).
+VICTIM = re.compile(r'(?i)\b(?:false\s+defect|defect\s+report|falsely\s+attribut\w*'
+                    r'|filed\s+against|reported\s+(?:on|against)'
+                    r'|unrelated\s+to|blam(?:e|ed|ing)\s+(?:on|against))')
+VICTIM_GAP = 14
 FACTORY = ('tools/', '.github/workflows/')
 SCOPE_IN_TITLE = re.compile(r'(?i)^\s*(?:fix|feat|bug|test|docs|chore)\s*\(([^)]*)\)')
 
@@ -448,12 +494,18 @@ def claims(body, T):
     # (a2) COMPARISON is not a claim: the object of an analogy names a SIBLING
     # defect. Suppress only the token immediately following the frame.
     cmp_ends = [m.end() for m in ANALOG.finditer(body)]
+    vic_ends = [m.end() for m in VICTIM.finditer(body)]
 
     def _gated(pos):
-        """The two token-shape gates, shared by both kinds."""
+        """The token-shape gates, shared by both kinds."""
         if NEG.search(body[max(0, pos - NEG_WIN):pos]):        # (a) POLARITY
             return False
-        return not any(0 <= pos - e <= ANALOG_GAP for e in cmp_ends)
+        if any(0 <= pos - e <= ANALOG_GAP for e in cmp_ends):  # (a2) ANALOGY
+            return False
+        # (a3) VICTIM: the token is what a defect was REPORTED AGAINST. Attached
+        # to the frame only -- #530 and #455 name a tool this way; a body that
+        # names a path as the thing being fixed has no such frame before it.
+        return not any(0 <= pos - e <= VICTIM_GAP for e in vic_ends)
 
     for m in TOK.finditer(body):
         if not _gated(m.start()):
