@@ -1444,7 +1444,7 @@ section "rc contract --help=0 fleet-wide (C-#3)"
 HELP_N=0
 for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   [ -x "$t" ] || continue
-  case "$t" in */lib/*|*/tests/*|*/archive/*) continue ;; esac
+  case "$t" in */lib/*|*/tests/*|*/archive/*|*.bak|*.bak-*|*.pre-*) continue ;; esac
   tn="$(basename "$t")"
   HELP_N=$((HELP_N+1))
   OC_TOOLS_NOLOG=1 timeout 20 "$t" --help >/dev/null 2>&1     && ok "$tn --help rc=0" || bad "$tn --help rc!=0 (tools/docs/RC-CONTRACT.md violated)"
@@ -1465,6 +1465,25 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
 done
 [ "$HELP_N" -ge 30 ] && ok "fleet --help floor: $HELP_N tool(s) enumerated" \
   || bad "fleet --help floor: only $HELP_N tool(s) enumerated -- the glob stopped matching (want >= 30)"
+# #691: the edit tool writes a `.bak` pre-image beside every file it edits, and
+# those sidecars are EXECUTABLE copies of the tool, so the glob above enumerated
+# them as fleet tools and ran their --help (7 phantom PASS legs, 2026-09-28).
+# Re-evaluate the SAME skip pattern against the live sidecar population, and
+# disclose vacuity rather than passing silently when there are none.
+_BAKFIND="find \"$TOOLS_DIR\" -maxdepth 2 -type f \( -name 'oc-*.bak' -o -name 'oc-*.bak-*' -o -name 'oc-*.pre-*' \)"
+_BAKC="$(eval "$_BAKFIND" 2>/dev/null | grep -c . || true)"
+_BAKSKIP=0
+while IFS= read -r _bf; do
+  [ -n "$_bf" ] || continue
+  case "$_bf" in */lib/*|*/tests/*|*/archive/*|*.bak|*.bak-*|*.pre-*) _BAKSKIP=$((_BAKSKIP+1)) ;; esac
+done <<< "$(eval "$_BAKFIND" 2>/dev/null)"
+if [ "$_BAKC" = "0" ]; then
+  ok "generated-ignored sidecar class: none present (guard vacuous this run)"
+elif [ "$_BAKSKIP" = "$_BAKC" ]; then
+  ok "generated-ignored sidecar class: all $_BAKC skipped by the tool enumeration (#691)"
+else
+  bad "generated-ignored sidecar class: $((_BAKC-_BAKSKIP)) of $_BAKC STILL enumerated as tools (#691)"
+fi
 
 # ---- 61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)
 section "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"
@@ -2211,8 +2230,12 @@ echo "== SIGPIPE pipeline-form guard (#660) =="
 # the here-string replacement is a no-op for them, and the two live sites
 # (oc-lint-laws:179,180) are additionally [ -n ]-guarded so an empty payload
 # cannot reach the pattern. Exempt comments.
+# Also exclude the generated-ignored SIDECAR class (.bak / .bak-* / .pre-*),
+# which the edit tool writes beside every file it touches -- sidecars are NOT
+# code (#691: this scan reported 6 live sites, every one inside a sidecar).
 _SG_HITS="$(grep -rnP "printf[^|]*\|\s*grep\s+-q" "$TOOLS_DIR" 2>/dev/null \
   | grep -v '/tests/run.sh:' \
+  | grep -vE '^[^:]+\.(bak|pre-)' \
   | grep -v ':[0-9]*: *#' \
   | grep -v "printf '%s\\\\n" \
   || true)"
@@ -2231,6 +2254,25 @@ _SG_CANARY="$(printf '%s\n' "printf '%s' \"\$x\" | grep -q y" \
 if [ "$_SG_N" != "0" ]; then
   printf '%s\n' "$_SG_HITS" | sed 's/^/      /' | head -20
 fi
+# #691 controls, BOTH directions: a sidecar carrying the form must be
+# EXCLUDED (it is not code), and a live source file carrying it must still be
+# SEEN -- otherwise the filter has degraded to "accept nothing".
+_SGF2="$(mktemp -d)"; _SGF3="$(mktemp -d)"
+printf "printf '%%s' \"\$x\" | grep -q y\n" > "$_SGF2/oc-canary.bak"
+printf "printf '%%s' \"\$x\" | grep -q y\n" > "$_SGF3/oc-real"
+_SG_CAN_B="$(grep -rnP "printf[^|]*\|\s*grep\s+-q" "$_SGF2" 2>/dev/null \
+  | grep -vE '^[^:]+\.(bak|pre-)' \
+  | grep -c . || true)"
+_SG_CAN_C="$(grep -rnP "printf[^|]*\|\s*grep\s+-q" "$_SGF3" 2>/dev/null \
+  | grep -vE '^[^:]+\.(bak|pre-)' \
+  | grep -c . || true)"
+rm -rf "$_SGF2" "$_SGF3"
+[ "$_SG_CAN_B" = "0" ] \
+  && ok "SIGPIPE scan excludes the sidecar class (#691)" \
+  || bad "SIGPIPE scan counts a .bak sidecar as code (canary=$_SG_CAN_B)"
+[ "$_SG_CAN_C" = "1" ] \
+  && ok "SIGPIPE scan still sees a live source file (no over-filter, #691)" \
+  || bad "SIGPIPE scan OVER-filters: a live source file was skipped (canary=$_SG_CAN_C)"
 
 
 # ---- 82. shell-quoting guard: python3 engine fences (#670) ------------------
