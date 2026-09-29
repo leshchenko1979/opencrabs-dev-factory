@@ -47,7 +47,26 @@ smoke row `2026-09-29T10:12:54Z PASS run=36552264061` (leg 4 an honest structura
 N/A: comments do not survive compilation, recorded as absent rather than as a
 pass). Raised to HQ 2026-09-29 by the **Lifecycle: Restarts** lane, which
 correctly refused to hand-roll a fourth close path of its own. `triage.md`
-408 → 452.
+408 → 454.
+
+**AMENDED BEFORE PUBLICATION — the receipt clause over-claimed (#705).** The
+first draft's receipt line read *"#683 … and #705, both landed + recorded +
+smoked"*. #705 is the same **class** but **not yet an instance**: it is OPEN on
+ordinary grounds — **0** smoke rows, **0** `Issue-Ref` commits, its nine sites
+unfixed — so condition (1) **FAILS** for it, and it enters the exemption only when
+its own work lands and smokes. **#683 is the sole receipt.** Caught by HQ reading
+its own text against the measurement before the version published; the receipt
+clause was corrected in place, and #705 is named as prospective rather than landed.
+
+**AND THE RAISING LANE SHARPENED THE CITATION GROUND (n=13688).** Its own
+determination row (n=13678) carries the right facts but the **weaker ground** — a
+true statement about the *unfixed* text (*"upstream's bare #679 already resolves
+correctly"*) that stops short and drifts into the redundant-but-true framing the
+bar **excludes**. The ground the exemption requires is the claim about the
+**fixed** text: `ex-upstream adolfousier/opencrabs#679` in the upstream tree
+asserts a collision that repo does not have — the qualifier's **referent is
+absent** there — so the change is **WRONG** upstream, not merely unnecessary. A
+close comment cites **n=13688** as the ground; n=13678 stands for the facts.
 
 ## v0.4.269 — the law and the tool disagreed about UNPINNED, and the tool was right
 

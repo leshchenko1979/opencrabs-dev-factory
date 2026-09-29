@@ -316,11 +316,13 @@ statement that no PR can ever file.
 This is an **exemption on the harvest gate, not a fourth autonomous-close
 class** — the same framing as v0.4.232, and for the same reason: (a)/(b)/(c)
 dispose of issues whose work is NOT done, whereas this closes an issue whose work
-IS done, recorded, and smoked on a change no PR can ever carry. Receipts: #683
+IS done, recorded, and smoked on a change no PR can ever carry. Receipt: #683
 (deployed.sha = 4ab5e66f7a933df1d5c111edc610bc16faa97e88, smoke row
-2026-09-29T10:12:54Z PASS run=36552264061) and #705, both landed + recorded +
-smoked and unclosable by construction; raised to HQ by the Lifecycle: Restarts
-lane 2026-09-29.
+2026-09-29T10:12:54Z PASS run=36552264061, ledger `done` n=13662). The residual
+#705 is the same CLASS but **not yet an instance** — it is OPEN on ordinary
+grounds (0 smoke rows, 0 `Issue-Ref` commits, its nine sites unfixed), so
+condition (1) FAILS for it; it enters this exemption only when its own work lands
+and smokes. Raised to HQ by the Lifecycle: Restarts lane 2026-09-29.
 
 **Close identity guard — the cited artifact must touch the issue's own surface
 (HQ ruling 2026-09-19, v0.4.216).** Every close resting on a commit or PR
