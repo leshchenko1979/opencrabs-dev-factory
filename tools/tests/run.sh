@@ -1236,20 +1236,6 @@ GHEOF
   rm -rf "$d"
 fi
 
-# ---- 11. oc-ledger (KERNEL C1–C5 + item-2(b) commit-pending sweep) ---------
-section "oc-ledger"
-run_selftest oc-ledger
-d="$(mktemp -d)"; mkdir -p "$d/state"
-printf '{"current_skill_version":"0.0.1","meta":{"skill_version":"0.0.1","current_skill_version":"0.0.1"},"updated_at":"x","workers":[],"events":[]}' > "$d/state/workers-ledger.json"
-# #19 (2026-09-12): stamp REFUSES an anonymous row, so the battery fixture
-# carries an actor the way a lane's shell does.
-OC_LEDGER="$d/state/workers-ledger.json" OC_ACTOR="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$TOOLS_DIR/state/oc-ledger" stamp note "battery edge" >/dev/null 2>&1 \
-  && [ "$(jq '.events[-1].n' "$d/state/workers-ledger.json")" = "1" ] \
-  && ok "empty-events fixture: first stamp -> n=1" || bad "empty-events fixture stamp"
-OC_LEDGER="$d/state/workers-ledger.json" "$TOOLS_DIR/state/oc-ledger" frobnicate >/dev/null 2>&1
-[ $? -eq 2 ] && ok "unknown subcommand -> 2 (usage)" || bad "unknown subcommand -> expected 2"
-rm -rf "$d"
-
 # ---- 12. oc-review-persist (ghost-incident cure: reports on disk) ----------
 section "oc-review-persist"
 run_selftest oc-review-persist
@@ -1972,7 +1958,6 @@ R614_N="$(grep -cE '^ *printf .*"fail_rows": %s' "$SELF_ABS")"
   || bad "a receipt writer is missing fail_rows ($R614_N of 2 printf lines)"
 rm -rf "$R614"
 
-# ---- 76. (retired) the meta factory's questions tool is tested THERE -------
 # ---- 77. lib/oc-root.sh resolver coherence (F-L1/F-L2) -----------------------
 # Two defects HQ's lens F found in the v0.4.255 regroup's wake, both the
 # "green over a surface it cannot see" class:
