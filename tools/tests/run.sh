@@ -698,6 +698,18 @@ chk("addressed sweep form", oc.is_addressed("#2 — closed-issue stale claim swe
 chk("UNCLAIM #N is not an address (#305)", oc.is_addressed("UNCLAIM #72 — stood down in favour of editor lane X", 72), False)
 chk("addressed mid-sentence is NOT", oc.is_addressed("note: see #264 for detail", 264), False)
 chk("addressed 71 does not address 710", oc.is_addressed("#710 — x", 71), False)
+# #690 (2026-09-28, toolsmith; reported by Triage 530c29ec): the LEADING LEAD-IN
+# form is an address too, and 42 live rows use it -- including this lane's own
+# `issue #675 landed a0931587`, which could not close its own claim. The arm is
+# BOUNDED to the start, so the #305 fence below still holds.
+chk("addressed 'issue #N' lead-in", oc.is_addressed("issue #29 close-out: upstream PR filed", 29), True)
+chk("addressed 'Issue #N' case-insens", oc.is_addressed("Issue #24 mechanical notify fan-out LANDED", 24), True)
+# CONTROLS: the fence is unchanged -- a NON-leading "issue #N" is still not an
+# address, and neither is a bare mention whose #N is a different issue.
+chk("NEG: 'issue #N' NOT at the start is not an address",
+    oc.is_addressed("reopened issue #75 — still open", 75), False)
+chk("NEG: leading lead-in does not address a MENTIONED issue",
+    oc.is_addressed("issue #29 close-out: supersedes #75", 75), False)
 
 # --- is_unattributed sentinels
 chk("sentinel unattributed", oc.is_unattributed("(unattributed)"), True)

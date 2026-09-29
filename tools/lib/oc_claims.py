@@ -445,8 +445,19 @@ def is_addressed(what, iss):
     Tolerates the `STANDDOWN ` keyword: `STANDDOWN #269 (52058a75) — ...`.
     Anchored at the start on purpose — a mere mention mid-sentence is not an
     address (#305).
+
+    #690 (2026-09-28, toolsmith; reported by Triage 530c29ec): the corpus also
+    carries a LEADING LEAD-IN form -- `issue #29 close-out: ...`, `Issue #24
+    ... LANDED` -- which is just as much an address as the bare form, but the
+    start anchor could not read it, so a real done row could not close its own
+    claim. Measured live: 42 rows take that form (811 take the bare one), and
+    one of them was this lane's own `issue #675 landed a0931587`.
+    The arm stays BOUNDED: the address must still BEGIN the row (optionally
+    after STANDDOWN/issue), so a mid-sentence mention still closes nothing and
+    the #305 fence is unchanged.
     """
-    return bool(re.match(r"^\s*(?:STANDDOWN\s+)?#%d\b" % int(iss), str(what or "").strip()))
+    return bool(re.match(r"^\s*(?:STANDDOWN\s+)?(?:issue\s+)?#%d\b" % int(iss),
+                         str(what or "").strip(), re.I))
 
 
 def parse_events(events):
