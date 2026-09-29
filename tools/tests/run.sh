@@ -1236,6 +1236,28 @@ GHEOF
   rm -rf "$d"
 fi
 
+# ---- 11. oc-ledger (KERNEL C1–C5 + item-2(b) commit-pending sweep) ---------
+# RESTORED 2026-09-29 (toolsmith 2fae1230). The 2026-09-29 owner order removed
+# "questions and ledger" on the premise that their code belongs to the meta
+# factory and is tested there. Measured: that holds for `questions`
+# (TEMPLATE/tools/questions + TEMPLATE/tests/test_questions.py) but NOT for
+# oc-ledger -- the template ships `ledger.py`, a different artifact, and its own
+# addon doc (TEMPLATE/docs/addons/harness/opencrabs.md:243) states the harness
+# supplies `oc-ledger`. Nothing else tests it, so removing this section left it
+# uncovered. Restored; remove again only with a replacement gate.
+section "oc-ledger"
+run_selftest oc-ledger
+d="$(mktemp -d)"; mkdir -p "$d/state"
+printf '{"current_skill_version":"0.0.1","meta":{"skill_version":"0.0.1","current_skill_version":"0.0.1"},"updated_at":"x","workers":[],"events":[]}' > "$d/state/workers-ledger.json"
+# #19 (2026-09-12): stamp REFUSES an anonymous row, so the battery fixture
+# carries an actor the way a lane's shell does.
+OC_LEDGER="$d/state/workers-ledger.json" OC_ACTOR="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$TOOLS_DIR/state/oc-ledger" stamp note "battery edge" >/dev/null 2>&1 \
+  && [ "$(jq '.events[-1].n' "$d/state/workers-ledger.json")" = "1" ] \
+  && ok "empty-events fixture: first stamp -> n=1" || bad "empty-events fixture stamp"
+OC_LEDGER="$d/state/workers-ledger.json" "$TOOLS_DIR/state/oc-ledger" frobnicate >/dev/null 2>&1
+[ $? -eq 2 ] && ok "unknown subcommand -> 2 (usage)" || bad "unknown subcommand -> expected 2"
+rm -rf "$d"
+
 # ---- 12. oc-review-persist (ghost-incident cure: reports on disk) ----------
 section "oc-review-persist"
 run_selftest oc-review-persist
