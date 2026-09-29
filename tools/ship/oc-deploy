@@ -145,6 +145,49 @@ _OC_NOTIFY_LIB="$OC_TOOLS_DIR/lib/oc-notify.sh"
 [ -f "$_OC_NOTIFY_LIB" ] && source "$_OC_NOTIFY_LIB"   # E-F4 (v0.4.97): shared wake contract
 trap 'oc_log_finish $?' EXIT
 
+# ---- #355 GATE-BEFORE-LAND helpers ----------------------------------------
+# `ship`'s push leg LANDS a sha on fork main. Until #355 it did so with NO gate
+# consult, and a sha whose PR-lane gate was still IN FLIGHT reached the tip
+# (2026-09-18, ee4f6797a): fork main went clippy-RED and every lane inherited a
+# BASE-FAULT it did not own. These two helpers implement the guard, reusing
+# oc-ship-chain's --gated-run / --gated-sha vocabulary (DRY — one gate
+# vocabulary in the fleet, never a second) and the tool's OWN patch-id idiom
+# (line ~238's lineage twin) for the content-identical-rebase carry.
+#
+# gate_verdict_for_run prints, to stdout, exactly one of:
+#   green    the named run concluded success
+#   red      the named run reached a terminal non-success conclusion
+#   inflight the named run has not reached a terminal state
+#   unknown  the run could not be read (API failure, absent id)
+gate_verdict_for_run() {
+  local rid="${1:-}" json st cl
+  [ -n "$rid" ] || { printf 'unknown'; return 0; }
+  json="$("$GH" api "repos/$FORK/actions/runs/$rid" 2>/dev/null || true)"
+  [ -n "$json" ] || { printf 'unknown'; return 0; }
+  st="$(printf '%s' "$json" | jq -r '.status // empty' 2>/dev/null)"
+  cl="$(printf '%s' "$json" | jq -r '.conclusion // empty' 2>/dev/null)"
+  case "$st" in
+    completed)
+      case "$cl" in
+        success) printf 'green' ;;
+        *)       printf 'red' ;;
+      esac ;;
+    queued|in_progress|waiting|pending|requested) printf 'inflight' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# oc_deploy_same_patch: content-identity, the same test the chain applies when
+# it carries a gate forward across a rebase (Duty-4 n=2520).
+oc_deploy_same_patch() {
+  local a="${1:-}" b="${2:-}" pa pb repo
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  repo="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+  pa="$(git -C "$repo" show "$a" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+  pb="$(git -C "$repo" show "$b" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+  [ -n "$pa" ] && [ "$pa" = "$pb" ]
+}
+
 # v0.4.60 (owner order 2026-08-31 06:03Z "move all accounting files and markers
 # out of the skill dir"): deploy artifacts (deployed.sha/meta, fanout.state,
 # oc-deploy/journal, shadow log) default to the STATE dir — the skill repo
@@ -826,7 +869,7 @@ STUB
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-nonff-conflict-rc" $rc 5
   check_has "ship-nonff-conflict-token" "$out" "OC_DEPLOY_GATE=rebase-conflict"
 
@@ -836,7 +879,7 @@ STUB
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-nonff-autorebase-rc" $rc 0
   check_has "ship-nonff-autorebase-msg" "$out" "auto-rebased"
 
@@ -845,7 +888,7 @@ STUB
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD~1:refs/heads/main   # back to c1
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-exec-rc" $rc 0
   check_has "ship-exec-gates" "$out" "4/4 PASS"
   check_has "ship-exec-dispatch" "$out" "dispatched carrier run"
@@ -860,7 +903,7 @@ STUB
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-success \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --wait 5 2>&1)"; rc=$?
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
   check_rc "shipwait-green-rc" $rc 0
   check_has "shipwait-green-line" "$out" "SHIP-WAIT: run 555 GREEN"
   grep -q "ship-wait-green:555" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-wait-green shadow row"; }
@@ -868,7 +911,7 @@ STUB
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-failure \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --wait 5 2>&1)"; rc=$?
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
   check_rc "shipwait-red-rc" $rc 6
   check_has "shipwait-red-line" "$out" "terminal-failure"
   grep -q "ship-wait-red:555:failure" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-wait-red shadow row"; }
@@ -876,7 +919,7 @@ STUB
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=in_progress \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --wait 2 2>&1)"; rc=$?
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; rc=$?
   check_rc "shipwait-timeout-rc" $rc 5
   check_has "shipwait-timeout-line" "$out" "never reached a terminal state"
   grep -q "ship-wait-timeout" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-wait-timeout shadow row"; }
@@ -885,13 +928,61 @@ STUB
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="9999999999999999999999999999999999999999" OC_TEST_SHIPWAIT_CONCL=completed-success \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --wait 2 2>&1)"; check_rc "shipwait-wrongsha-rc" $? 5
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; check_rc "shipwait-wrongsha-rc" $? 5
   rm -f "$T/shipwait-flag"
   # 7. ship execute gate-fail -> exit 2 (validator stub exits 2; push is no-op)
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-fail" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute >/dev/null 2>&1); check_rc "ship-gate-fail" $? 2
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute >/dev/null 2>&1); check_rc "ship-gate-fail" $? 2
   grep -q "gate-fail" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no gate-fail shadow row"; }
+
+  # 7b. #355 GATE-BEFORE-LAND: the push leg refuses an ungated landing.
+  #     The remote is first moved BEHIND the sha, so "did not push" can
+  #     actually FAIL — a guard arm whose negative cannot redden is vacuous.
+  R_TIP_ORIG="$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null || echo none)"
+  git -C "$T/repo" push -q -f "$T/remote.git" "$SHA2~1:refs/heads/main"
+  R_TIP_BEFORE="$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)"
+  rm -f "$SD/oc-deploy-shadow.log"
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
+  check_rc "gate-missing-refused-rc" $rc 2
+  check_has "gate-missing-refused-token" "$out" "OC_DEPLOY_GATE=gate-missing"
+  [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$R_TIP_BEFORE"  ]\
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: gate-missing-did-not-push: remote main MOVED on a refused landing"; }
+
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --execute --gated-run 444 2>&1)"; rc=$?
+  check_rc "gate-inflight-refused-rc" $rc 2
+  check_has "gate-inflight-refused-token" "$out" "OC_DEPLOY_GATE=gate-inflight"
+  [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$R_TIP_BEFORE"  ]\
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: gate-inflight-did-not-push: remote main MOVED on an in-flight gate"; }
+
+  (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --execute --gated-run 888 >/dev/null 2>&1); check_rc "gate-red-refused-rc" $? 2
+
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --execute --gated-run 777 2>&1)"; rc=$?
+  check_rc "gate-green-allowed-rc" $rc 0
+  [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$SHA2"  ]\
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: gate-green-did-push: a GREEN-gated landing did NOT reach remote main"; }
+
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "selftest: exercising the audited escape hatch" 2>&1)"; rc=$?
+  check_rc "gate-override-allowed-rc" $rc 0
+  check_has "gate-override-is-loud" "$out" "UNGATED PUSH OVERRIDE"
+  (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "" >/dev/null 2>&1); check_rc "gate-override-needs-justification-rc" $? 2
+
+  if [ "$R_TIP_ORIG" != "none" ]; then
+    git -C "$T/repo" push -q -f "$T/remote.git" "$R_TIP_ORIG:refs/heads/main" 2>/dev/null || true
+  fi
+  rm -f "$SD/oc-deploy-shadow.log"
   # 8. poll plan mode at S0: swap LOCKED, sha decoded from the build job name
   #    (jobs[0] here is an ORDER gates job with NO sha at all — nothing decodes)
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" "$SELF_BIN" poll 2>&1)"; rc=$?
@@ -2940,7 +3031,7 @@ MODE="${1:-}"; [ $# -gt 0 ] && shift
 # globals — the cgroup detach must re-exec with the original flags.
 ORIG_ARGS=("$@")
 # C-F5 (v0.4.71): --help / -h exits 0 on stdout, before any validation
-case "$MODE" in -h|--help) echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--allow-features-drop] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;; esac
+case "$MODE" in -h|--help) echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push "<justification>"] [--allow-features-drop] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;; esac
 # issue #24 D1: contributors takes its own arg shape (positional range /
 # --deployed / --repo) — dispatch BEFORE the ship/poll flag loop so the
 # positional range survives. contributors is RETIRED (dies rc 1); the
@@ -2956,6 +3047,8 @@ if [ "$MODE" = recover-receipt ]; then recover_receipt_run "$@"; exit $?; fi
 SHA=""; FEATURES=""; FEATURES_EXPLICIT=0; EXECUTE=0; RUN_ID=""; DRILL=0; ARTDIR=""; DRYRUN=0; WITH_DELTA=0; ALLOW_DROP=0   # FEATURES="" = resolve from carrier (KERNEL D2, 2026-08-28)
 WAIT_SECS=0; NOTIFY_SESSION=""   # C-#2: poll --wait / --notify-session
 ALLOW_REWRITTEN_LINEAGE=0; RW_JUSTIFY=""; RW_ACTOR="${OC_DEPLOY_ACTOR:-$(id -un 2>/dev/null || echo unknown)}"   # v0.4.151: audited swap-guard override
+GATED_RUN=""; GATED_SHA=""; ALLOW_UNGATED=0; UNGATED_JUSTIFY=""   # #355: gate-before-land (reuses oc-ship-chain's --gated-run/--gated-sha contract)
+# #675-safe: the KERNEL's per-process guard must not change.
 while [ $# -gt 0 ]; do
   case "$1" in
     --sha)      SHA="${2:-}"; shift ;;
@@ -2968,12 +3061,17 @@ while [ $# -gt 0 ]; do
       [ -n "${2:-}" ] || die 2 "OC_DEPLOY_GATE=override-needs-justification: --allow-rewritten-lineage requires a non-empty justification string (it is journaled with the actor)"
       ALLOW_REWRITTEN_LINEAGE=1; RW_JUSTIFY="${2:-}"; shift ;;
     --actor)    [ -n "${2:-}" ] || die 2 "--actor needs a value (lane uuid or name)"; RW_ACTOR="${2:-}"; shift ;;
+    --gated-run) [ -n "${2:-}" ] || die 2 "OC_DEPLOY_GATE=gate-arg-empty: --gated-run needs a run id"; GATED_RUN="${2:-}"; shift ;;   # #355: the PR-lane gate run that gated this sha
+    --gated-sha) [ -n "${2:-}" ] || die 2 "OC_DEPLOY_GATE=gate-arg-empty: --gated-sha needs a sha"; GATED_SHA="${2:-}"; shift ;;   # #355: the sha that WAS gated (this sha, or a content-identical rebase of it)
+    --allow-ungated-push)   # #355: audited escape hatch, mirrors --allow-rewritten-lineage (justification MANDATORY)
+      [ -n "${2:-}" ] || die 2 "OC_DEPLOY_GATE=override-needs-justification: --allow-ungated-push requires a non-empty justification string (it is journaled with the actor)"
+      ALLOW_UNGATED=1; UNGATED_JUSTIFY="${2:-}"; shift ;;
     --dry-run)  DRYRUN=1 ;;   # issue #24: fanout rehearsal — never marks done
     --with-delta) WITH_DELTA=1 ;;   # merge B (v0.4.48): watch rides oc-upstream-delta too
     --wait)     WAIT_SECS="${2:-}"; shift ;;   # C-#2: poll blocks until a NEW green run (or timeout, rc 5)
     --notify-session) [ -n "${2:-}" ] || die 2 "--notify-session needs a session uuid"; NOTIFY_SESSION="${2:-}"; shift ;;   # C-#2: session uuid woken on handoff/timeout; guard lens C MED-3 (v0.4.79)
     --artifact-dir) ARTDIR="${2:-}"; shift ;;
-    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--allow-features-drop] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
+    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push "<justification>"] [--allow-features-drop] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
     *)          die 1 "unknown arg: $1" ;;
   esac
   shift || true
@@ -3102,6 +3200,38 @@ case "$MODE" in
       SHA="$NEW_SHA"
     fi
     if [ "$EXECUTE" = 1 ]; then
+      # ---- #355 GATE-BEFORE-LAND ------------------------------------------
+      # The push below LANDS $SHA on fork main. Refuse it unless this
+      # invocation carries a GREEN gate for that sha, or an audited override.
+      # Fail CLOSED: an absent gate is a refusal, never a silent pass.
+      GATE_STATE=""; GATE_SRC=""
+      if [ -n "$GATED_RUN" ]; then
+        GATE_SRC="run:$GATED_RUN"
+        GATE_STATE="$(gate_verdict_for_run "$GATED_RUN")"
+      elif [ -n "$GATED_SHA" ]; then
+        GATE_SRC="sha:$GATED_SHA"
+        if [ "$GATED_SHA" = "$SHA" ]; then
+          GATE_STATE="green"
+        elif oc_deploy_same_patch "$GATED_SHA" "$SHA"; then
+          GATE_STATE="green"   # content-identical rebase: the chain's Duty-4 n=2520 carry
+        else
+          GATE_STATE="mismatch"
+        fi
+      else
+        GATE_SRC="(none)"
+        GATE_STATE="missing"
+      fi
+      case "$GATE_STATE" in
+        green) : ;;
+        *)
+          if [ "$ALLOW_UNGATED" = 1 ]; then
+            shadow_log ship "$SHA" "$FEATURES" "ungated-push-override:$GATE_STATE"
+            echo "oc-deploy: UNGATED PUSH OVERRIDE ($GATE_STATE, gate=$GATE_SRC) — allowed by --allow-ungated-push: $UNGATED_JUSTIFY (actor ${RW_ACTOR})" >&2
+          else
+            shadow_log ship "$SHA" "$FEATURES" "gate-blocked:$GATE_STATE"
+            die 2 "OC_DEPLOY_GATE=gate-$GATE_STATE: refusing to push $SHA to refs/heads/main — gate=$GATE_SRC, verdict=$GATE_STATE. Land only a GREEN-gated sha (--gated-run <id> / --gated-sha <sha>, the oc-ship-chain contract). If the landing is genuinely justified, override explicitly and audibly: --allow-ungated-push \"<justification>\"."
+          fi ;;
+      esac
       PUSH_OK=0
       for PUSH_ATTEMPT in 1 2; do
         if git push -q "$REMOTE" "$SHA:refs/heads/main" 2>/dev/null; then
@@ -3356,5 +3486,5 @@ case "$MODE" in
     status_run "$@"
     ;;
   --selftest|selftest) selftest "$@" ;;
-  *) die 1 "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--allow-features-drop] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)" ;;
+  *) die 1 "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push "<justification>"] [--allow-features-drop] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)" ;;
 esac

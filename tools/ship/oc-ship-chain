@@ -290,6 +290,10 @@ GATE_CARRIED_FORWARD=""
 # #672: the docs-only SKIP is a third no-leg path -- same false banner (`FAST`
 # claims fmt+clippy ran when nothing ran).
 GATE_SKIPPED_DOCS=""
+# #355: the run that gated THIS sha, resolved on the dispatch path too (it was
+# previously parsed only inside the rc=5 resume loop), so LEG4 can name its
+# gate to oc-deploy instead of landing silently.
+GATE_RUN_ID="${GATE_RUN_ID:-}"
 FAST=0
 # LEG1 gate budget (defect fix 2026-09-11, lane 4b4463d5). The PR-lane gate on
 # this box takes ~30 min end-to-end; oc-prchecks' own --wait default is 600 s,
@@ -1008,7 +1012,12 @@ else
     set -e
   done
   case "$GATE_RC" in
-    0) journal "LEG1 gate GREEN" ;;
+    0) journal "LEG1 gate GREEN"
+       # #355: retain the run id on the SUCCESS path. oc-prchecks prints
+       # `run=<id>` on stdout; the rc=5 loop already relied on that shape, so
+       # this is the same parse, simply not withheld from the happy path.
+       GATE_RUN_ID="$(printf '%s' "$GATE_OUT" | grep -oE 'run=[0-9]+' | head -1 | cut -d= -f2 || true)"
+       [ -n "$GATE_RUN_ID" ] && journal "LEG1 gate GREEN run=$GATE_RUN_ID" || journal "LEG1 gate GREEN (run id not on stdout)" ;;
     3) journal "LEG1 gate RED";  printf '%s\n' "$GATE_OUT"; die "GATE-RED" 4 ;;
     # rc 2 is prchecks' USAGE/PRECONDITION class ("usage / sha-shape / unknown
     # ref / repo-path-no-origin"), NOT infra — and the rc-6 contract above lists
@@ -1172,7 +1181,29 @@ unset NOTIFY_SESSION || true
 # ---- leg 4: ship -----------------------------------------------------------
 journal "LEG4 ship start (oc-deploy ship --execute --wait $WAIT)"
 set +e
-SHIP_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" ship --sha "$SHA" --execute --wait "$WAIT" 2>&1)"
+# #355 GATE-BEFORE-LAND: hand ship the gate this chain is landing under.
+# `oc-deploy ship` refuses to push an ungated sha to fork main — the bypass
+# that put a non-compiling commit on the tip (2026-09-18, ee4f6797a) and made
+# every lane inherit a BASE-FAULT. An ARRAY, never a string: an unquoted
+# expansion would split the justification's words and leave literal quotes.
+GATE_ARGS=()
+if [ -n "$GATED_RUN" ]; then
+  GATE_ARGS+=(--gated-run "$GATED_RUN")
+elif [ -n "$GATED_SHA" ]; then
+  GATE_ARGS+=(--gated-sha "$GATED_SHA")
+elif [ -n "$GATE_RUN_ID" ]; then
+  GATE_ARGS+=(--gated-run "$GATE_RUN_ID")
+elif [ "$GATE_SKIPPED_DOCS" = "1" ]; then
+  # No gate exists BY DESIGN on this path (docs-only commit, no changed path
+  # compiled into the binary). Declare it, audibly, rather than land silently.
+  GATE_ARGS+=(--allow-ungated-push "LEG1 GATE-SKIPPED-DOCS: docs-only commit, no changed path is compiled into the binary (owner ruling 2026-09-12 11:04Z)")
+else
+  # LEG1 returned GREEN but the run id did not survive its stdout. Disclose the
+  # bookkeeping failure in the journal entry rather than block the landing.
+  GATE_ARGS+=(--allow-ungated-push "LEG1 returned GREEN but this chain could not resolve the gate run id from prchecks stdout")
+fi
+journal "LEG4 gate carried into ship: ${GATE_ARGS[*]}"
+SHIP_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" ship --sha "$SHA" --execute --wait "$WAIT" "${GATE_ARGS[@]}" 2>&1)"
 SHIP_RC=$?
 set -e
 echo "$SHIP_OUT" | tail -5
@@ -1207,7 +1238,16 @@ case "$SHIP_RC" in
     fi
     journal "LEG4 ship WAIT-TIMEOUT (${WAIT}s budget exhausted)"
     die "SHIP-WAIT-TIMEOUT: the carrier build did not reach a terminal state within the LEG4 --wait budget (${WAIT}s). The run is still BUILDING — do NOT re-dispatch it. Wait for it, then resume with: oc-deploy poll --sha $SHA --execute --wait <sec>  (or re-run the chain with a larger --wait)" 8 ;;
-  *) journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
+  *)
+    # #355: a gate refusal is a CHAIN BOOKKEEPING fault, not infra. Without
+    # this arm it fell to the INFRA death below and sent the lane hunting a
+    # phantom infrastructure problem.
+    case "$SHIP_OUT" in
+      *OC_DEPLOY_GATE=gate-missing*|*OC_DEPLOY_GATE=gate-inflight*|*OC_DEPLOY_GATE=gate-red*|*OC_DEPLOY_GATE=gate-mismatch*)
+        journal "LEG4 ship GATE-NOT-GREEN (oc-deploy refused the ungated landing)"
+        die "GATE-NOT-GREEN: oc-deploy refused to land $SHA — the gate carried into ship was missing, in flight, or not green. This is a chain bookkeeping fault, NOT infra: re-run naming the run that gated this sha, oc-ship-chain --sha $SHA --branch $BRANCH --gated-run <id>." 4 ;;
+    esac
+    journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
 esac
 
 # ---- leg 5: swap confirmation ---------------------------------------------
