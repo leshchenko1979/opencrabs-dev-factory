@@ -242,6 +242,38 @@ EOF
     t_bad "auto-stamp ledger (rc=$rc out=$out)"
   fi
 
+  # Test 6b (#699): the row the tool WRITES must be ADDRESSED to its issue.
+  # Test 6 above only asserts the CALL carries "#238" -- it passed for years
+  # while the row itself addressed nothing, because the ref sat mid-sentence.
+  # This leg runs the REAL closure predicate against the PRODUCED row (never a
+  # re-implementation: oc-claims-single-source fails the battery on a private
+  # copy of that predicate under tools/).
+  _row="$(sed -n 's/^stamp done //p' "$d/state/fake-ledger.calls" | tail -n 1)"
+  if [ -n "$_row" ] && OC699_ROW="$_row" OC699_CLAIMS="$OC_TOOLS_DIR/lib/oc_claims.py" python3 -c '
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("oc_claims", os.environ["OC699_CLAIMS"])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+sys.exit(0 if m.is_addressed(os.environ["OC699_ROW"], 238) else 1)
+'; then
+    t_ok "the auto-stamped row is ADDRESSED to #238 -- it can close its own claim (#699)"
+  else
+    t_bad "auto-stamped row is UNADDRESSED and closes nothing: '$_row' (#699)"
+  fi
+  # CONTROL: the historical wording must be REJECTED by that same predicate, so
+  # this leg cannot be satisfied by a predicate that accepts anything.
+  if OC699_ROW="smoke PASS verified for issue #238" OC699_CLAIMS="$OC_TOOLS_DIR/lib/oc_claims.py" python3 -c '
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("oc_claims", os.environ["OC699_CLAIMS"])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+sys.exit(0 if m.is_addressed(os.environ["OC699_ROW"], 238) else 1)
+'; then
+    t_bad "#699 control: the OLD mid-sentence wording still reads as addressed"
+  else
+    t_ok "#699 control: the old mid-sentence wording is correctly UNADDRESSED"
+  fi
+
   # Test 7: --no-ledger skips ledger stamping on PASS
   rm -f "$d/state/fake-ledger.calls"
   rc=0
@@ -774,7 +806,14 @@ if [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 0 ]; then
   if [ -x "$ACTUAL_LEDGER_BIN" ] && [ -f "$STATE_DIR/workers-ledger.json" ]; then
     echo "$PROG: stamping workers-ledger.json done for issue #$ISSUE..."
     set +e
-    LEDGER_OUT="$(OC_DEPLOY_STATE_DIR="$STATE_DIR" "$ACTUAL_LEDGER_BIN" stamp done "smoke PASS verified for issue #${ISSUE}" 2>&1)"
+    # #699: the row must BEGIN with the issue ref. is_addressed() is anchored
+    # (deliberately -- #305 fences off mid-sentence closure), so the historical
+    # "smoke PASS verified for issue #N" wording wrote a row that addressed
+    # NOTHING and closed nothing, silently: 104 such rows across 94 issues, each
+    # reporting "read-back ok", which confirms the WRITE and never the
+    # addressing. The fleet convention is the leading form (oc-ledger's own
+    # fixture: `stamp done "#601 landed: b9ee661cc"`).
+    LEDGER_OUT="$(OC_DEPLOY_STATE_DIR="$STATE_DIR" "$ACTUAL_LEDGER_BIN" stamp done "#${ISSUE} smoke PASS verified" 2>&1)"
     LEDGER_RC=$?
     set -e
     if [ "$LEDGER_RC" -eq 0 ]; then
