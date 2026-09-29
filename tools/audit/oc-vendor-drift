@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-vendor-drift — detect drift in files vendored from another repository
+# =============================================================================
+# Issue #700. The `oc-questions` register is developed upstream (the meta
+# factory's TEMPLATE) and vendored here, because the live instrument must be
+# findable at `tools/*/oc-questions` while its source of truth lives elsewhere.
+# Three ports have been executed by 3-way merge and the live page reverted twice
+# in one day, because NOTHING enforced even the weak contract the upstream law
+# states -- "the union of FUNCTIONS and BEHAVIOUR, never a byte-identical copy".
+#
+# This guard makes that contract mechanical: a vendored file is compared against
+# its recorded upstream revision, with a DECLARED delta allowed (the deployment
+# naming the two copies legitimately differ in). Anything else is drift.
+#
+# Usage: oc-vendor-drift [--json] [--repo <path>] [--ref <ref>]
+#                        [--advisory-only] [--selftest]
+# Exit:  0 every entry IN_SYNC / 1 DRIFTED or LOCAL_MISSING found
+#        2 usage (bad manifest) / 3 UPSTREAM_UNREACHABLE (nothing comparable)
+# Emits: one line per entry plus a summary; --json emits the same as data.
+#
+# VERDICTS (each is the FACT read, never a guess):
+#   IN_SYNC              normalized bytes equal at the recorded ref
+#   DRIFTED              normalized bytes differ -- the vendored copy was edited
+#   LOCAL_MISSING        the vendored path does not exist
+#   UPSTREAM_UNREACHABLE repo, ref or path could not be read (never green)
+#   +UPSTREAM_MOVED      suffix advisory: origin/main advanced past the recorded ref
+#
+# The delta is matched as a REGEX against whole lines and stripped from BOTH
+# sides, so a declared line that was merely reworded upstream still reports
+# DRIFTED rather than silently passing.
+
+set -uo pipefail
+
+ORIG_ARGS=("$@")
+MODE="check"
+JSON=0
+REPO_OVERRIDE=""
+REF_OVERRIDE=""
+ADVISORY_ONLY=0
+MANIFEST_OVERRIDE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --json)     JSON=1; shift ;;
+        --repo)     REPO_OVERRIDE="${2:-}"; shift 2 ;;
+        --manifest) MANIFEST_OVERRIDE="${2:-}"; shift 2 ;;
+        --ref)      REF_OVERRIDE="${2:-}"; shift 2 ;;
+        --root)     shift 2 ;;
+        --advisory-only) ADVISORY_ONLY=1; shift ;;
+        --selftest) MODE="selftest"; shift ;;
+        -h|--help)  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --check-internal) shift ;;
+        *) echo "oc-vendor-drift: unknown flag $1" >&2; exit 2 ;;
+    esac
+done
+
+# Vendored paths in the manifest are relative to the skill repo root, two levels
+# up from tools/audit/.
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+MANIFEST="${MANIFEST_OVERRIDE:-$REPO_ROOT/tools/docs/vendor-manifest.json}"
+
+# --- selftest (drives the shipped checker against a scratch upstream) --------
+if [ "$MODE" = "selftest" ]; then
+    exec python3 - "$0" <<'PY'
+import json, os, shutil, subprocess, sys, tempfile
+
+TOOL = os.path.abspath(sys.argv[1])
+ok = bad = 0
+def ck(c, m):
+    global ok, bad
+    if c:
+        ok += 1; print("ok   - %s" % m)
+    else:
+        bad += 1; print("FAIL - %s" % m)
+
+def check(manifest, root, repo):
+    """Drive the SHIPPED checker through the tool's own CLI."""
+    p = subprocess.run(["bash", TOOL, "--check-internal",
+                        "--manifest", manifest, "--repo", repo, "--root", root],
+                       capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+tmp = tempfile.mkdtemp(prefix="oc-vd-")
+up = os.path.join(tmp, "upstream")
+os.makedirs(os.path.join(up, "T"), exist_ok=True)
+for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+            ["config", "user.name", "t"]):
+    subprocess.run(["git", "-C", up] + cmd, check=True,
+                   capture_output=True)
+BODY = ("#!/usr/bin/env python3\n"
+        "PROG = \"upstream-name\"\n"
+        "RENDER = \"x-render.mjs\"\n"
+        "def main():\n"
+        "    return 0\n")
+with open(os.path.join(up, "T", "thing"), "w") as fh:
+    fh.write(BODY)
+subprocess.run(["git", "-C", up, "add", "-A"], check=True, capture_output=True)
+subprocess.run(["git", "-C", up, "commit", "-qm", "one"], check=True,
+               capture_output=True)
+REF = subprocess.run(["git", "-C", up, "rev-parse", "HEAD"],
+                     capture_output=True, text=True).stdout.strip()
+# The scratch repo has no remote; give it origin/main = the checked-out commit,
+# or rev-parse yields nothing and every advisory assertion passes VACUOUSLY.
+subprocess.run(["git", "-C", up, "branch", "-f", "origin/main", "HEAD"],
+               check=True, capture_output=True)
+
+local = os.path.join(tmp, "local")
+os.makedirs(os.path.join(local, "tools", "state"), exist_ok=True)
+LOC = os.path.join(local, "tools", "state", "thing")
+VEND = BODY.replace("upstream-name", "oc-questions")
+
+man = {"upstream_repo": up,
+       "vendor": [{"local": "tools/state/thing", "upstream_path": "T/thing",
+                   "ref": REF,
+                   "delta": [
+                       {"match": '^PROG = "oc-questions"$',
+                        "match_upstream": '^PROG = "upstream-name"$',
+                        "why": "deployment name"},
+                       {"match": '^RENDER = "x-render\\.mjs"$',
+                        "why": "sibling name"}]}]}
+mpath = os.path.join(tmp, "manifest.json")
+
+def write_manifest(d):
+    with open(mpath, "w") as fh:
+        json.dump(d, fh, indent=2)
+
+# LEG 1 -- a vendored copy differing ONLY by the declared delta is IN_SYNC.
+with open(LOC, "w") as fh:
+    fh.write(VEND)
+write_manifest(man)
+rc, out = check(mpath, local, up)
+ck(rc == 0 and "IN_SYNC" in out,
+   "declared delta only -> IN_SYNC rc=0 (rc=%d)" % rc)
+
+# LEG 2 -- NEGATIVE CONTROL: one byte edited outside the delta -> DRIFTED rc=1.
+with open(LOC, "w") as fh:
+    fh.write(VEND.replace("return 0", "return 1"))
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "DRIFTED" in out,
+   "one byte outside the delta -> DRIFTED rc=1 (rc=%d)" % rc)
+
+# LEG 2b -- an edit ON a delta line but OUTSIDE the declared part is drift.
+# Regression control for the 2026-09-29 blindness: with a prefix-style delta
+# pattern, appending text to the PROG line left the guard green.
+with open(LOC, "w") as fh:
+    fh.write(VEND.replace('PROG = "oc-questions"',
+                          'PROG = "oc-questions"  # peer edit'))
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "DRIFTED" in out,
+   "edit after a declared delta line -> DRIFTED rc=1 (rc=%d)" % rc)
+
+# LEG 2c -- the guard must not DEPEND on the manifest's pattern being end-anchored.
+# A delta declared with an open-ended pattern ("^PROG = ") must still match only a
+# WHOLE line: under the old search() it stripped any line carrying that prefix and
+# the edited line read in-sync. This is the control for the search->fullmatch fix.
+with open(LOC, "w") as fh:
+    fh.write(VEND.replace('PROG = "oc-questions"',
+                          'PROG = "oc-questions"  # peer edit'))
+open_ended = json.loads(json.dumps(man))
+open_ended["vendor"][0]["delta"][0]["match"] = "^PROG = "
+open_ended["vendor"][0]["delta"][0].pop("match_upstream", None)
+write_manifest(open_ended)
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "DRIFTED" in out,
+   "open_ended delta pattern still matches ONE line only -> DRIFTED (rc=%d)" % rc)
+
+# LEG 3 -- a missing vendored file is reported, never assumed clean.
+os.unlink(LOC)
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "LOCAL_MISSING" in out,
+   "absent vendored file -> LOCAL_MISSING rc=1 (rc=%d)" % rc)
+
+# LEG 4 -- an unreachable upstream ref is rc 3, never a green.
+with open(LOC, "w") as fh:
+    fh.write(VEND)
+man2 = json.loads(json.dumps(man))
+man2["vendor"][0]["ref"] = "0" * 40
+write_manifest(man2)
+rc, out = check(mpath, local, up)
+ck(rc == 3 and "UPSTREAM_UNREACHABLE" in out,
+   "unresolvable ref -> UPSTREAM_UNREACHABLE rc=3 (rc=%d)" % rc)
+
+# LEG 5 -- a SHORT-FORM recorded ref naming origin/main's own commit must NOT
+# report MOVED: two spellings of one commit are not movement. Regression
+# control for the 2026-09-29 defect, where a raw string compare against the
+# 40-char head printed "is c0a8f614eef7 (recorded c0a8f614eef7)".
+write_manifest(man)
+with open(LOC, "w") as fh:
+    fh.write(VEND)
+short = json.loads(json.dumps(man))
+short["vendor"][0]["ref"] = REF[:12]
+write_manifest(short)
+rc, out = check(mpath, local, up)
+ck(rc == 0 and "UPSTREAM_MOVED" not in out,
+   "short-form ref naming HEAD -> IN_SYNC, no MOVED advisory (rc=%d)" % rc)
+
+# LEG 6 -- upstream moving past the recorded ref IS an advisory, not drift:
+# the control proving LEG 5's fix did not silence real movement.
+write_manifest(man)
+with open(os.path.join(up, "T", "thing"), "a") as fh:
+    fh.write("# peer edit\n")
+subprocess.run(["git", "-C", up, "add", "-A"], check=True, capture_output=True)
+subprocess.run(["git", "-C", up, "commit", "-qm", "two"], check=True,
+               capture_output=True)
+subprocess.run(["git", "-C", up, "branch", "-f", "origin/main", "HEAD"],
+               check=True, capture_output=True)
+rc, out = check(mpath, local, up)
+ck("UPSTREAM_MOVED" in out,
+   "upstream advanced -> UPSTREAM_MOVED advisory present (control)")
+
+shutil.rmtree(tmp, ignore_errors=True)
+print("selftest: %d passed, %d failed" % (ok, bad))
+sys.exit(1 if bad else 0)
+PY
+fi
+
+exec python3 - "$0" "$MANIFEST" "$REPO_ROOT" "${ORIG_ARGS[@]}" <<'PY'
+# --- CHECKER BEGIN --- (pure python; single source for selftest + runtime)
+import json, os, re, subprocess, sys
+
+TOOL = os.path.abspath(sys.argv[1])
+MANIFEST = sys.argv[2] if len(sys.argv) > 2 else ""
+ROOT = sys.argv[3] if len(sys.argv) > 3 else ""
+argv = sys.argv[4:]
+
+def opt(name, default=""):
+    if name in argv:
+        return argv[argv.index(name) + 1]
+    return default
+
+MANIFEST = opt("--manifest", MANIFEST) or os.environ.get("OC_VD_MANIFEST", "")
+ROOT = opt("--root", ROOT) or os.environ.get("OC_VD_REPO_ROOT", "")
+UPSTREAM = opt("--repo", os.environ.get("OC_VD_REPO", ""))
+REF_OVERRIDE = opt("--ref", os.environ.get("OC_VD_REF", ""))
+AS_JSON = "--json" in argv or os.environ.get("OC_VD_JSON", "0") == "1"
+
+def git(repo, *args):
+    p = subprocess.run(["git", "-C", repo] + list(args),
+                       capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+def norm(text, delta, side="local"):
+    """Drop every line matching a declared delta pattern for THIS side.
+
+    A delta line is a line the two copies legitimately differ in, so it must be
+    droppable from BOTH sides -- but the local and upstream forms differ (ours
+    derives the name, theirs hardcodes it), so an entry may carry
+    `match_upstream` to name the upstream form. Without that, only our side is
+    stripped and the upstream line shifts the comparison, reporting DRIFTED on a
+    file that is exactly as declared.
+    """
+    pats = []
+    for d in (delta or []):
+        m = d.get("match_upstream") if side == "upstream" else d.get("match")
+        m = m or d.get("match") or "$^"
+        pats.append(re.compile(m))
+    out = []
+    for line in text.splitlines(True):
+        # FULLMATCH, not search: a prefix-style pattern silently strips a line
+        # that was EDITED after the declared part, so any edit on a delta line
+        # read as in-sync (measured 2026-09-29: appending "# peer edit" to the
+        # PROG line left the guard green).
+        if any(p.fullmatch(line.rstrip("\n")) for p in pats):
+            continue
+        out.append(line)
+    return "".join(out)
+
+try:
+    with open(MANIFEST, encoding="utf-8") as fh:
+        man = json.load(fh)
+except (OSError, ValueError) as exc:
+    print("oc-vendor-drift: manifest unreadable (%s): %s" % (MANIFEST, exc),
+          file=sys.stderr)
+    sys.exit(2)
+
+repo = UPSTREAM or man.get("upstream_repo", "")
+entries = man.get("vendor", [])
+if not entries:
+    print("oc-vendor-drift: manifest declares no vendored files", file=sys.stderr)
+    sys.exit(2)
+
+results = []
+drift = 0
+unreachable = 0
+
+head = ""
+if repo and os.path.isdir(os.path.join(repo, ".git")):
+    rc, head = git(repo, "rev-parse", "origin/main")
+    head = head.strip()
+
+for e in entries:
+    local_rel = e.get("local", "")
+    up_path = e.get("upstream_path", "")
+    ref = REF_OVERRIDE or e.get("ref", "")
+    delta = e.get("delta", [])
+    row = {"local": local_rel, "upstream_path": up_path, "ref": ref,
+           "verdict": "IN_SYNC", "detail": ""}
+
+    local_abs = os.path.join(ROOT, local_rel)
+    if not ROOT or not os.path.isfile(local_abs):
+        row["verdict"] = "LOCAL_MISSING"
+        row["detail"] = "no file at %s" % (local_rel or "<unset>")
+        results.append(row)
+        drift += 1
+        continue
+
+    if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+        row["verdict"] = "UPSTREAM_UNREACHABLE"
+        row["detail"] = "no git repo at %s" % (repo or "<unset>")
+        results.append(row)
+        unreachable += 1
+        continue
+
+    rc, up_text = git(repo, "show", "%s:%s" % (ref, up_path))
+    if rc != 0:
+        row["verdict"] = "UPSTREAM_UNREACHABLE"
+        row["detail"] = "cannot read %s:%s" % ((ref or "<no ref>")[:12], up_path)
+        results.append(row)
+        unreachable += 1
+        continue
+
+    with open(local_abs, encoding="utf-8", errors="replace") as fh:
+        local_text = fh.read()
+    a = norm(local_text, delta, "local")
+    b = norm(up_text, delta, "upstream")
+    if a == b:
+        row["detail"] = "%d lines match after %d declared delta line(s)" % (
+            len(a.splitlines()), len(delta))
+    else:
+        al, bl = a.splitlines(), b.splitlines()
+        first = ""
+        for i in range(max(len(al), len(bl))):
+            x = al[i] if i < len(al) else "<absent>"
+            y = bl[i] if i < len(bl) else "<absent>"
+            if x != y:
+                first = "first diff line %d: vendored %r vs upstream %r" % (
+                    i + 1, x[:70], y[:70])
+                break
+        row["verdict"] = "DRIFTED"
+        row["detail"] = "%d vendored vs %d upstream lines; %s" % (
+            len(al), len(bl), first)
+        drift += 1
+
+    if head and ref:
+        # Compare FULL shas: a recorded ref may legitimately be a short form or a
+        # tag/branch name, and a raw string compare then reports MOVED for two
+        # spellings of the SAME commit (measured 2026-09-29: a 12-char ref against
+        # the 40-char head printed "is c0a8f614eef7 (recorded c0a8f614eef7)").
+        rc2, ref_full = git(repo, "rev-parse", "--verify", "--quiet",
+                            "%s^{commit}" % ref)
+        ref_full = ref_full.strip()
+        if rc2 == 0 and ref_full and head != ref_full:
+            row["verdict"] = row["verdict"] + "+UPSTREAM_MOVED"
+            row["detail"] += " | upstream origin/main is %s (recorded %s)" % (
+                head[:12], ref_full[:12])
+        results.append(row)
+
+if AS_JSON:
+    print(json.dumps({"verdicts": results, "drifted": drift,
+                      "unreachable": unreachable, "upstream_head": head},
+                     indent=2))
+else:
+    for r in results:
+        print("%-26s %s :: %s" % (r["verdict"], r["local"], r["detail"]))
+    print("summary: %d vendored, %d drifted, %d unreachable" % (
+        len(results), drift, unreachable))
+
+if drift:
+    sys.exit(1)
+if unreachable == len(results):
+    sys.exit(3)
+sys.exit(0)
+PY

@@ -1,0 +1,36 @@
+{
+  "_": "Vendored-file manifest for oc-vendor-drift (issue #700). Each entry names a file this repo carries a copy of, the upstream revision it was flattened from, and the ONLY differences permitted. A delta entry matches OUR form via `match` and THEIR form via `match_upstream` (defaulting to `match`), because a delta line must be droppable from both sides or the comparison shifts. Anything else is drift and fails the guard.",
+  "upstream_repo": "/root/agent-factories",
+  "vendor": [
+    {
+      "local": "tools/state/oc-questions",
+      "upstream_path": "TEMPLATE/tools/questions",
+      "ref": "b131dfab694f171c2c8b308f7b81f8be940e62f3",
+      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Flattened 2026-09-29; identical bytes at d57a5835 and e490a492.",
+      "delta": [
+        {
+          "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
+          "match_upstream": "^PROG\\ =\\ \"questions\"$",
+          "why": "Deployment name: derives from the invoked program so the unified-log 'tool' field and every die() remedy name the command that actually exists here. Upstream ask: the same one line."
+        },
+        {
+          "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ PROG\\ \\+\\ \"\\-render\\.mjs\"\\)$",
+          "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"questions\\-render\\.mjs\"\\)$",
+          "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
+        },
+        {
+          "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+          "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+          "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
+        }
+      ]
+    },
+    {
+      "local": "tools/state/oc-questions-render.mjs",
+      "upstream_path": "TEMPLATE/tools/questions-render.mjs",
+      "ref": "b131dfab694f171c2c8b308f7b81f8be940e62f3",
+      "why": "The json-render catalog the register renders its page through. Byte-identical: no deployment naming is embedded in it.",
+      "delta": []
+    }
+  ]
+}

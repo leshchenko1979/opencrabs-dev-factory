@@ -2327,6 +2327,44 @@ $(printf '%s' "$SQ_LIVE" | head -5)"
 fi
 rm -rf "$SQD"
 
+# ---- 83. oc-vendor-drift: vendored copies match their upstream (#700) --------
+# The register is the meta factory's tool; this fleet carries a copy. The copy is
+# allowed exactly three DECLARED delta lines (the deployment name); anything else
+# is drift. Presence is not behaviour, so the leg drives the guard, not the file.
+if [ -x "$TOOLS_DIR/audit/oc-vendor-drift" ]; then
+  VD_OUT="$(./tools/audit/oc-vendor-drift 2>&1)"; VD_RC=$?
+  if [ -d /root/agent-factories/.git ]; then
+    if [ "$VD_RC" -eq 0 ]; then
+      ok "oc-vendor-drift: vendored register IN_SYNC with upstream rc=0"
+    else
+      bad "oc-vendor-drift rc=$VD_RC on a reachable upstream:
+$(printf '%s' "$VD_OUT" | head -5)"
+    fi
+  else
+    # Disclosed skip, never a silent pass: the guard's whole contract is that an
+    # unreachable upstream is NOT green, so a battery green here would be a lie.
+    case "$VD_OUT" in
+      *UPSTREAM_UNREACHABLE*) note "  SKIP oc-vendor-drift: upstream repo absent (disclosed by the guard)" ;;
+      *) bad "oc-vendor-drift rc=$VD_RC with the upstream repo ABSENT but no UPSTREAM_UNREACHABLE verdict" ;;
+    esac
+  fi
+  # NEGATIVE CONTROL: an unresolvable recorded ref must be rc 3, never green.
+  VD_BAD="$(./tools/audit/oc-vendor-drift --ref 0000000000000000000000000000000000000000 2>&1)"; VD_BRC=$?
+  if [ "$VD_BRC" -eq 3 ]; then
+    ok "oc-vendor-drift: an unresolvable ref is rc=3, never green (control)"
+  else
+    bad "oc-vendor-drift: unresolvable ref gave rc=$VD_BRC, contract says 3"
+  fi
+  VD_ST="$(./tools/audit/oc-vendor-drift --selftest 2>&1)"; VD_SRC=$?
+  case "$VD_ST" in
+    *"selftest: 8 passed, 0 failed"*) ok "oc-vendor-drift selftest: 8 passed, 0 failed" ;;
+    *) bad "oc-vendor-drift selftest: $(printf '%s' "$VD_ST" | tail -2)" ;;
+  esac
+  [ "$VD_SRC" -eq 0 ] || bad "oc-vendor-drift selftest rc=$VD_SRC"
+else
+  bad "oc-vendor-drift missing at tools/audit/oc-vendor-drift"
+fi
+
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
 battery_capture_fail_rows
