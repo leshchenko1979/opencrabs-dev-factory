@@ -1,5 +1,54 @@
 # Changelog — opencrabs-dev
 
+## v0.4.270 — the closure predicate had no branch for a defect the fork invented
+
+**WHAT THIS VERSION RECORDS.** A fourth harvest-gate vacuity, named the
+**fork-identity exemption** (`triage.md`, §closure predicate). A defect can be
+**fork-only BY CONSTRUCTION** — an artifact of the fork carrying a parallel issue
+tracker whose numbering COLLIDES with upstream's — and such an issue fitted
+**NONE** of the three existing branches. Branch 1 can never fire (no upstream PR
+can carry a change upstream does not want); branch 2 has no fork-only parent
+subsystem to hang on, because the subject is **tracker hygiene, not a feature
+symbol**; branch 3 does not apply because `src/**` is harvestable. The result was
+work that **lands, smokes, deploys — and stays open forever**, accumulating in
+Triage's closure queue as done-but-unreachable fix-titled residue.
+
+**THE DISCRIMINATOR IS FALSE-UPSTREAM, NOT MERELY UNNECESSARY-UPSTREAM.** This is
+the whole safety of the exemption. The test is: state the post-fix text in the
+upstream tree and evaluate its **truth**. A fix that would be merely
+redundant-but-TRUE upstream is branch 1 or 2 work and this exemption **must never
+be cited for it**. Where the post-fix state is **FALSE** upstream, the referent is
+genuinely absent — no upstream object exists for the change to attach to — and no
+PR can or should ever file.
+
+**MEASURED INSTANCE.** #683 (and its residual #705) qualify comments **inherited
+from upstream** that cite bare `#679` meaning **upstream's** #679, in a tree where
+bare `#679` now resolves to the **fork's** #679. Fork #679 is *"feat(telegram):
+quiet mode for groups"*; upstream #679 is *"fix(telegram): tables render as bare
+HTML after #651 retired the rich-markdown table path"*. Two issues, one number.
+Inside upstream a citation reading `ex-upstream adolfousier/opencrabs#679` asserts
+a **falsehood** — upstream's bare `#679` already resolves correctly — so the change
+is not redundant there, it is **wrong** there. The contrast that proves the
+distinguishing feature is **harvestability, not the surface**: #552 (a genuine
+code defect — blockquote swallowing a `<details>` block) closed normally on
+2026-09-27 because its subject EXISTS upstream, so branch 1 gave it a path.
+
+**CONDITIONS, all three required** — (1) `landed` on its OWN fork surface,
+recorded by a ledger row of kind `done`/`close`; (2) the fork-only determination
+recorded, naming the colliding pair (fork #N and upstream #N, **both titles**) and
+showing the post-fix state false upstream; (3) **no** fork-only parent subsystem
+exists that branch 2 could hang the close on — if one does, branch 2 STANDS. The
+close identity guard applies unchanged, and LANDING is still not the trigger: the
+trigger is the fork-only determination, which **is** the statement that no PR can
+ever file.
+
+**RECEIPTS.** #683 — `deployed.sha` = `4ab5e66f7a933df1d5c111edc610bc16faa97e88`,
+smoke row `2026-09-29T10:12:54Z PASS run=36552264061` (leg 4 an honest structural
+N/A: comments do not survive compilation, recorded as absent rather than as a
+pass). Raised to HQ 2026-09-29 by the **Lifecycle: Restarts** lane, which
+correctly refused to hand-roll a fourth close path of its own. `triage.md`
+408 → 452.
+
 ## v0.4.269 — the law and the tool disagreed about UNPINNED, and the tool was right
 
 **WHAT THIS VERSION RECORDS.** Triage reported a law-vs-tool divergence on the tier order: `triage.md:53` said *"UNPINNED takes NO tier … so the tiers are total over the 133 resolvable issues and **silent about the 48 UNPINNED**"*, while `oc-issue-scope` deliberately pins the opposite in its own selftest (`:207`, *"and fix-typed UNPINNED reads P2 (deprioritised, never excluded)"*). **The two halves of one paragraph contradicted each other** — the same paragraph already delegates authority to the tool (*"read it from the tool, do not re-derive it"*).

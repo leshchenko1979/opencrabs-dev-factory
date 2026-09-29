@@ -278,6 +278,50 @@ and unclosable by construction; `git ls-tree -r --name-only adolfousier/main --
 tools` → 0 files, `… -- .github/workflows` → 4 files. Filed by Triage lane GAP 3
 (topic "OpenCrabs Dev Triage").
 
+**Fork-identity exemption — the harvest gate is vacuous when the CHANGE has no
+upstream referent (HQ ruling 2026-09-29).** The v0.4.232 exemption above is
+vacuity of the *carrying repo*; this is vacuity of the *change*. A defect may be
+**fork-only BY CONSTRUCTION** — an artifact of the fork carrying a parallel issue
+tracker whose numbering COLLIDES with upstream's. Such an issue fits NONE of the
+three branches: branch 1 can never fire (no upstream PR can carry a change
+upstream does not want), branch 2 has no fork-only parent subsystem to hang on
+(the subject is tracker hygiene, not a feature symbol), and branch 3 does not
+apply because `src/**` is harvestable. Measured instance: #683 — and its residual
+#705 — qualify INHERITED comments that cite bare `#679` meaning **upstream's**
+#679, in a tree where bare `#679` now resolves to the **fork's** #679: fork #679
+is "quiet mode for groups", upstream #679 is "tables render as bare HTML". Two
+issues, one number, and the fix is meaningful only inside the fork.
+
+**The bar is FALSE-UPSTREAM, not merely UNNECESSARY-UPSTREAM.** State the
+post-fix text in the upstream tree and evaluate its truth. Inside upstream, a
+citation qualified `ex-upstream adolfousier/opencrabs#679` asserts a falsehood —
+upstream's bare `#679` already resolves correctly — so the change is not
+redundant there, it is WRONG there. That is what makes the referent absent: no
+upstream object exists for the change to attach to. A fix that would be merely
+redundant-but-TRUE upstream stays in branch 1 or 2; this exemption does not reach
+it, and it must never be cited for one.
+
+An open fork issue MAY be closed autonomously when ALL hold: (1) it is `landed`
+on its OWN fork surface, recorded by a ledger row of kind `done`/`close`
+addressing the issue (`oc_claims.LANDED_KINDS`); (2) the fork-only determination
+is recorded AND names the colliding-number pair (fork #N and upstream #N, both
+titles) and shows the post-fix state FALSE upstream; (3) NO fork-only parent
+subsystem exists that branch 2 could hang the close on — if one does, branch 2
+STANDS and this exemption is refused. The close comment names the shipped sha(s),
+the smoke row and the fork-only determination; the close identity guard below
+applies unchanged. The LANDING-never-the-trigger corollary is satisfied rather
+than waived: the trigger here is the fork-only determination itself, which IS the
+statement that no PR can ever file.
+
+This is an **exemption on the harvest gate, not a fourth autonomous-close
+class** — the same framing as v0.4.232, and for the same reason: (a)/(b)/(c)
+dispose of issues whose work is NOT done, whereas this closes an issue whose work
+IS done, recorded, and smoked on a change no PR can ever carry. Receipts: #683
+(deployed.sha = 4ab5e66f7a933df1d5c111edc610bc16faa97e88, smoke row
+2026-09-29T10:12:54Z PASS run=36552264061) and #705, both landed + recorded +
+smoked and unclosable by construction; raised to HQ by the Lifecycle: Restarts
+lane 2026-09-29.
+
 **Close identity guard — the cited artifact must touch the issue's own surface
 (HQ ruling 2026-09-19, v0.4.216).** Every close resting on a commit or PR
 reference — autonomous (a)/(b)/(c) and harvest-gated alike — MUST confirm the
