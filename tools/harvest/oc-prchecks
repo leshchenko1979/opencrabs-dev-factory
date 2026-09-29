@@ -67,7 +67,7 @@
 # =============================================================================
 # --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
-_oc_r="$(dirname "$0")"; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 _OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"

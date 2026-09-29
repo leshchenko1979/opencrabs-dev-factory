@@ -15,7 +15,7 @@
 # =============================================================================
 set -u
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
-_oc_r="$(dirname "$0")"; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 TOOLS_DIR="$OC_TOOLS_DIR"
@@ -2371,6 +2371,104 @@ $(printf '%s' "$VD_OUT" | head -5)"
 else
   bad "oc-vendor-drift missing at tools/audit/oc-vendor-drift"
 fi
+
+# ---- 84. entry-preamble fixpoint: a relative invocation must not hang (#708) --
+section "entry-preamble fixpoint + relative invocation (#708)"
+# A lane that cds into a tool's directory and runs ./name used to SPIN FOREVER.
+# The entry preamble walked up with `dirname "$0"`; with $0='./tool' that yields
+# '.', and `dirname "."` is '.' -- a FIXPOINT, so the walk never advanced, all
+# three guards stayed true, and the tool emitted nothing at 100% CPU. It had been
+# copy-pasted into every fleet tool. Section 60 drives $t as an ABSOLUTE path
+# (its glob is "$TOOLS_DIR"/...), so it cannot observe this class: the fixpoint
+# needs a RELATIVE invocation to reproduce.
+#
+# STATIC ARM (exact, whole fleet): anything that still walks up must carry the
+# fixpoint break. Keyed on the BREAK's presence, never on the old line's absence,
+# so this leg asserts the fix rather than merely failing to find the bug.
+EP_N=0; EP_BAD=0
+for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-* "$TOOLS_DIR"/tests/run.sh; do
+  [ -f "$t" ] || continue
+  case "$t" in */archive/*|*.bak|*.bak-*|*.pre-*) continue ;; esac
+  grep -qF 'while [ "$_oc_r" != "/" ]' "$t" 2>/dev/null || continue
+  EP_N=$((EP_N+1))
+  if grep -qF '[ "$_oc_r" != "." ]' "$t" 2>/dev/null; then
+    :
+  else
+    EP_BAD=$((EP_BAD+1))
+    bad "$(basename "$t"): walk-up WITHOUT the fixpoint break (#708)"
+  fi
+done
+# FLOOR: the preamble was in 44 files when this leg was written (43 tools + lib +
+# run.sh). A glob that silently matches fewer reddens here instead of passing on a
+# shrunken population -- the silent-skip class this battery exists to catch.
+if [ "$EP_N" -ge 40 ]; then
+  ok "fixpoint break present in all $EP_N file(s) carrying the walk-up"
+else
+  bad "walk-up enumerated only $EP_N file(s) (floor 40) -- the glob is not seeing the fleet"
+fi
+
+# DYNAMIC ARM (behavioural): drive a sample by RELATIVE path from the tool's OWN
+# directory -- the exact invocation that hung. One representative per kind, so a
+# regression in any single kind is observable without paying a fleet-wide --help
+# sweep for the second time in this battery.
+EP_DYN=0
+for rel in state/oc-ledger ship/oc-deploy harvest/oc-prchecks audit/oc-lint-laws \
+           smoke/oc-smoke git/oc-commit issue/oc-issue-scope notify/oc-ping-proof \
+           tests/run.sh; do
+  t="$TOOLS_DIR/$rel"
+  [ -f "$t" ] || { bad "relative-invocation sample missing: $rel"; continue; }
+  EP_DYN=$((EP_DYN+1))
+  d="$(dirname "$t")"; b="$(basename "$t")"
+  # run.sh has NO --help arm (it would execute the whole battery); give it a
+  # cheap flag that still forces the preamble to run and then exits.
+  case "$rel" in tests/run.sh) _arg="--chunk 999" ;; *) _arg="--help" ;; esac
+  # shellcheck disable=SC2086
+  # BATTERY_IN_CHUNK is inherited from THIS chunk and disables the nested
+  # run.sh --chunk branch (its own guard is `[ -z "${BATTERY_IN_CHUNK:-}" ]`),
+  # so it would fall through and execute the whole battery. Clear it.
+  ( cd "$d" && OC_TOOLS_NOLOG=1 BATTERY_IN_CHUNK= timeout 20 "./$b" $_arg >/dev/null 2>&1 ); rc=$?
+  if [ "$rc" -eq 0 ]; then
+    :
+  elif [ "$rc" -eq 124 ]; then
+    bad "$rel: ./$b HUNG (rc=124) -- the dirname('.') fixpoint is back (#708)"
+  else
+    bad "$rel: ./$b rc=$rc (expected 0; 124 = fixpoint hang)"
+  fi
+done
+[ "$EP_DYN" -eq 9 ] && ok "relative invocation returns for all $EP_DYN sampled tool(s)" \
+  || bad "relative-invocation sample ran $EP_DYN of 9"
+
+# CONTROL -- two-sided, and it does NOT reuse the fleet's literal line (a fixture
+# embedding the real preamble would make the static arm above match run.sh's own
+# text). The MECHANISM under test is `dirname "." == "."`, so the fixture
+# reproduces that mechanism in miniature: the broken form must TIME OUT, and the
+# same fixture with the break must RETURN. Without the broken half this leg could
+# not tell a working instrument from one that never fires.
+EP_FX="$(mktemp -d)"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' '_oc_r="$(dirname "$0")"'
+  printf '%s\n' 'while [ "$_oc_r" != "/" ] && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done'
+  printf '%s\n' 'echo reached'
+} > "$EP_FX/broken"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' '_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."'
+  printf '%s\n' 'while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done'
+  printf '%s\n' 'echo reached'
+} > "$EP_FX/fixed"
+chmod +x "$EP_FX/broken" "$EP_FX/fixed"
+( cd "$EP_FX" && timeout 3 ./broken >/dev/null 2>&1 ); fx=$?
+if [ "$fx" -eq 124 ]; then
+  ok "fixpoint control: the broken preamble TIMES OUT (the instrument sees the class)"
+else
+  bad "fixpoint control: broken preamble returned rc=$fx, so this leg cannot detect a hang"
+fi
+( cd "$EP_FX" && timeout 3 ./fixed >/dev/null 2>&1 ); fx=$?
+[ "$fx" -eq 0 ] && ok "fixpoint control: the same fixture WITH the break returns rc=0" \
+  || bad "fixpoint control: fixed preamble rc=$fx (expected 0)"
+rm -rf "$EP_FX"
+
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log

@@ -30,7 +30,7 @@
 # USAGE — the bootstrap is the same 4 lines in every tool, because the resolver
 # cannot be found without first finding the tools dir:
 #
-#   _oc_r="$(dirname "$0")"; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+#   _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
 #   if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 #   if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 #   TOOLS_DIR="$OC_TOOLS_DIR"
