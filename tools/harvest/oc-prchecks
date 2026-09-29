@@ -289,6 +289,18 @@ YEOF
       resolve_timeout)
         printf '[{"databaseId":333,"event":"push","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":555,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"}]\n' \
           "\$(date -u -d '+5 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
+      supersede_pins|supersede_nopin)
+        # #703 fixture. 900001 = MY cancelled run; 900003 = a NEWER peer pinning a
+        # DIFFERENT sha (a different concurrency group - it cannot have cancelled
+        # mine); 900002 = a peer pinning MY sha (same group - the real superseder).
+        # supersede_nopin drops 900002, so no candidate shares the group.
+        if [ "\$S" = "supersede_nopin" ]; then
+          printf '[{"databaseId":900001,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":900003,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"}]\n' \
+            "\$(date -u -d '-40 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+        else
+          printf '[{"databaseId":900001,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":900002,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":900003,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"}]\n' \
+            "\$(date -u -d '-40 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '-5 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '-2 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+        fi ;;
       *)
         printf '[{"databaseId":222,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":111,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":333,"event":"push","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":444,"event":"workflow_dispatch","headBranch":"main","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"},{"databaseId":555,"event":"workflow_dispatch","headBranch":"ci/quick-build-linux","headSha":"ffffffffffffffffffffffffffffffffffffffff","createdAt":"%s"}]\n' \
           "\$(date -u -d '+9 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '+5 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '+5 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '+5 seconds' +%Y-%m-%dT%H:%M:%SZ)" "\$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
@@ -302,12 +314,23 @@ YEOF
       job_failed)  printf '{"jobs":[{"name":"lint","conclusion":"failure","steps":[{"name":"cargo fmt","conclusion":"success"}]}]}\n' ;;
       fmt_gate_ok) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"success"},{"name":"Apply cargo fmt (fix mode)","conclusion":"skipped"},{"name":"Upload fmt-fix patch","conclusion":"skipped"}]}]}\n' ;;
       fmt_gate_failed) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"failure"}]}]}\n' ;;
+      supersede_*)
+        # #703: REAL gh keys the job list on the run id, so the fixture must too -
+        # otherwise both sides of the comparison read the same pin and the
+        # discriminator is untestable. 900001/900002 pin aaaa; 900003 pins bbbb.
+        case "\$*" in
+          *900001*) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","steps":[]}]}\n' ;;
+          *900002*) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
+          *900003*) printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
+          *)        printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
+        esac ;;
       *)           printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"success"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;   # #631: real job names carry the tested sha
     esac ;;
   *"run view"*)
     case "\$S" in
       inflight)       printf '{"status":"in_progress","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' && exit 0 ;;
       cancelled)      printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      supersede_*)    printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       run_failed)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       nullconclusion) printf '{"status":"completed","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       run_view_fail)  exit 1 ;;
@@ -402,6 +425,29 @@ do_selftest() {
       *) t_ok "resume cancelled -> 6 with recovery hint, no set -u abort (#333)" ;;
     esac
   else t_bad "resume cancelled (rc=$T_RC out=$T_OUT)"; fi
+  # #703: driven via `resume <id>` so RUN_ID is explicit - the dispatch form runs
+  # ADOPTION first, which picks the newest run in the window and refuses it on the
+  # #631 pin before the CANCELLED handler is ever reached (measured: adopted
+  # run=900003, rc 4), so it cannot exercise this handler at all.
+  # The superseder must come from the run's OWN concurrency group, not from
+  # any run sharing the carrier branch. Fixture: my run 900001 pins aaaa; 900003
+  # is NEWER but pins bbbb (different group); 900002 pins aaaa and is the real
+  # superseder. The newest peer must NOT be named (its resume arm would hand this
+  # lane a verdict about a sha it never gated).
+  run_t supersede_pins resume 900001
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"superseding run: 900002"*) true ;; *) false ;; esac; then
+    t_ok "#703: superseder named from the same group (900002), not the newest peer (900003)"
+  else t_bad "#703: superseder misattributed (rc=$T_RC out=$T_OUT)"; fi
+  case "$T_OUT" in
+    *900003*) t_bad "#703: named a run pinning a different sha (different concurrency group)" ;;
+    *)        t_ok "#703: a run pinning another lane's sha is never named" ;;
+  esac
+  # and where NO candidate shares the group, name nothing at all - an unnamed
+  # superseder is honest; a misnamed one sends the lane the wrong way.
+  run_t supersede_nopin resume 900001
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"superseding run: unknown"*) true ;; *) false ;; esac; then
+    t_ok "#703: no same-group candidate -> superseder left unnamed, rc 6 preserved"
+  else t_bad "#703: unnamed-superseder fallback (rc=$T_RC out=$T_OUT)"; fi
   run_t run_failed "$SHA"
   if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"run-failure"*) true ;; *) false ;; esac; then
     t_ok "run conclusion failure -> 3 RED reason run-failure"
@@ -1156,9 +1202,30 @@ case "$CONCLUSION" in
     # that treats concurrency cleanup as code failure. Exit 6 = superseded,
     # never GREEN — the false-GREEN hole stays closed; the lane re-arms on the
     # superseding run instead of treating the gate as RED.
-    SUP="$("$GH_BIN" run list --workflow pr-checks.yml --repo "$REPO" --branch "$CARRIER" --limit 10 \
-      --json databaseId,createdAt 2>/dev/null | jq -r --arg rid "$RUN_ID" --arg since "$RUN_CREATED_AT" \
-      '[.[] | select(.databaseId != ($rid|tonumber) and .createdAt >= $since)] | sort_by(.createdAt) | .[-1].databaseId // empty' 2>/dev/null)"
+    # #703: the candidate set must be the concurrency GROUP, not the carrier
+    # branch. The group is keyed on the dispatch input ref (ci-lane-impl.yml
+    # `concurrency.group: prchecks-${{ inputs.ref }}`), which `run list` does not
+    # expose; the observable proxy is the GATE JOB's sha pin - the same identity
+    # carrier #631 already uses to keep two concurrent lanes apart. A run whose
+    # job pins a different sha sits in a different group and CANNOT have
+    # cancelled this one, so naming it is actionable in the WRONG direction: the
+    # resume hint would hand the lane another lane's verdict, and a carried
+    # forward GREEN on a stranger's tests is the false-GREEN hole this handler
+    # exists to keep closed. Where the pin cannot be resolved we name NOTHING -
+    # an unnamed superseder is honest, a misnamed one is a false lead.
+    SUP=""
+    if command -v oc_job_sha >/dev/null 2>&1; then
+      _sup_mine="$(oc_job_sha "$("$GH_BIN" run view "$RUN_ID" --repo "$REPO" --json jobs --jq '[.jobs[].name]|join(" ")' 2>/dev/null || true)" || true)"
+      if [ -n "$_sup_mine" ]; then
+        _sup_cands="$("$GH_BIN" run list --workflow pr-checks.yml --repo "$REPO" --branch "$CARRIER" --limit 10 \
+          --json databaseId,createdAt 2>/dev/null | jq -r --arg rid "$RUN_ID" --arg since "$RUN_CREATED_AT" --argjson n "${OC_PRCHECKS_SUP_TRIES:-3}" \
+          '[.[] | select(.databaseId != ($rid|tonumber) and .createdAt >= $since)] | sort_by(.createdAt) | reverse | .[0:$n] | .[].databaseId' 2>/dev/null || true)"
+        for _sup_cid in $_sup_cands; do
+          _sup_pin="$(oc_job_sha "$("$GH_BIN" run view "$_sup_cid" --repo "$REPO" --json jobs --jq '[.jobs[].name]|join(" ")' 2>/dev/null || true)" || true)"
+          if [ -n "$_sup_pin" ] && [ "$_sup_pin" = "$_sup_mine" ]; then SUP="$_sup_cid"; break; fi
+        done
+      fi
+    fi
     oc_log_extra "verdict" "CANCELLED"
     oc_log_extra "verdict_reason" "superseded${SUP:+; superseding=$SUP}"
     echo "VERDICT CANCELLED (run $RUN_ID was concurrency-cancelled — superseded, not failed)"
