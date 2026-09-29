@@ -24,6 +24,8 @@
 #       Records a newly filed PR in the harvest registry. Idempotent: re-recording
 #       the same (unit, pr, issue) triple updates the entry instead of duplicating it.
 #   purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
+#                                    REFUSED (rc 2) unless --dry-run: REMOVAL
+#                                    IS FORBIDDEN (harvest.md, #707)
 #       Removes matching manual_records entries from the harvest registry.
 #       --unit is required; --pr/--issue narrow the match. --dry-run lists only.
 #   sync [--repo <path>] [--state-file <path>]
@@ -2492,6 +2494,27 @@ cmd_purge() {
   if [ -z "$unit" ]; then
     usage
   fi
+  # ---- REMOVAL IS FORBIDDEN (#707) -----------------------------------------
+  # harvest.md: "REMOVAL IS FORBIDDEN -- there is deliberately no verb, flag or
+  # procedure that deletes a `manual_records` entry. These records are
+  # load-bearing in the direction that PREVENTS work ... deleting it would open
+  # the way to filing a PR that is NOT owed."
+  #
+  # This verb contradicted that law: it deleted ANY matching record with no
+  # status guard, so a `not-upstreamable` protection (#705) lasted only until
+  # someone typed `purge --unit 705`. Its own selftest asserted the destruction
+  # ("purged row no longer refuses the target").
+  #
+  # Refusal is the safe direction: refusing costs nothing, deleting re-opens an
+  # unowed PR. `--dry-run` keeps its LISTING (information only, rc 0) and still
+  # removes nothing.
+  if [ "$dry_run" -ne 1 ]; then
+    echo "purge: REFUSED -- removal is forbidden (harvest.md, #707)." >&2
+    echo "       manual_records are load-bearing in the direction that PREVENTS work;" >&2
+    echo "       deleting one re-opens filing a PR that is not owed." >&2
+    echo "       Use --dry-run to LIST matching records (removes nothing)." >&2
+    exit 2
+  fi
   if [ ! -f "$REGISTRY_FILE" ]; then
     echo "Purge: registry uninitialized ($REGISTRY_FILE) - nothing to purge"
     exit 0
@@ -2523,10 +2546,14 @@ for r in removed:
 if dry_s == "1":
     print("DRY-RUN: %d of %d manual_records would be purged (unit=%s)" % (len(removed), len(records), unit))
     sys.exit(0)
-data["manual_records"] = kept
-with open(reg_file, "w") as f:
-    json.dump(data, f, indent=2)
-print("Purged %d of %d manual_records (unit=%s) in %s" % (len(removed), len(records), unit, reg_file))
+# REMOVAL IS FORBIDDEN (#707): there is no code path here that writes the
+# registry. The shell refuses a non-dry-run invocation before this point, and
+# this block refuses too, so no future edit to the shell guard can leave a
+# deletion reachable through the Python.
+print("purge: REFUSED -- removal is forbidden (harvest.md, #707); "
+      "%d matching of %d manual_records left intact." % (len(removed), len(records)),
+      file=sys.stderr)
+sys.exit(2)
 OCPY
   exit 0
 }
@@ -3791,21 +3818,31 @@ sys.exit(0 if row and row[0].get("status") == "not-upstreamable" else 1)
     return 1
   fi
 
-  # 23. purge removes the row; the manual-records gate stops refusing
+  # 23. purge REFUSES: removal is forbidden (#707). This leg previously asserted
+  # the destruction ("purge removes matching manual_records row" -> "purged row
+  # no longer refuses the target"), i.e. the selftest certified the exact path the
+  # law forbids. It now asserts BOTH halves of the refusal: the non-zero rc AND
+  # that the row survives.
   rc=0
   out="$(bash "$0" purge --unit "test-unit" --state-file "$mock_reg" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "Purged 1 of 1"; then
-    ok "purge removes matching manual_records row"
+  if [ "$rc" -eq 2 ] && oc_has "$out" "REFUSED"; then
+    ok "purge refuses (rc=2) instead of deleting (#707)"
   else
-    echo "  bad  - purge expected rc=0 with 1 removed, got rc=$rc ($out)"
+    echo "  bad  - purge expected rc=2 REFUSED, got rc=$rc ($out)"
+    return 1
+  fi
+  if grep -q '"test-unit"' "$mock_reg"; then
+    ok "purge left the manual_records row intact (control: the refusal is not vacuous)"
+  else
+    echo "  bad  - purge removed the row despite refusing"
     return 1
   fi
   rc=0
   out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "test-unit" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    ok "purged row no longer refuses the target"
+  if [ "$rc" -ne 0 ]; then
+    ok "the manual-records gate STILL refuses after a purge attempt (inverted from the pre-#707 leg)"
   else
-    echo "  bad  - after purge expected rc=0, got rc=$rc ($out)"
+    echo "  bad  - after a refused purge the gate stopped refusing (rc=0)"
     return 1
   fi
 
