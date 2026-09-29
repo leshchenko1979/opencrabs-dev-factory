@@ -175,7 +175,7 @@ fi
 # must never change the chain's exit status. Only non-zero, non-usage exits
 # wake -- a usage error is the caller's typo, which it already sees.
 _chain_wake_arming_lane() { # $1 = exit code
-  local rc="$1" uuid="" chain_lib="" bin="" prof=""
+  local rc="$1" uuid="" chain_lib="" bin="" prof="" _dep="" _state=""
   case "$rc" in 0|2) return 0 ;; esac          # 0 = SWAPPED, 2 = usage
   [ "${OC_SHIPCHAIN_NO_WAKE:-0}" = 1 ] && return 0
   # HERMETICITY, and it must key on the ENVIRONMENT marker, not on argv.
@@ -194,6 +194,32 @@ _chain_wake_arming_lane() { # $1 = exit code
   # protection was gone.
   if [ "${OC_SHIPCHAIN_SELFTEST:-0}" = "1" ]; then
     [ "${OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST:-0}" = 1 ] || return 0
+  fi
+  # #695: the pre-#695 text asserted "(not SWAPPED)" as FACT on any non-zero rc,
+  # but rc is not the swap verdict -- the swap poll reads the deployed.sha MARKER,
+  # and a post-swap step can fail while the marker stays set. Measured 2026-09-28
+  # (chain oc-ship-680-225526, rc 141): the wake said "not SWAPPED" while the
+  # chain's own journal read "SWAPPED sha=3eb5adb9..." and deployed.sha carried
+  # that sha. Read the marker and STATE which state this actually is; a wake that
+  # asserts an unchecked state sends the lane to disprove its own headline, and a
+  # lane that trusts it may re-arm a chain for already-shipped work.
+  #
+  # ERR-EXIT SAFETY: this runs from the EXIT trap, where bash uses the trap's
+  # final status as the script's. An unguarded failing command substitution here
+  # REPLACES the chain's exit code -- measured 3 -> 1, which corrupted the very
+  # audit surface the rc is (reproduced against the tool's own freeze legs).
+  # Hence the `[ -r ]` guard and the `|| _dep=""`.
+  _dep=""
+  if [ -r "${STATE_DIR:-}/deployed.sha" ]; then
+    _dep="$(cat "${STATE_DIR:-}/deployed.sha" 2>/dev/null)" || _dep=""
+  fi
+  _dep="$(printf '%s' "$_dep" | tr -d ' \n')" || _dep=""
+  if [ -n "${SHA:-}" ] && [ -n "$_dep" ] && [ "$_dep" = "$SHA" ]; then
+    _state="the ship LANDED for this sha -- deployed.sha carries it, so the failure is in a POST-SWAP step and the host is ALREADY swapped; do NOT re-run the swap"
+  elif [ -n "$_dep" ]; then
+    _state="the work may be landed but UNSHIPPED -- deployed.sha carries ${_dep}, NOT ${SHA:-?}"
+  else
+    _state="the work may be landed but UNSHIPPED -- deployed.sha is ABSENT, so no swap is recorded"
   fi
   # A1b (owner order 2026-09-27): the SELF uuid comes from the environment, and
   # OPENCRABS_SESSION_ID WINS over OC_ACTOR -- the latter is retired for the actor
@@ -218,7 +244,7 @@ _chain_wake_arming_lane() { # $1 = exit code
   prof="${OC_SHIPCHAIN_PROFILE:-ops}"
   oc_notify_session "$bin" "$prof" "oc-ship-chain" "$uuid" \
     "SHIP-CHAIN ${CHAIN:-?}: EXITED rc=$rc" \
-    "The chain armed by this lane has STOPPED with rc=$rc (not SWAPPED). The work may be landed but UNSHIPPED -- re-read the chain journal for ${SHA:-?} before re-arming, and note that a stale fix often needs only --gated-run after a rebase. This wake exists because a settled lane is not resumed by the boot classifier." >/dev/null 2>&1 || true
+    "The chain armed by this lane has STOPPED with rc=$rc. ${_state} -- re-read the chain journal for ${SHA:-?} before re-arming, and note that a stale fix often needs only --gated-run after a rebase. This wake exists because a settled lane is not resumed by the boot classifier." >/dev/null 2>&1 || true
 }
 
 _chain_exit_handler() {
@@ -2038,6 +2064,30 @@ EOF
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-nowake-exit-code-unchanged" "$RC" 7
   [ -s "$T/wake.log" ] && bad "wake-nowake-suppressed" || ok "wake-nowake-suppressed"
+
+  # 11d2. #695: the wake's STATE CLAIM must be READ, not asserted. rc is not the
+  # swap verdict -- the deployed.sha marker is. Measured 2026-09-28: a lane was
+  # woken with "STOPPED with rc=141 (not SWAPPED)" while the chain's own journal
+  # read "SWAPPED sha=3eb5adb9..." and deployed.sha carried that sha. Drive the
+  # wake function directly with STATE_DIR pointed at each of the two states.
+  mkdir -p "$T/state"
+  printf '%s\n' "$FSHA" > "$T/state/deployed.sha"
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"the ship LANDED for this sha"*) ok "wake-reads-marker-post-swap" ;;
+    *) bad "wake-reads-marker-post-swap: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"UNSHIPPED"*) bad "wake-post-swap-claims-unshipped" ;;
+    *) ok "wake-post-swap-claims-unshipped" ;; esac
+  rm -f "$T/state/deployed.sha" "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"deployed.sha is ABSENT"*) ok "wake-reads-marker-no-swap" ;;
+    *) bad "wake-reads-marker-no-swap: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
 
   # 11e. SWAPPED (rc 0) must NOT wake -- the lane already sees the verdict, and a
   # wake on every success would be the noise this tool's own fan-out was filed for.
