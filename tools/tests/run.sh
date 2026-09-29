@@ -2226,18 +2226,18 @@ fi
 # ---------------------------------------------------------------------------
 echo "== SIGPIPE pipeline-form guard (#660) =="
 
-# Exempt the `printf '%s\n...'` forms: they are already newline-terminated, so
-# the here-string replacement is a no-op for them, and the two live sites
-# (oc-lint-laws:179,180) are additionally [ -n ]-guarded so an empty payload
-# cannot reach the pattern. Exempt comments.
-# Also exclude the generated-ignored SIDECAR class (.bak / .bak-* / .pre-*),
-# which the edit tool writes beside every file it touches -- sidecars are NOT
-# code (#691: this scan reported 6 live sites, every one inside a sidecar).
+# Two exclusions, both about what is NOT a site:
+#   - the generated-ignored sidecar class (.bak / .bak-* / .pre-*), which the
+#     edit tool writes beside every file it touches -- sidecars are NOT code
+#     (#691: this scan reported 6 live sites, every one inside a sidecar);
+#   - comments, which quote the form without being it.
+# The old `printf '%s\n'` exemption was REMOVED by #693: it hid a real site
+# in oc-lint-laws while its stated premise (newline-terminated, [ -n ]-guarded)
+# says nothing about SIGPIPE, which is payload-size gated.
 _SG_HITS="$(grep -rnP "printf[^|]*\|\s*grep\s+-q" "$TOOLS_DIR" 2>/dev/null \
   | grep -v '/tests/run.sh:' \
   | grep -vE '^[^:]+\.(bak|pre-)' \
   | grep -v ':[0-9]*: *#' \
-  | grep -v "printf '%s\\\\n" \
   || true)"
 _SG_N="$(printf '%s\n' "$_SG_HITS" | grep -c . || true)"
 
@@ -2247,6 +2247,19 @@ _SG_CANARY="$(printf '%s\n' "printf '%s' \"\$x\" | grep -q y" \
 [ "$_SG_CANARY" = "1" ] \
   && ok "SIGPIPE guard observes its own class (canary fires)" \
   || bad "SIGPIPE guard cannot see the class it forbids (canary=$_SG_CANARY)"
+# #693: the revision above ALSO exempted the `printf '%s\n...'` shape by
+# pattern, so this form was invisible while standing in oc-lint-laws. Run the
+# SAME filter chain over a fixture carrying that shape: a guard that cannot see
+# the shape it used to exempt is how the live site survived the #660 sweep.
+_SGF="$(mktemp -d)"
+printf "printf '%%s\\\\n%%s' \"\$a\" \"\$b\" | grep -qF x\n" > "$_SGF/oc-canary"
+_SG_CAN_F="$(grep -rnP "printf[^|]*\|\s*grep\s+-q" "$_SGF" 2>/dev/null \
+  | grep -v ':[0-9]*: *#' \
+  | grep -c . || true)"
+rm -rf "$_SGF"
+[ "$_SG_CAN_F" = "1" ] \
+  && ok "SIGPIPE guard sees the printf-format shape it used to exempt (#693)" \
+  || bad "SIGPIPE guard CANNOT see the printf-format shape (canary=$_SG_CAN_F) — the exemption blind spot is back" 
 [ "$_SG_N" = "0" ] \
   && ok "no printf-pipe-grep-q sites remain (use <<< or oc_has)" \
   || bad "printf-pipe-grep-q sites present: $_SG_N (use <<< or oc_has)"

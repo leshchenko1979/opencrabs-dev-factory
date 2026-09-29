@@ -190,8 +190,14 @@ _selftest_impl() {
   # chk <name> <want-rc> <want-needle> [<forbid-needle>]
   chk() {
     if [ "$RC" != "$2" ]; then bad "$1 (rc=$RC want=$2)"; return; fi
-    if [ -n "$3" ] && ! { printf '%s\n%s' "$OUTP" "$ERR"; } | grep -qF -- "$3"; then bad "$1 (missing: $3)"; return; fi
-    if [ -n "${4:-}" ] && { printf '%s\n%s' "$OUTP" "$ERR"; } | grep -qF -- "$4"; then bad "$1 (unexpected: $4)"; return; fi
+    # #693: here-string, not a pipeline. With `set -o pipefail` and a payload
+    # past the 64 KiB pipe buffer, grep -q exits on match and printf takes
+    # SIGPIPE (141), which the `!` inverts into a reported MISS. Measured
+    # 26/40 false-miss at 64 KiB, 40/40 at 128 KiB; this form 0/40 at 200 KiB.
+    if [ -n "$3" ] && ! grep -qF -- "$3" <<<"$OUTP
+$ERR"; then bad "$1 (missing: $3)"; return; fi
+    if [ -n "${4:-}" ] && grep -qF -- "$4" <<<"$OUTP
+$ERR"; then bad "$1 (unexpected: $4)"; return; fi
     ok "$1"
   }
 
