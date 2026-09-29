@@ -1,5 +1,23 @@
 # Changelog — opencrabs-dev
 
+## v0.4.271 — the sync's test union kept a test that could not fail
+
+Raised by the Triage lane while finishing the 2026-09-29 sync (origin/main `888decf7a` → `73ad3e969`), and verified first-hand before it was written. The runbook's step 4 told the resolver to **union both sides' test cases** in a file both sides touched, and said nothing about what happens when upstream has *deleted* the behaviour a fork test covers.
+
+**The blind spot.** The two halves of such a pair behave differently: the fork's POSITIVE test FAILS (the gate sees it), while its NEGATIVE twin passes **VACUOUSLY** — once the weld exists nowhere, `assert!(!text.contains(MARKER))` holds for every input and *cannot* fail. So the gate reports GREEN over a permanently dead test, and "the gate is the only sound instrument" — true for compile and positive assertions — is **FALSE for vacuous negatives**.
+
+**Measured receipt.** `src/tests/channel_capabilities_preamble_test.rs` at head `d1e4b98ea` (round-8 gate, run `36590801265`, RED): `test_compaction_recovers_telegram_capabilities_if_in_brain` (positive) FAILED, while `test_compaction_skips_capabilities_for_non_telegram_session` (negative, same marker) PASSED vacuously. Upstream removed the compaction weld (#1649/#1676) and replaced both with `test_compaction_preserves_capabilities_in_system_brain`, which pins the property that matters. Resolution was upstream-wins — both fork tests removed plus the orphaned `use uuid::Uuid;`; gate GREEN first try on `73ad3e969` (run `36593950366`, **10522 passed / 0 failed**).
+
+**The law.** `upstream-merge-runbook.md` gains a **Test-union clause** under §Seam-resolution shape: where upstream deleted a production fn or behaviour, a fork-only `#[test]` referencing it is a **REMOVAL candidate under the upstream-wins default, never a union keep**; the discriminator is to state the input on which the test would FAIL, and a test for which no such input exists measures its own constants. Step 4 now carries the clause and a corrected pointer — it cited `fleet-directives.md` as the canonical home for the seam-resolution shape, but that section lives in the runbook itself, and the register's own routing row (`fleet-directives.md:9`) sends seam resolution *to* the runbook. Same class as `editor.md §Phase 6b (d)` (absence-shaped probes), deliberately cross-referenced rather than restated: that clause governs leg-4 smoke probes, this one the sync's test union.
+
+**LOC delta (owner order 2026-09-19):**
+
+| File | Before | After | Delta |
+|---|---|---|---|
+| `upstream-merge-runbook.md` | 476 | 496 | +20 |
+
+Both within the 500-line budget. `oc-lint-laws` rc=0.
+
 ## v0.4.270 — the closure predicate had no branch for a defect the fork invented
 
 **WHAT THIS VERSION RECORDS.** A fourth harvest-gate vacuity, named the

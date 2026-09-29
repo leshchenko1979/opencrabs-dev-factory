@@ -65,10 +65,13 @@ per-commit at replay time.
    the model. Do not hand-drop them.
    - **`DONE = git rebase adolfousier/main executed on sync branch.`**
 4. **Replay conflicts: resolve per the Seam-resolution shape, canonical in
-   `fleet-directives.md`** (upstream's code ships byte-exact; our delta adapts
-   on top — never overwrite his code). Conflicts arise only while replaying OUR
-   still-pending commits, so resolution is per-commit. Shared TEST files union
-   both sides' cases — expect the worst overlap in tests, not source.
+   `upstream-merge-runbook.md §Seam-resolution shape` below** (upstream's code
+   ships byte-exact; our delta adapts on top — never overwrite his code).
+   Conflicts arise only while replaying OUR still-pending commits, so
+   resolution is per-commit. Shared TEST files union both sides' cases — expect
+   the worst overlap in tests, not source — **but a UNION OF TESTS IS NOT A
+   UNION OF MEANING: apply the §Test-union clause below before keeping ANY fork
+   test in a file upstream also touched.**
    - **`DONE = All replay conflict seams resolved adapting fork delta cleanly on top of upstream base.`**
 5. **Database migrations — dedicated pass, never drive-by.** Both sides may sit
    at the SAME `MIGRATION_COUNT` with DIFFERENT sets (2026-09-02: fork #37
@@ -290,6 +293,23 @@ Anything beyond a port seam → editor work.
 ## Seam-resolution shape (REBASE model — replaces the retired merge-resolution shape)
 
 (owner 2026-09-02 principle, "keep his part as he sees it — apply our changes on top where it's essential", carried forward into the rebase model):** upstream's code ships byte-exact as adolfo wrote it, never hand-blended. The MECHANISM changes with the model: our topical commits are replayed onto `upstream/main`, and the rebase **drops every commit upstream has already accepted** — that is precisely what makes the ahead counter shrink. Conflicts therefore arise only while replaying OUR still-pending commits, and resolution is per-commit: adapt our delta onto upstream's current shape, never overwrite his code. Each replay conflict is gated by the **overlay-disposition analysis**: fork-only commits classified drop/port/ask against upstream's revealed stance (his merges of our PRs = auto-drop our duplicate; absorbed = check what he changed on top; declined = his comment decides; no signal = ask), with adolfo's commit bodies and PR/issue comments read — the classification ships as a table for the **owner's human gate** before any adaptation commit is cut. Standing exception: prod-bound fork migrations keep their slot (load-bearing prod `user_version`); upstream's migration shifts to the next free version, content byte-exact. Historical (MERGE mechanism, RETIRED with the merge policy): first applied at merge `247fed2b` (2026-09-02) — 32/32 conflicted files upstream-verbatim, 0-byte fidelity check; superseded resolution preserved at ref `merge/upstream-20260902-forkwin`. Recorded as precedent for the byte-exact principle, not as a live procedure.
+
+### Test-union clause — the gate is BLIND to a vacuous negative (Triage finding 2026-09-29, v0.4.271)
+
+**A union of test files is not a union of meaning.** Where upstream DELETED a production fn or behaviour, a fork-only `#[test]` that references it is a **REMOVAL candidate under the same upstream-wins default — never a union keep.** Keeping both sides' tests is right only while both sides' tests still assert something.
+
+**The class, and why the gate cannot see it.** In a file both sides touched, the two halves behave differently when upstream has removed a fork behaviour: the fork's **POSITIVE** test FAILS, so the gate sees it — while its **NEGATIVE** twin passes **VACUOUSLY**, so the gate is blind **forever**. A negative assertion over a weld upstream deleted (`assert!(!text.contains(MARKER))`) holds for **every** input once the weld exists nowhere, so it *cannot* fail; it is invisible in a GREEN run and inflates the passing count.
+
+**Measured receipt (do not re-derive — read it).** File `src/tests/channel_capabilities_preamble_test.rs` at head `d1e4b98ea` (gate round 8, run `36590801265`, RED):
+
+| Test | Shape | Outcome at `d1e4b98ea` |
+|---|---|---|
+| `test_compaction_recovers_telegram_capabilities_if_in_brain` | positive — `text.contains("--- TELEGRAM CHANNEL CAPABILITIES ---")` | **FAILED** |
+| `test_compaction_skips_capabilities_for_non_telegram_session` | negative — `!text.contains(<same marker>)` | **PASSED, vacuously** |
+
+Upstream removed the compaction weld (#1649/#1676: `system_brain` survives compaction untouched, so welding duplicated ~16k tokens onto the in-memory marker while the persisted marker carried none) and replaced both fork tests with `test_compaction_preserves_capabilities_in_system_brain`, which pins the property that matters and passed throughout. Resolution: **upstream-wins** — both fork tests removed, plus the orphaned `use uuid::Uuid;`; gate GREEN first try on `73ad3e969` (run `36593950366`, 10522 passed / 0 failed).
+
+**The discriminator — apply it before keeping any test.** State the input on which the test would FAIL; a test for which no such input exists **measures its own constants**. For a negative assertion: name the input that used to produce the negated thing, and show it still produces it on the pre-fix tree. Same class as `editor.md §Phase 6b (d)` ("an absence-shaped fix needs a FIRING RECEIPT, not a criterion") — that clause governs leg-4 smoke probes, **this one governs the sync's test union**; a vacuous negative is a defect to REMOVE, not a passing test to count. **Consequence:** "the gate is the only sound instrument" is true for compile and positive assertions and **FALSE for vacuous negatives**, so a sync can land with silently dead tests and report GREEN — this clause is step 6's upstream-wins default reaching into test code, where step 4's union instruction otherwise never looks.
 
 ## Upstream-merge cadence · HARVEST LAW · NO-HOLD
 
