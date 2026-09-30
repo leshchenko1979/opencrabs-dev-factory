@@ -21,12 +21,14 @@ The failure mode is **not** a refusal that announces itself. An unwritten key do
 - **#714 is landed on fork main and UNSHIPPED.** `ac4df8acf` + `89945b5a3` are on `origin/main` (`89945b5a3` = HEAD), while `deployed.sha` = **`c6c7cc45`** (swapped 2026-09-30T13:29:42Z, `prev_sha 68cd5fdf`), which predates them. So the unconditional pre-migration snapshot fix is **written but not running** — an editor ship matter, recorded here because the disk it would relieve is the same disk the sync and the battery must write to.
 - **A queued "deployed.sha is ABSENT" alert was scoped to another lane's chain, not this one.** Settled by locating the canonical state dir (`$HOME/.opencrabs/profiles/ops/opencrabs-dev/`, `oc-deploy:196`): `deployed.sha` exists and is readable there. A state claim read from the wrong scope is not a state.
 
-### Bump and sync are DEFERRED — two blockers, both measured
+### Bump and sync — two blockers measured, both since cleared (v0.4.272–274 land in one catch-up sync)
 
 1. **`tools/tests/run.sh` is dirty** with the Toolsmith's in-flight #720 cgroup-isolation work (**224 lines**, +223/-7). The sync's **stray-guard** (`oc-ledger:1313-1334`, v0.4.157) dies **rc 7** rather than sweep another actor's work into a bump commit — the same guard that correctly refused my v0.4.270 bump while the Toolsmith held an uncommitted `oc-ledger`.
 2. **The battery receipt is aged out.** `battery-last.json` reads **PASS 296 / 0 fail, 2026-09-30T14:11:15Z** — **5.98 h** at read time against the gate's **6 h** ceiling (`oc-ledger:1230-1237`), i.e. it expires within the minute. A sync would die **rc 5**.
 
 A fresh battery is **not** run here: the `opencrabs-ops` cgroup measured **1596493824 / 1610612736 = 99.12 %** with `MemoryHigh == MemoryMax` and `memory.oom.group=1`, so a 4-job parallel battery is exactly the allocation spike that takes the **whole group** — daemon plus every lane's in-flight turn — and it would run through the Toolsmith's **uncommitted** harness besides. Committing doc-first keeps the repo out of the "bumped but never synced" state v0.4.269 sat in for a day.
+
+**Both blockers cleared before this sync ran, each re-measured rather than assumed.** (1) The Toolsmith committed its work — `4047491a` (#720, the battery's transient-scope re-exec) and `510dae7e` (#722, `oc-ledger commit-pending --help` no longer sweeps and pushes) — so the stray-guard's subject is gone and the worktree carries no non-exempt dirty path. (2) The battery receipt was **re-run at 2026-09-30T21:18:19Z: PASS 309 / 0 fail**, `cgroup_isolated: true`, `tree_changed: false` — **321 s** wall at `jobs=4` under a transient scope, so the parallel battery no longer runs inside the ops cgroup the OOM section above describes. Both reads are from the same turn that ran the sync, and the bump is a **catch-up** (`--catch-up`, three versions 0.4.272→0.4.274) because the doc-first entries for all three were written while the blockers stood.
 
 ### LOC delta (mandatory per the law)
 
@@ -36,11 +38,11 @@ A fresh battery is **not** run here: the `opencrabs-ops` cgroup measured **15964
 
 Law corpus (`*.md`, git-tracked, counted in python from `HEAD` to the working tree): **17283 → 17323 (+40)**, of which **+2** is the runbook clause and **+38** this entry's own growth (biography, not rule text). `oc-lint-laws` rc=0 (clean). No other law file touched.
 
-**Bundled and named (C8), this window since `cd708a28` (v0.4.271):** `ed4db066` · `2e10e1fe` (v0.4.272, worktree paths) · `b3ad3571` · `93181c6c` · `e04db728` · `3a65fda6` (v0.4.273) — all named in the entries above, so this entry adds no unnamed commit to the window.
+**Bundled and named (C8), this window since `cd708a28` (v0.4.271):** `ed4db066` · `2e10e1fe` (v0.4.272, worktree paths) · `b3ad3571` · `93181c6c` · `e04db728` · `3a65fda6` (v0.4.273) · `3c447ca7` (this entry's own doc-first commit) · `4047491a` + `510dae7e` (Toolsmith — [#720](https://github.com/leshchenko1979/opencrabs/issues/720) the battery re-execs into a transient scope; [#722](https://github.com/leshchenko1979/opencrabs/issues/722) `oc-ledger commit-pending --help` no longer sweeps and pushes) — all named here or in the entries above, so this entry adds no unnamed commit to the window.
 
 ## v0.4.273 — two owner orders, and a safeguard that only looked removed
 
-Two owner orders landed on the law surface the same hour, plus the q34 answer that had been waiting since morning. **Bump and sync are DEFERRED**: the battery receipt on disk is `2026-09-29T12:36:05Z` — ~23 h old, where the sync gate demands <6 h — and the `opencrabs-ops` cgroup was measured at **99.93 % of its 1536 MiB cap with 1.1 MiB headroom** under `oom.group=1`, so a 4-job parallel battery now risks triggering the whole-group OOM it would be measuring under. Committing doc-first keeps the repo out of the "bumped but never synced" state v0.4.269 sat in for a day.
+Two owner orders landed on the law surface the same hour, plus the q34 answer that had been waiting since morning. **Bump and sync are DEFERRED**: the battery receipt on disk is `2026-09-29T12:36:05Z` — ~23 h old, where the sync gate demands <6 h — and the `opencrabs-ops` cgroup was measured at **99.93 % of its 1536 MiB cap with 1.1 MiB headroom** under `oom.group=1`, so a 4-job parallel battery now risks triggering the whole-group OOM it would be measuring under. Committing doc-first keeps the repo out of the "bumped but never synced" state v0.4.269 sat in for a day. **Resolved at the v0.4.274 catch-up:** the battery was re-run to **PASS 309 / 0** at `2026-09-30T21:18:19Z` and the Toolsmith's dirty `run.sh` was committed (`4047491a`, `510dae7e`), so v0.4.272–274 published together in one catch-up sync.
 
 ### 1 · Issue provenance — blame it, follow it, explain it (owner order 2026-09-30)
 
