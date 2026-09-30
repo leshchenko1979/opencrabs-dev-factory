@@ -238,21 +238,21 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
    `oc-start` automatically executes:
    - Uniqueness check and ledger claim (`oc-ledger claim`).
    - Remote fetch and clean branch creation off fresh `origin/main`.
-   - Clean worktree mounting at `~/oc-wt-<task>`.
+   - Clean worktree mounting at `~/opencrabs-wt/<task>`.
    *(Manual fallback `oc-wt add <task> <branch>` is reserved only for raw non-issue worktrees).*
    - **ZERO-ACK ON DISPATCH (owner order 2026-09-13)**: When receiving a task dispatch (`[ISSUE DISPATCH: #N]`), **NEVER reply with a `session_notify` ack**. Running `oc-start` or stamping `oc-ledger claim` is the sole required action.
 
-DONE = Issue verified/filed, atomically claimed on ledger, and clean worktree mounted at `~/oc-wt-<task>` on branch `<type>/<slug>` tracking fresh `origin/main`.
+DONE = Issue verified/filed, atomically claimed on ledger, and clean worktree mounted at `~/opencrabs-wt/<task>` on branch `<type>/<slug>` tracking fresh `origin/main`.
 
 ## Phase 2 — Worktree Lifecycle & Isolation
 
-- **Exclusivity**: ALL edits happen in `~/oc-wt-<task>`, NEVER in the shared checkout. Parallel agents share the repository.
+- **Exclusivity**: ALL edits happen in `~/opencrabs-wt/<task>`, NEVER in the shared checkout. Parallel agents share the repository.
 - **Inline Execution**: While holding an active worktree, ALL execution runs inline in the owning session (`isolated=false`). Auto-spawned isolated workers are forbidden.
 - **Teardown**: After shipping via `oc-ship-chain` (Phase 5), remove the worktree:
   ```bash
   tools/git/oc-wt remove <task>
   ```
-DONE = Worktree exclusivity maintained, edits isolated to `~/oc-wt-<task>`.
+DONE = Worktree exclusivity maintained, edits isolated to `~/opencrabs-wt/<task>`.
 
 ## Phase 3 — Explore before writing (Imperative `memory_search` & DRY Gate)
 
@@ -338,7 +338,7 @@ The Editor runs `oc-ship-chain` in one detached invocation under one chain-id �
 
 ```bash
 # 1. Push your branch first
-git -C ~/oc-wt-<task> push -u origin <branch>
+git -C ~/opencrabs-wt/<task> push -u origin <branch>
 
 # 2. Arm the chain in its OWN unit (resumes the session on finish)
 systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
@@ -377,10 +377,10 @@ When shipping features via `oc-ship-chain` or deploying via `oc-deploy`, failure
 - **Exit 4 — GATE-RED / CARRIER-RED:** The CI gate failed or the carrier build failed. Start a fix round (Phase 6-Fix): keep the same branch, fix in a new worktree, commit, push, and re-run `oc-ship-chain`. Triage heuristics live in `editor.md §Red-run triage heuristics` (below). **Also the `--gated-run` / `--gated-sha` pre-verify failure:** the supplied run was not `completed success` on a job pinned to the sha, or `--gated-sha` did not match `--sha`. Do NOT re-dispatch the run — re-verify it with `gh run view <id> --json status,conclusion,jobs` and re-supply the correct id.
 - **Exit 5 — NON-FF / MERGE CONFLICT · TIP-MOVED · REBASE-GATE:** THREE distinct causes share this code (tool text: the three exits that share rc 5 in `oc-ship-chain`; full register in `tools/docs/RC-CONTRACT.md`). **(a) NON-FF / MERGE CONFLICT** — `oc-ship-chain` LEG3 ran `git merge --ff-only` and refused. A **clean** non-FF and a **conflicted** one are the SAME code from the chain's side: the chain performs **no rebase of its own**, so the LANE rebases `$BRANCH` onto fork main and force-pushes first; a **semantic conflict** additionally requires hand adjudication. (The automatic in-tool rebase belongs to `oc-deploy`'s own push path — that is cause **(c)**, not this one. Do not wait for an auto-rebase that the chain never runs.)
   ```bash
-  git -C ~/oc-wt-<task> fetch origin
-  git -C ~/oc-wt-<task> rebase origin/main
+  git -C ~/opencrabs-wt/<task> fetch origin
+  git -C ~/opencrabs-wt/<task> rebase origin/main
   # resolve conflicts in working tree
-  git -C ~/oc-wt-<task> push --force-with-lease origin <branch>
+  git -C ~/opencrabs-wt/<task> push --force-with-lease origin <branch>
   ```
   ⚠️ **`oc-rebase-safety` is NOT the rebase engine** — it is a READ-ONLY safety auditor (`audit` / `overlap`). Use standard git commands to resolve conflicts, verify zero lost edits with `oc-rebase-safety audit`, and re-run `oc-ship-chain`.
   - **(b) TIP-MOVED** — the branch was force-pushed mid-gate, so `$TIP != $SHA`: LEG3 refuses rather than fast-forwarding fork main onto a tip NO GATE VALIDATED. Recovery: re-run the chain against the new tip — do NOT land the ungated tip.
@@ -399,10 +399,10 @@ When shipping features via `oc-ship-chain` or deploying via `oc-deploy`, failure
 **Post-landing-lock ancestor re-check — MANDATORY before LEG3 lands (finding `127429e6`, cycle `20260919-c21`):** the gate (LEG1) runs BEFORE the landing lock is taken, so the window between "gate green" and "lock acquired" is unprotected — and LEG3 is a bare `git merge --ff-only` that performs **no rebase of its own**. Any lane landing on fork `main` inside that window makes your branch a non-fast-forward and LEG3 dies `rc 5` (cause **(a)** above). **A chain queued on `ship.lock` is already doomed if `origin/main` moved while it waited** — it will take the lock and then refuse. After acquiring the lock, re-check ancestry against the CURRENT remote tip:
 
 ```bash
-git -C ~/oc-wt-<task> fetch origin
-git -C ~/oc-wt-<task> merge-base --is-ancestor <branch> origin/main || {
-  git -C ~/oc-wt-<task> rebase origin/main      # hand-resolve any conflicts
-  git -C ~/oc-wt-<task> push --force-with-lease origin <branch>
+git -C ~/opencrabs-wt/<task> fetch origin
+git -C ~/opencrabs-wt/<task> merge-base --is-ancestor <branch> origin/main || {
+  git -C ~/opencrabs-wt/<task> rebase origin/main      # hand-resolve any conflicts
+  git -C ~/opencrabs-wt/<task> push --force-with-lease origin <branch>
 }
 ```
 
@@ -649,7 +649,7 @@ tools/git/oc-wt add <task> <branch>
 tools/git/oc-commit -m "<msg>"   # gated wrapper: Session-Id from ambient session ID, Issue-Ref
 #    derived from your latest ledger claim, implementation comment folded in
 # 3. push branch, then re-run oc-ship-chain (Leg 1 CI gate -> Leg 2 comment -> Leg 3 ff-merge -> Leg 4 carrier build -> Leg 5 swap)
-git -C ~/oc-wt-<task> push origin <branch>
+git -C ~/opencrabs-wt/<task> push origin <branch>
 tools/ship/oc-ship-chain --sha <NEW-head-sha> --branch <branch> [--issue <issue-n>]
 # 4. on exit 0 SWAPPED, remove the worktree — proceed to Phase 6b smoke re-test
 tools/git/oc-wt remove <task>

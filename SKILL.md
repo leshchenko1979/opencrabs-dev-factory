@@ -11,7 +11,7 @@ description: >
   (/opencrabs-dev)
 globs:
   - ~/opencrabs/**
-  - ~/oc-wt-*/**
+  - ~/opencrabs-wt/**
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**

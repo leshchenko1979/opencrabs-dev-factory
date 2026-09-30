@@ -70,7 +70,7 @@ git -C ~/opencrabs log --format='%H%x09%s%x09%(trailers:key=Session-Id,valueonly
 #     The old "oc-wt never creates" raw `worktree add -b` ritual taught a
 #     false interface fact; use `--create` unless that flag is unavailable.)
 tools/git/oc-wt add up-<feature> leshchenko1979/<feature> --create --from adolfousier/main --repo ~/opencrabs
-git -C ~/oc-wt-up-<feature> cherry-pick <sha1> <sha2> ...
+git -C ~/opencrabs-wt/up-<feature> cherry-pick <sha1> <sha2> ...
 # 2-fresh. BASE FRESHNESS before the gate dispatch (Duty-4 P4, v0.4.80;
 #         AMENDED v0.4.93 — scope NARROWED to pre-filing only, owner "go all"
 #         2026-09-07 on the Adolfo-protocol amendment):
@@ -106,7 +106,7 @@ git -C ~/opencrabs rev-parse adolfousier/main   # must equal the sha the port wa
 #   cite the green run URL in the PR body prep next to the smoke/run evidence).
 
 # 3. push the head branch to the FORK (PR heads live there)
-git -C ~/oc-wt-up-<feature> push -u origin leshchenko1979/<feature>
+git -C ~/opencrabs-wt/up-<feature> push -u origin leshchenko1979/<feature>
 
 # 4. open the upstream PR — detailed description; body rules are canonical in
 #    the Rules bullet below (fork-issue link at END, `Closes #N` FORBIDDEN).
