@@ -2465,6 +2465,17 @@ ACKEOF
   jq '.events += [{"n": 901, "t": "x", "by": "tool", "kind": "note", "what": "help-probe"}]' "$OC_LEDGER" > "$T/d2.json" && mv "$T/d2.json" "$OC_LEDGER"
   bash "$ME" commit-pending >/dev/null 2>&1
   if [ "$(git -C "$T/state" rev-parse HEAD)" != "$_cp_h0" ]; then ok; else bad "commit-pending-help-probe-cannot-see-writes"; fi
+  # (#722) `selftest --help` is a READ even though parse_global consumes the bare
+  # `selftest` token as a GLOBAL flag -- which makes the dispatcher's own arm
+  # UNREACHABLE and leaves the arm before the SELFTEST branch as the only live one.
+  # Bounded by `timeout` and guarded by OC_LEDGER_SELFTEST: on a REGRESSION this
+  # invocation would start a NESTED battery, and the guard makes that fail the leg
+  # instead of recursing into it.
+  if [ "${OC_LEDGER_SELFTEST:-0}" != "1" ]; then
+    _st_out="$(OC_LEDGER_SELFTEST=1 timeout 10 bash "$ME" selftest --help 2>&1)"; _st_rc=$?
+    chk "selftest-help-rc" 0 "$_st_rc"
+    case "$_st_out" in *"usage: oc-ledger selftest"*) ok ;; *) bad "selftest-help-text: $(printf '%s' "$_st_out" | head -1)" ;; esac
+  fi
   echo artifact > "$T/skill/deployed.sha"
   # v0.4.63: sync now sweeps untracked files (payload root-fix), so the bundle
   # needs a freshly dirty runtime artifact — pre-root-fix the test leaked the
@@ -4665,7 +4676,14 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
 case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | [selftest|--selftest]"; exit 0 ;; esac
-if [ "$SELFTEST" -eq 1 ]; then cmd_selftest; exit $?; fi
+if [ "$SELFTEST" -eq 1 ]; then
+  # (#722) `selftest --help` must be a READ. parse_global consumes the bare
+  # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
+  # UNREACHABLE for it and the battery would run instead of answering. The arm
+  # therefore has to sit HERE, before cmd_selftest.
+  case "${ARGS[0]:-}" in -h|--help) echo "usage: oc-ledger selftest"; exit 0 ;; esac
+  cmd_selftest; exit $?
+fi
 sub="${ARGS[0]:-}"; rest=("${ARGS[@]:1}")
 case "$sub" in
   stamp) cmd_stamp "${rest[@]+"${rest[@]}"}" ;;
@@ -4686,7 +4704,7 @@ case "$sub" in
   roster) cmd_roster "${rest[@]+"${rest[@]}"}" ;;
   events|tail) cmd_events "${rest[@]+"${rest[@]}"}" ;;
   duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
-  selftest) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger selftest"; exit 0 ;; esac; cmd_selftest; exit $? ;;
+  selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
     echo "stamp sync check-version cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates"
     exit 0
