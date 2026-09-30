@@ -24,6 +24,8 @@ per-commit at replay time.
    leg and auto-swaps on GREEN (owner order 2026-09-15: manual swap gate removed).
 3. **Semantic overrides** — any feature pair where OUR version should beat
    upstream's is **[GATE]**: owner decides per pair. Default is upstream-wins.
+4. **Config-migration gate [GATE]** — a key the FORK binary cannot parse yet (e.g. #1802
+   `40a28f7bd`: `[agent] session_notify_enabled = true`) MUST be written at SWAP TIME, never before.
 
 ## Roles
 

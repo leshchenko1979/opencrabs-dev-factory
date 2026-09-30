@@ -1,5 +1,43 @@
 # Changelog — opencrabs-dev
 
+## v0.4.274 — the absorb that would silently kill the factory's backbone
+
+Triage raised a **landmine for the next upstream absorb**, verified at source this turn rather than relayed: upstream **#1802** (`40a28f7bd`, Adolfo, 2026-09-29T16:50Z) turns `session_notify` into a **kill switch that DEFAULTS OFF**. `[agent] session_notify_enabled` is `#[serde(default)]` and its `Default` impl sets it **false**; when false the tool refuses every action, the A2A `session/notify` method refuses, and `opencrabs session notify` exits 4. The field's own doc comment calls it deliberate — *"an unprompted channel into another session's context breaks session isolation"*, post-mortem #1203/#1207 — so it is a sound upstream default that is **fatal to this fork's operating model**: `session_notify` is the backbone every dispatch, lane report and cross-lane tell rides.
+
+**Absent from the fork, and unpresentable — both verified.** `git merge-base --is-ancestor 40a28f7bd origin/main` → rc 1, and `grep -rn session_notify_enabled src/` over the fork returns **0 lines**: the struct does not carry the field, so `config_manager write_config agent session_notify_enabled true` is **hard-denied** *against the running binary* ("unknown config path … the Config struct has no such section or key … would create a key serde ignores"), and equally denied for the absorbed build until it lands. This is why the fix **cannot be pre-staged**: the key must be written in the window between the swap that introduces it and the first cross-lane notify that needs it.
+
+### 1 · Config-migration gate added to the sync gates (`upstream-merge-runbook.md`)
+
+`## Gates (fail closed)` gains a **fourth gate** — a key the FORK binary cannot parse yet MUST be written (`config_manager`) in **every live profile** AT SWAP TIME, never before, naming #1802's key as the worked case. Three profiles are live on this box and each carries a `config.toml`: `ops`, `family`, and the **root default** — the gate says every live profile because the omission on any one of them is a silent death of that profile's fan-out.
+
+The gate is written into the runbook's own gate list rather than the register for two reasons: it **is** a sync gate, sitting beside the three it joins; and the register measures **732 lines** against the 500-line law-file budget, so new law is placed in its operational home rather than growing the overage.
+
+### Why this is a gate and not a chore
+
+The failure mode is **not** a refusal that announces itself. An unwritten key does not error at swap: the swap goes GREEN, the daemon starts, and the first cross-lane dispatch **silently returns** — the factory loses its backbone with no failing signal anywhere. The gate exists because the absence is indistinguishable from calm.
+
+### 2 · State measured while landing it (both shas read, neither inferred)
+
+- **#714 is landed on fork main and UNSHIPPED.** `ac4df8acf` + `89945b5a3` are on `origin/main` (`89945b5a3` = HEAD), while `deployed.sha` = **`c6c7cc45`** (swapped 2026-09-30T13:29:42Z, `prev_sha 68cd5fdf`), which predates them. So the unconditional pre-migration snapshot fix is **written but not running** — an editor ship matter, recorded here because the disk it would relieve is the same disk the sync and the battery must write to.
+- **A queued "deployed.sha is ABSENT" alert was scoped to another lane's chain, not this one.** Settled by locating the canonical state dir (`$HOME/.opencrabs/profiles/ops/opencrabs-dev/`, `oc-deploy:196`): `deployed.sha` exists and is readable there. A state claim read from the wrong scope is not a state.
+
+### Bump and sync are DEFERRED — two blockers, both measured
+
+1. **`tools/tests/run.sh` is dirty** with the Toolsmith's in-flight #720 cgroup-isolation work (**224 lines**, +223/-7). The sync's **stray-guard** (`oc-ledger:1313-1334`, v0.4.157) dies **rc 7** rather than sweep another actor's work into a bump commit — the same guard that correctly refused my v0.4.270 bump while the Toolsmith held an uncommitted `oc-ledger`.
+2. **The battery receipt is aged out.** `battery-last.json` reads **PASS 296 / 0 fail, 2026-09-30T14:11:15Z** — **5.98 h** at read time against the gate's **6 h** ceiling (`oc-ledger:1230-1237`), i.e. it expires within the minute. A sync would die **rc 5**.
+
+A fresh battery is **not** run here: the `opencrabs-ops` cgroup measured **1596493824 / 1610612736 = 99.12 %** with `MemoryHigh == MemoryMax` and `memory.oom.group=1`, so a 4-job parallel battery is exactly the allocation spike that takes the **whole group** — daemon plus every lane's in-flight turn — and it would run through the Toolsmith's **uncommitted** harness besides. Committing doc-first keeps the repo out of the "bumped but never synced" state v0.4.269 sat in for a day.
+
+### LOC delta (mandatory per the law)
+
+| file | before | after | Δ |
+|---|---:|---:|---:|
+| `upstream-merge-runbook.md` | 496 | 498 | **+2** |
+
+Law corpus (`*.md`, git-tracked, counted in python from `HEAD` to the working tree): **17283 → 17323 (+40)**, of which **+2** is the runbook clause and **+38** this entry's own growth (biography, not rule text). `oc-lint-laws` rc=0 (clean). No other law file touched.
+
+**Bundled and named (C8), this window since `cd708a28` (v0.4.271):** `ed4db066` · `2e10e1fe` (v0.4.272, worktree paths) · `b3ad3571` · `93181c6c` · `e04db728` · `3a65fda6` (v0.4.273) — all named in the entries above, so this entry adds no unnamed commit to the window.
+
 ## v0.4.273 — two owner orders, and a safeguard that only looked removed
 
 Two owner orders landed on the law surface the same hour, plus the q34 answer that had been waiting since morning. **Bump and sync are DEFERRED**: the battery receipt on disk is `2026-09-29T12:36:05Z` — ~23 h old, where the sync gate demands <6 h — and the `opencrabs-ops` cgroup was measured at **99.93 % of its 1536 MiB cap with 1.1 MiB headroom** under `oom.group=1`, so a 4-job parallel battery now risks triggering the whole-group OOM it would be measuring under. Committing doc-first keeps the repo out of the "bumped but never synced" state v0.4.269 sat in for a day.
