@@ -194,6 +194,81 @@ fi
 JOBS="${OC_BATTERY_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 if [ "${1:-}" = "--jobs" ] && [ -n "${2:-}" ]; then JOBS="$2"; shift 2; fi
 case "${1:-}" in --jobs=*) JOBS="${1#--jobs=}"; shift ;; esac
+# ---- cgroup isolation (#720): never run the battery inside the daemon's unit -
+# Every command a lane runs inherits the daemon's cgroup
+# (`.../app.slice/opencrabs-ops.service`), whose wall is MemoryHigh == MemoryMax
+# == 1536 MiB with swap exhausted -- measured 98.6% full WHILE IDLE -- and whose
+# OOMPolicy=kill means a test allocation does not merely die itself: systemd
+# tears the whole unit down and takes the daemon with it. The test processes are
+# small (tens of MiB); the hazard is CO-TENANCY with a full wall, so no test
+# diet can fix it -- the run must not be in that cgroup at all. It re-execs
+# itself into a transient user scope (a SIBLING of the service, outside its
+# accounting) with its own caps, and the receipt names the cgroup it ACTUALLY
+# ran in so the isolation is a durable claim, not a story.
+#
+# Placement is load-bearing: this sits AFTER the --chunk branch (whose children
+# take their branch and exit, never reaching here) and AFTER the single-flight
+# lock (so a queued run blocks on the lock rather than re-exec'ing under it).
+# BATTERY_CGROUP_ISOLATED guards the re-exec to ONE level: the transient child
+# carries the flag, so it runs the suite instead of recursing.
+#
+# Fails OPEN. A missing systemd-run, no user manager, an unreadable cgroup, or a
+# refusal by the re-exec all leave the run on its current path with one WARNING
+# -- a harness that refuses to run is worse than one running in the wrong
+# cgroup. Opt out with --no-cgroup or OC_BATTERY_NO_CGROUP=1.
+BATTERY_NO_CGROUP="${OC_BATTERY_NO_CGROUP:-}"
+[ -n "${BATTERY_NO_CGROUP:-}" ] || { for _a in "$@"; do [ "$_a" = "--no-cgroup" ] && BATTERY_NO_CGROUP=1; done; }
+# The cgroup reader is a FUNCTION so section 85 can drive this block with a
+# synthetic path. The branch it takes depends on where the RUN sits -- a
+# .service unit on this box, no systemd at all in CI -- so a test that only ever
+# exercises the branch its own environment happens to take asserts nothing.
+# Production carries no test-only override; the test redefines the function.
+battery_cgroup_path() { sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null | head -n1; }
+if [ -z "${BATTERY_IN_CHUNK:-}" ] && [ -z "${BATTERY_CGROUP_ISOLATED:-}" ] && [ -z "${BATTERY_NO_CGROUP:-}" ]; then
+  _oc_sr="$(command -v systemd-run 2>/dev/null || true)"
+  _oc_cg="$(battery_cgroup_path)"
+  _oc_mgr="$(command -v systemctl 2>/dev/null || true)"
+  # Read the LEAF unit, not the whole path: every user-manager cgroup sits under
+  # `user@0.service`, so a substring test on the full path calls ANY user cgroup
+  # a service -- a transient `.scope` leaf included, which made the "already
+  # isolated" branch unreachable and re-exec'd a scope's own children (section 85
+  # LEG 3 caught this). The last path segment names the unit we are actually in.
+  case "${_oc_cg##*/}" in *.service) _oc_svc=1 ;; *) _oc_svc=0 ;; esac
+  if [ -z "$_oc_sr" ]; then
+    note "battery: WARNING: no systemd-run -- running in ${_oc_cg:-?} (NOT isolated from the daemon cgroup, #720)"
+  elif [ -z "$_oc_mgr" ] || ! systemctl --user is-system-running >/dev/null 2>&1; then
+    note "battery: WARNING: no user systemd manager -- running in ${_oc_cg:-?} unisolated (#720)"
+  elif [ -z "$_oc_cg" ]; then
+    note "battery: WARNING: cgroup path unreadable -- running unisolated (#720)"
+  elif [ "$_oc_svc" = "0" ]; then
+    note "battery: already outside a service cgroup (${_oc_cg}) -- no isolation needed"
+  else
+    # Fail OPEN -- which a bare `exec` cannot do by itself: it never returns, so
+    # a REFUSED re-exec would REPLACE the battery with systemd-run's own exit
+    # code, and a harness error would be read as a RED verdict. One throwaway
+    # scope creation settles whether the caps are accepted BEFORE the real one
+    # replaces us. The property list lives HERE, once: the probe and the real
+    # exec share one array, so they can never diverge.
+    _oc_caps=(--user --scope --quiet \
+      -p MemoryMax=1024M -p MemorySwapMax=512M -p CPUQuota=300% -p TasksMax=128)
+    if "$_oc_sr" "${_oc_caps[@]}" true; then
+      export BATTERY_CGROUP_ISOLATED=1 BATTERY_CGROUP_PARENT_CG="$_oc_cg"
+      note "battery: re-exec into a transient scope to isolate from the daemon cgroup (#720)"
+      exec "$_oc_sr" "${_oc_caps[@]}" "$0" "$@"
+    fi
+    note "battery: WARNING: could not create a transient scope -- running in ${_oc_cg} unisolated (#720)"
+  fi
+fi
+# The cgroup this run is ACTUALLY in, read fresh -- and whether the re-exec
+# moved it. `isolated=true` asserts only what is observable: the flag is set AND
+# the path differs from the one the re-exec started in.
+BATTERY_SELF_CGROUP="$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null | head -n1)"
+BATTERY_SELF_CGROUP_ISO=false
+if [ "${BATTERY_CGROUP_ISOLATED:-0}" = "1" ] && [ -n "$BATTERY_SELF_CGROUP" ] \
+   && [ "$BATTERY_SELF_CGROUP" != "${BATTERY_CGROUP_PARENT_CG:-}" ]; then
+  BATTERY_SELF_CGROUP_ISO=true
+fi
+
 # ---- red-receipt transcript -------------------------------------------------
 # Defect (HQ item 5, 2026-09-22): emit_summary wrote battery-last.json durably
 # while the transcript went only to stdout, so a committed red receipt
@@ -342,9 +417,9 @@ emit_summary() {
   battery_capture_fail_rows
   local _fpe _changed; _fpe="$(_battery_tree_fp)"
   _changed=false; [ "$_fpe" = "$BATTERY_FP_START" ] || _changed=true
-  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
+  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
     "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" "$FAIL_LOG_FIELD" \
-    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
+    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
     > "$TOOLS_DIR/tests/battery-last.json"
   [ "$_changed" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
   note ""
@@ -2469,6 +2544,152 @@ fi
   || bad "fixpoint control: fixed preamble rc=$fx (expected 0)"
 rm -rf "$EP_FX"
 
+# ---- 85. cgroup isolation (#720): the battery must not run in the daemon unit -
+section "cgroup isolation (#720)"
+# Every command a lane runs inherits the daemon's cgroup
+# (`.../app.slice/opencrabs-ops.service`), whose wall is MemoryHigh == MemoryMax
+# == 1536 MiB with swap exhausted and whose OOMPolicy=kill tears the WHOLE unit
+# down on an allocation that exceeds it -- so a test allocation does not merely
+# die, it takes the daemon with it. Measured 2026-09-30: four daemon OOM kills
+# (07:46 08:34 10:08 12:05Z), each during a battery run. The test processes are
+# small (tens of MiB); the hazard is CO-TENANCY with a full wall, so no test diet
+# can fix it -- the run must not BE in that cgroup. The preamble re-execs into a
+# transient user scope, a SIBLING of the service and outside its accounting.
+#
+# The block under test is EXTRACTED FROM THIS FILE, never retyped: $0 is this
+# script, and a hand-copied fixture would drift from the code it claims to test.
+# The single rewrite is the cgroup INPUT -- the branch taken is a function of
+# where the run sits, and a test that can only exercise the branch its own
+# environment happens to take asserts nothing. The rewrite's exactness is
+# asserted below, so a sed that mangles more than the input reddens here.
+CI_FX="$(mktemp -d)"
+CI_BLOCK="$CI_FX/iso.sh"
+awk '/^# ---- cgroup isolation \(#720\)/,/^# ---- red-receipt transcript/' "$0" \
+  | sed '/^# ---- red-receipt transcript/d' > "$CI_BLOCK"
+if [ -s "$CI_BLOCK" ] && grep -q 'BATTERY_CGROUP_ISOLATED' "$CI_BLOCK"; then
+  ok "isolation block extracted from run.sh ($(wc -l < "$CI_BLOCK") lines)"
+else
+  bad "#720: isolation block NOT found in run.sh -- the extractor matched nothing"
+fi
+# INPUT rewrite exactness: exactly one source line may differ (two diff sides).
+sed "s|\$(battery_cgroup_path)|\${CI_SVC_CG}|" "$CI_BLOCK" > "$CI_FX/exact.sh"
+_nd="$(diff "$CI_BLOCK" "$CI_FX/exact.sh" | grep -c '^[<>]')"
+[ "$_nd" -eq 2 ] \
+  && ok "cgroup input rewrite touches exactly one line (the branch input, not the logic)" \
+  || bad "#720: input rewrite changed $_nd diff sides (expected 2) -- the fixture is not the block"
+
+# Stub systemd-run/systemctl: they log their argv (so the re-exec CONTRACT is
+# observable) and exit with settable rc (so the probe's REFUSAL path is drivable).
+CI_SB="$CI_FX/bin"; mkdir -p "$CI_SB"
+cat > "$CI_SB/systemd-run" <<'CI_STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CI_SR_LOG:?}"
+case " $* " in *" true "*) exit "${CI_PROBE_RC:-0}" ;; esac
+exit 0
+CI_STUB
+cat > "$CI_SB/systemctl" <<'CI_STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--user" ] && [ "${2:-}" = "is-system-running" ]; then exit "${CI_MGR_RC:-0}"; fi
+exit 0
+CI_STUB
+chmod +x "$CI_SB/systemd-run" "$CI_SB/systemctl"
+
+# Harness: source the block with a synthetic cgroup path, then report whether we
+# SURVIVED. A working re-exec REPLACES this process, so "SURVIVED" is the FAILURE
+# signal in the arm that wants isolation -- and the PASS signal in the arms that
+# must not re-exec (already isolated, or opted out).
+cat > "$CI_FX/harness.sh" <<'CI_HARNESS'
+#!/usr/bin/env bash
+set -u
+note() { printf '%s\n' "$*"; }
+PATH="${CI_SB:?}:$PATH"; export PATH
+if [ -n "${CI_SYNTH_CG:-}" ]; then
+  sed "s|\$(battery_cgroup_path)|\${CI_SYNTH_CG}|" "$CI_BLOCK" > "$CI_BLOCK.synth" || exit 9
+  CI_BLOCK="$CI_BLOCK.synth"
+fi
+. "$CI_BLOCK"
+printf 'SURVIVED cg=%s iso=%s\n' "${BATTERY_SELF_CGROUP:-}" "${BATTERY_SELF_CGROUP_ISO:-}"
+CI_HARNESS
+chmod +x "$CI_FX/harness.sh"
+ci_out() { # $1 = synthetic cgroup path; remaining: env assignments
+  local synth="$1"; shift
+  : > "$CI_FX/sr.log"
+  env -u BATTERY_IN_CHUNK -u BATTERY_CGROUP_ISOLATED -u OC_BATTERY_NO_CGROUP \
+      "CI_SB=$CI_SB" "CI_BLOCK=$CI_BLOCK" "CI_SYNTH_CG=$synth" "CI_SR_LOG=$CI_FX/sr.log" \
+      "$@" bash "$CI_FX/harness.sh" 2>&1
+}
+CI_SVC_CG='/user.slice/user-0.slice/user@0.service/app.slice/opencrabs-ops.service'
+CI_SCOPE_CG='/user.slice/user-0.slice/user@0.service/app.slice/oc-battery.scope'
+
+# LEG 1 -- inside a .service unit the block MUST re-exec, with #720's caps.
+_1="$(ci_out "$CI_SVC_CG" CI_PROBE_RC=0)"
+case "$_1" in
+  *SURVIVED*) bad "#720: inside a .service cgroup the block did NOT re-exec (isolation inert)";;
+  *"re-exec into a transient scope"*) ok "#720: inside a .service unit the run re-execs into a transient scope";;
+  *) bad "#720: neither a re-exec nor a diagnostic for a .service cgroup";;
+esac
+_sr="$(cat "$CI_FX/sr.log" 2>/dev/null || true)"
+_ln="$(printf '%s\n' "$_sr" | grep -c .)"
+[ "$_ln" -eq 2 ] \
+  && ok "#720: probe then real exec -- 2 invocations, and the probe is what makes it fail-open" \
+  || bad "#720: expected 2 stub invocations, got $_ln"
+if [ "$(printf '%s\n' "$_sr" | grep -c 'MemoryMax=1024M')" -eq 2 ] \
+   && [ "$(printf '%s\n' "$_sr" | grep -c 'MemorySwapMax=512M')" -eq 2 ] \
+   && [ "$(printf '%s\n' "$_sr" | grep -c 'CPUQuota=300%')" -eq 2 ] \
+   && [ "$(printf '%s\n' "$_sr" | grep -c 'TasksMax=128')" -eq 2 ]; then
+  ok "#720: both invocations carry the full cap set (one property list, never divergent)"
+else
+  bad "#720: cap set differs between probe and real exec: $_sr"
+fi
+case "$_sr" in
+  *"--user --scope"*) ok "#720: re-exec requests a user transient scope";;
+  *) bad "#720: re-exec argv lacks --user --scope";;
+esac
+
+# LEG 2 -- the scope creation is REFUSED: must fail OPEN, not exit RED.
+_2="$(ci_out "$CI_SVC_CG" CI_PROBE_RC=1)"
+case "$_2" in
+  *SURVIVED*) ok "#720: a refused scope does NOT replace the run (fail-open holds)";;
+  *) bad "#720: a refused scope swallowed the run -- a harness error would read as a RED verdict";;
+esac
+case "$_2" in
+  *"could not create a transient scope"*) ok "#720: refusal is reported as a WARNING, and the battery still runs";;
+  *) bad "#720: refusal path emitted no diagnostic";;
+esac
+_ln="$(printf '%s\n' "$(cat "$CI_FX/sr.log" 2>/dev/null)" | grep -c .)"
+[ "$_ln" -eq 1 ] \
+  && ok "#720: refusal makes exactly one attempt (no second exec after a refusal)" \
+  || bad "#720: refusal path made $_ln invocations (expected 1)"
+
+# LEG 3 -- already outside a service cgroup: no isolation, no re-exec.
+_3="$(ci_out "$CI_SCOPE_CG" CI_PROBE_RC=0)"
+case "$_3" in
+  *"already outside a service cgroup"*SURVIVED*) ok "#720: a .scope cgroup is left alone (no needless re-exec)";;
+  *) bad "#720: an already-isolated cgroup was mis-handled: $_3";;
+esac
+
+# LEG 4 -- the documented opt-out.
+_4="$(ci_out "$CI_SVC_CG" CI_PROBE_RC=0 OC_BATTERY_NO_CGROUP=1)"
+case "$_4" in
+  *SURVIVED*) ok "#720: OC_BATTERY_NO_CGROUP=1 opts out of isolation";;
+  *) bad "#720: the opt-out still re-exec'd";;
+esac
+[ -s "$CI_FX/sr.log" ] \
+  && bad "#720: the opt-out still invoked systemd-run" \
+  || ok "#720: the opt-out invoked no scope at all"
+
+# NEGATIVE CONTROL (neuter-the-code): with the exec line removed, LEG 1's signal
+# must INVERT. Without this the leg could be passing because the harness never
+# reaches the block, not because isolation works.
+sed 's|^      exec "\$_oc_sr"|      : "\$_oc_sr"|' "$CI_BLOCK" > "$CI_FX/neutered.sh"
+_ci_orig="$CI_BLOCK"; CI_BLOCK="$CI_FX/neutered.sh"
+_5="$(ci_out "$CI_SVC_CG" CI_PROBE_RC=0)"
+CI_BLOCK="$_ci_orig"
+case "$_5" in
+  *SURVIVED*) ok "#720 NEGATIVE CONTROL: a neutered re-exec IS detected (the leg can fail)";;
+  *) bad "#720 NEGATIVE CONTROL: neutered re-exec still not detected -- this leg is inert";;
+esac
+rm -rf "$CI_FX"
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
@@ -2479,9 +2700,9 @@ _tch=false
 _fp_tail="$(_battery_tree_fp)"
 [ "$_fp_tail" = "$BATTERY_FP_START" ] || _tch=true
 BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
+printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
   "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$FAIL_LOG_FIELD" \
-  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
+  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
   > "$TOOLS_DIR/tests/battery-last.json"
 [ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
 
