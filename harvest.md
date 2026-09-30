@@ -54,6 +54,34 @@ this PR is the ONE sanctioned exception (completed features only).
 #     Binds the FILING ask ONLY: no new gate, no second approval, and no licence to bundle
 #     (one issue per PR still binds — the summary describes each unit separately).
 #
+#     THE PR CARRIES THE VALUE AND NECESSITY OF THE CHANGE (owner order 2026-09-30T22:48:43Z,
+#     relayed by the harvest lane 4b0990b7; recorded n=13833). Owner, verbatim: "It's imperative
+#     for a PR to carry the value and necessity of the change. Why do the users need it? What is
+#     the job to be done? You should refuse PRs if this is not clear to you from the issues."
+#     The PR body MUST carry, in the user's terms: WHY the users need it, and WHAT the job to be
+#     done is — a named section, not a phrase in passing.
+#
+#     ENFORCEMENT IS TWO-TIER, because the halves cost differently (harvest lane's assessment,
+#     accepted): (a) PRESENCE is mechanical and cheap — the body carries the named section;
+#     (b) SUFFICIENCY is a lane judgment and CANNOT be mechanised — a heading plus "improves
+#     reliability" passes any grep and is WORSE than no section, because it launders a weak change
+#     as a valuable one. Presence is not behaviour — the same law the smoke verdicts already run on.
+#     THE REFUSAL TRIGGER IS "THE STATED VALUE IS UNFALSIFIABLE", never "I am not convinced":
+#     unfalsifiable is decidable, unclear is not. Refuse, and name the unfalsifiable sentence.
+#
+#     CORRECTIVE-CHANGE CARVE-OUT: a corrective fix's value is SUBTRACTIVE — nothing new appears,
+#     something false stops appearing (#680 is the specimen: it stops a diagnostic naming the wrong
+#     cause). For a `fix(...)` unit the necessity is the DEFECT and the falseness it removes; do NOT
+#     invent user-facing value for a change that has none — that inverts the rule's intent.
+#
+#     THE PRECONDITION IS AN ISSUE-SIDE PROPERTY. When the issue does not state the job to be done,
+#     the right act is to FIX THE ISSUE, not to compose prose at PR time. Measured 2026-09-30 by the
+#     harvest lane: the fork has NO `.github/ISSUE_TEMPLATE/` (`.github/` carries only CODEOWNERS and
+#     workflows/), so a value section is a CONVENTION, not a template product, and nothing makes it
+#     self-correct — 4 of 12 sampled open issues carry a value section (720, 719, 710, 709), 8 do not.
+#     The issue-side repair is TRIAGE's work item; the refusal must not land on the filing lane for a
+#     defect it did not cause.
+#
 #     TWO GAPS THIS CLAUSE DOES NOT CLOSE, both recorded 2026-09-27 (lane 7e1ebbb6, Duty-4 `20260927-c25`):
 #     (a) AN APPROVAL GIVEN BEFORE 2026-09-26 HAS NO READ PATH. The stamp-then-read law begins with this
 #         clause, so approvals issued earlier exist only as chat scroll — the owner's 2026-09-25T21:13Z order

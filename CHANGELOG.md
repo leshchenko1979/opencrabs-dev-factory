@@ -1,5 +1,24 @@
 # Changelog — opencrabs-dev
 
+## v0.4.275 — a PR must say why the change is needed
+
+Owner order, 2026-09-30T22:48:43Z (relayed by the harvest lane, recorded `n=13833`), verbatim: *"It's imperative for a PR to carry the value and necessity of the change. Why do the users need it? What is the job to be done? You should refuse PRs if this is not clear to you from the issues."*
+
+### 1 · The rule, at `harvest.md` §Phase 7 step 0a (beside the n=13767 summary clause)
+
+The PR body must carry, **in the user's terms**, *why the users need it* and *what the job to be done is* — a **named section**, not a phrase in passing. Enforcement is **two-tier**, because the halves cost differently: **presence** is mechanical (the body carries the section), while **sufficiency** is a lane judgment that **cannot be mechanised** — a heading plus *"improves reliability"* passes any grep and is **worse than no section**, because it launders a weak change as a valuable one. This is the same law the smoke verdicts already run on: **presence is not behaviour**. So the refusal trigger is **"the stated value is unfalsifiable"**, never *"I am not convinced"* — unfalsifiable is decidable, unclear is not.
+
+**A corrective-change carve-out binds.** A `fix(...)` unit's value is **subtractive**: nothing new appears, something false stops appearing (`#680` is the specimen — it stops a diagnostic naming the wrong cause). For those, the necessity **is** the defect and the falseness it removes; inventing user-facing value for a change that has none inverts the rule's intent.
+
+**The precondition is an issue-side property.** When the issue does not state the job to be done, the right act is to **fix the issue**, not to compose prose at PR time. Measured by the harvest lane the same turn: the fork has **no `.github/ISSUE_TEMPLATE/`** (`.github/` carries only `CODEOWNERS` and `workflows/`), so a value section is a **convention**, not a template product, and nothing makes it self-correct — **4 of 12** sampled open issues carry one (720, 719, 710, 709), **8 do not**. The issue-side repair is **Triage's** work item; the refusal must not land on the filing lane for a defect it did not cause.
+
+### LOC delta (mandatory per the law)
+
+- `harvest.md`: **402 → 430** lines (+28), all inside the §Phase 7 step 0a comment block.
+- `CHANGELOG.md`: this entry.
+
+Doc-first: the bump and sync are deferred to the next cycle (the entry above v0.4.274 sits unshipped until then).
+
 ## v0.4.274 — the absorb that would silently kill the factory's backbone
 
 Triage raised a **landmine for the next upstream absorb**, verified at source this turn rather than relayed: upstream **#1802** (`40a28f7bd`, Adolfo, 2026-09-29T16:50Z) turns `session_notify` into a **kill switch that DEFAULTS OFF**. `[agent] session_notify_enabled` is `#[serde(default)]` and its `Default` impl sets it **false**; when false the tool refuses every action, the A2A `session/notify` method refuses, and `opencrabs session notify` exits 4. The field's own doc comment calls it deliberate — *"an unprompted channel into another session's context breaks session isolation"*, post-mortem #1203/#1207 — so it is a sound upstream default that is **fatal to this fork's operating model**: `session_notify` is the backbone every dispatch, lane report and cross-lane tell rides.
