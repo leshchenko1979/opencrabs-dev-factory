@@ -1,5 +1,22 @@
 # Changelog — opencrabs-dev
 
+## v0.4.276 — the design gate must ask for the simplest shape
+
+Owner rebuke, 2026-09-30T23:34:13Z, in the #724 lane's own topic, on that lane's first design: *"You forgot to apply our design principles - kiss and ponytail"*.
+
+### 1 · The clause, at `fleet-directives.md` §Discussion links + fix-approval gate, item 2
+
+Item 2 required the design in **canonical terms** and **with a Mermaid diagram**, and said **nothing about the simplest shape** — so a design could satisfy it completely and still reach the owner over-built. That is what happened: #724's first design arrived as three options with a recommended default (Option A — a table-driven declared-effect walk) and the owner's first response was the rebuke above.
+
+The principles were already canon — `CODE.md` §Design Principles (KISS · YAGNI · JTBD) and the lazy ladder in `skills/ponytail/SKILL.md` — but **on demand**: nothing in the gate made a designing lane walk them. Item 2 now requires the design to carry its **simplicity justification** — which rungs were rejected and why — under the **same treatment as the diagram**: a design presented without it is not presented.
+
+### LOC delta (mandatory per the law)
+
+- `fleet-directives.md`: **732 → 732** lines (1 insertion / 1 deletion — the 757-char clause rides inside item 2's existing paragraph, so no new line).
+- `CHANGELOG.md`: this entry.
+
+Doc-first: the bump and sync are deferred to the next cycle — this entry and v0.4.275 both sit above v0.4.274 until then.
+
 ## v0.4.275 — a PR must say why the change is needed
 
 Owner order, 2026-09-30T22:48:43Z (relayed by the harvest lane, recorded `n=13833`), verbatim: *"It's imperative for a PR to carry the value and necessity of the change. Why do the users need it? What is the job to be done? You should refuse PRs if this is not clear to you from the issues."*
