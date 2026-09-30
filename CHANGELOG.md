@@ -1,5 +1,29 @@
 # Changelog — opencrabs-dev
 
+## v0.4.272 — the law mounted worktrees where the tool no longer puts them
+
+Raised by the disk-cleanup actor (`cli`) and verified at source before a line was written: `editor.md` told every lane to mount its worktree at `~/oc-wt-<task>`, while `tools/git/oc-wt` creates at `~/opencrabs-wt/<task>`.
+
+**The template named a path that exists for NO task.** `oc-wt` resolves a task through `lib/oc-wt-resolve.sh` — a **3-name ladder**: `$WT_BASE/<task>`, then `$WT_BASE/oc-wt-<task>`, then the **legacy** `$HOME/oc-wt-<task>` — so the doc's shape was the ladder's legacy arm, and a **fresh** task's `add` falls through to `$WT_BASE/<task>` = `$HOME/opencrabs-wt/<task>`. Measured at the ruling instant: `/root/oc-wt-*` holds **0** trees while `/root/opencrabs-wt/` holds **41**. So this was a **broken instruction**, not a stale example: a lane copying the template's `git -C ~/oc-wt-<task> push` ran git in a directory that does not exist.
+
+**Blast radius, swept past the named file.** `editor.md` carried **13** template refs (the Phase 1 mount and DONE lines, the Phase 5 push, both exit-5 recovery blocks, the post-landing-lock ancestor re-check, the Phase 6-Fix re-push), `harvest.md` **2** (`git -C ~/oc-wt-up-<feature> cherry-pick` and `push -u`), and `SKILL.md`'s skill-activation **glob** `~/oc-wt-*/**` — the glob is why the class matters beyond prose: a lane working in a worktree could fall outside the skill's activation set entirely.
+
+**Deliberately NOT changed, each for its own reason.** `tools/docs/HEALTH-CHECKS.md:34` and `HEALTH-CLASSES.md:83` still name `/root/oc-wt-*`, but `tools/docs/*.md` is the **Toolsmith's** surface (v0.4.87 carve-out) and the *tool* is already correct — `oc-health:42` sets `WT_PATTERNS` to `oc-work/* oc-wt-* opencrabs-wt/*` — so only the docs lag; routed to the Toolsmith, not edited here. `RC-CONTRACT.md:61,68` KEEP the legacy name because they document the resolver's ladder, where it is the third arm: "correcting" those would delete the fact. `war-stories.md` keeps its historical examples under its own stated contract ("history is reference, not procedure").
+
+**The cleanup actor's move left the registry consistent** — verified, not assumed: `git worktree prune -n` prints nothing, so no tree was moved out from under its registration.
+
+**Bundled and named (C8), this window:** `ed4db066` (this lane — the worktree-path correction at three surfaces) · `08c884c6` (Toolsmith — the `dirname('.')` walk-up fixpoint: every fleet tool hung on a relative invocation) · `c64009fa` (Toolsmith — `purge` REFUSED: removal of a `manual_records` entry is forbidden) · `a755907f` (Toolsmith — `oc-smoke`'s auto-stamp now addresses its issue) · `dd793945` (Toolsmith — `oc-issue-scope`: a path named as a defect's VICTIM is not the surface) · `02db1c7e` (the B3 runtime-artifacts sweep). The five Toolsmith/sweep rows landed inside the v0.4.270–271 window and carry **no naming line of their own** — grep-verified 0 hits each in this file — so they are named here rather than left as an unexplained C8 gap.
+
+**LOC delta (owner order 2026-09-19):**
+
+| File | Before | After | Delta |
+|---|---|---|---|
+| `editor.md` | 680 | 680 | 0 |
+| `harvest.md` | 393 | 393 | 0 |
+| `SKILL.md` | 496 | 496 | 0 |
+
+Net **0** over the 8-file corpus (**3680 → 3680**): every edit is a same-line path replacement. `editor.md` (680) and `fleet-directives.md` (728) remain over the 500-line budget — pre-existing and recorded; this change neither causes nor worsens it. `oc-lint-laws` rc=0.
+
 ## v0.4.271 — the sync's test union kept a test that could not fail
 
 Raised by the Triage lane while finishing the 2026-09-29 sync (origin/main `888decf7a` → `73ad3e969`), and verified first-hand before it was written. The runbook's step 4 told the resolver to **union both sides' test cases** in a file both sides touched, and said nothing about what happens when upstream has *deleted* the behaviour a fork test covers.
