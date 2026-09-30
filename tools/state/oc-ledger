@@ -815,6 +815,7 @@ _by_uuid_shaped_unresolvable() { # $1=value; prints a warning to stderr if unres
 }
 
 cmd_stamp() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger stamp <kind> \"<what>\" [--by <actor>] [--what <text>|--what-file <path>|--what-stdin] [--allow-unattributed] [--allow-no-ref]"; exit 0 ;; esac
   local kind="" what="" by="" by_explicit=0 allow_unattr=0 allow_noref=0 what_file="" what_stdin=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1214,6 +1215,7 @@ EOF
 }
 
 cmd_sync() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger sync --version <v> [--why <text>] [--catch-up] [--allow-sweep]"; exit 0 ;; esac
   local v="" why="" catchup=0 allow_sweep=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1451,6 +1453,7 @@ _self_uuid() { # $1 = verb name, $2 = supplied uuid (may be empty)
 }
 
 cmd_ack() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger ack [<uuid>] <0.N.N version> [--at <ts>]"; exit 0 ;; esac
   local uuid="${1:-}" version="${2:-}" at=""; shift 2 2>/dev/null || true
   while [ $# -gt 0 ]; do case "$1" in --at) at="${2:-}"; shift 2 ;; *) shift ;; esac; done
   # A1b: `ack` is SELF, so the uuid is optional. A single non-uuid argument is
@@ -1523,6 +1526,7 @@ cmd_ack() {
 
 # ---- enroll ------------------------------------------------------------------
 cmd_enroll() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger enroll [<uuid>] <role> [--topic N] [--feature X]"; exit 0 ;; esac
   local uuid="${1:-}" role="${2:-}" topic="-" feature="-"; shift 2 2>/dev/null || true
   # A1b: `enroll` is SELF, so a single non-uuid argument is the ROLE
   # (`oc-ledger enroll editor` = enroll myself).
@@ -1780,6 +1784,7 @@ cmd_retire() { # retire <uuid> [--topic N] [--role R] [--why TEXT] — REMOVE on
 # ledger already lives).
 RUNTIME_ARTIFACTS="tools/tests/battery-last.json"
 cmd_commit_pending() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger commit-pending [--bundle]   (--bundle also sweeps the TRACKED state paths and commits the skill runtime artifacts; both mirrors are pushed either way)"; exit 0 ;; esac
   local bundle=0; [ "${1:-}" = "--bundle" ] && bundle=1
   local sd; sd="$(STATE_DIR)"; local did=0
   # state repo: ledger first
@@ -2445,6 +2450,21 @@ ACKEOF
   jq '.events += [{"n": 900, "t": "x", "by": "tool", "kind": "note", "what": "stray"}]' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
   bash "$ME" commit-pending | grep -q "state ledger committed" && ok || bad "commit-pending-sweep"
   git -C "$T/state" status --porcelain workers-ledger.json | grep -q . && bad "commit-pending-left-dirty" || ok
+  # (#722) `commit-pending --help` USED TO RUN THE SWEEP: the dispatcher passed
+  # the flag straight into cmd_commit_pending, which had NO help arm, so `--help`
+  # fell through as an ignored positional (bundle stayed 0) and the sweep ran
+  # anyway -- committing the state ledger and PUSHING both mirrors. Help must be
+  # a READ. Two-sided, same probe both ways: NEGATIVE (help writes nothing) and
+  # POSITIVE (a dirtied ledger DOES advance HEAD), so a probe that could not see
+  # a write reddens the POSITIVE leg instead of passing the negative as calm.
+  _cp_h0="$(git -C "$T/state" rev-parse HEAD)"
+  _cp_out="$(bash "$ME" commit-pending --help 2>&1)"; _cp_rc=$?
+  chk "commit-pending-help-rc" 0 "$_cp_rc"
+  case "$_cp_out" in *"usage: oc-ledger commit-pending"*) ok ;; *) bad "commit-pending-help-text: $_cp_out" ;; esac
+  chk "commit-pending-help-is-read" "$_cp_h0" "$(git -C "$T/state" rev-parse HEAD)"
+  jq '.events += [{"n": 901, "t": "x", "by": "tool", "kind": "note", "what": "help-probe"}]' "$OC_LEDGER" > "$T/d2.json" && mv "$T/d2.json" "$OC_LEDGER"
+  bash "$ME" commit-pending >/dev/null 2>&1
+  if [ "$(git -C "$T/state" rev-parse HEAD)" != "$_cp_h0" ]; then ok; else bad "commit-pending-help-probe-cannot-see-writes"; fi
   echo artifact > "$T/skill/deployed.sha"
   # v0.4.63: sync now sweeps untracked files (payload root-fix), so the bundle
   # needs a freshly dirty runtime artifact — pre-root-fix the test leaked the
@@ -4650,8 +4670,8 @@ sub="${ARGS[0]:-}"; rest=("${ARGS[@]:1}")
 case "$sub" in
   stamp) cmd_stamp "${rest[@]+"${rest[@]}"}" ;;
   sync) cmd_sync "${rest[@]+"${rest[@]}"}" ;;
-  check-version) cmd_check_version ;;
-  cadence) cmd_cadence ;;
+  check-version) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger check-version"; exit 0 ;; esac; cmd_check_version ;;
+  cadence) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger cadence"; exit 0 ;; esac; cmd_cadence ;;
   ack) cmd_ack "${rest[@]+"${rest[@]}"}" ;;
   enroll) cmd_enroll "${rest[@]+"${rest[@]}"}" ;;
   promote) cmd_promote "${rest[@]+"${rest[@]}"}" ;;
@@ -4666,7 +4686,7 @@ case "$sub" in
   roster) cmd_roster "${rest[@]+"${rest[@]}"}" ;;
   events|tail) cmd_events "${rest[@]+"${rest[@]}"}" ;;
   duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
-  selftest) cmd_selftest; exit $? ;;
+  selftest) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger selftest"; exit 0 ;; esac; cmd_selftest; exit $? ;;
   --verbs)
     echo "stamp sync check-version cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates"
     exit 0
