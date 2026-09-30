@@ -45,6 +45,15 @@ this PR is the ONE sanctioned exception (completed features only).
 #     exists", and a lane that draws that conclusion re-asks the owner — which is the
 #     defect this clause exists to remove. Same trap, same fix as the MODE read at v0.4.244.
 #
+#     THE ASK CARRIES A SUMMARY, NOT A NUMBER LIST (owner order 2026-09-30T11:38Z, topic
+#     "Upstream: Harvest"): per unit in the group, ONE SENTENCE OF DEFECT and ONE SENTENCE
+#     OF FIX, in the user's terms — not the issue number, not test names, not gate receipts.
+#     Issue links, census and gate evidence ACCOMPANY it; they do not replace it. An ask that
+#     names only issue numbers is INCOMPLETE: the approver cannot approve what he has not been
+#     told (owner, verbatim 2026-09-27: "what is 225 about?" — asked because the ask omitted it).
+#     Binds the FILING ask ONLY: no new gate, no second approval, and no licence to bundle
+#     (one issue per PR still binds — the summary describes each unit separately).
+#
 #     TWO GAPS THIS CLAUSE DOES NOT CLOSE, both recorded 2026-09-27 (lane 7e1ebbb6, Duty-4 `20260927-c25`):
 #     (a) AN APPROVAL GIVEN BEFORE 2026-09-26 HAS NO READ PATH. The stamp-then-read law begins with this
 #         clause, so approvals issued earlier exist only as chat scroll — the owner's 2026-09-25T21:13Z order
