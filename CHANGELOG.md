@@ -1,5 +1,51 @@
 # Changelog — opencrabs-dev
 
+## v0.4.273 — two owner orders, and a safeguard that only looked removed
+
+Two owner orders landed on the law surface the same hour, plus the q34 answer that had been waiting since morning. **Bump and sync are DEFERRED**: the battery receipt on disk is `2026-09-29T12:36:05Z` — ~23 h old, where the sync gate demands <6 h — and the `opencrabs-ops` cgroup was measured at **99.93 % of its 1536 MiB cap with 1.1 MiB headroom** under `oom.group=1`, so a 4-job parallel battery now risks triggering the whole-group OOM it would be measuring under. Committing doc-first keeps the repo out of the "bumped but never synced" state v0.4.269 sat in for a day.
+
+### 1 · Issue provenance — blame it, follow it, explain it (owner order 2026-09-30)
+
+Owner, verbatim: *"while exploring and validating a new issue, the editor should blame it, see connected issues and PRs and understand why the code was introduced in the first place."*
+
+`editor.md §Phase 3` (the explore-before-writing phase, which already carried the symbol-graph and DRY mandates) gains **step 6**; `fleet-directives.md` carries the binding `[LANE]` mention, since the order governs the investigation and not only the editor's procedure. Three legs: blame to the **INTRODUCING** commit and read its **body**, not just its diff; follow the issues and PRs that commit cites; state **why** the code was introduced before proposing a change.
+
+**The failure this order was written against, and why the third leg is the load-bearing one.** The rationale for a guard, cap or band lives in the commit body, the doc comment or the cited issue — **never in the numbers alone**. Measured the same morning: the `MemoryHigh == MemoryMax` collapse in the ops drop-in reads like a **deleted safeguard** (a 256 MiB throttle band removed), and a lane proposed restoring it; the drop-in's own comment says it is a **deliberate trade** — *"high == max so the unit OOMs instead of sitting in `mem_cgroup_handle_over_high`"* — against a SIGBUS crash-loop (#411, #638). Restoring the band would have re-armed the crash. The numbers made it look wrong; only the rationale said it was right.
+
+Two traps recorded inline, both of which bit this box inside 24 h:
+- **`gh` inside `/root/opencrabs` defaults to UPSTREAM**, where the same number is a **different** issue. Scoping `-R leshchenko1979/opencrabs` is mandatory. Measured: fork #714 is *"pre-migration snapshot guard runs on every CLI invocation"*; upstream #714 is *"config_manager write paths don't re-validate before fs::write"* — a lane read the wrong one and attributed the snapshot defect to upstream.
+- **An issue TITLE is a claim, not a finding.** A stale-open issue asserting an unfixed defect makes the next lane re-implement landed work: #394 was fully fixed on main yet titled *"two hot write paths still unwrapped"*, and a plan was composed against it a day after the fix landed.
+
+### 2 · The filing ask carries a summary, not a number list (owner order 2026-09-30T11:38Z)
+
+Owner, verbatim (topic "Upstream: Harvest"): *"every time you are asking about the upstream approval, you need to give summary - what the changes are about."*
+
+Under DEGRADED mode `harvest.md` step 0a prescribed the **form** of the approval ask (owner word in the lane topic) and its **record** (a stamped `FILING APPROVED` row) but said nothing about its **content**, so the asks went out as unit numbers plus gate and census receipts: the owner was asked to approve a filing without being told what any of it does. His own reply is the evidence — *"what is 225 about?"* (2026-09-27).
+
+Step 0a now requires, **per unit in the group**, one sentence of DEFECT and one sentence of FIX in the user's terms. Links and gate evidence **accompany** it; they do not replace it. Boundaries are written into the clause so it cannot be over-read: it binds the **filing ask only** (status reports, handoffs and inter-lane notifies unchanged), it adds **no new gate and no second approval**, and it is **not a licence to bundle** — one issue per PR still binds, and the summary describes each unit separately.
+
+**Home is `harvest.md`, not the register** — this is the harvest role's own filing procedure, the same home step 0a already has, and the register measures **732 lines** against the 500-line law-file budget. Not duplicated.
+
+### 3 · q34 answered — leg (i) reads the issue BODY too (`b3ad3571`)
+
+The owner answered opencrabs-dev **q34** (*"Design-gate backstop: should the predicate read the issue BODY?"*) with **"A — widen leg (i) to the body"**. `triage.md`'s design-gate backstop leg (i) now counts a declaration in the **issue body** as a third channel beside the first-comment body and any claim row.
+
+The asymmetry was the tell, one bullet above: the **ROOT leg** already ended *"A lane that declares its root in the BODY is equally compliant"*, while leg (i) read only comments and claim rows — the stricter of two legs of the same backstop for no stated reason. The mechanism the leg already documents for comments applies: the body is the natural place a lane writes its validation note when the issue was filed by someone else, and the **only** channel on an issue that already carries a design comment (a retroactive declaration cannot be the FIRST comment).
+
+### LOC delta (mandatory per the law)
+
+| file | before | after | Δ |
+|---|---:|---:|---:|
+| `editor.md` | 680 | 686 | **+6** |
+| `fleet-directives.md` | 728 | 732 | **+4** |
+| `harvest.md` | 393 | 402 | **+9** |
+| `triage.md` | 454 | 454 | **0** |
+| `SKILL.md` | 496 | 496 | **0** |
+
+Law corpus (`*.md`, counted in python from `cd708a28` to the working tree): **7582 → 7625 (+43)**, of which **+19** is the four law files above and the remainder is this CHANGELOG's own growth (the biography, not rule text). `oc-lint-laws` rc=0 (clean) on every commit.
+
+**Bundled and named (C8), this window:** `b3ad3571` (this lane — the q34 design-gate widening) · `93181c6c` (this lane — the provenance law) · `e04db728` (this lane — the harvest filing-ask law) · `2e10e1fe` (this lane — the v0.4.272 entry commit). All four carry **no prior naming line** in this file (grep-verified 0 hits each) and are named here rather than left as a C8 gap.
+
 ## v0.4.272 — the law mounted worktrees where the tool no longer puts them
 
 Raised by the disk-cleanup actor (`cli`) and verified at source before a line was written: `editor.md` told every lane to mount its worktree at `~/oc-wt-<task>`, while `tools/git/oc-wt` creates at `~/opencrabs-wt/<task>`.
