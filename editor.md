@@ -273,8 +273,14 @@ DONE = Worktree exclusivity maintained, edits isolated to `~/opencrabs-wt/<task>
    - Verify external/crate traits and version-specific methods with `grep_docs` (Context7) before calling them.
 5. **Module Sizing**:
    - Prefer extracting a clean, modular submodule over growing any existing file past ~1000 lines.
+6. **Issue provenance — blame it, then believe it (owner order 2026-09-30)**:
+   - `git log -L` / `git blame` the line to the commit that INTRODUCED it, and read that commit's body, not just its diff.
+   - Read the connected issues and PRs that commit cites (`Issue-Ref:` / `Closes #` / `Original issue:`), and search the tracker for the defect class.
+   - **Scope every `gh` call `-R leshchenko1979/opencrabs`**: inside this repo `gh` defaults to UPSTREAM, where the same number is a DIFFERENT issue.
+   - State WHY the code was introduced before proposing to change it. A guard, cap or band that looks wrong is often a deliberate trade against a named incident — the rationale lives in the commit body, the doc comment or the cited issue, NEVER in the numbers alone.
+   - An issue TITLE is a claim, not a finding: a stale-open issue asserting an unfixed defect makes a lane re-implement landed work. Reproduce at HEAD before believing it.
 
-DONE = Full symbol graph & caller tree mapped via `memory_search scope="external"`, DRY reuse verified, and trait/API signatures confirmed via `grep_docs` before the first edit.
+DONE = Full symbol graph & caller tree mapped via `memory_search scope="external"`, DRY reuse verified, trait/API signatures confirmed via `grep_docs`, and issue provenance (blame → connected issues/PRs → stated rationale) established before the first edit.
 
 ## Phase 4 — Shape the change
 

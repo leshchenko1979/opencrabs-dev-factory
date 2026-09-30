@@ -62,6 +62,10 @@ A **cron prompt carries the INVOCATION and the mechanical envelope, never the la
 
 **Envelope check before you call a prompt thin.** A trigger that **notifies a bound lane** (e.g. `factory-triage-patrol`, 2,198 chars) is thin by construction — the work happens in a lane that has the skill loaded. A prompt whose cron session **is the worker** must additionally load the skill first, so it carries the load step and nothing more. Both shapes are thin; a prompt that restates a law is not, whichever shape it has.
 
+## Issue provenance — blame, relations, rationale (owner order 2026-09-30) [LANE]
+
+Owner, verbatim: *"while exploring and validating a new issue, the editor should blame it, see connected issues and PRs and understand why the code was introduced in the first place."* Blame to the INTRODUCING commit and read its body, follow the issues and PRs it cites, and state WHY the code was introduced before proposing a change — the rationale lives in the commit body, the doc comment or the cited issue, NEVER in the numbers alone. Scope every `gh` call `-R leshchenko1979/opencrabs`: unscoped calls read UPSTREAM, where the same number is a different issue. Procedure: `editor.md §Phase 3` step 6.
+
 ## Discussion links + fix-approval gate (owner 2026-08-28 14:28Z)
 
 1. **Whenever a PR or issue is discussed, a link must be given.** Every mention of a PR or issue number — chat, reports, ledger entries, rulings — carries the full URL (or an owner/repo#N reference that resolves to one). No bare numbers: a number without a link is an unfinished sentence. If a reference cannot be resolved to a link, say so explicitly.
