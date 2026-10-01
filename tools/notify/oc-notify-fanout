@@ -133,9 +133,10 @@
 #   truncation. The wave re-execs under a transient scope OUTSIDE the unit
 #   before taking its lock, exactly as oc-deploy does for the swap itself.
 #
-# Exit codes: 0 all sent/skipped-clean · 2 usage/roster error · 3 ledger ·
-#             4 partial send failures (receipts say which) · 5 abort (placeholder leak guard)
-#             7 concurrent wave in progress (live lock held by another pid)
+# Exit codes: 0 all sent/skipped-clean · 2 usage/validation · 3 ledger/manifest
+#             unavailable · 4 partial send failures (receipts say which) ·
+#             7 concurrent wave in progress (live lock held by another pid) ·
+#             8 --verify found unreached lanes (manifest vs receipts)
 set -euo pipefail
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
