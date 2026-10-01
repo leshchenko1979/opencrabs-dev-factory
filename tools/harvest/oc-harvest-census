@@ -2336,8 +2336,8 @@ cmd_scan() {
   local json_flag=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo) REPO="$2"; shift 2 ;;
-      --upstream) UPSTREAM_REPO="$2"; shift 2 ;;
+      --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
+      --upstream) [ $# -ge 2 ] || { echo "oc-harvest-census: --upstream needs a value" >&2; usage; }; UPSTREAM_REPO="$2"; shift 2 ;;
       --json) json_flag="--json"; shift ;;
       *) usage ;;
     esac
@@ -2353,9 +2353,9 @@ cmd_check() {
   CHECK_BASE_REF=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo) REPO="$2"; shift 2 ;;
-      --base) CHECK_BASE_REF="$2"; shift 2 ;;
-      --subject) DECLARED_SUBJECT="$2"; shift 2 ;;
+      --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
+      --base) [ $# -ge 2 ] || { echo "oc-harvest-census: --base needs a value" >&2; usage; }; CHECK_BASE_REF="$2"; shift 2 ;;
+      --subject) [ $# -ge 2 ] || { echo "oc-harvest-census: --subject needs a value" >&2; usage; }; DECLARED_SUBJECT="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       -*) usage ;;
       *)
@@ -2378,14 +2378,14 @@ cmd_record() {
   local unit="" pr="" issue="" issues_str="" status="" reason=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --unit) unit="$2"; shift 2 ;;
-      --state-file) REGISTRY_FILE="$2"; shift 2 ;;
-      --pr) pr="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --issues) issues_str="$2"; shift 2 ;;
-      --status) status="$2"; shift 2 ;;
-      --reason) reason="$2"; shift 2 ;;
-      --repo) REPO="$2"; shift 2 ;;
+      --unit) [ $# -ge 2 ] || { echo "oc-harvest-census: --unit needs a value" >&2; usage; }; unit="$2"; shift 2 ;;
+      --state-file) [ $# -ge 2 ] || { echo "oc-harvest-census: --state-file needs a value" >&2; usage; }; REGISTRY_FILE="$2"; shift 2 ;;
+      --pr) [ $# -ge 2 ] || { echo "oc-harvest-census: --pr needs a value" >&2; usage; }; pr="$2"; shift 2 ;;
+      --issue) [ $# -ge 2 ] || { echo "oc-harvest-census: --issue needs a value" >&2; usage; }; issue="$2"; shift 2 ;;
+      --issues) [ $# -ge 2 ] || { echo "oc-harvest-census: --issues needs a value" >&2; usage; }; issues_str="$2"; shift 2 ;;
+      --status) [ $# -ge 2 ] || { echo "oc-harvest-census: --status needs a value" >&2; usage; }; status="$2"; shift 2 ;;
+      --reason) [ $# -ge 2 ] || { echo "oc-harvest-census: --reason needs a value" >&2; usage; }; reason="$2"; shift 2 ;;
+      --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       *) usage ;;
     esac
@@ -2469,9 +2469,9 @@ print(f"{verb} Unit {unit} -> {_what} (issues: {sorted(list(all_issues))}) in {r
 cmd_sync() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo) REPO="$2"; shift 2 ;;
-      --upstream) UPSTREAM_REPO="$2"; shift 2 ;;
-      --state-file) REGISTRY_FILE="$2"; shift 2 ;;
+      --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
+      --upstream) [ $# -ge 2 ] || { echo "oc-harvest-census: --upstream needs a value" >&2; usage; }; UPSTREAM_REPO="$2"; shift 2 ;;
+      --state-file) [ $# -ge 2 ] || { echo "oc-harvest-census: --state-file needs a value" >&2; usage; }; REGISTRY_FILE="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -2482,10 +2482,10 @@ cmd_purge() {
   local unit="" pr="" issue="" dry_run=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --unit) unit="$2"; shift 2 ;;
-      --pr) pr="$2"; shift 2 ;;
-      --issue) issue="$2"; shift 2 ;;
-      --state-file) REGISTRY_FILE="$2"; shift 2 ;;
+      --unit) [ $# -ge 2 ] || { echo "oc-harvest-census: --unit needs a value" >&2; usage; }; unit="$2"; shift 2 ;;
+      --pr) [ $# -ge 2 ] || { echo "oc-harvest-census: --pr needs a value" >&2; usage; }; pr="$2"; shift 2 ;;
+      --issue) [ $# -ge 2 ] || { echo "oc-harvest-census: --issue needs a value" >&2; usage; }; issue="$2"; shift 2 ;;
+      --state-file) [ $# -ge 2 ] || { echo "oc-harvest-census: --state-file needs a value" >&2; usage; }; REGISTRY_FILE="$2"; shift 2 ;;
       --dry-run) dry_run=1; shift ;;
       -h|--help) usage 0 ;;
       *) usage ;;
@@ -4888,7 +4888,7 @@ cmd_clusters() {
   local json_flag="" openfix_flag="" clock_flag=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo) REPO="$2"; shift 2 ;;
+      --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
       --json) json_flag="--json"; shift ;;
       --open-fix) openfix_flag="--open-fix"; shift ;;
       --clock) clock_flag="--clock"; shift ;;
