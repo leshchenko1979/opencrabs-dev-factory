@@ -92,7 +92,8 @@ stamp the dispatch + receipt id via oc-ledger.
    identifies the DISPATCH; the run's checkout log line identifies the TESTED
    TREE — only the checkout-ref is terminal truth for code-level verdicts.
    Verify the run checked out your head sha before reading any verdict as lane
-   evidence; a mismatch is a carrier bug against the dispatch path — come
+   evidence — `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity
+   reported but never trusted; a mismatch is a carrier bug against the dispatch path — come
    straight to HQ with run id + checkout-ref + ledger incident
    stamp (suspect the single-flight dispatch lock adoption).
 4. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify
@@ -224,7 +225,8 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
 ## Phase 1 — Claim & Worktree Setup (`oc-start`)
 
 0. **Claim-time fresh re-read & Goal Mandate (v0.4.14 / v0.4.149, owner order 2026-09-12)**:
-   - **Fresh Re-read**: FIRST action after claiming/waking — re-read `SKILL.md` + `editor.md` + `fleet-directives.md` from disk (never from recalled memory) — SKILL.md and editor.md in FULL, fleet-directives at thematic-index minimum with every `[LANE]`-tagged section in FULL. DONE = all three files re-read THIS turn.
+   - **Fresh Re-read**: FIRST action after claiming/waking — re-read `SKILL.md` + `editor.md` + `fleet-directives.md` from disk (never from recalled memory) — SKILL.md and editor.md in FULL, fleet-directives at thematic-index minimum with every `[LANE]`-tagged section in FULL.
+   - **Checkable Completion Formula**: DONE = all three files re-read THIS turn.
    - **Design-gate precondition (owner order 2026-09-12)**: Issue the goal **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). While the design is unapproved the editor stays in the design/approval phase — an early `/goal` would carry it past the very gate that requires owner approval BEFORE code. Fixed sequence: design → owner confirms → `/goal` → continuous execution through Phase 6.
    - **Autonomous Goal Mandate**: After the owner's design confirmation, the editor MUST execute `/goal follow the skill until the smoke test phase` (via `slash_command`). The Editor is mandated to drive autonomously and continuously from Phase 1 through Phase 6 smoke testing (claim → worktree → code → sign → ship via `oc-ship-chain` → live behavioral smoke test on swapped binary → record 4-leg smoke verdict in `smoke-verdicts.log`). **Editors MUST NOT stop or ask for confirmation after Phase 4 (writing code) or after intermediate ship legs.** The task is only complete once the live behavioral smoke test is recorded in `smoke-verdicts.log`.
 1. **Uniqueness Gate**: Search existing issues first via `tools/issue/oc-issue-sweep '<query>'` (sweeps fork open/closed + upstream closed).
@@ -311,9 +313,9 @@ ref immediately.
 Signing is not optional: an unsigned commit makes you invisible to the notification loop. `tools/git/oc-commit` adds the ambient Session-Id and Issue-Ref trailers automatically — never compose them by hand.
 
 **Verify the trailer block parses after ANY amend/rebase/cherry-pick that
-touches the trailer area** (v0.4.71, Duty-4 P2). `git interpret-trailers --parse` (or a `gh api`
-commit-body scan) must show every expected trailer before the sha enters any
-gate or push.
+touches the trailer area** (v0.4.71, Duty-4 P2). `tools/state/oc-attrib --repo <path>
+--trailers-only --range <A..B>` must show every expected trailer before the sha enters
+any gate or push (a hand-rolled `git interpret-trailers --parse` is agent-memory-as-gate-input; c27 J-5).
 
 **Test placement & upstream coding standards (CONTRIBUTING.md policy, Adolfo DM 2026-09-13):**
 - Tests live under `src/tests/*_test.rs` registered in `src/tests/mod.rs`, never inline `#[cfg(test)] mod tests { ... }` blocks.

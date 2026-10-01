@@ -286,7 +286,8 @@ harvested commits. When a PR is not mergeable, route by BLOCKER CLASS:
 | PRE-EXISTING upstream red (base fails in files we never touched) | ❌ NO editor pings — our code is innocent | housekeeping-PR candidate: issue filed + ledger-registered first (v0.3.8), Alexey decides |
 | Maintainer rejects/closes the PR | Owning editor | REOPEN the linked issues with a pointer comment; record the outcome |
 
-Hard rules: verify the failing log names files THIS PR actually touches BEFORE
+Hard rules: run `tools/harvest/oc-pr-fault-scope <pr#> --run <run-id>` — rc 0
+IN-SCOPE (the PR owns it) / rc 1 BASE-FAULT (pre-existing; do NOT ping) — BEFORE
 pinging anyone (identical clippy walls on every PR can live on the upstream base). Soft-fail fmt diffs are
 cosmetic — NEVER ping for fmt alone. Absorption ends the lifecycle: if the
 maintainer merges/reimplements the feature, the PR story closes with a SHIPPED

@@ -209,13 +209,14 @@ What STAYS at this factory:
   new cycle into it, and always pass `--dir` explicitly.
 - **The corpus pack is a TRIAL, not this instrument** — it runs by absolute path from its own
   project dir, and its routing into `tools/` is a separate decision.
-- **KEY-SET CLOSURE STAYS HERE.** The `status` enum is
-  mechanically carried (`review.py schema` emits `enum: [IN_PROGRESS, COMPLETED, ABANDONED]`,
-  enforced as `LIFECYCLE_STATES`), but **the "every key ⊆ the ruled set" rule is carried
-  NOWHERE** — the emitted schema has no top-level `additionalProperties`, so an unknown key such
-  as c25's `corpus_hash` is accepted. Until the instrument closes that, a cycle open/close must
-  assert key-set closure by hand. Stated because a carve must not delete a live rule that has no
-  mechanical carrier.
+- **KEY-SET CLOSURE STAYS HERE.** No instrument at THIS factory carries the "every key ⊆ the
+  ruled set" closure: the meta-factory engine's `review.py schema` (which would emit it) is NOT
+  operative here (see the ⚠ banner in §Duty 4), and `tools/state/oc-review-persist` emits no
+  cycle-state schema — so an unknown top-level key such as c25's `corpus_hash` is accepted
+  silently. Until a carrier closes it, a cycle open/close must assert key-set closure by hand.
+  Stated because a carve must not delete a live rule that has no mechanical carrier. (Tool half
+  — a `validate` verb emitting `additionalProperties: false` on the cycle schema — ROUTED to
+  Toolsmith, c27 J-1.)
 ## Duty 7 — RETIRED (owner order 2026-09-14, v0.4.176)
 
 Duty 7 and the centralized Idea Box coordination queue are RETIRED; feedback routes directly to the

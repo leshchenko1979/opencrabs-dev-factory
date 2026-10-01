@@ -17,9 +17,11 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
    - **Reviewer A — REDUNDANCY + ONTOLOGY:** same rule stated twice across
      files; duplicated war stories; terms violating the SKILL.md test ontology
      (SMOKE TEST / CODE TESTS / FEATURE-PRESENCE CHECK / EXECUTION SANITY
-     SIGNAL); undefined coinages; stale ref names (lens I-2.2
-     v0.4.116: A owns ref CONSISTENCY; B weighs refs only as load-weight —
-     first finder gets attribution); SEDIMENT — stale layers
+     SIGNAL); undefined coinages; stale ref names — INCLUDING every cross-repo
+     pointer (`hq.md` §Duty 4/6, `docs/instruments/*`): resolve each named
+     path/verb against this tree and against its declared home before calling it
+     consistent (lens I-2.2 v0.4.116: A owns ref CONSISTENCY; B weighs refs only
+     as load-weight — first finder gets attribution); SEDIMENT — stale layers
      that survive because adding feels safe and removing feels risky
      (docs-lens vocabulary reference:
      `skills/writing-for-agents/SKILL.md`). PLUS the churn-drift checklist, EVERY
@@ -263,8 +265,9 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      the latest persisted report (scope drift, stale check classes), (2)
      OVERLAP — findings double-covered by two lenses, or coverage GAPS where
      no lens owns an artifact class, (3) FALSE-POSITIVE/NEGATIVE HISTORY —
-     per-lens accuracy record from HQ's premise-verification
-     history (precedents: brain-scrub "cargo ban homeless" overstatement, the
+     the retraction/rejection rows in `workers-ledger.json` (query:
+     `grep -i 'retract\|reject'`) plus the ship-time folds already in these briefs
+     (precedents: brain-scrub "cargo ban homeless" overstatement, the
      B-8 misattribution — both rejected 2026-09-08; later retractions are
      recorded in the ledger and MUST be folded in at ship time, e.g. the
      boot-instant arithmetic corrected against bytes at `n=449`), (4) CATALOG HYGIENE —

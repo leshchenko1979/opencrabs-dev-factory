@@ -142,7 +142,7 @@ If an identical reload demand (same skill version + same skill sha) arrives and 
 
 ## Attribution guard (post-compaction wakes)
 
-Before disputing the attribution of any shipped artifact (build, deploy, ledger event, commit) — on a `session_notify` wake, after a compaction, or whenever memory and records disagree — re-derive OWN shipped work from durable state FIRST: `opencrabs-dev/workers-ledger.json` claim/fanout events, oc-deploy journal lines + deployed.sha markers. Ledger beats memory; a mismatch is reported, never accused. Origin: post-compaction amnesia made this lane falsely blame oc-attrib/fanout for its own shipped work (retraction logged 2026-08-30, HQ d72bd52d); guard forwarded to owner via HQ topic report — remove on owner order only.
+Before disputing the attribution of any shipped artifact (build, deploy, ledger event, commit) — on a `session_notify` wake, after a compaction, or whenever memory and records disagree — run `tools/state/oc-attrib --repo ~/opencrabs --deployed` FIRST — it composes the shipped range from `deployed.sha`/`prev_sha` and attributes each commit to its lane by `Session-Id` trailer; a hand re-derivation of those three sources (ledger, journal, `deployed.sha`) is agent-memory-as-gate-input. Ledger beats memory; a mismatch is reported, never accused. Origin: post-compaction amnesia made this lane falsely blame oc-attrib/fanout for its own shipped work (retraction logged 2026-08-30, HQ d72bd52d); guard forwarded to owner via HQ topic report — remove on owner order only.
 
 ## PR naming convention (owner 2026-08-30) [LANE]
 Every PR this fleet opens carries a type prefix in the title so upstream release triage can split bugfixes from features at a glance:
@@ -647,7 +647,7 @@ Every tool/script we build must be debuggable from its logs alone. Each state-ch
 **Canonical Waiter Discipline Standards (W1–W6):**
 1. **W1 (Detached execution standard):** Long-running commands (>60s) execute detached (`background: true`). Hand-rolled nohup/sleep loops are strictly forbidden.
 2. **W2 (Poll floor & ceiling):** Detached CI watchers must respect a ≥30s poll interval floor and a bounded timeout ceiling (default 2700s via `oc-prchecks wait`).
-3. **W3 (Invocation verification):** Verify job dispatch identity before entering wait loops; never poll an ambiguous or unverified run ID.
+3. **W3 (Invocation verification):** Verify job dispatch identity before entering wait loops; never poll an ambiguous or unverified run ID (run `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity reported but never trusted).
 4. **W4 (Notify wiring):** Automated watchers notify directly to the owning session UUID via `session_notify` upon terminal completion.
 5. **W5 (Log-window cuts):** Grep and log queries must bound search ranges (`--since` or fixed tail) to avoid context compaction floods.
 6. **W6 (Actor attribution):** automatic via ambient `$OPENCRABS_SESSION_ID` — see §Attribution & Goal Hygiene A1.
