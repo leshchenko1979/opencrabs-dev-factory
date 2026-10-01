@@ -54,7 +54,7 @@ usage() {
 }
 
 selftest() {
-  local passed=0 total=9 rc d jout
+  local passed=0 total=9 rc d jout perr
   d="$(mktemp -d)"
   printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00\x01\x00\x00\x00' > "$d/fake-bin-x64"
   printf 'SOME_MARKER_ABC123\nregular text\n' >> "$d/fake-bin-x64"
@@ -65,8 +65,6 @@ selftest() {
   printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00\x01\x00\x00\x00' > "$d/fake-bin-split"
   printf 'attempting\nbounded\nreclaim\n' >> "$d/fake-bin-split"
   printf 'attempting bounded reclaim\n' >> "$d/fake-bin-x64"
-  printf '#!/bin/sh\necho 0.3.83-fake\n' > "$d/fake-ver"
-  chmod +x "$d/fake-ver" 2>/dev/null
   "$0" "$d/fake-bin-x64" --markers SOME_MARKER_ABC123 >/dev/null 2>&1;      rc=$?; [ "$rc" = 0 ] && passed=$((passed+1))
   "$0" "$d/fake-bin-x64" --markers NO_SUCH_MARKER >/dev/null 2>&1;           rc=$?; [ "$rc" = 3 ] && passed=$((passed+1))
   "$0" "$d/fake-bin-x64" --expect-sha 0000000000000000000000000000000000000000 >/dev/null 2>&1; rc=$?; [ "$rc" = 4 ] && passed=$((passed+1))
@@ -86,13 +84,57 @@ selftest() {
   # defect report saw: {"bounded":12,"reclaim":10,"attempting":9})
   jout="$("$0" "$d/fake-bin-x64" --markers "attempting bounded reclaim" --json 2>/dev/null)"
   grep -qF '"attempting bounded reclaim"' <<< "$jout" && passed=$((passed+1))
+  # (10-11) VERSION gate (#747): the `--expect-version` arm at :141 had NO leg.
+  # The old fixture was created and chmod'ed, then never executed — a dead
+  # fixture that made the gate look covered. A fake ELF cannot print a version,
+  # so both sides are driven against a REAL ELF64 present on any host: the
+  # shell running this selftest. Guarded — where bash is not an ELF64 the two
+  # legs are dropped from `total` instead of failing silently.
+  local elfbin=""
+  elfbin="$(command -v bash 2>/dev/null || true)"
+  if [ -n "$elfbin" ] && [ -f "$elfbin" ] \
+     && [ "$(head -c4 "$elfbin" | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; then
+    total=$((total+2))
+    # (10) positive: the version string IS in the --version banner -> pass
+    "$0" "$elfbin" --expect-version "GNU bash" >/dev/null 2>&1; rc=$?; [ "$rc" = 0 ] && passed=$((passed+1))
+    # (11) THE DISCRIMINATOR: a version that is not in the banner -> rc 5, and
+    # the failure must NAME the version gate (a bare rc-4 from elsewhere would
+    # otherwise satisfy this leg).
+    perr="$("$0" "$elfbin" --expect-version "ZZZ-NOPE-9.9.9" 2>&1 1>/dev/null)"
+    rc=$?
+    [ "$rc" = 5 ] && grep -qF 'VERSION-MISMATCH' <<< "$perr" && passed=$((passed+1))
+  fi
+  # (12-14) PROVENANCE gate (#747): the two rc-4 arms at :195 (no
+  # embed-carrying job) and :201 (embed sha != source) had no control. `gh` is
+  # stubbed on PATH, so the gate is driven with no network and no repo. Both
+  # legs assert rc 4 AND the gate's own message — the two share a return code,
+  # so the message is what pins each one to its own site.
+  mkdir -p "$d/bin"
+  printf '%s\n' '#!/bin/sh' \
+    '[ "$1" = run ] && [ "$2" = view ] && { printf "%s\n" "$STUB_JOBS"; exit 0; }' \
+    'exit 1' > "$d/bin/gh"
+  chmod +x "$d/bin/gh"
+  local src="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee"
+  total=$((total+3))
+  # (12) no job name carries a "(<sha>, <features>)" embed -> PROVENANCE rc 4
+  perr="$(PATH="$d/bin:$PATH" STUB_JOBS='{"jobs":[{"name":"ORDER gates"}]}' \
+    "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'no embed-carrying job' <<< "$perr" && passed=$((passed+1))
+  # (13) THE DISCRIMINATOR: the embed names a DIFFERENT sha -> rc 4 from :201
+  perr="$(PATH="$d/bin:$PATH" STUB_JOBS='{"jobs":[{"name":"ship / Linux amd64 (9999999999999999999999999999999999999999, telegram)"}]}' \
+    "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'PROVENANCE-MISMATCH' <<< "$perr" && passed=$((passed+1))
+  # (14) positive: the embed names THIS source -> pass
+  PATH="$d/bin:$PATH" STUB_JOBS="{\"jobs\":[{\"name\":\"ship / Linux amd64 ($src, telegram)\"}]}" \
+    "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 >/dev/null 2>&1; rc=$?; [ "$rc" = 0 ] && passed=$((passed+1))
   rm -rf "$d"
   if [ "$passed" = "$total" ]; then
     echo "selftest OK: $passed/$total cases (no network)"
   else
     echo "selftest FAIL: $passed/$total cases (no network)" >&2
   fi
-  [ "$passed" = "$total" ]
   [ "$passed" = "$total" ]
 }
 
