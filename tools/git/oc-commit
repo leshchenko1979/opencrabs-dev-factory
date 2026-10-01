@@ -12,12 +12,23 @@
 #      measured 2026-09-25, lane a5b34466 committed #500 work under
 #      `Issue-Ref: #548` and the wrapper posted an implementation comment onto
 #      #548 (a durable false attribution, corrected by hand).
+#      #728: `--session-id-only` is the ESCAPE from law 3, not a bypass of it.
+#      A commit that belongs to NO issue — a tools/** self-commit, a repo
+#      hygiene sweep, a doc fix with no tracking issue — had no route through
+#      this wrapper: the derivation is MANDATORY when --issue is absent, so the
+#      only way to commit was to borrow an unrelated OPEN claim's number, and
+#      the wrapper then posted an implementation comment onto THAT issue. The
+#      false comment on fork #465 (a lane committed under #465 because it was
+#      the actor's newest open claim) is that shape. With the flag the commit
+#      carries `Session-Id:` ALONE — no Issue-Ref, no post-commit comment, no
+#      cross-check — and `--issue N` is REFUSED (rc 2) alongside it, because
+#      "no Issue-Ref" and "the ref is N" cannot both hold.
 # NEVER stages anything — the stage-only-your-paths rule is untouched; it
 # refuses when the index is empty instead of improvising a stage.
 #
 # Usage:
 #   oc-commit -m <msg> [-m <msg>...] [--issue N] [--repo <path>]
-#             [--no-comment] [--state <text>] | --selftest
+#             [--no-comment] [--state <text>] [--session-id-only] | --selftest
 #
 # E2 finding 2 (v0.4.72): the post leg is FOLDED — after a gated commit the
 # one-implementation-comment (owner law 2026-08-28 22:54Z) is posted via the
@@ -38,7 +49,9 @@
 # here: it is an unprobed hypothesis about the parser, and belief is not
 # evidence.
 #
-# Exit codes: 0 committed+commented · 2 usage · 3 gate-fail (detached HEAD /
+# Exit codes: 0 committed+commented (0 also for a --session-id-only commit,
+#             which posts no comment by design) · 2 usage (incl.
+#             --session-id-only together with --issue) · 3 gate-fail (detached HEAD /
 #             no actor / nothing staged / no issue derivable / derived ref
 #             contradicts the branch or subject) · 4
 #             git-commit failure · 5 commit landed but comment FAILED
@@ -54,7 +67,7 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-commit" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
-usage() { echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--no-comment] [--state <text>] | --selftest" >&2; exit 2; }
+usage() { echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--no-comment] [--state <text>] [--session-id-only] | --selftest" >&2; exit 2; }
 
 if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
   d="$(mktemp -d)" || exit 3
@@ -105,15 +118,23 @@ exit 3
   # 4. success: trailers derived (Session-Id + Issue-Ref #149 from claim) + comment posted via stub
   ( cd "$R" && echo z > h && git add h && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "fix: trailers" --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: gated commit failed" >&2; exit 1; }
+  #     The trailer assertions belong to THIS commit. They previously sat after
+  #     4b/4c and so read whichever commit had last moved HEAD — 4c's, since both
+  #     of those also commit. That made "4. trailers derived" assert on 4c's
+  #     --no-comment commit while leg 4's own commit was never checked at all,
+  #     and it masked the #728 control (leg 10c asserts the same predicate on the
+  #     same kind of commit, but earlier in the run — so a mutant that breaks the
+  #     ref under --no-comment reddened leg 4 first and 10c could never be the
+  #     first failure). Each assertion now reads its own commit.
+  LOG="$(git -C "$R" log -1 --format=%B)"
+  grep -q "Session-Id: f1c7c0de-0000-4000-8000-000000000149" <<< "$LOG" || { echo "selftest: Session-Id trailer missing" >&2; exit 1; }
+  grep -q "Issue-Ref: #149" <<< "$LOG" || { echo "selftest: Issue-Ref #149 missing" >&2; exit 1; }
   # 4b. comment leg folded: stub fails -> rc 5 (commit landed, comment FAILED)
   ( cd "$R" && echo q > k && git add k && OC_ISSUE_LOG_BIN="$STUB_FAIL" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "fix: comment-fail" --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 5 ] || { echo "selftest: comment-fail-after-commit != 5" >&2; exit 1; }
   # 4c. --no-comment skips the post leg entirely (stub-fail but rc 0)
   ( cd "$R" && echo r > l && git add l && OC_ISSUE_LOG_BIN="$STUB_FAIL" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: drill" --no-comment --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: --no-comment drill != 0" >&2; exit 1; }
-  LOG="$(git -C "$R" log -1 --format=%B)"
-  grep -q "Session-Id: f1c7c0de-0000-4000-8000-000000000149" <<< "$LOG" || { echo "selftest: Session-Id trailer missing" >&2; exit 1; }
-  grep -q "Issue-Ref: #149" <<< "$LOG" || { echo "selftest: Issue-Ref #149 missing" >&2; exit 1; }
   # 5. explicit --issue overrides derivation
   ( cd "$R" && echo w > i && git add i && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: override" --issue 42 --repo "$R" ) >/dev/null 2>&1
   git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: #42" || { echo "selftest: --issue override missing" >&2; exit 1; }
@@ -221,10 +242,61 @@ This closes #321 for real." --no-comment --repo "$R" ) >/dev/null 2>"$E"
   git -C "$R" checkout -q main
   ( cd "$R" && echo m4 > m4 && git add m4 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: no ref here" --no-comment --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: #501 no-signal must commit (rc 0)" >&2; exit 1; }
+  # 10. (#728) --session-id-only: Session-Id ALONE — no Issue-Ref, no comment.
+  #     The fixture ledger carries an OPEN claim for #149, so the derivation IS
+  #     available in every leg below. That is what makes 10c a real control: the
+  #     flag, not an absent claim, is what suppresses the ref. Without 10c this
+  #     whole block would pass identically on a tool where the flag did nothing
+  #     at all and the derivation happened to fail — the #699/#707 disease.
+  #     Leg labels are SHORT TOKENS because tools/tests/negctl-728-mutation-guard.sh
+  #     matches the FIRST failure line against them; a sentence-shaped label would
+  #     have to be quoted in full to be asserted, and would rot on any rewording.
+  #    10a. the flag suppresses the ref and the comment leg
+  ( cd "$R" && echo n1 > n1 && git add n1 && OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore(tools): a commit that belongs to no issue" --session-id-only --repo "$R" ) >/dev/null 2>"$d/728a.err"
+  [ $? -eq 0 ] || { echo "selftest: #728-sid-only-rc0 want 0" >&2; exit 1; }
+  L="$(git -C "$R" log -1 --format=%B)"
+  grep -q "Session-Id: f1c7c0de-0000-4000-8000-000000000149" <<< "$L" \
+    || { echo "selftest: #728-sid-only-session-id Session-Id trailer missing" >&2; exit 1; }
+  grep -q "Issue-Ref:" <<< "$L" \
+    && { echo "selftest: #728-sid-only-no-ref Issue-Ref PRESENT under --session-id-only" >&2; exit 1; }
+  grep -q "issue-ref: NONE" "$d/728a.err" \
+    || { echo "selftest: #728-sid-only-announced the absent ref must be ANNOUNCED on stderr (silence is indistinguishable from a failed derivation)" >&2; exit 1; }
+  #    10b. the contradiction is refused, in EITHER flag order
+  ( cd "$R" && echo n2 > n2 && git add n2 && OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --session-id-only --issue 42 --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 2 ] || { echo "selftest: #728-sid-only-conflict --session-id-only --issue want 2" >&2; exit 1; }
+  ( cd "$R" && echo n2b > n2b && git add n2b && OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --issue 42 --session-id-only --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 2 ] || { echo "selftest: #728-sid-only-conflict-order flag order must not decide it (want 2)" >&2; exit 1; }
+  #    10c. NEGATIVE CONTROL for 10a: the SAME invocation WITHOUT the flag must
+  #         still derive Issue-Ref #149 from the same open claim. This is what
+  #         proves 10a's absence of a ref is the FLAG's doing rather than a
+  #         derivation that never fired.
+  ( cd "$R" && echo n3 > n3 && git add n3 && OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore(tools): the same commit without the flag" --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #728-control-derivation rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: #149" \
+    || { echo "selftest: #728-control-derivation FAILED — without the flag the derivation must still fire, else 10a proves nothing" >&2; exit 1; }
+  #    10d. the post-commit comment leg must NOT be invoked. The stub CREATES a
+  #         marker, so an invocation is detectable rather than inferred from
+  #         silence — the env default (OC_COMMIT_COMMENT=1, NO_COMMENT=0) would
+  #         otherwise have run it.
+  STUB_MARK="$d/728-il-invoked"
+  rm -f "$STUB_MARK"
+  STUB_TRAP="$d/il-trap"
+  printf '#!/usr/bin/env bash\ntouch "%s"\nexit 0\n' "$STUB_MARK" > "$STUB_TRAP"; chmod +x "$STUB_TRAP"
+  ( cd "$R" && echo n4 > n4 && git add n4 && OC_ISSUE_LOG_BIN="$STUB_TRAP" OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore(tools): no comment leg" --session-id-only --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #728-sid-only-no-comment rc want 0" >&2; exit 1; }
+  [ -e "$STUB_MARK" ] \
+    && { echo "selftest: #728-sid-only-no-comment the comment leg WAS invoked under --session-id-only" >&2; exit 1; }
+  #    10e. CONTROL for 10d: the SAME trap stub WITHOUT the flag IS invoked —
+  #         otherwise 10d would pass on a tool whose post leg was simply broken.
+  rm -f "$STUB_MARK"
+  ( cd "$R" && echo n5 > n5 && git add n5 && OC_ISSUE_LOG_BIN="$STUB_TRAP" OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore(tools): comment leg reachable" --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #728-control-comment rc want 0" >&2; exit 1; }
+  [ -e "$STUB_MARK" ] \
+    || { echo "selftest: #728-control-comment FAILED — the post leg must be reachable without the flag, else 10d proves nothing" >&2; exit 1; }
   echo "selftest OK"; exit 0
 fi
 
-REPO="$(pwd)"; MSGS=(); ISSUE=""; ISSUE_EXPLICIT=0; NO_COMMENT=0; CSTATE=""; MBODY=""
+REPO="$(pwd)"; MSGS=(); ISSUE=""; ISSUE_EXPLICIT=0; NO_COMMENT=0; CSTATE=""; MBODY=""; SESSION_ID_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     # #428: the body text is ALSO accumulated — MBODY is the scan's input. MSGS
@@ -234,13 +306,21 @@ while [ $# -gt 0 ]; do
     --issue) ISSUE="${2:-}"; [ -n "$ISSUE" ] || usage; ISSUE_EXPLICIT=1; shift 2 ;;
     --repo) REPO="${2:-}"; [ -n "$REPO" ] || usage; shift 2 ;;
     --no-comment) NO_COMMENT=1; shift ;;
+    --session-id-only) SESSION_ID_ONLY=1; shift ;;
     --state) CSTATE="${2:-}"; [ -n "$CSTATE" ] || usage; shift 2 ;;
-    -h|--help) echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--no-comment] [--state <text>] | --selftest"; exit 0 ;;
+    -h|--help) echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--no-comment] [--state <text>] [--session-id-only] | --selftest"; exit 0 ;;
     selftest) bash "$0" --selftest; exit $? ;;
     *) usage ;;
   esac
 done
 [ ${#MSGS[@]} -ge 2 ] || usage
+# #728: the two flags contradict each other — session-id-only emits no
+# Issue-Ref, so naming one is unsatisfiable. Refused AFTER the loop so flag
+# ORDER never decides the outcome.
+if [ "$SESSION_ID_ONLY" = 1 ] && [ "$ISSUE_EXPLICIT" = 1 ]; then
+  echo "usage: --session-id-only emits no Issue-Ref, so it cannot be combined with --issue" >&2
+  exit 2
+fi
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
   || { echo "gate-fail: not a git repo: $REPO" >&2; exit 3; }
 G="git -C $REPO"
@@ -261,7 +341,10 @@ $G diff --cached --quiet 2>/dev/null \
 # post-commit implementation comment onto a FINISHED issue. An explicit --issue
 # still overrides — that is the lane taking the decision on the record.
 DERIVE_ERR=""
-if [ -z "$ISSUE" ]; then
+# #728: --session-id-only skips the derivation ENTIRELY. It is not a fallback
+# for a failed derivation — it is the caller declaring the commit belongs to no
+# issue, so there is nothing to derive and no comment to post.
+if [ "$SESSION_ID_ONLY" = 0 ] && [ -z "$ISSUE" ]; then
   OC_LEDGER_BIN="$OC_TOOLS_DIR/state/oc-ledger"
   if ! ISSUE="$("$OC_LEDGER_BIN" claim-ref "$OC_ACTOR" --open 2>/dev/null)"; then
     ISSUE=""
@@ -272,9 +355,14 @@ fi
 if [ -n "$ISSUE" ]; then
   printf '%s' "$ISSUE" | grep -Eq '^[0-9]+$' || { echo "gate-fail: bad --issue '$ISSUE'" >&2; exit 3; }
   echo "issue-ref: #$ISSUE (from ${OC_LEDGER:+override ledger}${OC_LEDGER:-canonical ledger})" >&2
+elif [ "$SESSION_ID_ONLY" = 1 ]; then
+  # #728: no issue, by declaration. Say so on stderr — a silent absence would
+  # be indistinguishable from the derivation having quietly failed.
+  echo "issue-ref: NONE (--session-id-only: this commit carries Session-Id alone, no Issue-Ref, no comment)" >&2
 else
   echo "gate-fail: no OPEN claim with #N by $OC_ACTOR and no --issue passed${DERIVE_ERR:+ — $DERIVE_ERR}" >&2
   echo "          claim the issue first, or pass --issue <N> to commit against it explicitly" >&2
+  echo "          (or --session-id-only if this commit belongs to no issue — #728)" >&2
   exit 3
 fi
 
@@ -290,8 +378,11 @@ fi
 # which issue the work belongs to, so a disagreement with the derived ref is not
 # a tie to break — it is a contradiction, and picking silently is what caused the
 # harm. The wrapper refuses and names both; `--issue N` remains the override for
-# the case where the lane really does mean the other issue.
-if [ "$ISSUE_EXPLICIT" = 0 ]; then
+# the case where the lane really does mean the other issue. #728: a
+# --session-id-only commit carries NO ref, so there is nothing to contradict —
+# the check is skipped by construction (ISSUE_EXPLICIT stays 0), and that is
+# stated here rather than left to fall out of the branch order.
+if [ "$ISSUE_EXPLICIT" = 0 ] && [ "$SESSION_ID_ONLY" = 0 ]; then
   _br="$($G rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   _br_issue="$(printf '%s' "$_br" | grep -oE '(feat|fix|ci|chore|test|docs|refactor)/[0-9]+-' | tail -n 1 | grep -oE '[0-9]+' || true)"
   _subj="$(printf '%s' "$MBODY" | head -n 1 | sed 's/[[:space:]]*$//')"
@@ -358,11 +449,32 @@ scan_close_keywords() { # $1 = the caller's -m bodies; warns on stderr, always r
 scan_close_keywords "$MBODY"
 
 # gated commit
-if $G -c trailer.ifexists=replace commit --trailer "Session-Id: $OC_ACTOR" --trailer "Issue-Ref: #$ISSUE" "${MSGS[@]}"; then
+# #728: the Issue-Ref trailer and its post-commit comment are emitted TOGETHER
+# or not at all — a ref without its comment breaks the owner law (one
+# implementation comment per commit), and a comment without a ref has no issue
+# to land on. Under --session-id-only both are absent and the commit carries
+# Session-Id alone.
+# LIMIT, stated rather than hidden: this governs the trailers the WRAPPER adds.
+# A caller who writes `Issue-Ref: #N` into their own -m body still gets it —
+# that is prose they authored, and the wrapper has never rewritten a caller's
+# body. The flag's guarantee is "no ref is DERIVED or ADDED", not "the message
+# is scrubbed".
+if [ "$SESSION_ID_ONLY" = 1 ]; then
+  _TRAILERS=(--trailer "Session-Id: $OC_ACTOR")
+else
+  _TRAILERS=(--trailer "Session-Id: $OC_ACTOR" --trailer "Issue-Ref: #$ISSUE")
+fi
+if $G -c trailer.ifexists=replace commit "${_TRAILERS[@]}" "${MSGS[@]}"; then
   CSHA="$($G rev-parse --short HEAD)"
-  echo "committed on $($G rev-parse --abbrev-ref HEAD): $CSHA (actor $OC_ACTOR, issue #$ISSUE)"
-  # folded post leg (E2 finding 2): one implementation comment per commit
-  if [ "$NO_COMMENT" = 0 ] && [ "${OC_COMMIT_COMMENT:-1}" = 1 ]; then
+  if [ "$SESSION_ID_ONLY" = 1 ]; then
+    echo "committed on $($G rev-parse --abbrev-ref HEAD): $CSHA (actor $OC_ACTOR, no Issue-Ref — #728)"
+  else
+    echo "committed on $($G rev-parse --abbrev-ref HEAD): $CSHA (actor $OC_ACTOR, issue #$ISSUE)"
+  fi
+  # folded post leg (E2 finding 2): one implementation comment per commit.
+  # #728: gated on an ISSUE — with no ref there is no issue to comment on, so
+  # the leg is skipped structurally rather than by a NO_COMMENT side effect.
+  if [ "$SESSION_ID_ONLY" = 0 ] && [ "$NO_COMMENT" = 0 ] && [ "${OC_COMMIT_COMMENT:-1}" = 1 ]; then
     IL="${OC_ISSUE_LOG_BIN:-$OC_TOOLS_DIR/issue/oc-issue-log}"
     if "$IL" "$ISSUE" "$CSHA" ${CSTATE:+--state "$CSTATE"} --repo "${OC_ISSUE_LOG_REPO:-leshchenko1979/opencrabs}" --repo-path "$REPO" >/dev/null 2>&1; then
       echo "implementation comment posted on #$ISSUE"
