@@ -356,7 +356,9 @@ The cargo ban, the `origin`/`adolfousier` split and actor attribution live in `e
 §Hard rules — deliberately not restated here (Duty-6 c25 B-9: three cargo-ban homes inside SKILL.md alone).
 
 Everything else — the skill glob gate's exact matching semantics, branch namespaces, the
-carrier/feature-set/dispatch rules, and the daemon facts — is in `environment.md`.
+carrier/feature-set/dispatch rules, **which workflow files exist on which branch (all fork CI
+lives on `ci/quick-build-linux`; `main` carries upstream's, so it has no post-merge net)**, and
+the daemon facts — is in `environment.md`.
 
 
 ## Upstream relations (v0.4.0, owner-approved 2026-08-26)

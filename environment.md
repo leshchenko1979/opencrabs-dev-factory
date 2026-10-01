@@ -134,3 +134,19 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   object's `headSha` reports the CARRIER tip, not the built tree — the built
   commit is verified via the JOB NAME, which embeds `(source_ref, features)`.
   Carrier branches NEVER merge to `main` (same reservation discipline as `leshchenko1979/*`).
+- **ALL fork CI lives on the carrier branch — `main` carries UPSTREAM's workflows, not ours**
+  (owner correction 2026-10-01T01:11Z: *"the forks ci files live on a special branch"*).
+  Measured: `origin/main` carries exactly `auto-assign.yml` `ci.yml` `prerelease.yml`
+  `release.yml`; the fork's OWN CI — `pr-checks.yml` (the PR-lane gate), `ci-lane-impl.yml`
+  and `quick-build-linux.yml` (the carrier build) — exists ONLY on `ci/quick-build-linux`.
+  `main`'s `ci.yml` is **byte-identical to upstream's** (`git diff adolfousier/main origin/main
+  -- .github/workflows/ci.yml` is empty) and its jobs resolve `self-hosted` on a push (the
+  ternary yields `ubuntu-latest` only for a fork PR); the fork has **0 registered self-hosted
+  runners**, so every main-push run queues indefinitely and is cancelled by the next push —
+  measured 2026-10-01T01:17Z: **0 success / 58 cancelled** since 2026-09-14, the newest still
+  `pending` on the `a85740948` push. **CONSEQUENCE — fork `main` has NO post-merge CI net**, by
+  design (the CI files moved off `main` 2026-08-26, Alexey's call, mirroring upstream dropping
+  them from theirs): the PRE-merge PR-lane gate (`oc-ship-chain` LEG1) is the ONLY gate, and
+  the only thing between a red commit and the carrier build. **Never read `main`'s workflow
+  files as evidence about the fork's CI, and never "repair" them** — they are upstream's; editing
+  one is divergence that conflicts on every upstream sync.

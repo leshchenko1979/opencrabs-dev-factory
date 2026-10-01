@@ -1,5 +1,30 @@
 # Changelog — opencrabs-dev
 
+## v0.4.277 — all fork CI lives on the carrier branch
+
+Owner correction, 2026-10-01T01:11:29Z, in the OC DEV HQ topic, after an HQ answer had offered him a choice between "repairing" and "deleting" `main`'s `ci.yml`: *"You probably forgot that the forks ci files live on a special branch"* — then, at 01:13:51Z: *"Shouldn't this fact be on our law?"*
+
+### 1 · The fact, at `environment.md` (beside the carrier clause)
+
+The carrier clause stated this for **one file** — `quick-build-linux.yml`. The general fact was uncodified, and its absence produced a wrong ruling: HQ read `main`'s `ci.yml` as the fork's own CI, measured its runs, and offered the owner a repair-or-delete choice — when that file is **upstream's**, and editing it is divergence that conflicts on every upstream sync.
+
+The law now carries the whole shape. `origin/main` holds exactly `auto-assign.yml` `ci.yml` `prerelease.yml` `release.yml` — upstream's files. The fork's OWN CI — `pr-checks.yml` (the PR-lane gate), `ci-lane-impl.yml` and `quick-build-linux.yml` (the carrier build) — exists **only** on `ci/quick-build-linux`. `main`'s `ci.yml` is **byte-identical to upstream's** (`git diff adolfousier/main origin/main -- .github/workflows/ci.yml` empty) and its jobs resolve `self-hosted` on a push, since the ternary yields `ubuntu-latest` only for a fork PR; the fork has **0 registered self-hosted runners**, so every main-push run queues indefinitely and the next push cancels it — **0 success / 58 cancelled** since 2026-09-14, the newest `pending` on the `a85740948` push.
+
+**Consequence, now stated: fork `main` has NO post-merge CI net, by design** — the CI files moved off `main` on 2026-08-26 (Alexey's call, mirroring upstream dropping them from theirs). The PRE-merge PR-lane gate (`oc-ship-chain` LEG1) is the **only** gate, and the only thing between a red commit and the carrier build. The rule closes with the operational half: **never read `main`'s workflow files as evidence about the fork's CI, and never "repair" them.**
+
+### 2 · Discoverability, at `SKILL.md` §Shared environment facts
+
+The always-loaded router listed "the carrier/feature-set/dispatch rules" without naming this one, so the fact was reachable only by loading `environment.md`. The routing sentence now names it in place.
+
+### LOC delta (mandatory per the law)
+
+- `environment.md`: **136 → 152** lines (new bullet, +16).
+- `SKILL.md`: **495 → 497** lines (+2; the routing sentence only — still under the 500 budget).
+- `CHANGELOG.md`: this entry.
+
+Doc-first: the bump and sync are deferred to the next cycle — this entry, v0.4.276 and v0.4.275 all sit above v0.4.274 until then.
+
+
 ## v0.4.276 — the design gate must ask for the simplest shape
 
 Owner rebuke, 2026-09-30T23:34:13Z, in the #724 lane's own topic, on that lane's first design: *"You forgot to apply our design principles - kiss and ponytail"*.
