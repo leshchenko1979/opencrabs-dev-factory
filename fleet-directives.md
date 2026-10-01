@@ -220,7 +220,7 @@ All observed runtime events, anomalies, proposals, and feature ideas MUST follow
   open the autonomous checklist. Two lanes resolved that ambiguity the same way by reading
   intent rather than law; this clause makes that reading the rule.
 - **An UNATTENDED session MUST NOT open a plan (v0.4.246, HQ ruling 2026-09-24; origin #510, raised by Triage n=10690).** A session with **no channel binding** — a cron worker or an A2A-origin session — has **no approval surface at all**: `plan init` returns its own *"ask the user to approve"* guidance, the model complies and ends its turn, and the plan sits `Editing` with `approved_at: null` forever, because no card exists to carry the tap. Measured on the `ops` profile 2026-09-24: **6** plans in that state, **every one with 0 `plan_cards` rows and 0 `session_bindings`** — four cron workers (`oc-harvest-344-resume` `0af22fbc`, `oc-harvest-421-resume` `b246ddbd`, `triage-hourly-issue-assignment` `41ca47a9`, `outreach-mining-tranche` `e8389c6b`), one **A2A** session (`9d163421`), and one orphan plan file with no session row. So the class is **not cron-only**, and it is **self-repeating**: a cron reuses its worker session, so every subsequent fire re-reads the stranded plan and re-reports a blocker no surface can clear — **three consecutive patrol cycles** closed with *"the plan card in this topic needs an Approve / /execute first"* while `plan_cards` held **zero** rows for that session AND that topic. Consequences: a cron/A2A prompt that could reach `plan init` must forbid it **explicitly**, and **the guidance telling an unattended session to use `checklist` instead is NOT a mitigation** — `init mode=checklist` ALSO returns to `Editing` pending approval, so the sanctioned choice strands the session too. Tool-side fix is **#510** (plan-tool lane, design-gated); this clause is the law-side stop. **A blocker claim is a status claim:** asserting a card exists, or naming the surface it lives on, requires the same-turn read — see the ops `AGENTS.md` §Execution Discipline bullet.
-- **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6b behavioral smoke testing.
+- **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6 behavioral smoke testing.
 - **Completion Definition**: A task is complete ONLY when the live behavioral smoke test on the swapped binary has executed and its 4-leg receipt is recorded in `smoke-verdicts.log`.
 
 ## Full-Gate Pre-PR Testing Law (v0.4.149, owner order 2026-09-12) [LANE]
@@ -293,7 +293,7 @@ A behavioral probe that creates a throwaway profile home (`profiles/<name>`) **r
 
 ## Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled (v0.4.202, HQ ruling 2026-09-18) [LANE]
 
-**Origin:** Triage asked whether an issue whose deliverable lies outside the carrier feature set is dispatchable at all under the 4-leg rubric — raised after #319 was wired 3× across two lanes with zero claims at the time of the read (ledger n=8161, n=8234, n=8261). The churn was real. The answer is YES: the defect was an **unlabeled smoke ceiling**, not an undispatchable issue.
+**Origin:** Triage asked whether an issue whose deliverable lies outside the carrier feature set is dispatchable at all under the 4-Leg Smoke Rubric — raised after #319 was wired 3× across two lanes with zero claims at the time of the read (ledger n=8161, n=8234, n=8261). The churn was real. The answer is YES: the defect was an **unlabeled smoke ceiling**, not an undispatchable issue.
 
 ### F1 — Dispatchability never depends on the carrier feature set
 
@@ -301,7 +301,7 @@ The existing classification bucket governs — `DISPATCHABLE = unclaimed AND vet
 
 ### F2 — The ceiling is `structural N/A`, and the verdict MUST read `UNPROVEN (structural N/A)`
 
-Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absent from the shipped set. `structural N/A` is a legal leg-4 substitute under the 4-leg rubric — but per the corrected-code presence rule, presence is not behavioral proof: the verdict reads **`UNPROVEN (structural N/A)`** and is **NEVER GREEN**. The ceiling is determined mechanically, not by judgment: read the live set with `tools/ship/oc-carrier-features` and compare it against the deliverable's feature-gated modules.
+Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absent from the shipped set. `structural N/A` is a legal leg-4 substitute under the 4-Leg Smoke Rubric — but per the corrected-code presence rule, presence is not behavioral proof: the verdict reads **`UNPROVEN (structural N/A)`** and is **NEVER GREEN**. The ceiling is determined mechanically, not by judgment: read the live set with `tools/ship/oc-carrier-features` and compare it against the deliverable's feature-gated modules.
 
 ### F3 — Harvest stays blocked; the lane parks and releases
 

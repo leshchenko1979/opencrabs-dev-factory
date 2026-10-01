@@ -10,7 +10,7 @@ worktree, SIGN every commit with the session trailer, push the branch, then ship
 `oc-ship-chain` (§Phase 5 — Ship (`oc-ship-chain`), below).
 After any
 swap containing your commits you TEST what shipped (test-on-notify loop,
-Phase 6b). The Editor NEVER dispatches BUILD runs (`quick-build-linux.yml`), NEVER
+Phase 6). The Editor NEVER dispatches BUILD runs (`quick-build-linux.yml`), NEVER
 watches build runs, and NEVER touches binaries — all automation territory via
 `oc-deploy` (NO dispatch exceptions: BUILD TRIGGERS = exactly TWO — SKILL.md §Hard rules).
 The Editor also owns CI/workflow config on the fork: changing the shipped feature
@@ -85,17 +85,17 @@ through an intermediary lane. Address by full uuid from a same-turn roster read;
 stamp the dispatch + receipt id via oc-ledger.
 
 1. **Detached execution & actor attribution:** follow `fleet-directives.md §CI-wait discipline & actor attribution` — W1 detached `background: true`, W6 automatic `$OPENCRABS_SESSION_ID` attribution.
-3. Re-running the same CI because the head moved is inherent to a fix loop, but
+2. Re-running the same CI because the head moved is inherent to a fix loop, but
    only via oc-prchecks re-dispatch — pr-checks.yml carries a concurrency group
    (`cancel-in-progress: true`, owner fix) so the superseded run is auto-cancelled.
-4. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only
+3. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only
    identifies the DISPATCH; the run's checkout log line identifies the TESTED
    TREE — only the checkout-ref is terminal truth for code-level verdicts.
    Verify the run checked out your head sha before reading any verdict as lane
    evidence; a mismatch is a carrier bug against the dispatch path — come
    straight to HQ with run id + checkout-ref + ledger incident
    stamp (suspect the single-flight dispatch lock adoption).
-5. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify
+4. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify
    the run actually carries your head (job name embeds the head sha) before
    waiting on it — a dispatch that fired on the wrong ref wastes the whole
    wait. oc-prchecks headSha adoption enforces this for its own runs; the
@@ -106,10 +106,10 @@ stamp the dispatch + receipt id via oc-ledger.
    **JOB NAME**. Full clause and the general counter rule:
    `environment.md §Environment facts (all roles)` (it binds every role that
    checks a gate, not editors only).
-6. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
-7. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
-8. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated/lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
-9. **PR-state claims need a same-turn `gh pr view` receipt (Duty-6/#1431
+5. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
+6. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
+7. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated/lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
+8. **PR-state claims need a same-turn `gh pr view` receipt (Duty-6/#1431
    lesson, v0.4.91):** any claim that a PR was created, updated, re-pointed,
    or "auto-updated" by a push is UNVERIFIED until `gh pr view <n> --json
    headRefOid,headRefName,state` names the EXPECTED head sha and repo — a
@@ -219,14 +219,14 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
 - Before building on an existing branch: diff it against its merge-base to confirm no
   foreign WIP rode along from parallel agents. Take a backup branch ref before any
   `rebase --onto`. *(SKILL.md §Shared war stories)*
-- **Checkable Completion Formula**: `DONE = Remotes origin and adolfousier fetched + origin/main tip verified.`
+- **Checkable Completion Formula**: DONE = Remotes origin and adolfousier fetched + origin/main tip verified.
 
 ## Phase 1 — Claim & Worktree Setup (`oc-start`)
 
 0. **Claim-time fresh re-read & Goal Mandate (v0.4.14 / v0.4.149, owner order 2026-09-12)**:
    - **Fresh Re-read**: FIRST action after claiming/waking — re-read `SKILL.md` + `editor.md` + `fleet-directives.md` from disk (never from recalled memory) — SKILL.md and editor.md in FULL, fleet-directives at thematic-index minimum with every `[LANE]`-tagged section in FULL. DONE = all three files re-read THIS turn.
-   - **Design-gate precondition (owner order 2026-09-12)**: Issue the goal **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). While the design is unapproved the editor stays in the design/approval phase — an early `/goal` would carry it past the very gate that requires owner approval BEFORE code. Fixed sequence: design → owner confirms → `/goal` → continuous execution through Phase 6b.
-   - **Autonomous Goal Mandate**: After the owner's design confirmation, the editor MUST execute `/goal follow the skill until the smoke test phase` (via `slash_command`). The Editor is mandated to drive autonomously and continuously from Phase 1 through Phase 6b smoke testing (claim → worktree → code → sign → ship via `oc-ship-chain` → live behavioral smoke test on swapped binary → record 4-leg smoke verdict in `smoke-verdicts.log`). **Editors MUST NOT stop or ask for confirmation after Phase 4 (writing code) or after intermediate ship legs.** The task is only complete once the live behavioral smoke test is recorded in `smoke-verdicts.log`.
+   - **Design-gate precondition (owner order 2026-09-12)**: Issue the goal **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). While the design is unapproved the editor stays in the design/approval phase — an early `/goal` would carry it past the very gate that requires owner approval BEFORE code. Fixed sequence: design → owner confirms → `/goal` → continuous execution through Phase 6.
+   - **Autonomous Goal Mandate**: After the owner's design confirmation, the editor MUST execute `/goal follow the skill until the smoke test phase` (via `slash_command`). The Editor is mandated to drive autonomously and continuously from Phase 1 through Phase 6 smoke testing (claim → worktree → code → sign → ship via `oc-ship-chain` → live behavioral smoke test on swapped binary → record 4-leg smoke verdict in `smoke-verdicts.log`). **Editors MUST NOT stop or ask for confirmation after Phase 4 (writing code) or after intermediate ship legs.** The task is only complete once the live behavioral smoke test is recorded in `smoke-verdicts.log`.
 1. **Uniqueness Gate**: Search existing issues first via `tools/issue/oc-issue-sweep '<query>'` (sweeps fork open/closed + upstream closed).
 2. **Issue Creation & Continuous Relationship Linking**: file a `fix(`/`bug(`-titled issue via `tools/issue/oc-issue-create` declaring its origin ON the creating command -- `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), `--no-parent "<reason>"` as the last resort. A declared root or orphan is legal; a silent one is a violation.
    - If no issue fits, open ONE issue on the fork: `gh issue create -R leshchenko1979/opencrabs` (symptom + evidence).
@@ -242,7 +242,7 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
    *(Manual fallback `oc-wt add <task> <branch>` is reserved only for raw non-issue worktrees).*
    - **ZERO-ACK ON DISPATCH (owner order 2026-09-13)**: When receiving a task dispatch (`[ISSUE DISPATCH: #N]`), **NEVER reply with a `session_notify` ack**. Running `oc-start` or stamping `oc-ledger claim` is the sole required action.
 
-DONE = Issue verified/filed, atomically claimed on ledger, and clean worktree mounted at `~/opencrabs-wt/<task>` on branch `<type>/<slug>` tracking fresh `origin/main`.
+- **Checkable Completion Formula**: DONE = Issue verified/filed, atomically claimed on ledger, and clean worktree mounted at `~/opencrabs-wt/<task>` on branch `<type>/<slug>` tracking fresh `origin/main`.
 
 ## Phase 2 — Worktree Lifecycle & Isolation
 
@@ -252,7 +252,7 @@ DONE = Issue verified/filed, atomically claimed on ledger, and clean worktree mo
   ```bash
   tools/git/oc-wt remove <task>
   ```
-DONE = Worktree exclusivity maintained, edits isolated to `~/opencrabs-wt/<task>`.
+- **Checkable Completion Formula**: DONE = Worktree exclusivity maintained, edits isolated to `~/opencrabs-wt/<task>`.
 
 ## Phase 3 — Explore before writing (Imperative `memory_search` & DRY Gate)
 
@@ -280,7 +280,7 @@ DONE = Worktree exclusivity maintained, edits isolated to `~/opencrabs-wt/<task>
    - State WHY the code was introduced before proposing to change it. A guard, cap or band that looks wrong is often a deliberate trade against a named incident — the rationale lives in the commit body, the doc comment or the cited issue, NEVER in the numbers alone.
    - An issue TITLE is a claim, not a finding: a stale-open issue asserting an unfixed defect makes a lane re-implement landed work. Reproduce at HEAD before believing it.
 
-DONE = Full symbol graph & caller tree mapped via `memory_search scope="external"`, DRY reuse verified, trait/API signatures confirmed via `grep_docs`, and issue provenance (blame → connected issues/PRs → stated rationale) established before the first edit.
+- **Checkable Completion Formula**: DONE = Full symbol graph & caller tree mapped via `memory_search scope="external"`, DRY reuse verified, trait/API signatures confirmed via `grep_docs`, and issue provenance (blame → connected issues/PRs → stated rationale) established before the first edit.
 
 ## Phase 4 — Shape the change
 
@@ -335,7 +335,7 @@ cross-check every NEW or CHANGED call site against the callee's real definition:
 the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
 (moving a field out of `&mut self` in `drop` is `E0507` — take it with
 `Option::take()`).
-DONE = Target change implemented, call-site shapes verified, and signed commit landed on branch with Session-Id trailer.
+- **Checkable Completion Formula**: DONE = Target change implemented, call-site shapes verified, and signed commit landed on branch with Session-Id trailer.
 
 ## Phase 5 — Ship (`oc-ship-chain`)
 
@@ -354,7 +354,7 @@ systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
 **THE LAUNCH SURFACE IS LOAD-BEARING (measured 2026-09-26, lane 63d775f9).** Two consecutive chains armed via the harness's background mode died `rc=143` (SIGTERM) ~75 s after the wrapper exited 6 — **even though LAW 17's re-exec had already placed each in its own user scope** (`run-r02937f26c50b43bea91cb45c7ca6dc58`, `run-rd0e1dd4e3b404e09b861bb58a87a3e0a`; detached logs `747586` / `758792`, both ending `gate infra rc=143`). Swap, a peer's broad `pkill` and a ship-lock wait were each ruled out by same-turn reads. The identical chain armed with `--unit=… --collect` survives and polls. **The CAUSE is NOT established** — the discriminator is. And the cost of getting it wrong is not just a lost chain: the killed run leaves its gate **`in_progress` with nobody polling it**. Measured the same hour: `36277623534` and `36277682621`, both `status=in_progress` / `conclusion=null` — two wasted full gates.
 
 `oc-ship-chain` executes the entire 5→swapped stretch mechanically:
-1. **Leg 1 (CI Gate):** Dispatches and watches `oc-prchecks` (`pr-checks.yml` on your branch: fmt + clippy + `cargo test --locked --profile ci --all-features`). ⚠️ **The chain's DEFAULT gate is FAST, and FAST is NOT the CI-gate leg of the 4-leg rubric** (finding `127429e6`, cycle `20260919-c21`): `oc-ship-chain` passes `--fast` to `oc-prchecks` unless `--full`/`--no-fast` is given (the `oc-ship-chain` fast-default, its `--fast` pass-through to `oc-prchecks`), and `--fast` runs **fmt + clippy only, tests skipped** (`oc-prchecks --help`, `:704`). A FAST run's job name carries the only visible marker (`… — FAST`) and its `Run tests` step reads `skipped` — citing that run as your CI-gate evidence leaves the smoke receipt with **no all-features test evidence at all**, the exact leg the "Corrected-code presence ≠ smoke success" law protects. Pass `--full` when the receipt needs the test leg, or dispatch `oc-prchecks` yourself without `--fast`. **Exception — a pure-docs commit SKIPS this leg** (owner ruling 2026-09-12: *"We don't need the pure docs commits to pass through ci on our side."*). "Pure docs" is defined in the law, not by the tool: every changed path ends `.md` **and** is not `include_str!`-compiled into the binary — the 21-path compiled-in exclusion set lives in `fleet-directives.md §Docs-Only LEG1 Gate Skip`. A skip is recorded as **SKIPPED** and is never a passed gate: do not cite a skipped leg as GREEN, and do not count it as a passed leg in a smoke receipt.
+1. **Leg 1 (CI Gate):** Dispatches and watches `oc-prchecks` (`pr-checks.yml` on your branch: fmt + clippy + `cargo test --locked --profile ci --all-features`). ⚠️ **The chain's DEFAULT gate is FAST, and FAST is NOT the CI-gate leg of the 4-Leg Smoke Rubric** (finding `127429e6`, cycle `20260919-c21`): `oc-ship-chain` passes `--fast` to `oc-prchecks` unless `--full`/`--no-fast` is given (the `oc-ship-chain` fast-default, its `--fast` pass-through to `oc-prchecks`), and `--fast` runs **fmt + clippy only, tests skipped** (`oc-prchecks --help`, `:704`). A FAST run's job name carries the only visible marker (`… — FAST`) and its `Run tests` step reads `skipped` — citing that run as your CI-gate evidence leaves the smoke receipt with **no all-features test evidence at all**, the exact leg the "Presence and bookkeeping legs are never a smoke PASS" law protects. Pass `--full` when the receipt needs the test leg, or dispatch `oc-prchecks` yourself without `--fast`. **Exception — a pure-docs commit SKIPS this leg** (owner ruling 2026-09-12: *"We don't need the pure docs commits to pass through ci on our side."*). "Pure docs" is defined in the law, not by the tool: every changed path ends `.md` **and** is not `include_str!`-compiled into the binary — the 21-path compiled-in exclusion set lives in `fleet-directives.md §Docs-Only LEG1 Gate Skip`. A skip is recorded as **SKIPPED** and is never a passed gate: do not cite a skipped leg as GREEN, and do not count it as a passed leg in a smoke receipt.
 2. **Leg 2 (Issue Log):** If `--issue <N>` is supplied, posts the per-commit implementation comment via `oc-issue-log` automatically.
 3. **Leg 3 (Fast-Forward Merge):** Fetches fork `main`, verifies fast-forwardability, and pushes `<branch>:main` (serialized via `ship.lock`).
 4. **Leg 4 (Carrier Ship):** Dispatches `oc-deploy ship --sha <sha> --execute` to build on `ci/quick-build-linux`.
@@ -374,10 +374,10 @@ When shipping features via `oc-ship-chain` or deploying via `oc-deploy`, failure
 | **1. Non-Fast-Forward Push** | `rc=5` — **any** NON-FF, clean *or* conflicted | **Mechanical only on `oc-deploy`'s own push path** (cause (c) below, v0.4.145): it auto-fetches `origin/main`, rebases, audits with `oc-rebase-safety audit`, and retries the push in 3s. **`oc-ship-chain` does NOT rebase** — LEG3 is a bare `git merge --ff-only` that dies `rc 5` **unconditionally** on any non-FF, so LEG4 (and with it the auto-rebase) is never reached. | The **LANE** rebases `$BRANCH` onto fork main and force-pushes **before** re-running the chain — a **clean** non-FF still needs this; the table does NOT mean "wait for auto". A **semantic conflict** additionally needs hand adjudication. | `NON-FF: rebase <branch> onto fork main (oc-rebase-safety) and re-run` (chain) OR `REBASE_CLEAN` / `REBASE_CONFLICT` (**only** on `oc-deploy`'s push path). Canonical rc register: `tools/docs/RC-CONTRACT.md`. |
 | **2. Carrier Compilation Failure** | `rc=3` (`build-failed`) | **Auto-log extraction**: Tool automatically runs `gh run view <id> --log-failed`, parses `error[E...]` and rustc diagnostic lines, and prints the exact compiler error and file:line in tool stderr. | Agent fixes the Rust syntax, borrow checker, or missing module error in the worktree, commits, and re-runs `oc-ship-chain`. | `CARRIER_BUILD_FAILED (rc=3): Run <id>` followed by extracted compiler error block |
 | **3. Daemon Boot Panic / Swap Failure** | `rc=4` (`swap-failed`) | **Auto-rollback & Auto-diag**: `oc-deploy swap-execute` **automatically rolls back** to the previous binary (`/usr/local/bin/opencrabs.bak`), restarts the service, and automatically extracts the panic backtrace from `journalctl -u opencrabs-ops.service -n 30` into tool output. | Agent inspects the auto-extracted panic trace, reproduces/fixes the startup bug or bad unwrap in the worktree, commits, and re-chains. Host remains 100% healthy. | `SWAP_FAILED (rc=4): Auto-rolled back to previous binary. Daemon boot panic: <extracted log>` |
-| **4. Daemon Bounce Task Interruption** | Restart signal / `[BACKGROUND TASK INTERRUPTED]` | **State file + recovery re-run** (⚠️ there is **no `--resume` flag** — `oc-ship-chain` dies `rc=2` on an unknown arg): `oc-deploy swap-execute` writes the deployment result to `/root/.opencrabs/profiles/ops/opencrabs-dev/deployed.sha`. Only the `poll --execute` path hands Phase B to a transient `systemd-run` unit, so a **direct** `swap-execute` runs in the caller's cgroup and can be killed by the very restart it performs. | **Recover by state, not by resume**: read `deployed.sha`; if the swap landed, confirm `disk==proc MATCH` and go to Phase 6b. If the chain died before the swap, **re-run the same chain with `--gated-run <id>`** (reuses the GREEN gate run whose job name pins your sha) — see `upstream-merge-runbook.md`. | `SWAP_SUCCESSFUL: running binary matches deployed SHA. Ready for Phase 6b smoke.` |
+| **4. Daemon Bounce Task Interruption** | Restart signal / `[BACKGROUND TASK INTERRUPTED]` | **State file + recovery re-run** (⚠️ there is **no `--resume` flag** — `oc-ship-chain` dies `rc=2` on an unknown arg): `oc-deploy swap-execute` writes the deployment result to `/root/.opencrabs/profiles/ops/opencrabs-dev/deployed.sha`. Only the `poll --execute` path hands Phase B to a transient `systemd-run` unit, so a **direct** `swap-execute` runs in the caller's cgroup and can be killed by the very restart it performs. | **Recover by state, not by resume**: read `deployed.sha`; if the swap landed, confirm `disk==proc MATCH` and go to Phase 6. If the chain died before the swap, **re-run the same chain with `--gated-run <id>`** (reuses the GREEN gate run whose job name pins your sha) — see `upstream-merge-runbook.md`. | `SWAP_SUCCESSFUL: running binary matches deployed SHA. Ready for Phase 6 smoke.` |
 
 **Exit codes & Lane action:**
-- **Exit 0 — SWAPPED:** The new binary is running live on the host (`opencrabs-ops` user unit). Worktree can now be removed (`tools/git/oc-wt remove <task>`). Proceed immediately to Phase 6b (Smoke-test-on-notify).
+- **Exit 0 — SWAPPED:** The new binary is running live on the host (`opencrabs-ops` user unit). Worktree can now be removed (`tools/git/oc-wt remove <task>`). Proceed immediately to Phase 6 (Smoke-test-on-notify).
 - **Exit 2 — USAGE:** Bad or missing arguments (`--sha`/`--branch` are required; malformed flag). Correct the invocation and re-run — no lane state to resolve.
 - **Exit 3 — DIRTY CHECKOUT:** The fork checkout has uncommitted changes (pre-flight refusal). Clean or stash it, then re-run.
 - **Exit 4 — GATE-RED / CARRIER-RED:** The CI gate failed or the carrier build failed. Start a fix round (Phase 6-Fix): keep the same branch, fix in a new worktree, commit, push, and re-run `oc-ship-chain`. Triage heuristics live in `editor.md §Red-run triage heuristics` (below). **Also the `--gated-run` / `--gated-sha` pre-verify failure:** the supplied run was not `completed success` on a job pinned to the sha, or `--gated-sha` did not match `--sha`. Do NOT re-dispatch the run — re-verify it with `gh run view <id> --json status,conclusion,jobs` and re-supply the correct id.
@@ -415,9 +415,9 @@ git -C ~/opencrabs-wt/<task> merge-base --is-ancestor <branch> origin/main || {
 ⚠️ **Distinguish this from the v0.4.214 local-main reconcile — same `rc 5`, opposite fixes.** v0.4.214 covers LOCAL `main` being stale while the branch is *correctly* based on `origin/main`: that is a FALSE alarm and the fix is **do not rebase**. This check covers `origin/main` having genuinely MOVED during the gate: the rebase is **real and necessary**. The v0.4.214 diagnostic (`git merge-base --is-ancestor main origin/main`) does not separate the two — test against `origin/main`, never against local `main`. Automating the re-check inside the chain (pre-LEG3) is a Toolsmith call; until it lands, the LANE owes the check.
 
 **Gate-idle question sweep:** CI gate and carrier build waits are idle time — do not sit silent on open questions. Circle back to the user in your topic with anything unresolved (scope doubts, naming, approach forks) while the chain runs; waiting is never a reason to hold a question or to guess.
-DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with new binary running live on `opencrabs-ops` unit and worktree cleaned.
+- **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with new binary running live on `opencrabs-ops` unit and worktree cleaned.
 
-## Phase 6b — Smoke Verification (oc-smoke)
+## Phase 6 — Smoke Verification (oc-smoke)
 
 A post-swap notify announcing a new binary (mechanical fan-out — `oc-deploy
 fanout`, [#24](https://github.com/leshchenko1979/opencrabs/issues/24) LIVE
@@ -444,8 +444,7 @@ right here (`opencrabs-ops` user unit).
    built — report the mismatch to the sender, do not smoke on a stale unit.
 3. Drive your feature end-to-end against the RUNNING unit on its normal
    surfaces (Telegram, cron, MCP — whatever the feature touches).
-   **Checkable completion criteria (v0.4.170, Finding G-2):**
-   DONE = Mechanical proof demonstrating target feature execution against the running binary (command output, log line with PID/timestamp match, or API receipt); confirmed via `tools/smoke/oc-smoke` (exit 0) and recorded in `smoke-verdicts.log`.
+   - **Checkable Completion Formula**: DONE = Mechanical proof demonstrating target feature execution against the running binary (command output, log line with PID/timestamp match, or API receipt); confirmed via `tools/smoke/oc-smoke` (exit 0) and recorded in `smoke-verdicts.log`.
    **Receipt surface for a channel-RENDERING defect is the DELIVERED message, never a stored row
    (finding `1a63f103`, cycle `20260919-c21`):** the `pending_followups` row (`host_html` /
    `host_markdown`) is written BEFORE `normalize_rich_markdown_with_media` → `enforce_button_fit`,
@@ -474,17 +473,18 @@ right here (`opencrabs-ops` user unit).
    duty for it ENDS — no further fork maintenance, no fix rounds. Future work
    on that feature happens upstream only: new claim via Phase 1, normal rules.
 
-**Behavioral probe is the smoke PASS GATE (owner order 2026-09-08 12:16Z):**
-lineage (is-ancestor), identity (`oc-smoke-evidence` MATCH) and CI gate
-evidence do NOT constitute smoke PASS — they are bookkeeping legs. A smoke
-verdict of PASS requires step 3 to have TRIGGERED the fix's actual runtime
-path on the live box and observed it execute (real message round-trip, real
-interrupt, real stamp — not CI test counts). If the fix has no observable
-runtime surface, declare the probe N/A with the structural reason in the
-smoke evidence (precedent: #92 no-runtime-string finding) — never silent-skip.
-A verdict citing only legs 1–3 is INCOMPLETE and gets returned to the lane.
-(A stripped binary that compiles the fix but crashes on the path must FAIL —
-that is the exact hole this rule closes; origin: ship-38585459 smoke n=2036.)
+**Presence and bookkeeping legs are never a smoke PASS (owner order 2026-09-08):**
+lineage (is-ancestor), identity (`oc-smoke-evidence` MATCH / artifact==exe sha) and CI gate
+evidence are BOOKKEEPING LEGS — all three passing still does not constitute a successful smoke
+test. Presence evidence (strings marker hit, sha match, `deployed.meta` identity) proves only
+that the artifact shipped; it says nothing about behavior. A smoke PASS requires step 3 to have
+TRIGGERED the fix's actual runtime path on the live box and observed it execute (real message
+round-trip, real interrupt, real stamp — not CI test counts). If only presence evidence exists,
+the verdict is `UNPROVEN (presence-only)` — never GREEN. If the fix has no observable runtime
+surface, declare the probe N/A with the structural reason in the smoke evidence (precedent: #92
+no-runtime-string finding) — never silent-skip. A verdict citing only legs 1–3 is INCOMPLETE and
+gets returned to the lane. (A stripped binary that compiles the fix but crashes on the path must
+FAIL — that is the exact hole this rule closes; origin: ship-38585459 smoke n=2036.)
 
 **Owner-dependent leg → PARK, never wait (v0.4.152, owner order 2026-09-12):**
 if the only remaining behavioral evidence needs the OWNER — a visual pass, a tap,
@@ -509,12 +509,10 @@ schemas (step 1), re-run from scratch — NEVER report the bounce itself as a fe
 FAIL.
 
 
-### Smoke-verdict rules (moved from SKILL.md §Test ontology, v0.4.262)
+### Smoke-verdict rules
 
-Re-homed by cycle `20260925-c24` lens B (B-H2): the always-loaded router carried the smoke
-PROCEDURE under its ontology table. The ontology (the three kinds + the sanity signal) stays in
-`SKILL.md §Test ontology`; the verdict rules and their incident history live here, on the load path
-of the role that actually produces smoke evidence.
+The ontology (the three kinds + the sanity signal) stays in `SKILL.md §Test ontology`; the verdict
+rules live here, on the load path of the role that actually produces smoke evidence.
 
 The table above carries the content; what remains prose:
 
@@ -543,16 +541,6 @@ nothing about behavior.
   free text and STATE which form was used — never present a token the tool
   cannot produce as tool-emitted.
 
-**Corrected-code presence ≠ smoke success (owner order 2026-09-08):** evidence
-that the corrected code is merely PRESENT in the swapped binary — strings
-marker hit, sha match, deployed.meta identity — can NEVER back a smoke-success
-verdict on its own. Presence proves the artifact shipped; it says nothing
-about behavior. A smoke verdict of GREEN additionally requires at least one
-BEHAVIORAL probe of the corrected path actually executing (a live call, a
-forced trigger, an observed output through the new code). If only presence
-evidence exists, the verdict is `UNPROVEN (presence-only)` — never GREEN, and
-the lane's ledger append must carry that label.
-
 **Live verification stamp required for live-testable UX features (owner order 2026-09-16):**
 For any UX, UI, card rendering, button interaction, or user-facing feature that is
 live-testable on the running binary, static binary string probes or symbol searches alone
@@ -564,22 +552,6 @@ automated and requires the owner's visual inspection, the lane MUST record `PARK
 naming the exact owner action and packaging sha — never substitute a binary string probe for a
 live UX verification.
 
-**Bookkeeping legs ≠ smoke PASS (owner order 2026-09-08 12:16Z):** lineage
-(is-ancestor), identity (artifact==exe sha) and CI gate evidence are
-bookkeeping legs — ALL THREE PASSING still does not constitute a successful
-smoke test. Smoke PASS requires a live behavioral probe of the corrected
-runtime path on the running box (full rule: editor.md Phase 6b). A verdict
-citing only bookkeeping legs is INCOMPLETE — returned to the lane, never GREEN.
-
-
-**Owner-dependent leg → PARK, never wait (v0.4.152, owner order 2026-09-12):** when
-the only remaining behavioral evidence requires the OWNER (a visual pass, a tap, an
-eye-confirm), the leg is NOT a blocking gate. Stamp the provable legs, append a
-`PARKED-OWNER-EYE` row naming the owner action and the packaging sha, and RELEASE
-the lane. A lane idling on an owner leg is in violation; a lane that parks and moves
-on is compliant. Full law: `fleet-directives.md §Owner-Dependent Smoke Legs — Park,
-Don't Chase` (L1–L4: parking, shift exit condition, owner-verdict timing, packaging-sha
-stamps).
 
 **Tool-description changes have no log-based probe (lane 1a63f103, 2026-09-12):** the
 daemon's provider log records tool ARGS only (`[TOOL_ACCUM] name=bash`) and NEVER tool
@@ -616,9 +588,9 @@ it would FAIL on the pre-fix artifact — state the input on which it fails.**
 **Two more ways a leg-4 probe measures nothing (Duty-4 `20260927-c25`, 2026-09-27).** **(d) AN ABSENCE-SHAPED FIX NEEDS A FIRING RECEIPT, NOT A CRITERION.** Where the fix's observable IS an absence (a message that must no longer appear, a path that must no longer be hit), a leg that checks 'it is absent' passes on a pre-fix artifact too — it cannot fail, so it proves nothing. The leg must instead show the condition FIRING on the pre-fix artifact and NOT firing after: drive the input that used to produce it and carry both readings (lane a5b34466). **(e) A PROBE OVER A MUTATING ARTIFACT OWES AN INSTANT AND AN IDENTITY RE-READ.** When the artifact can change between the probe and the report — a live store, a churning log, a page that re-renders — a bare PASS is unanchored: state the instant the probe read, and re-read the artifact's IDENTITY (hash / mtime / rowid) at report time so a later reader can tell whether they are looking at the same object. Measured 2026-09-25 on a re-rendered page: the same probe returned different results 20 minutes apart with no code change, and neither reading was wrong (lane 2ed8adeb). **Duty-5 ruling 2026-09-19 (answering lane 4b0990b7, issue #295): for a SINGLE-SIDED probe the corollary IS the sufficiency test -- the discriminating negative half need not be OBTAINED, only NAMED and mechanically shown absent from the pre-fix tree.** A positive half alone backs PASS when all three hold: (1) the falsifying input is STATED explicitly; (2) its absence on the pre-fix artifact is established by a MECHANICAL discriminator run that turn -- `git log -S <string> <fix-sha> -- <pathspec>` returning exactly ONE introduction (the fix's own commit), or the string absent from `git grep` over the pre-fix tree -- never by assertion, never by reasoning about the code; (3) the probe observes the RUNNING artifact's OWN output (a live session's rendered prompt, a real call), and the observing session itself exercises the path under test (a Telegram-bound session, for a Telegram-delivery feature) -- a `strings` dump of the binary stays presence-only and cannot back PASS for a live-testable UX feature. What the corollary forbids is a probe that cannot NAME any input it would fail on: that probe measures its own constants. Where the negative half is STRUCTURALLY unobtainable -- prompts are rendered per turn and never persisted, so a non-Telegram session's prompt cannot be read back -- the mechanical discriminator of (2) stands in for it. **Carry the discriminator's command in the row.** **And state WHICH SHAPE the fix is, because only one form applies to each:** form 1 ('exactly ONE introduction') is a claim about an ADDITION — it can only be satisfied where the fix ADDS the token. A REMOVAL-shaped fix has no introduction to find, so form 1 returns EMPTY for the correct pre-fix answer and a lane reading that empty as 'the discriminator failed' withdraws a sound probe; form 2 (absence from the pre-fix tree) is the applicable form there. Recorded 2026-09-27 (lane c6b1a539, Duty-4 `20260927-c25`): the law named both forms but never said which fix shape each covers. **Scope it, or it proves nothing:** both sanctioned forms silently assume the token is GLOBALLY UNIQUE, which this law never stated. A non-unique token -- `MAX_ATTEMPTS`, `TIMEOUT`, `retry`, `attempts` -- makes form 1 return FOREIGN introductions and form 2 a false PRESENT. Measured on `96b474e` (lane c6b1a539, verified first-hand): `git grep -nEi 'max_attempts|backoff' 96b474e -- src/cli src/a2a` returns rc=1 with ZERO hits -- the correct pre-fix answer, the retry path is absent -- while the SAME grep UNSCOPED returns rc=0 with 265 hits, including a foreign `const MAX_ATTEMPTS: u32 = 3;` at `src/brain/agent/service/compaction.rs:348`. A CORRECT fix therefore FAILS its own discriminator, and the lane may wrongly conclude its probe is unsound. So the discriminator token MUST be PATHSPEC-SCOPED to the subtree the fix changes, the row MUST carry the pathspec, and "exactly ONE introduction" is a claim about a SCOPE -- never about the tree. **Anchor it too, or it proves nothing on a pre-merge tree:** form 1's revision defaults to HEAD, and a lane runs this discriminator on a PRE-MERGE tree where the fix's own commit is not yet reachable from HEAD -- so the bare form returns EMPTY, and empty reads as "no introduction exists": a FALSE NEGATIVE on the one tree the law is about. Form 1 is therefore ANCHORED at the fix's own commit -- `git log -S <string> <fix-sha> -- <pathspec>`. Measured on #450 (lane 2ed8adeb, verified first-hand; HEAD=main, fix `b6389c892` unmerged -- `git merge-base --is-ancestor b6389c892 HEAD` rc=1): the bare form returns EMPTY, the anchored form returns exactly ONE introduction, `b6389c892`. Form 2 is unaffected by this gap and is what established the negative half for #450 -- scoped, `git grep -c 'ProgressEvent::TokenCount' 33b7aecdd -- src/channels/telegram/resume.rs` returns rc=1 with ZERO hits (the correct pre-fix answer), while the SAME grep UNSCOPED returns 19 hits across 6 files, including the fresh-turn twin at `src/channels/telegram/progress.rs:1` -- a false PRESENT.
 
 
-## Red-run triage heuristics (shared core, v0.4.10 — moved here from editor.md Phase 6, and from SKILL.md at v0.4.262 by cycle `20260925-c24` lens B)
+## Red-run triage heuristics (shared core, v0.4.10)
 
-ONE location: red-run diagnosis reads these (pre-S3: Compiler Step 2; now:
+ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-08-28, Step 2; now:
 `oc-deploy` RED reports + HQ triage); the
 Editor applies the same ones in its fix round (editor.md Phase 6-Fix). No lane
 uses them as a licence to fix outside its scope.
@@ -657,12 +629,12 @@ tools/git/oc-commit -m "<msg>"   # gated wrapper: Session-Id from ambient sessio
 # 3. push branch, then re-run oc-ship-chain (Leg 1 CI gate -> Leg 2 comment -> Leg 3 ff-merge -> Leg 4 carrier build -> Leg 5 swap)
 git -C ~/opencrabs-wt/<task> push origin <branch>
 tools/ship/oc-ship-chain --sha <NEW-head-sha> --branch <branch> [--issue <issue-n>]
-# 4. on exit 0 SWAPPED, remove the worktree — proceed to Phase 6b smoke re-test
+# 4. on exit 0 SWAPPED, remove the worktree — proceed to Phase 6 smoke re-test
 tools/git/oc-wt remove <task>
 ```
 
 **Per-commit laws live in their phases:** branch-attached HEAD + signing → §Phase 4; worktree-writer exclusivity → §Phase 2. They bind EVERY commit in ANY phase — read them there.
-- **Checkable Completion Formula**: `DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + tools/ship/oc-ship-chain exits 0 (SWAPPED) + worktree removed.`
+- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + tools/ship/oc-ship-chain exits 0 (SWAPPED) + worktree removed.
 
 
 ## Phase 7 + 7b — NOT the editor's → `harvest.md` (HARVEST lane)

@@ -1,16 +1,16 @@
 # review-lenses.md — Duty-6 reviewer lens catalog
 
-Full briefs for the eleven Duty-6 review lenses (A–J + standing brain-scrub; regrouped v0.4.81 with C joining TOOLS and D sole in ARTIFACTS — H later joined D in ARTIFACTS, v0.4.113/115; the MECHANICAL family + Reviewer J added v0.4.161 on owner order). hq.md §Duty 6 owns the
-method (read-only sub-agents, verbatim-quote verification, oc-review-persist
-persistence, poll triple-check, verdict table) and keeps only the family map
-there; this file owns the per-lens scope briefs (brain-scrub brief lives at review-lenses.md § STANDING LENS: brain-scrub). Letters keep chronological
+Full briefs for the eleven Duty-6 review lenses (A–J + standing brain-scrub; regrouped v0.4.81 with C joining TOOLS and D sole in ARTIFACTS — H later joined D in ARTIFACTS, v0.4.113/115; the MECHANICAL family + Reviewer J added v0.4.161 on owner order). The Duty-6 method — read-only sub-agents, verbatim-quote verification, `oc-review-persist`
+persistence, poll triple-check, verdict table — is canonical at `docs/instruments/review-rotation.md`
+(meta-factory repo, not resolvable from this tree). This file owns the per-lens scope briefs
+(brain-scrub brief lives at `review-lenses.md § STANDING LENS: brain-scrub`). Letters keep chronological
 birth order (stable report/persist keys, not an ordering). Reviewer-performance
-loop lessons (hq.md step 7) fold INTO these briefs at ship time,
+loop lessons fold INTO these briefs at ship time (ship-time fold, §FAMILY: META),
 attributed to the reviewer that produced the evidence. Family identity is the
 OBJECT under review, not the evidence flow between lenses (regrouped v0.4.81:
 C joined TOOLS — gaps/shape/implementation pipeline; D is sole in ARTIFACTS,
 the family IS the deletion owner gate). Membership and grouping change only
-on census evidence + owner word (hq.md step 7).
+on census evidence + owner word (ship-time fold, §FAMILY: META).
 
 #### FAMILY: DOCS — role files (wording / reading load / organization)
 
@@ -278,7 +278,7 @@ on census evidence + owner word (hq.md step 7).
      secondary — I-4.2).
      CORPUS (I-5.1 v0.4.116): durable reports live in
      `reviews/<cycle>/reports/`; when two skill-review-index.log files
-     diverge, defer to `hq.md §Duty 6 step 0`: the canonical root is the STATE repo
+     diverge, defer to `tools/state/oc-review-persist check-cycle` (contract: `docs/instruments/review-rotation.md` §step-0 recovery): the canonical root is the STATE repo
      (`$OC_DEV_STATE/reviews/<cycle>/reports/`); the frozen skill-repo `reviews/` root is history and
      MUST NOT be written. Severity scale:
      HIGH (load-bearing lie / stall class) · MED (real gap, bounded blast
@@ -292,7 +292,7 @@ on census evidence + owner word (hq.md step 7).
 
 #### STANDING LENS: `brain-scrub` — OUTSIDE the A–J families
 
-*(Heading shape note, lens I F7 v0.4.206: this brief sat at `####` — the FAMILY level — with no family claiming it, so a cold reader could not tell whether it belonged to META or was a family of its own. It is neither: the rotation is `A–J + standing brain-scrub` (`hq.md §Duty 6` step 1), the family map stays A–J, and this lens owns its own report. Registered in `oc-review-persist` LENSES as `brain-scrub`.)*
+*(Heading shape note, lens I F7 v0.4.206: this brief sat at `####` — the FAMILY level — with no family claiming it, so a cold reader could not tell whether it belonged to META or was a family of its own. It is neither: the rotation is `A–J + standing brain-scrub` (this file's lens list), the family map stays A–J, and this lens owns its own report. Registered in `oc-review-persist` LENSES as `brain-scrub`.)*
 
 Standing lens in the Duty 4+6 skill-review rotation (registered in `oc-review-persist` LENSES). Scrubs the ops profile's brain files for opencrabs-dev process content living outside the skill:
 
@@ -300,4 +300,4 @@ Standing lens in the Duty 4+6 skill-review rotation (registered in `oc-review-pe
 2. **MEMORY.md** carries no discipline laws — passive memory never binds on a cold session (shipped template law); directives found there are findings.
 3. **Every finding lands as a move-with-verification:** the canonical copy is verified present in the skill BEFORE anything is removed from the brain file. Brain files are append-only — shrink/cleanup requires explicit owner approval and `dedup_intent`/`cleanup_intent`.
 
-Reports persist via `oc-review-persist brain-scrub <text|@file>`. Same mechanics as every other lens: verdict consolidated → stamped (the boundary-stamp law at `hq.md §Duty 6` applies unchanged — the close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `review-battery`, which does not reset the counter).
+Reports persist via `oc-review-persist brain-scrub <text|@file>`. Same mechanics as every other lens: verdict consolidated → stamped (the cadence-stamp law at `hq.md §Cadence boundary is stamped at review consolidation` applies unchanged — the close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `review-battery`, which does not reset the counter).

@@ -12,7 +12,7 @@
 ## Phase 7 — Feature complete → upstream PR
 
 Trigger: the feature is COMPLETE — merged into fork `main`, shipped inside a
-green swapped build, smoke test PASS (v0.4.104 four-leg rubric). With tests green
+green swapped build, smoke test PASS (v0.4.104 4-Leg Smoke Rubric). With tests green
 and smoke confirmed, the HARVEST lane prepares the harvested PR branch, posts the smoke
 evidence, and files the upstream PR. Development-time contact stays issues-only;
 this PR is the ONE sanctioned exception (completed features only).
@@ -21,6 +21,7 @@ this PR is the ONE sanctioned exception (completed features only).
 # 0a. MODE GATE (v0.4.226) — resolve the current mode LIVE, never from memory:
 #       tools/state/oc-ledger events --n 2000 --kind note | grep -o 'MODE: [A-Z-]*' | head -1
 #     NO `MODE:` row => DEGRADED (fail closed).
+#     Resolution law + fail-closed default: SKILL.md §Hard rules — MODE REGISTER.
 #       DEGRADED   -> HOLD the PR GROUP. Request owner approval in YOUR forum topic
 #                     (reply or a positive reaction = approval; silence is NOT consent).
 #                     File only on that approval.
@@ -38,12 +39,11 @@ this PR is the ONE sanctioned exception (completed features only).
 #     The unit is the PR GROUP, not the issue — one approval covers every member and
 #     a member never needs its own tap. Prefix is canonical: `FILING APPROVED: group `.
 #
-#     WHY --n IS LOAD-BEARING ON THIS READ AND NOT COSMETICS: `events` is a TAIL with a
-#     ~20-row default window, so a bare `events --kind note` returns ZERO FILING APPROVED
-#     and ZERO MODE rows even when both exist (measured 2026-09-27: 1 MODE row on disk,
-#     0 hits on the bare read). An empty read is INDISTINGUISHABLE from "no approval
-#     exists", and a lane that draws that conclusion re-asks the owner — which is the
-#     defect this clause exists to remove. Same trap, same fix as the MODE read at v0.4.244.
+#     --n IS LOAD-BEARING ON THIS READ TOO, for the tail-window reason stated in
+#     SKILL.md §Hard rules — MODE REGISTER: a bare `events --kind note` returns ZERO
+#     FILING APPROVED rows even when they exist, and an empty read is INDISTINGUISHABLE
+#     from "no approval exists" — which makes a lane re-ask the owner, the exact defect
+#     this clause exists to remove.
 #
 #     THE ASK CARRIES A SUMMARY, NOT A NUMBER LIST (owner order 2026-09-30T11:38Z, topic
 #     "Upstream: Harvest"): per unit in the group, ONE SENTENCE OF DEFECT and ONE SENTENCE
@@ -290,7 +290,7 @@ Hard rules: verify the failing log names files THIS PR actually touches BEFORE
 pinging anyone (identical clippy walls on every PR can live on the upstream base). Soft-fail fmt diffs are
 cosmetic — NEVER ping for fmt alone. Absorption ends the lifecycle: if the
 maintainer merges/reimplements the feature, the PR story closes with a SHIPPED
-UPSTREAM notice (Phase 6b item 6), not more fork-side work.
+UPSTREAM notice (Phase 6 item 6), not more fork-side work.
 Two same-turn checks (v0.4.5): (1) BEFORE any push to a gated/frozen head branch,
 RE-READ live gate state — latest issue comments + HQ notifies — session-start
 knowledge structurally cannot know what changed mid-turn. (2) Before preparing ANY follow-up
@@ -311,7 +311,7 @@ Contract:
    `tools/git/oc-wt add up-<slug> leshchenko1979/fix/<slug> --create --from adolfousier/main`
 2. **Cherry-pick & Pre-Sweep**: Cherry-pick source commits preserving trailers (`-x` / `Issue-Ref`), then verify clean lineage with `tools/harvest/oc-harvest-sweep leshchenko1979/fix/<slug> --base adolfousier/main`.
    - **Atomic Subsystem Bundling & Fix Squashing (Owner Order 2026-09-17, v0.4.200)**: A harvest unit is not a loose series of patch commits — it is a single, cohesive, self-contained atomic commit. Squash all follow-up bugfixes, clippy cleanups, test updates, and dependent child issue commits directly into the coherent parent feature commit before CI gating and filing upstream (`git reset --soft` / `git commit --amend` to consolidate into one clean commit). Maintainer Adolfo squashes multi-commit PRs into a single commit on upstream `main` anyway; shipping clean, all-in-one atomic commits eliminates upstream review noise and intermediate cherry-pick breakage.
-   - **Dependency & Soak Inheritance (v0.4.187)**: Any `fix/*` modifying, depending on, or assuming an unharvested or soaking `feat/*` inherits the full 24h soak window of that base feature. It cannot be cherry-picked as a zero-hold fix if upstream lacks the underlying feature code.
+   - **Dependency & Soak Inheritance:** canonical at `upstream-merge-runbook.md` §Upstream-merge cadence.
    - **Native Sub-Issue / Child Pre-Flight Gate (Issue #188 / v0.4.198)**: A child issue, cleanup, or derivative task (such as deleting a script that exists only on fork or referencing unmerged docs/subsystems) must NEVER be harvested in isolation from its parent subsystem. If the parent subsystem is unharvested or unmerged upstream, refuse harvest staging until the parent lands upstream.
    - **In-Flight Lane Fence (v0.4.187)**: `tools/harvest/oc-harvest-dispatch vet <issue>` enforces this mechanically — it refuses a candidate whose subsystem is held by an active editor lane (rc 4 on `dispatch`). Read the fence from `tools/state/oc-ledger claim-ref <uuid>` (it takes a SESSION uuid, not an issue number) rather than hand-reading `workers-ledger.json` (a hand ledger read is the agent-memory-as-gate-input defect, lens J / F26). If an active lane is working the subsystem, hold harvest dispatch until that lane finishes, hot-swaps, and lands.
 3. **Smoke & Gate Verification (Hard Gate, v0.4.146 / v0.4.149 / v0.4.152)**:
@@ -367,7 +367,7 @@ Reference detail behind upstream PR harvesting and surfaces:
   (GitHub does not autolink inside backticks) — literal log-line quotes stay
   verbatim. Fork-side surfaces are unaffected (bare #N resolves correctly there).
 
-## Deep Core Advance Heads-Up Gate (Core vs Integration Rule, Owner Order 2026-09-17)
+### Deep Core Advance Heads-Up Gate (Core vs Integration Rule, Owner Order 2026-09-17)
 
 Maintainer coordination protocol between Alexey (`@leshchenko1979`) and Adolfo (`@adolfodev`):
 1. **Scope Classification**:
@@ -383,7 +383,7 @@ Maintainer coordination protocol between Alexey (`@leshchenko1979`) and Adolfo (
 3. **Surface Integrations Autonomy:**
    - Changes to Telegram, rich card rendering, formatting, and local developer tooling remain under our autonomous maintainer authority; they ship directly to upstream PRs with verified 4-leg smoke receipts without requiring advance group chat discussion.
 
-## Dependent Upstream PRs Law (Maintainer Consensus, 2026-09-14; Draft Mandate 2026-09-16)
+### Dependent Upstream PRs Law (Maintainer Consensus, 2026-09-14; Draft Mandate 2026-09-16)
 
 When PR B depends on PR A (which is not yet merged upstream):
 1. **Explicit Dependency Notice Permitted:** It is explicitly allowed to file PR B while PR A is open/pending, provided the PR description clearly states:
@@ -392,7 +392,7 @@ When PR B depends on PR A (which is not yet merged upstream):
 3. **Maintainer Order of Processing:** Upstream maintainer tackles dependent PRs in commit/chronological sequence (PR A merged before PR B).
 4. **Deferred Automated Publishing:** Alternatively, automated harvest pipelines may hold PR B until PR A merges via harvest watch / cron triggers.
 
-## Rejected-upstream — a TYPED state decided by a CONTENT DIFF (v0.4.250, owner order 2026-09-24)
+### Rejected-upstream — a TYPED state decided by a CONTENT DIFF (v0.4.250, owner order 2026-09-24)
 
 **PR state is not a rejection signal.** Measured 2026-09-24 over every upstream PR with `mergedAt == null` (**48 examined**): **18 (37.5 %)** carry content that is **already present on `adolfousier/main`** — the maintainer squashes, re-applies or reimplements, then closes our PR. Worked specimen: PR **#1611** reads "closed unmerged" while upstream `5d326aa12` cites `(#1611)` and carries the same content under a different sha. So a closed-unmerged PR is an **UNKNOWN**, never a rejection.
 
@@ -416,13 +416,13 @@ When PR B depends on PR A (which is not yet merged upstream):
 
 **REMOVAL IS FORBIDDEN — there is deliberately no verb, flag or procedure that deletes a `manual_records` entry.** These records are load-bearing in the direction that PREVENTS work: #209's effect is correct even though its wording misdescribes it, and deleting it would open the way to filing a PR that is **not owed**.
 
-## Upstream issue filings — report-only (owner 2026-08-28 15:17Z)
+### Upstream issue filings — report-only (owner 2026-08-28 15:17Z)
 
 **Offload order — CORRECTED (owner 2026-09-01, "Wait, i was talking about prs only. Revert issues"):** "Offload to upstream" applies to **PRs only** (when we fix OpenCrabs-source bugs, the fix ships as an upstream PR per the existing PRs-only rule). **Issue reports NEVER go upstream** — the fork is the issues home, permanently. The 2026-09-01 issue-migration (adolfousier #1279–#1286 for fork 70/33/38/58/35/60/65 + TEXT_ACCUM) was misread, withdrawn same day: all 8 upstream issues closed as withdrawn, all 7 fork issues reopened, #1255 cross-link deleted. #66 remains not-upstream-eligible (upstream #1260 closed pointing back to the fork; needs owner-level follow-up with adolfo).
 
 When the owner tells us to FILE an issue upstream (adolfousier/opencrabs), the editor does NOT fix it: the filed report is the deliverable, and fixing the upstream-reported defect is adolfo's lane. No editor lane writes fix code or opens a fix PR for an upstream-filed issue unless the owner explicitly orders the fix — follow-up REPORTING on the filed thread stays allowed (per the #1255 exception).
 
-## Cross-fork PR inspection — fetch head from the fork remote (Duty-4 proposal, owner-approved 2026-09-06)
+### Cross-fork PR inspection — fetch head from the fork remote (Duty-4 proposal, owner-approved 2026-09-06)
 
 Inspecting a cross-fork PR (`gh pr view N -R upstream`): fetch the head branch
 from the FORK remote (`git fetch origin <head>`), never from upstream — a

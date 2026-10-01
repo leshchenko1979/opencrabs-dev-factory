@@ -6,7 +6,7 @@ description: >
   smoke-test-on-notify), HQ (skill set + worker ledger),
   TRIAGE (interrupt lane: fix routing, enforcement — carved out of HQ at v0.4.86),
     TOOLSMITH (CLI tool lane: owns tools/ — makes and fixes the CLI tools every other role uses — carved out at v0.4.87),
-    HARVEST (upstream contribution lane: ports a READY cluster, gates it, files the upstream PR and owns its lifecycle — carved out at v0.4.250); Compiler role retired 2026-08-28).
+    HARVEST (upstream contribution lane: ports a READY cluster, gates it, files the upstream PR and owns its lifecycle — carved out at v0.4.250); Compiler role RETIRED 2026-08-28).
   Use when editing/fixing OpenCrabs Rust code, debugging quick-build-linux carrier or other CI runs, fetching CI artifacts, or swapping /usr/local/bin/opencrabs.
   (/opencrabs-dev)
 globs:
@@ -64,13 +64,13 @@ Roles **DO NOT intersect**:
   `main` + reported shas); `oc-deploy ship` takes it from there (dispatch → poll
   → swap-execute, consent eliminated 2026-08-28). If the run is RED, `oc-deploy`
   reports evidence and stops — fixing code is always Editor work.
-- The TRIAGE lane NEVER edits skill files (single-writer law unchanged — the
-  HQ is the sole author), NEVER settles protocol disputes (rulings =
-  HQ Duty 5), NEVER executes builds/swaps (strict routing, triage.md).
-- The TOOLSMITH lane owns `tools/` CODE only (v0.4.87 carve-out) — skill markdown +
-  fleet-directives stay HQ-only, daemon/carrier source stays Editor territory,
-  NEVER settles protocol disputes (rulings = HQ Duty 5).
-- The HARVEST lane owns the upstream PR lifecycle ONLY — it NEVER edits skill markdown (HQ-only), NEVER installs/swaps binaries, NEVER restarts daemons, NEVER dispatches builds, NEVER settles protocol disputes (rulings = HQ Duty 5).
+No lane settles protocol disputes — rulings are HQ Duty 5.
+
+| Lane | Owns | NEVER |
+|---|---|---|
+| TRIAGE | interrupt lane: fix routing, enforcement (`triage.md`) | edits skill files (single-writer law: HQ is the sole author) · executes builds/swaps (strict routing) |
+| TOOLSMITH | `tools/` CODE only (v0.4.87 carve-out) | skill markdown + `fleet-directives` (HQ-only) · daemon/carrier source (Editor territory) |
+| HARVEST | the upstream PR lifecycle only (`harvest.md`) | edits skill markdown (HQ-only) · installs/swaps binaries · restarts daemons · dispatches builds |
 - **The EDITOR's obligation ends at smoke evidence.** Harvest census, porting, upstream branch creation, PR filing and upstream lifecycle belong to the HARVEST lane — an editor lane that finds itself harvesting has taken work it does not own.
 - **PRIORITY AUTHORITY (owner order 2026-09-15):** ALL lanes (Editor, HQ, Triage, Toolsmith, Harvest) have complete, independent authority over priorities, sequencing, and task ordering within their codified scopes — never ask the human operator about priorities.
 
@@ -103,7 +103,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/state/oc-ledger <verb>` | workers-ledger: stamp/sync/check-version/cadence/ack/enroll/roster/commit-pending/claim-ref/claims/duplicates/confirm/events — `--verbs` lists registered subcommands; unrecognized verbs emit vocabulary hints; `roster --live --role <role>` is the ROLE-RESOLUTION verb; the `oc-roster --role <role>` form delegates to it and returns byte-identical output |
 | `./tools/state/oc-shadow-rotate [--dry-run]` | INTERNAL tail step of `oc-ledger sync` (standalone = manual fallback) |
 | `./tools/state/oc-review-persist <lens> <text\|@file\|-> [--dir DIR]` · `check-cycle <dir> [--strict-receipt]` | persist a Duty-6 review report (the index line IS the "persisted" receipt); `check-cycle` is the cycle-close gate |
-| `./tools/smoke/oc-smoke-evidence [--unit opencrabs-ops] [--markers m1,m2] [--negative-control <bin>] [--append-log [<path>]]` | mechanical identity + presence evidence for a Phase 6b smoke verdict; behavioral judgment stays human; `--append-log` is the SANCTIONED writer of the **IDENTITY EVIDENCE BLOCK** in the canonical `smoke-verdicts.log` — the VERDICT ROWS are LANE-AUTHORED (see `upstream-merge-runbook.md` §Upstream-merge cadence · HARVEST LAW · NO-HOLD); bare = the canonical absolute, a wrong path is unrepresentable (M2-2) |
+| `./tools/smoke/oc-smoke-evidence [--unit opencrabs-ops] [--markers m1,m2] [--negative-control <bin>] [--append-log [<path>]]` | mechanical identity + presence evidence for a Phase 6 smoke verdict; behavioral judgment stays human; `--append-log` is the SANCTIONED writer of the **IDENTITY EVIDENCE BLOCK** in the canonical `smoke-verdicts.log` — the VERDICT ROWS are LANE-AUTHORED (see `upstream-merge-runbook.md` §Upstream-merge cadence · HARVEST LAW · NO-HOLD); bare = the canonical absolute, a wrong path is unrepresentable (M2-2) |
 | `./tools/issue/oc-issue-log <issue-n> <sha> [--state <text>] [--repo <slug>] [--dry-run]` | per-commit implementation comment via gh `--body-file` ONLY |
 | `./tools/git/oc-commit -m <msg> [--issue N] [--no-comment] [--state <text>] [--repo <path>]` | gated commit wrapper: derives `Issue-Ref` from the actor's latest ledger claim, adds Session-Id + Issue-Ref trailers, folds in the post-commit comment |
 | `./tools/ship/oc-ship-audit [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
@@ -117,8 +117,8 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/audit/oc-watcher-audit [--json] [--notify-orphans]` | detached watcher compliance and sleep-loop audit across active sessions |
 | `./tools/git/oc-start <issue-N> --branch <branch>` | unified entry: claim + branch + worktree initialization |
 | `./tools/smoke/oc-smoke <issue-N> [--probe <cmd>] [--no-ledger]` | unified 4-leg smoke verification & verdict row logging + automatic ledger done stamp on PASS |
-| `./tools/issue/oc-issue-dispatch [--auto]` · `<issue-number> [--to <uuid>] [--force] [--allow-landed] [--redispatch] [--budget-secs N]` | mechanized issue triage dispatch to idle editor lanes; the issue is POSITIONAL and `--to` names the target session — there is NO `--issue` or `--lane` flag (verified live 2026-09-25 against the tool's own `--help` and `tools/docs/RC-CONTRACT.md` row 36). `--force` overrides the claim gate, `--allow-landed` disables the landed filter, `--redispatch` disables the 7-day dedup window |
-| `./tools/state/oc-questions <verb>` | the Open Questions register — the sanctioned blocked-on-you channel. Verbs, rc and the ask/answer contract: `tools/docs/RC-CONTRACT.md` row 49 · canon: `docs/instruments/open-questions.md` |
+| `./tools/issue/oc-issue-dispatch [--auto]` · `<issue-number> [--to <uuid>] [--force] [--allow-landed] [--redispatch] [--budget-secs N]` | mechanized issue triage dispatch to idle editor lanes; the issue is POSITIONAL and `--to` names the target session — there is NO `--issue` or `--lane` flag (verified live 2026-09-25 against the tool's own `--help` and `tools/docs/RC-CONTRACT.md` row `oc-issue-dispatch`). `--force` overrides the claim gate, `--allow-landed` disables the landed filter, `--redispatch` disables the 7-day dedup window |
+| `./tools/state/oc-questions <verb>` | the Open Questions register — the sanctioned blocked-on-you channel. Verbs, rc and the ask/answer contract: `tools/docs/RC-CONTRACT.md` row `oc-questions` · canon: `docs/instruments/open-questions.md` **in the meta-factory repo (`/root/agent-factories/`) — NOT resolvable from this skill tree** |
 | `./tools/audit/oc-lint-laws [--strict]` | mechanical syntax & tool-existence lint of skill markdown. Read findings from the tool itself, never from this row. Register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/audit/oc-claims-single-source [--scan DIR] [--selftest]` | battery guard: the claim-closure predicate has exactly ONE home (`tools/lib/oc_claims.py`) — fails the battery on a re-added private copy under `tools/`. Keys on the re-implementation SHAPE, never on a name (the two copies it exists to prevent were called `claims_index` and `claim_is_closed`, so a name-keyed guard misses both). Scan units include embedded `python3 -c` / heredoc blobs, not only whole files. rc register: tools/docs/RC-CONTRACT.md |
 | `./tools/harvest/oc-prchecks <branch-or-sha> [--wait N]` · `resume <run-id>` | one-command CI gate on a PR-lane branch; `resume` re-attaches to a run this lane witnessed. Register: `tools/docs/RC-CONTRACT.md` |
@@ -207,8 +207,9 @@ to another session, another role's topic, the forum General area, an unrelated c
   allowed (owner consent signal).
 - Sanctioned senders (NOT editors — none of this is lane-to-lane): the task-queue skill's documented
   `/tq-approve` flow; alerting lanes reporting to the owner DM per the ops runbook; HQ's session text.
-- Violation pattern for HQ: a TOOL_ACCUM row showing an editor lane calling a telegram send/edit
-  tool → session_notify the rule; second offense → review toggled.
+- Violation pattern (Triage patrol, `triage.md §Duty T4`): a TOOL_ACCUM row showing an editor lane
+  calling a telegram send/edit tool → the patrol notifies the rule; a repeat escalates to HQ for
+  the review toggle.
 
 ## Test ontology (v0.4.2 — three kinds + one sanity signal, NEVER conflate)
 
@@ -217,8 +218,8 @@ to another session, another role's topic, the forum General area, an unrelated c
 | Answers | does my feature WORK for a user right now? | is the code correct by analysis standards? | is the feature actually INSIDE the artifact we are about to deploy? |
 | What | behavioral drive of ONE shipped feature | compile/run verification: cargo fmt, clippy, cargo test | static markers: binary strings/symbols, sha256 identity vs artifact, source-tree grep |
 | Where | live `opencrabs-ops` unit, its real surfaces (Telegram, cron, MCP) | GitHub Actions ONLY — the CI gate (`pr-checks.yml`; upstream's own checks on PRs). Carrier build COMPILES the artifact but runs NO test leg (removed 2026-08-31, `e71dba58`) | this box, against the DOWNLOADED artifact + its source tree — nothing running |
-| When | after a swap notify (`editor.md` Phase 6b) | pre-flight gate before PRs/ff-merge (Phase 7 step 2c) — `pr-checks.yml` is the ONLY CODE-TESTS locus | pre-swap, every cycle (`oc-deploy` swap path) |
-| Who | owning Editor | Editor dispatches the gate and reads conclusions; `oc-deploy` reads build conclusions | `oc-deploy` swap path (pre-S3: Compiler alone) |
+| When | after a swap notify (`editor.md` Phase 6) | pre-flight gate before PRs/ff-merge (Phase 7 step 2c) — `pr-checks.yml` is the ONLY CODE-TESTS locus | pre-swap, every cycle (`oc-deploy` swap path) |
+| Who | owning Editor | Editor dispatches the gate and reads conclusions; `oc-deploy` reads build conclusions | `oc-deploy` swap path (pre-S3; Compiler role RETIRED 2026-08-28) |
 | Toolchain | none — local cargo FORBIDDEN in any form (binaries disabled 2026-08-28; editor.md §Box law — canonical, other files reference "(box law)") | CI's own — never local | `strings`, `sha256sum`, `git grep` — none compile anything |
 | Evidence | one line: drove X, observed Y (+ run id / sha) | job/step conclusions read via API | marker found/not-found + checksum line in baseline.json |
 | On FAIL | issue FIRST, then evidence to the HQ lane (`session_notify`) | fix before merge / PR | NO swap — feature missing from build; regression stated plainly |
@@ -227,14 +228,15 @@ The table above carries the ontology. **The smoke-verdict rules and their incide
 presence-is-not-behaviour, the live-verification stamp for live-testable UX, bookkeeping-legs-are-not-a-pass,
 the owner-dependent leg's PARK disposition, the no-log-probe rule for tool-description changes, leg-4
 probe hygiene, and the single-sided-probe sufficiency ruling — are canonical at `editor.md`
-§Phase 6b (Smoke-verdict rules).** Read them there before writing or judging a verdict.
+§Phase 6 (Smoke-verdict rules).** Read them there before writing or judging a verdict.
 
 ## Glossary — official terms (v0.4.62; one concept = one name)
 
-- **FIRE** — the release window between version bump and prod swap (editor.md
-  usage, lens A8 v0.4.89). In `oc-ledger` cadence output, "FIRE" = the
-  Duties-4+6 threshold verdict (≥5 bumps/5 days) — same word, different
-  locus; context disambiguates.
+- **FIRE** — the release window between version bump and prod swap. The
+  Duties-4+6 cadence threshold verdict (≥5 bumps/5 days) is a DISTINCT concept
+  and must not carry this token: it is emitted as `CADENCE-FIRE`. The tool-side
+  rename is a Toolsmith follow-up — until it lands, a bare `FIRE` in cadence
+  output means the threshold verdict, never a release window.
 - **carrier** — the single build lane: branch `ci/quick-build-linux` + its
   `quick-build-linux.yml` + dispatches from it. workflow_dispatch runs record
   the CARRIER ref/head, never the `-f ref` input; the carrier yml is the
@@ -296,7 +298,7 @@ probe hygiene, and the single-sided-probe sufficiency ruling — are canonical a
 - **Roster** — the worker registry in `workers-ledger.json` (enroll / claim /
   ack rows); `oc-attrib` joins Session-Id trailers against it.
 - **Lens (Reviewer A–J)** — one Duty-6 read-only review perspective
-  (hq.md §Duty 6; full briefs: `review-lenses.md`).
+  (catalog + full briefs: `review-lenses.md`; factory-side summary: `hq.md §Duty 6`).
 - **HQ** — the skill-owning lane. The former name *Supervisor* is RETIRED
   (owner order 2026-09-11 folded the term into HQ — one role, one term);
   unofficial variants ("Author lane", "Carrier") seen in lane files are also
@@ -353,7 +355,7 @@ HQ in RED triage. The heuristics themselves live there — no second copy here.
   fork-targeted read or write; an unscoped call returns a real but WRONG issue or 404s.
 
 The cargo ban, the `origin`/`adolfousier` split and actor attribution live in `environment.md` and in
-§Hard rules — deliberately not restated here (Duty-6 c25 B-9: three cargo-ban homes inside SKILL.md alone).
+§Hard rules — deliberately not restated here.
 
 Everything else — the skill glob gate's exact matching semantics, branch namespaces, the
 carrier/feature-set/dispatch rules, **which workflow files exist on which branch (all fork CI
@@ -411,7 +413,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 | Upstream receives PRs ONLY — body = detailed description ending `Original issue: <full fork URL>`; NEVER `Closes #N` (wrong issue space) | `adolfousier/opencrabs` PR bodies | owner 2026-08-27 |
 | Fork issue closed by US right after the PR is filed | fork issue tracker | — |
 | Fork issues NEVER claimed on GitHub: no tackling comments, assignment, labels/reactions by any lane — claiming = `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48); uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING, not the design/implementation record | ledger | owner 2026-08-27 17:07Z |
-| PR SHIPMENT — **PR SHIPMENT LAW (single home): feature COMPLETE + smoke PASS (v0.4.104 four-leg rubric) → the EDITOR posts smoke evidence to its forum topic and its obligation ENDS there; the HARVEST lane ports, gates and files the upstream PR. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
+| PR SHIPMENT — **PR SHIPMENT LAW (single home): feature COMPLETE + smoke PASS (v0.4.104 4-Leg Smoke Rubric) → the EDITOR posts smoke evidence to its forum topic and its obligation ENDS there; the HARVEST lane ports, gates and files the upstream PR. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
 | APPROVAL = Alexey's reply or a positive Telegram reaction to the explicit request in the forum topic; silence is NOT consent; spontaneous / ad-hoc PRs remain forbidden | owner word | v0.4.1 |
 
 *Pre-2026-08-27 upstream issues stay readable for uniqueness sweeps and legacy

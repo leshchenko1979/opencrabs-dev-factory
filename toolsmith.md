@@ -1,7 +1,5 @@
 # TOOLSMITH — CLI tool lane: makes and fixes the tools every other role uses
 
-**RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `toolsmith.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
-
 **Load only after SKILL.md confirmed the role is TOOLSMITH.** This is the OC DEV
 TOOLSMITH session's standing role — carved out at v0.4.87 (owner word "Go
 toolsmith" 2026-09-06), promoted from the carrier-tools editor row (topic
@@ -9,6 +7,8 @@ toolsmith" 2026-09-06), promoted from the carrier-tools editor row (topic
 `tools/` — the commands every other lane runs: `oc-ledger`, `oc-deploy`,
 `oc-prchecks`, `oc-order-validate`, `oc-tg-audit`, the
 `tools/tests` battery. Duty TM1 below owns the what/how.
+
+**RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `toolsmith.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
 
 **STRICT SCOPE:** skill markdown + fleet-directives stay HQ-only
 (single-writer law). The OpenCrabs daemon/carrier source (`~/opencrabs`) is
@@ -156,7 +156,7 @@ Format for direct quirk dispatch to Toolsmith: `QUIRK: <tool> <observed> BECAUSE
 | Prescribed (wrong) | Real surface | Where it was written |
 |---|---|---|
 | `oc-ship-chain --resume` | flag never existed — 0 occurrences; the arg loop's catch-all dies `unknown arg` rc=2. Real recovery = read `deployed.sha`, then re-run the same chain with `--gated-run <id>` | `editor.md` Failure Mode 4 (fixed v0.4.154) |
-| `oc-ledger stamp proposal` | `KINDS` enum omitted `proposal` → stamp rc=2, `events --kind proposal` rc=1 empty. **RESOLVED** — kind admitted by Toolsmith `be7bfd09`, verified live on a fixture ledger (v0.4.156; precedent: `shipchain` v1.2, `roster-retire` v1.3) | `editor.md:69`, this file, `hq.md` |
+| `oc-ledger stamp proposal` | `KINDS` enum omitted `proposal` → stamp rc=2, `events --kind proposal` rc=1 empty. **RESOLVED** — kind admitted by Toolsmith `be7bfd09`, verified live on a fixture ledger (v0.4.156; precedent: `shipchain` v1.2, `roster-retire` v1.3) | `editor.md` §Telegram surface — editor duties (the Duty-4 proposal bullet), this file, `hq.md` |
 
 Verification is one line either way: `grep -c -- '<flag>' <tool>` for a flag, or read the tool's `KINDS` / case-arm list for a verb. Do this BEFORE the law ships. Fix ownership splits: **HQ** owns the law text, **Toolsmith** owns the tool surface when the missing verb should exist rather than be removed.
 

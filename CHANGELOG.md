@@ -1,5 +1,88 @@
 # Changelog — opencrabs-dev
 
+## v0.4.278 — Duty-4/6 cycle c27: the phantom home, the dead tool names, and the biography purge
+
+Duty-6 review cycle **`20261001-c27`**, opened 2026-10-01T07:09Z on a **FIRE** cadence (7 skill-bumps past boundary `n=12391`), corpus at `c00947eb`. Eleven lenses ran as isolated read-only sub-agents; `oc-review-persist check-cycle --strict-receipt` closed the census at **11 persisted / 0 waived / 0 unreceipted** (rc 0). **99 findings** — 2 BLOCKER · 30 MAJOR · 55 MINOR · 12 NIT. This entry carries the accepted findings landed in this batch, and every provenance token stripped out of live rule text by A-8/A-9/A-14.
+
+### 1 · The phantom home — `tools/review.py` is not wired to this factory (I-1, BLOCKER)
+
+`hq.md` §Duty 4 and §Duty 6 both carried a `MOVED 2026-09-27` carve naming **`tools/review.py`** as THE review executable. Measured: **that file does not exist in this skill tree**, and the real engine (`/root/agent-factories/tools/review.py`) hardcodes `REPO_ROOT = Path(__file__).resolve().parent.parent` to its own repo with **no env override** — it answers *"Cycle '20260927-c25' not found."* about a cycle sitting on disk here. The instrument's own adoption census reports this factory **`0/5 … ABSENT`**, and its lens catalog is 14 lenses / 6 families against our 11.
+
+Both carves now carry a **`⚠ NOT OPERATIVE FOR THIS FACTORY`** banner naming the measured facts and the **operative carriers** — `tools/state/oc-review-persist` + its `check-cycle` gate, against the in-corpus catalog `review-lenses.md`. The pointer to `docs/instruments/review-rotation.md` is kept because the contract is real and lives elsewhere; its claim of a **wired** executable does not survive measurement. Same defect class as the `AGENTS.md` dead-path finding below.
+
+### 2 · Dead tool names in live law (G-2, MAJOR)
+
+`oc-harvest-tiers` **never shipped** — it is named in `triage.md` §Owns and in `upstream-merge-runbook.md` as a live tool. Both re-pointed at the tool that exists: `tools/harvest/oc-harvest-census`.
+
+### 3 · Biography purged from live rule text (A-8, A-9, A-14)
+
+Rule text carries **no biography** (`hq.md §Rule-text provenance`); every token below moved out of the rule surface and into this entry.
+
+- **`upstream-merge-runbook.md` §Remotes & sync** — the 3,571-char paragraph cut to 2,108 chars of live rules. Stripped: `(renamed 2026-08-24, was inverted)` · `owner-approved transition 2026-09-11, plan "Fork Rebase Transition and Sync Workflow"` · `the 2026-09-02 "Land it" MERGE policy is RETIRED` · `the policy that produced 31 merge commits and a 333-commit phantom ahead count` · `history diverged by design 2026-08-26` · `historical: REBASE-PORT procedure (hq.md §Upstream sync — re-homed v0.4.80, lens B F3)` · `— this line updated per Duty-6 lens B, 2026-08-31` · `first offense logged vs this lane 01:55Z` · `pilots 87d3bcb8 11:33Z / 2d643146 12:57Z / 6643cf3c 14:32Z, events 1269/1275/1281` · `ex-ROLE_EXCEPTION` · `since v0.4.38 (2026-08-29)` · `moved off 2026-08-26` · `(3349cf7e, 2026-08-27)` · `commit e71dba58` · `removed 2026-08-31` · `**S3 LIVE 2026-08-28**` · `(deploy consent ELIMINATED owner 2026-08-28 18:50Z)`. The live rules (REBASE model, `--force-with-lease` + pre-cutover sha recorded first, merged ≠ deployed, FREEZE, detection-only `ls-remote`, forbidden direct `gh workflow run`, full-40-char-sha dispatch, carrier ORDER gates, ledger canonical path) are unchanged in substance.
+- **`editor.md` §Smoke-verdict rules** — dropped `(moved from SKILL.md §Test ontology, v0.4.262)` and the whole *"Re-homed by cycle `20260925-c24` lens B (B-H2)…"* paragraph.
+- **`editor.md` §Red-run triage heuristics** — heading provenance dropped; the self-contradicting *"moved here from editor.md Phase 6"* note (A-14) removed with it.
+- **`environment.md` prologue** — dropped the *"Re-homed from `SKILL.md §Shared environment facts` by cycle `20260925-c24` lens B (B-H2): the always-loaded router carried 103 lines…"* paragraph.
+- **`SKILL.md` §Shared environment facts** — dropped `(Duty-6 c25 B-9: three cargo-ban homes inside SKILL.md alone)`.
+- **`hq.md` §Duty 6** — `- **KEY-SET CLOSURE STAYS HERE (Duty-6 c25 I-7, measured 2026-09-27).**` → `- **KEY-SET CLOSURE STAYS HERE.**`
+
+### 4 · Duplicate rules collapsed (A-2 · A-3 · A-4/A-5 · A-7 · A-15)
+
+- **A-4/A-5 (BLOCKER + MAJOR)** — the smoke-verdict rules were written out **three times** in `editor.md` (*"Behavioral probe is the smoke PASS GATE"*, *"Corrected-code presence ≠ smoke success"*, *"Bookkeeping legs ≠ smoke PASS"*), and the PARK rule **twice**. Collapsed to ONE merged rule — **`Presence and bookkeeping legs are never a smoke PASS`** — plus one PARK copy. The surviving reference at `editor.md` was re-pointed to the merged heading. This also discharged **G-5** (the circular `(full rule: editor.md Phase 6)` self-pointer) and **G-6** (the `b` phase suffix, swept to `Phase 6` across five files, 15 sites).
+- **A-7** — soak-inheritance duplicated in `harvest.md`; the copy replaced by a pointer, `upstream-merge-runbook.md` §Upstream-merge cadence remains the single home.
+- **A-2 / A-3** — the *"land every accepted proposal in its entirety"* landing rule and the Duty-4/6 cadence trigger each stated twice in `hq.md`; collapsed to one home each.
+- **A-15** — the MODE-resolution `--n` warning de-duplicated: `harvest.md` step 0a keeps the invocation + a fail-closed pointer; the resolution law stays at `SKILL.md §Hard rules — MODE REGISTER`.
+
+### 5 · Reference integrity (A-10 · A-11 · B-4 · B-8 · G-4 · G-12 · I-2)
+
+- **I-2 (MAJOR)** — `review-lenses.md` carried **five dead `hq.md §Duty 6` method references** (unfixed from c26); all re-pointed at the real homes (`review-lenses.md`'s own lens list, `tools/state/oc-review-persist check-cycle`, `hq.md §Cadence boundary is stamped at review consolidation`).
+- **A-10 / A-11** — the catalog prologue now names the method home correctly, and the CORPUS clause defers to `oc-review-persist check-cycle` instead of `hq.md §Duty 6 step 0`.
+- **B-4 (MAJOR)** — the dead `canon: docs/instruments/open-questions.md` path annotated **in the meta-factory repo (`/root/agent-factories/`) — NOT resolvable from this skill tree** at `SKILL.md` and `triage.md`.
+- **B-8** — the two unresolvable `row 36` / `row 49` citations into `RC-CONTRACT.md` replaced by the tool names they actually key (`oc-issue-dispatch`, `oc-questions`).
+- **G-4** — the `toolsmith.md` stale line-number anchor `editor.md:69` replaced by a section anchor.
+- **G-12** — the wrong-duty cross-reference `triage.md §Duty T7` corrected to the real Triage upstream-patrol home.
+
+### 6 · One concept, one name (A-6 · A-13 · A-17)
+
+- **A-6** — the smoke rubric is **`4-Leg Smoke Rubric`**; the `4-leg rubric` / `four-leg rubric` / `behavioral rubric` variants are gone from 11 sites across five files.
+- **A-13** — `FIRE` was overloaded: it is the **release window**, while the Duties-4+6 threshold verdict is a **distinct** concept emitted as **`CADENCE-FIRE`** (tool-side rename is a Toolsmith follow-up; until it lands, a bare `FIRE` in cadence output means the threshold verdict).
+- **A-17** — retired concepts marked with their retirement: `Harvester role RETIRED v0.4.176`, `Compiler role RETIRED 2026-08-28` (three sites).
+
+### 7 · Structure (B-6 · B-7 · G-1 · G-7 · G-8 · G-10 · G-11)
+
+- **B-6** — the five role-scope bullets restating one shape became a **Lane / Owns / NEVER** table.
+- **B-7** — the self-negating prohibition at `hq.md` dropped.
+- **G-1** — `## Retired Duties & Forwarding Pointers` moved out of `## Escalation to HQ`.
+- **G-7** — the five role-file prologues normalized to one order (load-gate line first).
+- **G-8** — the five top-level Phase-7 reference sections in `harvest.md` demoted under `## Phase 7 Reference Rules`.
+- **G-10** — every completion criterion now reads `**Checkable Completion Formula**` (8 sites in `editor.md`).
+- **G-11** — `### Related Triage operations` promoted out of the `## Duty 7 — RETIRED` block.
+
+### 8 · Duty-5 ruling recorded (not law — ledger)
+
+Cycle-time ruling: **base-repair ownership is NOT a standing Triage duty** — the pre-claim law binds as written (carry a sweep commit in the PR itself). The owner's *"Delegate the #725 base fix to Triage"* is a **one-off for #725**. Amended the same hour: the #725 filing count in the first ruling was **wrong** — it is **ZERO PRs owed, zero filed**, because upstream carries the surface pool-free by design and the fork's variant is the inferior one. Both recorded as `rulings` events (`n=13968`, `n=13972`).
+
+### 9 · Also measured this cycle
+
+- **Duty-4 intake: EMPTY** — a named state, not a pass. `proposals/` held 0 files; the newest ledger `kind=proposal` row (`n=12310`) predates the boundary. The poll wave (`d202fce6cb2b`) **never delivered** — `oc-notify-fanout` wedged on its first target for ~25 min in quiet mode (defect routed to Toolsmith).
+- **Corpus was NOT clean at open** — ` M tools/harvest/oc-prchecks`, an in-flight foreign lane's edit. Not touched, not staged.
+- **Lens H disclosed its own accidental write** — `oc-ledger sweep-closed-claims` without `--dry-run` minted 3 `unclaim` rows; all three issues were genuinely CLOSED, so no false row was created.
+
+### LOC delta (mandatory per the law)
+
+- `editor.md`: **686 → 658** (−28; the three-way smoke-rule duplication and the biography sediment)
+- `SKILL.md`: **497 → 499** (+2; still under the 500 budget)
+- `hq.md`: **267 → 273** (+6)
+- `upstream-merge-runbook.md`: **498 → 510** (+12; biography out, live rules given paragraph breaks)
+- `environment.md`: **152 → 149** (−3)
+- `triage.md`: **454 → 453** (−1)
+- `review-lenses.md`: **303 → 303** · `toolsmith.md`: **165 → 165** · `harvest.md`: **430 → 430** · `fleet-directives.md`: **732 → 732** (unchanged; the 732-line overage against the 500-line budget is a **next-batch** unit — a bad split of the always-loaded register breaks every session)
+
+### Bundled commits (C8)
+
+- `c00947eb` — law(changelog): v0.4.277 names its bundled commit (C8) + records the sync
+
+**Synced:** bump to **0.4.278** covering Duty-4/6 cycle `20261001-c27`.
+
 ## v0.4.277 — all fork CI lives on the carrier branch
 
 Owner correction, 2026-10-01T01:11:29Z, in the OC DEV HQ topic, after an HQ answer had offered him a choice between "repairing" and "deleting" `main`'s `ci.yml`: *"You probably forgot that the forks ci files live on a special branch"* — then, at 01:13:51Z: *"Shouldn't this fact be on our law?"*

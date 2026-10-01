@@ -1,7 +1,5 @@
 # HQ — skill maintenance & worker coordination
 
-**RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `hq.md`, `fleet-directives.md` in `active_skills`; re-read IN FULL on compaction/spawn).
-
 **Load only after SKILL.md confirmed the role is HQ.** This is HQ
 session's standing role. Interrupt-shaped duties (fix routing, enforcement
 patrols) operate in the TRIAGE lane since v0.4.86
@@ -10,9 +8,9 @@ escalations from that lane land here. Skill-file authorship stays SOLELY
 with HQ (single-writer law unchanged; v0.4.87 carve-out: the
 TOOLSMITH lane owns `tools/` CODE — skill markdown never leaves this lane, except the per-instrument law files under `docs/instruments/` (see the EXCEPTION bullets in `fleet-directives.md`)).
 
-Scope: own the skill set (full census in SKILL.md §Hard rules — incl. `harvest.md`, `fleet-directives.md`,
-`upstream-merge-runbook.md`, `war-stories.md`, `s2-swap-journal-spec.md`, `session-notify.md`, `environment.md`, `README.md`, `CHANGELOG.md`, `tools/docs/RC-CONTRACT.md`,
-`tools/docs/HEALTH-CHECKS.md`, `tools/docs/HEALTH-CLASSES.md`; `tools/archive/compiler.md` archived), keep every worker ON the current skill version, and
+**RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `hq.md`, `fleet-directives.md` in `active_skills`; re-read IN FULL on compaction/spawn).
+
+Scope: own the skill set (full census: `SKILL.md §Hard rules` — the one home), keep every worker ON the current skill version, and
 turn field evidence into rules. The HQ NEVER dispatches builds, NEVER swaps
 binaries, NEVER touches the binary, NEVER writes feature code.
 
@@ -139,10 +137,20 @@ Bump propagation mechanics (B-F4 v0.4.96 — moved out of the table cell):
 **MOVED 2026-09-27.** The intake contract — the channels a proposal arrives on, the closure
 determination, the validation triple-check, the per-lens census and the checkable completion
 formula — now lives at `docs/instruments/review-rotation.md` **in the meta-factory repo
-(`/root/agent-factories/`), NOT resolvable from this skill tree**. The executable is
-`tools/review.py` (verb `intake`); its state schema is `docs/review-cycle.schema.json`.
-Authored by the Review Rotation instrument lane (owner order 2026-09-27). Do not restate the
-contract here — a second copy is the drift this carve removed.
+(`/root/agent-factories/`), NOT resolvable from this skill tree**. Authored by the Review
+Rotation instrument lane (owner order 2026-09-27). Do not restate the contract here — a second
+copy is the drift this carve removed.
+
+> **⚠ NOT OPERATIVE FOR THIS FACTORY (Duty-6 c27 I-1, measured 2026-10-01).** The carve above
+> names `tools/review.py` as THE executable. **That file does not exist in this skill tree**, and
+> the real engine (`/root/agent-factories/tools/review.py`) hardcodes its cycle root to its own
+> repo (`REPO_ROOT = Path(__file__).resolve().parent.parent`), so it answers *"Cycle … not
+> found"* about cycles that are sitting on disk here. The instrument's own adoption census
+> reports this factory `0/5 … ABSENT`, and its lens catalog (14 lenses / 6 families) is not ours
+> (11). **The OPERATIVE carriers at this factory are `tools/state/oc-review-persist` and
+> `tools/state/oc-review-persist check-cycle`, with the in-corpus catalog `review-lenses.md`.**
+> The pointer above is kept because the contract is real and lives elsewhere; its claim of a
+> WIRED executable does not survive measurement.
 
 What STAYS at this factory, because it is process law about US and not about the instrument:
 
@@ -157,9 +165,8 @@ What STAYS at this factory, because it is process law about US and not about the
 - **The channels are DECLARED, not inferred.** The cycle declares the proposal directory and the
   ledger kind it reads; the instrument REFUSES on an undeclared or absent channel rather than
   reading nothing and reporting clean.
-- **HQ lands every ACCEPTED proposal itself — in its entirety, in the cycle's version batch**
-  (owner order 2026-09-25), with NO design gate, NO plan card and NO owner approval; a fix whose
-  owner is elsewhere is ROUTED to that owner and recorded as routed.
+- **Landing discipline: see §Duty 6 — ONE version batch, no design gate, no plan card, no owner
+  approval; a fix whose owner is elsewhere is ROUTED and recorded as routed.**
 ## Duty 5 — Procedure rulings (decision 6)
 
 On protocol disputes — role boundaries, exception clauses, gate semantics —
@@ -172,20 +179,19 @@ precedents behind it are in `CHANGELOG.md`.
 
 ## Duty 6 — Periodic subagent skill review
 
-Cadence: after every FIVE shipped version bumps, on owner request, or when an incident suggests
-drift. The cadence is COMPUTED from the ledger, never narrated — see
-`docs/instruments/review-rotation.md` and the section below.
+Cadence: shared trigger with Duty 4 (see §Duty 4). The cadence is COMPUTED from the ledger, never
+narrated — see `docs/instruments/review-rotation.md` and the section below.
 
 **MOVED 2026-09-27.** The review contract — step-0 recovery, the frozen state schema and its
 field rules, the anchored boundary matching, the read-only sub-agent reviewers, the family
 split, persist-first write-through, the validation triple-check, the reviewer-performance loop
 and the lens census — now lives at `docs/instruments/review-rotation.md` **in the meta-factory
-repo (`/root/agent-factories/`), NOT resolvable from this skill tree**. The executable is
+repo (`/root/agent-factories/`), NOT resolvable from this skill tree**. The instrument names
 `tools/review.py` (`step0` · `brief` · `record` · `waive` · `verify` · `compile` · `cadence` ·
-`close` · `migrate`); the state schema is `docs/review-cycle.schema.json`, EMITTED by
-`review.py schema` and never hand-kept. Authored by the Review Rotation instrument lane
-(owner order 2026-09-27). Do not restate the contract here — a second copy is the drift this
-carve removed.
+`close` · `migrate`) with `docs/review-cycle.schema.json` as its state schema — **but that
+executable is NOT operative for this factory; see the ⚠ banner in §Duty 4 above.** The
+operative carriers here are `tools/state/oc-review-persist` and its `check-cycle` gate, against
+the in-corpus catalog `review-lenses.md`.
 
 What STAYS at this factory:
 
@@ -203,7 +209,7 @@ What STAYS at this factory:
   new cycle into it, and always pass `--dir` explicitly.
 - **The corpus pack is a TRIAL, not this instrument** — it runs by absolute path from its own
   project dir, and its routing into `tools/` is a separate decision.
-- **KEY-SET CLOSURE STAYS HERE (Duty-6 c25 I-7, measured 2026-09-27).** The `status` enum is
+- **KEY-SET CLOSURE STAYS HERE.** The `status` enum is
   mechanically carried (`review.py schema` emits `enum: [IN_PROGRESS, COMPLETED, ABANDONED]`,
   enforced as `LIFECYCLE_STATES`), but **the "every key ⊆ the ruled set" rule is carried
   NOWHERE** — the emitted schema has no top-level `additionalProperties`, so an unknown key such
@@ -218,7 +224,7 @@ process owner. **The routing table itself is NOT retired and is canonical at
 → `reviews/<cycle-id>/proposals/` or `oc-ledger stamp proposal` · domain code → the owning Editor
 lane via the fork tracker). Legacy references to "hq.md Duty 7" are retired.
 
-### Related Triage operations (ownership pointers)
+## Related Triage operations (ownership pointers)
 - **Backlog assignment (Duty T5, v0.4.92):** post-compaction sweep of OPEN fork issues against ledger claim-refs; unclaimed → route or surface here for dispatch.
 - **Telegram-law TOOL_ACCUM enforcement (Duty T4, v0.4.43):** OPERATES in the TRIAGE lane since v0.4.86 — full procedure in `triage.md` §Duty T4. Repeat offenders escalate HERE for review-toggle decisions.
 
@@ -226,7 +232,7 @@ lane via the fork tracker). Legacy references to "hq.md Duty 7" are retired.
 
 ## Upstream sync — watch & governance (sync execution delegated to Triage)
 
-Sync execution is DELEGATED TO TRIAGE (owner order 2026-09-11: "You should not do these merges - delegate to triage"; HQ does not execute syncs). **SYNC LAW canonical = `upstream-merge-runbook.md §Remotes & sync` (REBASE model); executing procedure: `upstream-merge-runbook.md` (managed by Triage via `triage.md §Duty T7`).**
+Sync execution is DELEGATED TO TRIAGE (owner order 2026-09-11: "You should not do these merges - delegate to triage"; HQ does not execute syncs). **SYNC LAW canonical = `upstream-merge-runbook.md §Remotes & sync` (REBASE model); executing procedure: `upstream-merge-runbook.md` (managed by Triage via the `triage.md` prologue — "Upstream sync: delegated to Triage"; upstream patrols in `triage.md §Duty T4`).**
 
 HQ retains watch and governance authority only:
 - **Watch**: Monitor upstream delta (`./tools/harvest/oc-upstream-delta`) and notify Triage to execute rebase sync when upstream advances.
@@ -237,7 +243,7 @@ HQ retains watch and governance authority only:
 
 Long-running commands (>60s, test batteries, carrier/CI waits, heavy audits) MUST run detached via the bash tool parameter `background: true`.
 
-- **Auto-resume & injection:** The daemon tracks detached executions natively and auto-resumes the session upon process completion. Do NOT hand-roll polling loops or detached background daemons.
+- **Auto-resume & injection:** The daemon tracks detached executions natively and auto-resumes the session upon process completion.
 - **Terminal state:** CI waits must gate completion on terminal state (`completed` status; `success`/`failure` conclusion).
 - **Checkout-ref verification:** Checkout log lines identify the tested tree, but comparing them against the expected head SHA by hand is the agent-memory-as-gate-input defect (lens J / F27). Run `tools/ship/oc-job-verify <run-id> <source-ref>` — **rc 4 means the run's identity is reported but never trusted**; on rc 4 the verdict is not final evidence.
 - **REST v3 keys are snake_case:** In `gh api` `--jq` filters, `run_started_at`/`updated_at` work; camelCase (`runStartedAt`) silently evaluates to null.
