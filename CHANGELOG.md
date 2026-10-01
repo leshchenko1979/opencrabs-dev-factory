@@ -2,7 +2,7 @@
 
 ## v0.4.279 — c27 deferred-findings batch: the phantom-flag refusals, the tool-table collapse, and the B-1 cure refused
 
-Bundles **`76404b63`**. Clears the bucket the c27 verdict parked under the header **"OWNER-GATED / next batch (accepted, not landed here)"** — a straight breach of the owner order of 2026-09-25 (`fleet-directives.md:94`, verbatim): *"findings are not wasted but fixed in their entirety. remove the human gate fro the duty 4 and 6 fixing process"*. Twelve findings landed; one refused with evidence.
+Bundles **`76404b63`** (this batch) and **`7e1b281b`** (this bump), plus two Toolsmith commits that landed inside the sync window: **`84915e98`** — `fix(tools): retire oc-prchecks --label loudly` (#741) — and **`05945507`** — `law(tools): the oc-prchecks register row now states the detach's verdict relocation and the shared rc 8` (#742). Clears the bucket the c27 verdict parked under the header **"OWNER-GATED / next batch (accepted, not landed here)"** — a straight breach of the owner order of 2026-09-25 (`fleet-directives.md:94`, verbatim): *"findings are not wasted but fixed in their entirety. remove the human gate fro the duty 4 and 6 fixing process"*. Twelve findings landed; one refused with evidence.
 
 ### 1 · Three phantom refusals — the lens remedies prescribed tools that do not exist
 
