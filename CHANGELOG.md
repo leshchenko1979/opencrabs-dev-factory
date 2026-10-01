@@ -1,5 +1,36 @@
 # Changelog — opencrabs-dev
 
+## v0.4.280 — the stranded-law batch: four brain-scrub findings land where lanes actually read
+
+Bundles **`c954d711`**, plus three live brain-file edits that carry no commit (the profile root is not a git repo): `AGENTS.md` ×2 and `INTEGRATIONS.md` ×1. Second half of the c27 §3.4 bucket; v0.4.279 landed the first half.
+
+These are the **brain-scrub** findings — law sitting in the passive store (`MEMORY.md`, reached only through `memory_search`, never auto-injected) with **zero copies on any surface a lane actually reads**. A rule nobody loads is not a rule.
+
+| ID | Landed at | What moved |
+|---|---|---|
+| **BS-3** | `AGENTS.md` hard rule 8 | an issue number enters a report ONLY copied from the `gh issue create` stdout URL **in the same turn** — never reconstructed from "the next free number". Sharpened onto the always-loaded rule that already forbade hand-assembled identifiers. |
+| **BS-4** | `INTEGRATIONS.md` §`[Gatus]` alerts | a **LOAD-only** host-diag failure on the 1-core/961 MB box is **fleet self-load until proven otherwise** — check disk/mem, then `ps` the fleet, do NOT kill work in flight. Both 2026-09-10/11 recurrences carried the same shape. |
+| **BS-5** | `triage.md` §Retired Duties & Forwarding Pointers | the **ai-antispam Outreach lane retirement** (owner order 2026-09-12) — send it no board traffic; and the trap that its roster label is shared with a live lane, so read the TOPIC, not the label. |
+| **BS-8** | `AGENTS.md` rules index | **a mutual dangling pointer, fixed on both sides.** The index bullet pointed at *"register §Execution Discipline"* — a section that does not exist — while `fleet-directives.md:222` pointed back at *"the ops `AGENTS.md` §Execution Discipline bullet"*. The bullet now names the home that is real: **§Hard rules above (rules 1–7)**. |
+
+### Still open in the bucket, and why
+
+| ID | Disposition |
+|---|---|
+| **B-1** | **Refused, with the measurement.** The prescribed cure (move the `[LANE]`-tagged sections out) regresses the 2026-09-18 split, which was reverted on measurement — *"citation is not scope"* (`CHANGELOG.md:1719`). `[LANE]` is the must-read-at-reload marker, so those sections are exactly what the always-loaded register exists to carry. The budget question is **registered as open question `q44`** rather than re-executed blind. |
+| **BS-2** | **Routed** — the WITHDRAW-vs-amend canon belongs to `skills/meta-factory/open-questions.md`, owned by the Open Questions instrument lane. Not this factory's file to edit. |
+| **BS-6 / BS-7** | **Tool-gated, not deferred.** Both canons already exist at their correct homes (`skills/ai-antispam/SKILL.md:252`; `tools/docs/RC-CONTRACT.md:36`); the fix is *reducing* `MEMORY.md`, which is an append-only brain file whose cleanup requires an explicit owner tap (`cleanup_intent`). The rule is not missing — it is duplicated. |
+| **A-16** | Corpus-state observation (the dirty tree at cycle open) — already recorded in the c27 verdict §5 as **C27-D2**. Not a defect in the corpus. |
+
+### LOC delta (before → after, lines)
+
+| File | Before | After | Δ |
+|---|---|---|---|
+| `SKILL.md` | 499 | 499 | +0 |
+| `triage.md` | 466 | 467 | +1 |
+| `AGENTS.md` | 129 | 129 | +0 |
+| `INTEGRATIONS.md` | — | — | live file, edited in place |
+
 ## v0.4.279 — c27 deferred-findings batch: the phantom-flag refusals, the tool-table collapse, and the B-1 cure refused
 
 Bundles **`76404b63`** (this batch) and **`7e1b281b`** (this bump), plus two Toolsmith commits that landed inside the sync window: **`84915e98`** — `fix(tools): retire oc-prchecks --label loudly` (#741) — and **`05945507`** — `law(tools): the oc-prchecks register row now states the detach's verdict relocation and the shared rc 8` (#742). Clears the bucket the c27 verdict parked under the header **"OWNER-GATED / next batch (accepted, not landed here)"** — a straight breach of the owner order of 2026-09-25 (`fleet-directives.md:94`, verbatim): *"findings are not wasted but fixed in their entirety. remove the human gate fro the duty 4 and 6 fixing process"*. Twelve findings landed; one refused with evidence.
