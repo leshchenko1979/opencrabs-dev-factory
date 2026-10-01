@@ -2929,7 +2929,7 @@ status_run() {
     case "$1" in
       --json) json_out=1 ;;
       -h|--help) echo "usage: oc-deploy status [--json]"; exit 0 ;;
-      *) die 1 "status: unknown arg: $1" ;;
+      *) die 2 "status: unknown arg: $1" ;;
     esac
     shift || true
   done
@@ -3008,7 +3008,26 @@ status_run() {
       echo "  Step/Verdict:    ${last_journal_step:-unknown} / ${last_journal_verdict:-unknown}"
     fi
   fi
-  return 0
+  # rc 1 = mismatch-or-unswapped (the documented contract, RC-CONTRACT row
+  # `oc-deploy`): the marker the pipeline treats as the RUNNING deployment and
+  # the on-disk last-swap record must name the same sha. They disagree when a
+  # swap half-wrote (meta updated, marker stale — or the reverse), and a record
+  # that exists ALONE is a deployment no swap ever completed. Both absent means
+  # nothing is deployed and there is nothing to contradict, so rc 0.
+  local meta_sha="" marker_sha=""
+  if [ -f "$DEPLOYED_META" ]; then
+    meta_sha="$(jq -r '.sha // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+  fi
+  if [ -f "$DEPLOYED" ]; then
+    marker_sha="$(tr -d ' \n\r\t' < "$DEPLOYED" 2>/dev/null || true)"
+  fi
+  local status_rc=0
+  if [ -n "$meta_sha" ] && [ -n "$marker_sha" ]; then
+    [ "$meta_sha" = "$marker_sha" ] || status_rc=1
+  elif [ -n "$meta_sha" ] || [ -n "$marker_sha" ]; then
+    status_rc=1
+  fi
+  return "$status_rc"
 }
 
 # KILL FILE brake — invoked at the top of every REAL-mode arm of the dispatch
