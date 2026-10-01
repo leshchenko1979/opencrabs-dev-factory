@@ -75,9 +75,16 @@ MISSING=0
 ATTRIB="$OC_TOOLS_DIR/state/oc-attrib"
 T_OUT="$("$ATTRIB" --repo "$REPO" --trailers-only --range "$BASE..$BRANCH" 2>/dev/null)" \
   || die 3 "oc-attrib trailers-only failed on $BASE..$BRANCH"
-while IFS=$'\t' read -r c s; do
-  if [ -z "$s" ] || [ "$s" = "(unsigned)" ]; then echo -e "trailer-missing\t$c\t$(git -C "$REPO" log -1 --format=%s "$c")"; MISSING=$((MISSING+1)); fi
-done <<< "$T_OUT"
+# A here-string built from an EMPTY variable still supplies ONE empty line,
+# so an unguarded loop runs its body once with c="" and s="", emitting a
+# phantom "trailer-missing" row for a commit that does not exist and turning
+# a zero-commit range into a FINDING (#751). Guard the same way Leg U does.
+if [ -n "$T_OUT" ]; then
+  while IFS=$'\t' read -r c s; do
+    [ -n "$c" ] || continue
+    if [ -z "$s" ] || [ "$s" = "(unsigned)" ]; then echo -e "trailer-missing\t$c\t$(git -C "$REPO" log -1 --format=%s "$c")"; MISSING=$((MISSING+1)); fi
+  done <<< "$T_OUT"
+fi
 [ "$MISSING" -eq 0 ] && echo -e "trailers\tOK (all $BRANCH commits carry Session-Id)" || { echo -e "trailers\t$MISSING commit(s) MISSING Session-Id"; rc=1; }
 
 # Leg E — empty diff
