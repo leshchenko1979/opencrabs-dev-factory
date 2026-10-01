@@ -582,6 +582,16 @@ do_selftest() {
   [ "$T_RC" -eq 2 ] && t_ok "resume: non-numeric run id -> 2 (usage)" || t_bad "resume non-numeric (rc=$T_RC out=$T_OUT)"
   run_t none "$SHA" --notify 11111111-2222-3333-4444-555555555555
   [ "$T_RC" -eq 2 ] && t_ok "--notify retired -> 2 (usage)" || t_bad "--notify retired (rc=$T_RC out=$T_OUT)"
+  run_t none "$SHA" --label foo
+  # Assert the MESSAGE, not only the rc: a neutered arm falls through the parse
+  # loop, reaches the ref lookup, and ALSO exits 2 ("sha ... not found"), so an
+  # rc-only leg cannot discriminate the retirement from the not-found path
+  # (measured 2026-10-01 while neutering this arm — #741).
+  if [ "$T_RC" -eq 2 ] && printf '%s' "$T_OUT" | grep -q -- '--label retired'; then
+    t_ok "--label retired -> 2 (usage) naming the retirement"
+  else
+    t_bad "--label retired (rc=$T_RC out=$T_OUT)"
+  fi
   mk_shim "$D/gh" none
   OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
     OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
@@ -1007,7 +1017,7 @@ while [ $# -gt 0 ]; do
     --fast)    FAST_MODE=1 ;;
     --notify)  usage "--notify retired; run with background: true and chain 'cmd && tools/lib/oc-notify.sh <uuid> <msg>'" ;;
     --timeout) usage "--timeout retired; use --wait N for bounded watch or run with background: true" ;;
-    --label)   shift ;; # legacy no-op
+    --label)   usage "--label retired; it never reached the dispatch and was silently dropped (#741)" ;;
     --no-log)  : ;;
     resume)    [ "$RESUME_MODE" -eq 0 ] || usage "repeat 'resume'"; RESUME_MODE=1 ;;   # #74 H2: re-attach to a witnessed run
     -*)        usage "unknown flag '$1'" ;;
