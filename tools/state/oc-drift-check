@@ -71,7 +71,7 @@ cmd_drift() {
   local uuid="" claimed="" ack=0 skill_dir_flag=""
   while [ $# -gt 0 ]; do case "$1" in
     --ack) ack=1; shift ;;
-    --skill-dir) skill_dir_flag="${2:-}"; shift 2 ;;
+    --skill-dir) [ $# -ge 2 ] || { echo "oc-drift-check: --skill-dir needs a value" >&2; exit 2; }; skill_dir_flag=""$2""; shift 2 ;;
     -h|--help) echo "usage: oc-drift-check <uuid> [<claimed-version>] [--ack] [--skill-dir <path>]"; echo "Omit <claimed-version> to compare the lane's RECORDED last_acked (roster) instead of argv — no argv echo."; echo "Exit: 0 no-drift / 1 DRIFT or NO-HISTORY / 2 usage / 3 ledger-or-skilldir-fail"; exit 0 ;;  # C-#3: help=0
     --*) die 2 "unknown flag '$1'" ;;
     *) if [ -z "$uuid" ]; then uuid="$1"; elif [ -z "$claimed" ]; then claimed="$1"; fi; shift ;;

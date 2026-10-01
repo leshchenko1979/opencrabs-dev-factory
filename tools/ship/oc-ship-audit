@@ -144,12 +144,12 @@ OCDEV_DIR="${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
 DEPLOYED_META="$OCDEV_DIR/deployed.meta.json"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --hours) HOURS="${2:-}"; shift 2 ;;
-    --log) LOG="${2:-}"; shift 2 ;;
-    --journal-dir) JDIR="${2:-}"; shift 2 ;;
-    --grace) GRACE="${2:-}"; shift 2 ;;
-    --meta) DEPLOYED_META="${2:-}"; shift 2 ;;
-    --supersede-hours) SUPERSEDE_HOURS="${2:-}"; shift 2 ;;
+    --hours) [ $# -ge 2 ] || { echo "oc-ship-audit: --hours needs a value" >&2; usage; exit 2; }; HOURS=""$2""; shift 2 ;;
+    --log) [ $# -ge 2 ] || { echo "oc-ship-audit: --log needs a value" >&2; usage; exit 2; }; LOG=""$2""; shift 2 ;;
+    --journal-dir) [ $# -ge 2 ] || { echo "oc-ship-audit: --journal-dir needs a value" >&2; usage; exit 2; }; JDIR=""$2""; shift 2 ;;
+    --grace) [ $# -ge 2 ] || { echo "oc-ship-audit: --grace needs a value" >&2; usage; exit 2; }; GRACE=""$2""; shift 2 ;;
+    --meta) [ $# -ge 2 ] || { echo "oc-ship-audit: --meta needs a value" >&2; usage; exit 2; }; DEPLOYED_META=""$2""; shift 2 ;;
+    --supersede-hours) [ $# -ge 2 ] || { echo "oc-ship-audit: --supersede-hours needs a value" >&2; usage; exit 2; }; SUPERSEDE_HOURS=""$2""; shift 2 ;;
     *) usage ;;
   esac
 done

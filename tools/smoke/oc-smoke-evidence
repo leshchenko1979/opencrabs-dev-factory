@@ -234,9 +234,9 @@ repair_row() { # #477 -- EQUAL-LENGTH in-place repair of a malformed row.
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --unit) UNIT="${2:-}"; shift 2 ;;
+    --unit) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --unit needs a value" >&2; usage; exit 2; }; UNIT=""$2""; shift 2 ;;
     --markers|--strings) MARKERS="${2:-}"; shift 2 ;;   # --strings = deprecated alias
-    --negative-control) NEGCTRL="${2:-}"; shift 2 ;;
+    --negative-control) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --negative-control needs a value" >&2; usage; exit 2; }; NEGCTRL=""$2""; shift 2 ;;
     --append-log)
       # M2-2 (2026-09-12): a WRONG path must be unrepresentable. The canonical
       # log is absolute; a bare `smoke-verdicts.log` used to land in the CALLER'S
@@ -249,10 +249,10 @@ while [ $# -gt 0 ]; do
         /*) APPEND_LOG="$1"; shift ;;                    # absolute -> honoured
         *)  APPEND_LOG="$STATE_DIR/$1"; shift ;;         # relative -> STATE_DIR, never CWD
       esac ;;
-    --park-owner-eye) PARK_MODE=1; PARK_DESC="${2:-}"; shift 2 ;;
+    --park-owner-eye) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --park-owner-eye needs a value" >&2; usage; exit 2; }; PARK_MODE=1; PARK_DESC=""$2""; shift 2 ;;
     --repair-row) REPAIR_MODE=1; shift ;;
-    --match)   REPAIR_MATCH="${2:-}";   shift 2 ;;
-    --replace) REPAIR_REPLACE="${2:-}"; shift 2 ;;
+    --match) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --match needs a value" >&2; usage; exit 2; };   REPAIR_MATCH=""$2"";   shift 2 ;;
+    --replace) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --replace needs a value" >&2; usage; exit 2; }; REPAIR_REPLACE=""$2""; shift 2 ;;
     --log)
       # #477: the repair target. Same M2-2 discipline as --append-log -- a bare
       # flag means the canonical log, a relative path resolves against STATE_DIR
@@ -264,12 +264,12 @@ while [ $# -gt 0 ]; do
         *)  REPAIR_LOG="$STATE_DIR/$1"; shift ;;         # relative -> STATE_DIR, never CWD
       esac ;;
     --late-entry) LATE_MODE=1; shift ;;
-    --sha)     LATE_SHA="${2:-}";      shift 2 ;;
-    --run)     LATE_RUN="${2:-}";      shift 2 ;;
-    --actor)   LATE_ACTOR="${2:-}";    shift 2 ;;
-    --issue)   LATE_ISSUE="${2:-}";    shift 2 ;;
-    --target)  LATE_TARGET="${2:-}";   shift 2 ;;
-    --evidence) LATE_EVIDENCE="${2:-}"; shift 2 ;;
+    --sha) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --sha needs a value" >&2; usage; exit 2; };     LATE_SHA=""$2"";      shift 2 ;;
+    --run) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --run needs a value" >&2; usage; exit 2; };     LATE_RUN=""$2"";      shift 2 ;;
+    --actor) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --actor needs a value" >&2; usage; exit 2; };   LATE_ACTOR=""$2"";    shift 2 ;;
+    --issue) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --issue needs a value" >&2; usage; exit 2; };   LATE_ISSUE=""$2"";    shift 2 ;;
+    --target) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --target needs a value" >&2; usage; exit 2; };  LATE_TARGET=""$2"";   shift 2 ;;
+    --evidence) [ $# -ge 2 ] || { echo "oc-smoke-evidence: --evidence needs a value" >&2; usage; exit 2; }; LATE_EVIDENCE=""$2""; shift 2 ;;
     --log-stats)
       # Dynamic smoke log statistics
       shift

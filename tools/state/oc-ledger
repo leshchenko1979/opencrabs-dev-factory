@@ -819,7 +819,7 @@ cmd_stamp() {
   local kind="" what="" by="" by_explicit=0 allow_unattr=0 allow_noref=0 what_file="" what_stdin=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --by) by="${2:-}"; by_explicit=1; shift 2 ;;
+      --by) [ $# -ge 2 ] || { echo "oc-ledger: --by needs a value" >&2; exit 2; }; by=""$2""; by_explicit=1; shift 2 ;;
       --allow-unattributed) allow_unattr=1; shift ;;
       --allow-no-ref) allow_noref=1; shift ;;
       --what) what="${2:-}"; [ -n "$what" ] || die 2 "--what needs a value"; shift 2 ;;
@@ -1219,8 +1219,8 @@ cmd_sync() {
   local v="" why="" catchup=0 allow_sweep=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --version) v="${2:-}"; shift 2 ;;
-      --why) why="${2:-}"; shift 2 ;;
+      --version) [ $# -ge 2 ] || { echo "oc-ledger: --version needs a value" >&2; exit 2; }; v=""$2""; shift 2 ;;
+      --why) [ $# -ge 2 ] || { echo "oc-ledger: --why needs a value" >&2; exit 2; }; why=""$2""; shift 2 ;;
       --catch-up) catchup=1; shift ;;
       --allow-sweep) allow_sweep=1; shift ;;
       *) shift ;;
@@ -1536,8 +1536,8 @@ cmd_enroll() {
   uuid="$(_self_uuid enroll "$uuid")" || exit $?
   while [ $# -gt 0 ]; do
     case "$1" in
-      --topic) topic="${2:-}"; shift 2 ;;
-      --feature) feature="${2:-}"; shift 2 ;;
+      --topic) [ $# -ge 2 ] || { echo "oc-ledger: --topic needs a value" >&2; exit 2; }; topic=""$2""; shift 2 ;;
+      --feature) [ $# -ge 2 ] || { echo "oc-ledger: --feature needs a value" >&2; exit 2; }; feature=""$2""; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -1612,8 +1612,8 @@ cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
   uuid="$(_self_uuid promote "$uuid")" || exit $?
   while [ $# -gt 0 ]; do
     case "$1" in
-      --topic) topic="${2:-}"; shift 2 ;;
-      --feature) feature="${2:-}"; shift 2 ;;
+      --topic) [ $# -ge 2 ] || { echo "oc-ledger: --topic needs a value" >&2; exit 2; }; topic=""$2""; shift 2 ;;
+      --feature) [ $# -ge 2 ] || { echo "oc-ledger: --feature needs a value" >&2; exit 2; }; feature=""$2""; shift 2 ;;
       *) shift ;;
     esac
   done

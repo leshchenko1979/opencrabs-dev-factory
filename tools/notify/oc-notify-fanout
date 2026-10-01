@@ -798,18 +798,18 @@ title="" text="" text_file="" roles="" excludes="" dry=0 stamp=1 include_self=0 
 mode="quiet"
 forum_chat="${OC_FANOUT_FORUM_CHAT:--1003936827469}"
 while [ $# -gt 0 ]; do case "$1" in
-  --title) title="${2:-}"; shift 2 ;;
+  --title) [ $# -ge 2 ] || { echo "oc-notify-fanout: --title needs a value" >&2; exit 2; }; title=""$2""; shift 2 ;;
   --text|--body) text="${2:-}"; shift 2 ;;
   --text-file|--body-file) text_file="${2:-}"; shift 2 ;;
-  --roles) roles="${2:-}"; shift 2 ;;
-  --exclude) excludes="${2:-}"; shift 2 ;;
-  --forum-chat) forum_chat="${2:-}"; shift 2 ;;
+  --roles) [ $# -ge 2 ] || { echo "oc-notify-fanout: --roles needs a value" >&2; exit 2; }; roles=""$2""; shift 2 ;;
+  --exclude) [ $# -ge 2 ] || { echo "oc-notify-fanout: --exclude needs a value" >&2; exit 2; }; excludes=""$2""; shift 2 ;;
+  --forum-chat) [ $# -ge 2 ] || { echo "oc-notify-fanout: --forum-chat needs a value" >&2; exit 2; }; forum_chat=""$2""; shift 2 ;;
   --dry-run) dry=1; shift ;;
   --no-stamp) stamp=0; shift ;;
   --include-self) include_self=1; shift ;;
-  --self) self_uuid="${2:-}"; shift 2 ;;
-  --verify) verify_id="${2:-}"; shift 2 ;;
-  --mode) mode="${2:-}"; shift 2 ;;
+  --self) [ $# -ge 2 ] || { echo "oc-notify-fanout: --self needs a value" >&2; exit 2; }; self_uuid=""$2""; shift 2 ;;
+  --verify) [ $# -ge 2 ] || { echo "oc-notify-fanout: --verify needs a value" >&2; exit 2; }; verify_id=""$2""; shift 2 ;;
+  --mode) [ $# -ge 2 ] || { echo "oc-notify-fanout: --mode needs a value" >&2; exit 2; }; mode=""$2""; shift 2 ;;
   --help|-h) sed -n '2,40p' "$0"; exit 0 ;;
   *) die "unknown flag '$1' (valid flags: --title, --text/--body, --text-file/--body-file, --roles, --exclude, --mode, --forum-chat, --self, --dry-run, --no-stamp, --include-self, --verify, --help; see --help for usage details)" 2 ;;
 esac; done

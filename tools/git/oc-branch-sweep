@@ -53,11 +53,11 @@ die() { echo "oc-branch-sweep: $2" >&2; exit "$1"; }
 cmd_sweep() {
   local repo="" base="" dry=0 check_absorbed=0 keep='main|master|carrier|keep|port/'
   while [ $# -gt 0 ]; do case "$1" in
-    --repo) repo="${2:-}"; shift 2 ;;
-    --base) base="${2:-}"; shift 2 ;;
+    --repo) [ $# -ge 2 ] || { echo "oc-branch-sweep: --repo needs a value" >&2; exit 2; }; repo=""$2""; shift 2 ;;
+    --base) [ $# -ge 2 ] || { echo "oc-branch-sweep: --base needs a value" >&2; exit 2; }; base=""$2""; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --check-absorbed) check_absorbed=1; shift ;;
-    --keep) keep="${2:-}"; shift 2 ;;
+    --keep) [ $# -ge 2 ] || { echo "oc-branch-sweep: --keep needs a value" >&2; exit 2; }; keep=""$2""; shift 2 ;;
     -h|--help) echo "usage: oc-branch-sweep --repo <path> [--base b] [--dry-run] [--keep RE] [--check-absorbed]"; echo "Exit: 0 nothing-deleted / 1 deletions / 2 usage / 3 git-fail"; exit 0 ;;  # C-#3: help=0
     --*) die 2 "unknown flag '$1'" ;;
     *) die 2 "unexpected arg '$1'" ;;

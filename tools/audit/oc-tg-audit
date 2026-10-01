@@ -67,9 +67,9 @@ UUID=""; DATE="$(date -u +%Y-%m-%d)"; DAYS=1
 LOG_DIR="${OC_TOOLS_LOG_DIR:-${HOME:-/root}/.opencrabs/profiles/ops/logs}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --date) DATE="${2:-}"; shift 2 ;;
-    --days) DAYS="${2:-}"; shift 2 ;;
-    --log-dir) LOG_DIR="${2:-}"; shift 2 ;;
+    --date) [ $# -ge 2 ] || { echo "oc-tg-audit: --date needs a value" >&2; usage; exit 2; }; DATE=""$2""; shift 2 ;;
+    --days) [ $# -ge 2 ] || { echo "oc-tg-audit: --days needs a value" >&2; usage; exit 2; }; DAYS=""$2""; shift 2 ;;
+    --log-dir) [ $# -ge 2 ] || { echo "oc-tg-audit: --log-dir needs a value" >&2; usage; exit 2; }; LOG_DIR=""$2""; shift 2 ;;
     -h|--help) echo "usage: oc-tg-audit <uuid> [--date YYYY-MM-DD] [--days N] [--log-dir P]"; echo "Exit: 0 clean / 1 violation / 2 usage / 3 log-missing"; exit 0 ;;  # C-#3: help=0
     -*) usage "unknown flag: $1" ;;
     *) if [ -z "$UUID" ]; then UUID="$1"; shift; else usage; fi ;;

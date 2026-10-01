@@ -2690,6 +2690,72 @@ case "$_5" in
   *) bad "#720 NEGATIVE CONTROL: neutered re-exec still not detected -- this leg is inert";;
 esac
 rm -rf "$CI_FX"
+# ---- 86. fleet-wide: no arg arm may swallow a missing flag value (#750) -----
+# A value-taking arm written `--flag) VAR="${2:-}"; shift 2 ;;` HANGS forever
+# when the flag is the LAST argument: `shift 2` with $#=1 returns 1 and does NOT
+# shift, so `while [ $# -gt 0 ]` re-reads the same $1, and `${2:-}` suppresses
+# the unbound-variable error that would otherwise kill the loop. 59 arms across
+# 14 tools did this; every one was reachable by a plain typo, and the tool never
+# returned. The guard is `[ $# -ge 2 ] || { ...; exit 2; };` BEFORE the read.
+# Two traps the guard must avoid, both measured on the fix:
+#   * `usage` is NOT always defined (7 of the 14 define no usage()), so a bare
+#     `usage;` bail prints `usage: command not found` -- and under `set -e`
+#     (oc-notify-fanout) that exits 127 BEFORE the intended 2.
+#   * the bail must sit before the assignment, or the arm still reads an empty
+#     $2 first.
+# This is a SHAPE property, decidable without executing the tool -- hence a
+# static scan rather than 59 timed invocations. Keyed on shape, never on a tool
+# name, so a new tool inherits the guard simply by existing.
+_hg_scan() { # $1 = dir to scan; prints "<file>:<line>" per unguarded arm
+  python3 - "$1" <<'PY'
+import os,re,sys
+root=sys.argv[1]
+arm=re.compile(r'^\s*(--[a-z][a-z0-9-]*)\)(.*)$')
+bail=re.compile(r'\b(usage|die|fail|exit|return)\b')
+for dp,_,fns in os.walk(root):
+    if '__pycache__' in dp: continue
+    for fn in sorted(fns):
+        if not fn.startswith('oc-'): continue
+        if '.bak' in fn or fn.endswith(('.orig','.rej')): continue
+        p=os.path.join(dp,fn)
+        try: lines=open(p,encoding='utf-8',errors='replace').read().split('\n')
+        except OSError: continue
+        for i,l in enumerate(lines,1):
+            m=arm.match(l)
+            if not m: continue
+            body=m.group(2)
+            if '${2:-}' not in body or 'shift 2' not in body: continue
+            pre=body[:body.index('shift 2')].replace('${2:-}','')
+            if bail.search(pre): continue
+            print("%s:%d"%(p,i))
+PY
+}
+_hg_hits="$(_hg_scan "$TOOLS_DIR")"
+if [ -z "$_hg_hits" ]; then
+  ok "#750: no unguarded value-taking arg arm anywhere in the fleet"
+else
+  bad "#750: $(printf '%s\n' "$_hg_hits" | wc -l) unguarded value-taking arg arm(s) -- each HANGS on a missing value"
+  printf '%s\n' "$_hg_hits" | sed 's/^/        /' | record
+fi
+
+# NEGATIVE CONTROL (neuter-the-code): a fixture carrying the shape MUST be
+# flagged, or the leg could be green because the scanner itself is inert. The
+# guarded fixture is the anti-vacuity half: a scanner that flagged everything
+# would pass the first leg while reporting every healthy arm as a defect.
+_hg_fx="$(mktemp -d)"
+printf '%s\n' '#!/bin/sh' 'while [ $# -gt 0 ]; do case "$1" in' \
+  '  --repo) REPO="${2:-}"; shift 2 ;;' 'esac; done' > "$_hg_fx/oc-fake"
+printf '%s\n' '#!/bin/sh' 'while [ $# -gt 0 ]; do case "$1" in' \
+  '  --repo) [ $# -ge 2 ] || { echo x; exit 2; }; REPO="$2"; shift 2 ;;' \
+  '  --issue) ISSUE="${2:-}"; [ -n "$ISSUE" ] || usage; shift 2 ;;' \
+  'esac; done' > "$_hg_fx/oc-good"
+_hg_ctrl="$(_hg_scan "$_hg_fx")"
+if [ "$_hg_ctrl" = "$_hg_fx/oc-fake:3" ]; then
+  ok "#750 NEGATIVE CONTROL: the scanner flags the shape and ONLY the shape (the leg can fail)"
+else
+  bad "#750 NEGATIVE CONTROL: scanner did not isolate the fixture (got '$(printf '%s' "$_hg_ctrl" | tr '\n' ' ')') -- this leg is inert"
+fi
+rm -rf "$_hg_fx"
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log

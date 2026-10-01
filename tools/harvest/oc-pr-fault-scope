@@ -29,9 +29,9 @@ die() { echo "oc-pr-fault-scope: $2" >&2; exit "$1"; }
 cmd_scope() {
   local pr="" run="" repo="${OC_REPO:-leshchenko1979/opencrabs}" gh="${GH_BIN:-gh}"
   while [ $# -gt 0 ]; do case "$1" in
-    --run) run="${2:-}"; shift 2 ;;
-    --repo) repo="${2:-}"; shift 2 ;;
-    --gh) gh="${2:-}"; shift 2 ;;
+    --run) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --run needs a value" >&2; exit 2; }; run=""$2""; shift 2 ;;
+    --repo) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --repo needs a value" >&2; exit 2; }; repo=""$2""; shift 2 ;;
+    --gh) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --gh needs a value" >&2; exit 2; }; gh=""$2""; shift 2 ;;
     -h|--help) echo "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh cmd]"; echo "Exit: 0 IN-SCOPE / 1 BASE-FAULT / 2 usage / 3 gh failure"; exit 0 ;;  # C-#3: help=0
     --*) die 2 "unknown flag '$1'" ;;
     *) if [ -z "$pr" ]; then pr="$1"; fi; shift ;;

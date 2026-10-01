@@ -55,8 +55,8 @@ ISSUE=""; SHA=""; STATE=""; DRY=0; FORCE=0
 GH_BIN="${OC_ISSUELOG_GH:-gh}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --state) STATE="${2:-}"; shift 2 ;;
-    --repo) FORK="${2:-}"; shift 2 ;;
+    --state) [ $# -ge 2 ] || { echo "oc-issue-log: --state needs a value" >&2; usage; exit 2; }; STATE=""$2""; shift 2 ;;
+    --repo) [ $# -ge 2 ] || { echo "oc-issue-log: --repo needs a value" >&2; usage; exit 2; }; FORK=""$2""; shift 2 ;;
     --repo-path) REPO_PATH="${2:-}"; [ -n "$REPO_PATH" ] || usage; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --force) FORCE=1; shift ;;

@@ -49,9 +49,9 @@ git_ok() { git -C "$1" rev-parse --verify --quiet "$2^{commit}" >/dev/null 2>&1;
 cmd_overlap() {
   local old_main="" new_main="" tree=""
   while [ $# -gt 0 ]; do case "$1" in
-    --old-main) old_main="${2:-}"; shift 2;;
-    --new-main) new_main="${2:-}"; shift 2;;
-    --tree)     tree="${2:-}"; shift 2;;
+    --old-main) [ $# -ge 2 ] || { echo "oc-rebase-safety: --old-main needs a value" >&2; usage; exit 2; }; old_main=""$2""; shift 2;;
+    --new-main) [ $# -ge 2 ] || { echo "oc-rebase-safety: --new-main needs a value" >&2; usage; exit 2; }; new_main=""$2""; shift 2;;
+    --tree) [ $# -ge 2 ] || { echo "oc-rebase-safety: --tree needs a value" >&2; usage; exit 2; };     tree=""$2""; shift 2;;
     *) usage "overlap: unknown arg $1";;
   esac; done
   [ -n "$old_main" ] && [ -n "$new_main" ] || usage "overlap: --old-main and --new-main required"
@@ -125,10 +125,10 @@ cmd_overlap() {
 cmd_audit() {
   local old_tip="" new_tip="" base="" repo=""
   while [ $# -gt 0 ]; do case "$1" in
-    --old-tip) old_tip="${2:-}"; shift 2;;
-    --new-tip) new_tip="${2:-}"; shift 2;;
-    --base)    base="${2:-}"; shift 2;;
-    --repo)    repo="${2:-}"; shift 2;;
+    --old-tip) [ $# -ge 2 ] || { echo "oc-rebase-safety: --old-tip needs a value" >&2; usage; exit 2; }; old_tip=""$2""; shift 2;;
+    --new-tip) [ $# -ge 2 ] || { echo "oc-rebase-safety: --new-tip needs a value" >&2; usage; exit 2; }; new_tip=""$2""; shift 2;;
+    --base) [ $# -ge 2 ] || { echo "oc-rebase-safety: --base needs a value" >&2; usage; exit 2; };    base=""$2""; shift 2;;
+    --repo) [ $# -ge 2 ] || { echo "oc-rebase-safety: --repo needs a value" >&2; usage; exit 2; };    repo=""$2""; shift 2;;
     *) usage "audit: unknown arg $1";;
   esac; done
   [ -n "$old_tip" ] && [ -n "$new_tip" ] || usage "audit: --old-tip and --new-tip required"
