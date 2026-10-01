@@ -630,7 +630,7 @@ def oc_log_finish(exit_code):
     entry = {
         "ts": now_iso(),
         "tool": PROG,
-        "actor": os.environ.get("OPENCRABS_SESSION_ID", "unknown"),
+        "actor": (os.environ.get("OC_ACTOR") or os.environ.get("OPENCRABS_SESSION_ID") or "unknown"),
         "args": _LOG_ARGS[:500],
         "exit": int(exit_code) if isinstance(exit_code, int) else 1,
         "secs": round(time.time() - _LOG_START, 3),

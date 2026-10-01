@@ -582,6 +582,26 @@ if tool oc-attrib; then
   rm -rf "$wd"
 fi
 
+# ---- 00c. the ACTOR contract on a VENDORED python tool (#749a) --------------
+# oc-questions re-implements, in Python, the actor resolution that
+# tools/lib/oc-log.sh does in shell -- and it read OPENCRABS_SESSION_ID ALONE.
+# So every caller that set OC_ACTOR (which the owner rule of 2026-08-30 requires
+# of every oc-* invocation) was logged as actor="unknown" and could not be
+# traced to a lane. Assert the ROW, not the source line: the vendor manifest's
+# declared delta keeps the BYTES honest, but says nothing about what a row
+# actually carries. Control (run by hand, decisive): neutering the actor line
+# back to upstream's form makes this leg FAIL -- measured 2026-10-01.
+if tool oc-questions; then
+  wqd="$(mktemp -d)"
+  WQ="$wqd/q.log"
+  OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$WQ" OC_ACTOR="battery-actor-probe" \
+    "$TOOLS_DIR/state/oc-questions" list >/dev/null 2>&1
+  jq -e 'select(.tool=="oc-questions" and .actor=="battery-actor-probe")' "$WQ" >/dev/null 2>&1 \
+    && ok "oc-questions row carries OC_ACTOR, not the session id (#749a)" \
+    || bad "oc-questions row did NOT carry OC_ACTOR (#749a): $(tail -1 "$WQ" 2>/dev/null | cut -c1-120)"
+  rm -rf "$wqd"
+fi
+
 # ---- 1. oc-order-validate --------------------------------------------------
 section "oc-order-validate"
 run_selftest oc-order-validate
