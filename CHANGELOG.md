@@ -2,7 +2,7 @@
 
 ## v0.4.280 — the stranded-law batch: four brain-scrub findings land where lanes actually read
 
-Bundles **`c954d711`** (BS-5, the law edit), **`3479ac77`** (this bump + entry), and two commits that landed inside the sync window: **`b7c7024a`** — `fix(tools): use <<< in the #741 --label selftest leg` (Toolsmith's fix for the `printf|grep -q` site that reddened the battery gate and held this sync at `die 5`) — and **`0328902a`** — `law(changelog): v0.4.279 names the two bundled Toolsmith commits (C8)`. Plus three live brain-file edits that carry no commit (the profile root is not a git repo): `AGENTS.md` ×2 and `INTEGRATIONS.md` ×1. Second half of the c27 §3.4 bucket; v0.4.279 landed the first half.
+Bundles **`c954d711`** (BS-5, the law edit), **`3479ac77`** (this bump + entry), and two commits that landed inside the sync window: **`b7c7024a`** — `fix(tools): use <<< in the #741 --label selftest leg` (Toolsmith's fix for the `printf|grep -q` site that reddened the battery gate and held this sync at `die 5`) — and **`0328902a`** — `law(changelog): v0.4.279 names the two bundled Toolsmith commits (C8)`. Plus four live brain-file edits that carry no commit (the profile root is not a git repo): `AGENTS.md` ×3 (BS-1, BS-3, BS-8) and `INTEGRATIONS.md` ×1 (BS-4). Second half of the c27 §3.4 bucket; v0.4.279 landed the first half.
 
 These are the **brain-scrub** findings — law sitting in the passive store (`MEMORY.md`, reached only through `memory_search`, never auto-injected) with **zero copies on any surface a lane actually reads**. A rule nobody loads is not a rule.
 
