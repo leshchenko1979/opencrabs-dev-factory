@@ -44,11 +44,80 @@ usage() {
 }
 
 selftest() {
-  local passed=0 total=3 rc
-  "$0"           >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  "$0" 7aae6365  >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  local passed=0 total=9 rc d perr
+  d="$(mktemp -d)"
+  # gh is stubbed on PATH, so every gate below is driven with no network and no
+  # remote: the stub answers the four call shapes the tool makes, and each
+  # answer is chosen per leg through STUB_* environment variables.
+  mkdir -p "$d/bin"
+  printf '%s\n' '#!/bin/sh' \
+    'args="$*"' \
+    'case "$args" in' \
+    '  *compare*)        printf "%s\n" "${STUB_STATUS:-ahead}"; exit 0 ;;' \
+    '  *commit.message*) printf "%s\n" "${STUB_MSG:-}"; exit 0 ;;' \
+    '  *commits/main*)   printf "%s\n" "${STUB_TIP:-}"; exit 0 ;;' \
+    '  *commits/*)       [ "${STUB_SHA_EXISTS:-1}" = "1" ] || exit 1; printf "%s\n" "${STUB_SHA:-}"; exit 0 ;;' \
+    'esac' \
+    'exit 1' > "$d/bin/gh"
+  python3 -c 'import os,sys; os.chmod(sys.argv[1],0o755)' "$d/bin/gh" 2>/dev/null \
+    || chmod +x "$d/bin/gh"
+  local uuid="11111111-2222-3333-4444-555555555555"
+  printf '{"workers":[{"uuid":"%s","role":"editor"}]}\n' "$uuid" > "$d/ledger.json"
+  local sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee"
+  local tip="ffffffffffffffffffffffffffffffffffffffff"
+
+  # (1-3) ARG SHAPE — unchanged, and still the only legs that need no fixture.
+  "$0" >/dev/null 2>&1;                      rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" 7aae6365 >/dev/null 2>&1;             rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
   "$0" zz00000000000000000000000000000000000000 >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  echo "selftest OK: $passed/$total arg-shape cases (no network)"
+  # (4) a missing ledger is an invocation error, not a gate failure
+  "$0" "$sha" --repo R --ledger "$d/nope.json" --tip "$tip" >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+
+  # (5) EXISTENCE (#747): the sha is not on the remote -> rc 4. The message is
+  # asserted too, because rc 4 is ALSO the code for a failed compare API call —
+  # rc alone would not say which gate fired.
+  perr="$(PATH="$d/bin:$PATH" STUB_SHA_EXISTS=0 "$0" "$sha" --repo R --ledger "$d/ledger.json" --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'not found on' <<< "$perr" && passed=$((passed+1))
+
+  # (6) CONTAINMENT (#747): compare status says the sha is NOT an ancestor -> rc 2
+  perr="$(PATH="$d/bin:$PATH" STUB_STATUS=diverged "$0" "$sha" --repo R --ledger "$d/ledger.json" --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 2 ] && grep -qF 'UNMERGED' <<< "$perr" && passed=$((passed+1))
+
+  # (7) SIGNATURE, no trailer at all -> rc 3
+  perr="$(PATH="$d/bin:$PATH" STUB_STATUS=ahead STUB_MSG='plain subject' "$0" "$sha" --repo R --ledger "$d/ledger.json" --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 3 ] && grep -qF 'no Session-Id trailer' <<< "$perr" && passed=$((passed+1))
+
+  # (8) SIGNATURE, trailer present but the uuid is not in the workers ledger
+  # -> rc 3 from the SECOND unsigned arm. Same rc as (7), so the message is the
+  # only thing that pins this leg to :98 rather than :96.
+  perr="$(PATH="$d/bin:$PATH" STUB_STATUS=ahead STUB_MSG="subj
+
+Session-Id: 99999999-8888-7777-6666-555555555555" \
+    "$0" "$sha" --repo R --ledger "$d/ledger.json" --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 3 ] && grep -qF 'not in the workers ledger' <<< "$perr" && passed=$((passed+1))
+
+  # (9) the happy path -> rc 0 and the evidence names the ledger's role. NOTE
+  # the blank line: `git interpret-trailers --parse` treats a trailer block as
+  # the message's LAST PARAGRAPH, so a two-line message with no blank line
+  # parses as prose and yields no trailer (that is what reddened this leg when
+  # the fixture was first written — the tool was right).
+  local jout
+  jout="$(PATH="$d/bin:$PATH" STUB_STATUS=ahead STUB_MSG="subj
+
+Session-Id: $uuid" "$0" "$sha" --repo R --ledger "$d/ledger.json" --tip "$tip" 2>/dev/null)"
+  rc=$?
+  [ "$rc" = 0 ] && grep -qF '"role": "editor"' <<< "$jout" && passed=$((passed+1))
+
+  rm -rf "$d"
+  if [ "$passed" = "$total" ]; then
+    echo "selftest OK: $passed/$total cases (no network)"
+  else
+    echo "selftest FAIL: $passed/$total cases (no network)" >&2
+  fi
   [ "$passed" = "$total" ]
 }
 
