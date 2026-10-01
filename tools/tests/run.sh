@@ -508,12 +508,25 @@ DEMO
   # fixture child it spawned into the PRODUCTION tools.log -- 93 rows per run,
   # six phantom shas across two weeks, read back by oc-ship-audit as ORPHANED
   # dispatches (rc=1, gating `oc-ledger commit-pending`).
+  # #749b made the bare-subcommand arm TOOL-SCOPED: only a tool named in
+  # OC_LOG_BARE_SELFTEST_TOOLS suppresses on a first positional reading
+  # `selftest`. That scoping is the fix -- oc-drift-check's first positional is
+  # a session uuid and oc-log-search's is a log pattern, so the fleet-wide arm
+  # silenced REAL checks. oc-demo is a fixture, so it is NOT in the shipped
+  # default (section 00d holds that list EQUAL to the real `selftest)` arms in
+  # both directions), and an undeclared fixture is simply a tool the arm does
+  # not apply to: it logs a row and leg 1 below reads RED -- a false alarm
+  # about a suppression path the leg never actually reached. The fixture
+  # therefore DECLARES itself here, the same test-local hook section 00d uses
+  # for oc-drift-check, so both legs drive the real oc_is_selftest arm.
   L2="$d/tools2.log"
+  OC_LOG_BARE_SELFTEST_TOOLS=" oc-demo " \
   OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$L2" "$d/oc-demo" selftest
   [ -s "$L2" ] && bad "bare 'selftest' subcommand logged a row (M2-21)" \
                || ok "bare 'selftest' subcommand suppressed (M2-21)"
   # separate log: a leak in the assertion above must not cascade into this one
   L3="$d/tools3.log"
+  OC_LOG_BARE_SELFTEST_TOOLS=" oc-demo " \
   OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$L3" "$d/oc-demo" 0 selftest
   [ "$(wc -l < "$L3")" -eq 1 ] \
     && ok "a 'selftest' VALUE does not suppress a real invocation (M2-21)" \
