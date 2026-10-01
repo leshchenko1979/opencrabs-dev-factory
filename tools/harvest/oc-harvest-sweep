@@ -26,6 +26,140 @@ trap 'oc_log_finish $?' EXIT
 
 usage() { echo "usage: $0 <pr-branch> [--base adolfousier/main] [--repo <path>] [--port-of sha1,sha2] | --selftest" >&2; exit 2; }
 die() { echo "oc-harvest-sweep: $2" >&2; exit "$1"; }
+selftest() {
+  # #747: the old --selftest was inline in the arg loop and asserted ONLY the
+  # all-green path (leg-P MATCH + rc 0). Legs T, E, U and both leg-P failure
+  # arms were uncontrolled, so a regression in any of them still read green.
+  local passed=0 total=0 rc d b h h2 hm mainbr out perr self sd p td
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  sd="$(mktemp -d)"
+  # this selftest runs many deliberately-failing invocations; the fleet
+  # flood guard would otherwise answer rc 8 instead of the gate's code
+  export OC_TOOLS_NOLOG=1 OC_NO_FLOODGUARD=1 OC_DEPLOY_STATE_DIR="$sd"
+
+  # ---- usage / arg shape (rc 2) ------------------------------------------
+  total=$((total+1)); "$self" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 2 ] && passed=$((passed+1)) || echo "  FAIL no-args rc=$rc (want 2)" >&2
+
+  # #750: a value-taking flag as the LAST argument must be a usage error, not a hang
+  total=$((total+1)); perr="$("$self" --base 2>&1 1>/dev/null)"; rc=$?
+  { [ "$rc" = 2 ] && grep -qF -- '--base needs a value' <<< "$perr"; } \
+    && passed=$((passed+1)) || echo "  FAIL --base-as-last-arg rc=$rc msg='$perr'" >&2
+
+  total=$((total+1)); perr="$("$self" --port-of 2>&1 1>/dev/null)"; rc=$?
+  { [ "$rc" = 2 ] && grep -qF -- '--port-of needs a value' <<< "$perr"; } \
+    && passed=$((passed+1)) || echo "  FAIL --port-of-as-last-arg rc=$rc msg='$perr'" >&2
+
+  # ---- fixture repo -------------------------------------------------------
+  d="$(mktemp -d)"
+  git -C "$d" init -q
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+  b="$(git -C "$d" rev-parse HEAD)"
+  echo m > "$d/m"; git -C "$d" add m
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m m --trailer "Session-Id: um"
+  hm="$(git -C "$d" rev-parse HEAD)"   # master-only: never ported -> leg-P NO-MATCH
+  echo x > "$d/x"; git -C "$d" add x
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m x --trailer "Session-Id: u1"
+  h="$(git -C "$d" rev-parse HEAD)"
+  echo y > "$d/y"; git -C "$d" add y
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m y --trailer "Session-Id: u2"
+  h2="$(git -C "$d" rev-parse HEAD)"
+  mainbr="$(git -C "$d" rev-parse --abbrev-ref HEAD)"
+
+  # ---- branch / base resolution (rc 3) -----------------------------------
+  # TWO distinct rc-3 arms, and each must pass a valid value for the OTHER
+  # input. The first draft of this leg passed only --repo, so the DEFAULT base
+  # (adolfousier/main, absent from the fixture) tripped the base-ref guard and
+  # answered with 3 -- the branch-not-found arm was never exercised, and
+  # disabling it left the leg green. Both arms share rc 3, so each asserts its
+  # OWN message.
+  total=$((total+1))
+  perr="$("$self" nosuchbranch --repo "$d" --base "$mainbr" 2>&1 1>/dev/null)"; rc=$?
+  { [ "$rc" = 3 ] && grep -qF 'branch not found' <<< "$perr"; } \
+    && passed=$((passed+1)) || echo "  FAIL branch-not-found rc=$rc msg='$perr'" >&2
+
+  total=$((total+1))
+  perr="$("$self" "$mainbr" --repo "$d" --base nosuchbase 2>&1 1>/dev/null)"; rc=$?
+  { [ "$rc" = 3 ] && grep -qF 'base ref not found' <<< "$perr"; } \
+    && passed=$((passed+1)) || echo "  FAIL base-ref-not-found rc=$rc msg='$perr'" >&2
+
+  # ---- oc-attrib unavailable (the THIRD rc-3 arm) -------------------------
+  # The bootstrap re-derives OC_TOOLS_DIR from $0, so an env override cannot
+  # reach this arm. Relocate the tool into a private tools/ tree carrying lib/
+  # but no state/oc-attrib: the trailer sweep then cannot run at all, and the
+  # tool must say so rather than report a clean sweep.
+  td="$(mktemp -d)"; mkdir -p "$td/tools/harvest" "$td/tools/lib"
+  cp "$OC_TOOLS_DIR/lib/oc-root.sh" "$OC_TOOLS_DIR/lib/oc-log.sh" "$td/tools/lib/" 2>/dev/null
+  cp "$self" "$td/tools/harvest/oc-harvest-sweep"
+  total=$((total+1))
+  perr="$("$td/tools/harvest/oc-harvest-sweep" "$mainbr" --repo "$d" --base "$mainbr" 2>&1 1>/dev/null)"; rc=$?
+  { [ "$rc" = 3 ] && grep -qF 'oc-attrib trailers-only failed' <<< "$perr"; } \
+    && passed=$((passed+1)) || echo "  FAIL oc-attrib-missing rc=$rc msg='$perr'" >&2
+
+  git -C "$d" checkout -q -b pr "$b" 2>/dev/null
+  # the empty-trailer probe: a commit with no trailer must report NOTHING
+  p="$(git -C "$d" log -1 --format='%H%x09%(trailers:key=Session-Id,valueonly)' pr | cut -f2)"
+  total=$((total+1))
+  [ -z "$p" ] && passed=$((passed+1)) || echo "  FAIL empty-trailer probe returned '$p'" >&2
+
+  git -C "$d" -c user.email=t@t -c user.name=t cherry-pick "$h" "$h2" >/dev/null 2>&1 \
+    || { echo "selftest: fixture cherry-pick failed" >&2; return 1; }
+
+  # ---- all-green + leg P MATCH (lesson n=1543 multi-commit regression) ----
+  total=$((total+1))
+  out="$("$self" pr --repo "$d" --base "$mainbr" --port-of "$h,$h2" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 0 ] && [ "$(grep -c 'MATCH' <<< "$out")" -eq 2 ] && grep -qF 'SWEEP: CLEAN' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL all-green rc=$rc out='$out'" >&2
+
+  # ---- leg P NO-MATCH (a commit that was never ported) --------------------
+  total=$((total+1))
+  out="$("$self" pr --repo "$d" --base "$mainbr" --port-of "$hm" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'NO-MATCH' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-P-no-match rc=$rc out='$out'" >&2
+
+  # ---- leg P ERROR (unresolvable sha) -------------------------------------
+  total=$((total+1))
+  out="$("$self" pr --repo "$d" --base "$mainbr" --port-of "0000000000000000000000000000000000000000" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'cannot compute patch-id' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-P-error rc=$rc out='$out'" >&2
+
+  # ---- leg T (a commit carrying no Session-Id) ----------------------------
+  git -C "$d" checkout -q -b prt pr
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "no trailer"
+  total=$((total+1))
+  out="$("$self" prt --repo "$d" --base "$mainbr" --port-of "$h,$h2" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'MISSING Session-Id' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-T rc=$rc out='$out'" >&2
+
+  # ---- leg E (branch identical to base: no diff) --------------------------
+  git -C "$d" branch same "$mainbr"
+  total=$((total+1))
+  out="$("$self" same --repo "$d" --base "$mainbr" 2>/dev/null)"; rc=$?
+  # Bind the row: a bare 'FINDING' grep also matches the summary line
+  # "SWEEP: FINDINGS ...", so this leg read green with the guard disabled.
+  { [ "$rc" = 1 ] && grep -qF "$(printf 'empty-diff\tFINDING')" <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-E rc=$rc out='$out'" >&2
+
+  # ---- leg U (a modified path absent from base) ---------------------------
+  # Only a GITLINK reaches this: a `D` row means base HAS the path (so the D
+  # arm can never fire for regular blobs), and an `M` row means base has it
+  # too -- unless the base entry is a submodule pointer whose target object is
+  # missing from the object DB, which is the case built here.
+  git -C "$d" checkout -q "$mainbr"
+  git -C "$d" update-index --add --cacheinfo 160000,1111111111111111111111111111111111111111,sub
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "gitlink" --trailer "Session-Id: ug"
+  git -C "$d" checkout -q -b prv "$mainbr"
+  git -C "$d" update-index --cacheinfo 160000,2222222222222222222222222222222222222222,sub
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "gitlink2" --trailer "Session-Id: ug2"
+  total=$((total+1))
+  out="$("$self" prv --repo "$d" --base "$mainbr" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'upstream-void' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-U rc=$rc out='$out'" >&2
+
+  rm -rf "$d" "$sd" "$td" 2>/dev/null
+  echo "selftest OK: $passed/$total legs"
+  [ "$passed" = "$total" ]
+}
 
 BASE="adolfousier/main"; REPO="$HOME/opencrabs"; PORT=""; BRANCH=""
 while [ $# -gt 0 ]; do
@@ -33,32 +167,7 @@ while [ $# -gt 0 ]; do
     --base) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --base needs a value" >&2; usage; exit 2; }; BASE=""$2""; shift 2 ;;
     --repo) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --repo needs a value" >&2; usage; exit 2; }; REPO=""$2""; shift 2 ;;
     --port-of) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --port-of needs a value" >&2; usage; exit 2; }; PORT=""$2""; shift 2 ;;
-    --selftest)
-      d="$(mktemp -d)"
-      git -C "$d" init -q && git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-      b="$(git -C "$d" rev-parse HEAD)"
-      echo m > "$d/m" && git -C "$d" add m   # master-only commit: pr will lack it (non-empty diff)
-      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "m" --trailer "Session-Id: um"
-      echo x > "$d/x" && git -C "$d" add x
-      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "x" --trailer "Session-Id: u1"
-      h="$(git -C "$d" rev-parse HEAD)"
-      echo y > "$d/y" && git -C "$d" add y
-      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "y" --trailer "Session-Id: u2"
-      h2="$(git -C "$d" rev-parse HEAD)"
-      mainbr="$(git -C "$d" rev-parse --abbrev-ref HEAD)"
-      git -C "$d" checkout -q -b pr "$b" 2>/dev/null
-      p="$(git -C "$d" log -1 --format='%H%x09%(trailers:key=Session-Id,valueonly)' pr | cut -f2)"
-      [ -z "$p" ] || { echo "selftest: empty-trailer probe broken" >&2; exit 1; }
-      # leg-P regression (lesson n=1543): a MULTI-commit port must MATCH.
-      # The original single-commit fixture hid the `git log -p --format=`
-      # patch-id concatenation bug for 4 days.
-      git -C "$d" -c user.email=t@t -c user.name=t cherry-pick "$h" "$h2" \
-        || { echo "selftest: fixture cherry-pick failed" >&2; exit 1; }
-      self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-      out="$(OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$(mktemp -d)" "$self" pr --repo "$d" --base "$mainbr" --port-of "$h,$h2" 2>/dev/null)"
-      [ $? -eq 0 ] || { echo "selftest: multi-commit leg-P rc!=0: $out" >&2; exit 1; }
-      [ "$(grep -c MATCH <<< "$out")" -eq 2 ] || { echo "selftest: multi-commit leg-P missing MATCH: $out" >&2; exit 1; }
-      echo "selftest OK"; exit 0 ;;
+    --selftest) selftest; exit $? ;;
     -h|--help) (usage); exit 0 ;;   # F-L1 (v0.4.77): --help = 0 (subshell absorbs usage's exit 2)
     *) if [ -z "$BRANCH" ]; then BRANCH="$1"; else usage; fi; shift ;;
   esac
