@@ -22,7 +22,11 @@ The always-loaded router listed "the carrier/feature-set/dispatch rules" without
 - `SKILL.md`: **495 → 497** lines (+2; the routing sentence only — still under the 500 budget).
 - `CHANGELOG.md`: this entry.
 
-Doc-first: the bump and sync are deferred to the next cycle — this entry, v0.4.276 and v0.4.275 all sit above v0.4.274 until then.
+### Bundled commits (C8)
+
+- `35847c18` — fix(tools): oc-ledger selftest --help was dead code behind the global parser (#722)
+
+**Synced:** catch-up to **0.4.277** (ledger event n=13940), the single bump covering v0.4.275–v0.4.277.
 
 
 ## v0.4.276 — the design gate must ask for the simplest shape
