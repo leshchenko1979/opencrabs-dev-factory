@@ -43,8 +43,10 @@ GH_BIN="${OC_ISSUE_CREATE_GH:-gh}"
 UPSTREAM_SLUG="${OC_ISSUE_CREATE_UPSTREAM:-adolfousier/opencrabs}"
 UPSTREAM_REMOTE="${OC_ISSUE_CREATE_UPSTREAM_REMOTE:-adolfousier}"
 
-usage() {
-  cat >&2 <<'USAGE'
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
+  local rc="${1:-2}" fd=2
+  [ "$rc" = 0 ] && fd=1
+  cat >&$fd <<'USAGE'
 usage: oc-issue-create [--parent <N>] [--root <upstream:obj>] [--no-parent <reason>]
                        [--propose-parent]
                        [--repo <slug>] [--repo-path <dir>] [--dry-run] [--selftest]
@@ -82,7 +84,7 @@ judgement, never an auto-link. It is also structurally blind for the ~44% of
 fix issues with no commit on main at all -- those print "no commit on main",
 never a guess.
 USAGE
-  exit 2
+  exit "$rc"
 }
 
 # ---- arg parsing: ours vs gh's ----------------------------------------------
@@ -91,7 +93,7 @@ REPO_SLUG="$FORK_REPO"; PASSTHRU=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --selftest) SELFTEST=1; shift ;;
-    -h|--help) (usage); exit 0 ;;   # fleet contract (RC-CONTRACT): --help exits 0
+    -h|--help) usage 0 ;;   # fleet contract (RC-CONTRACT): --help exits 0 on STDOUT
     --parent) [ $# -ge 2 ] || { echo "oc-issue-create: --parent needs a value" >&2; usage; }; PARENT="$2"; shift 2 ;;
     --parent=*) PARENT="${1#--parent=}"; shift ;;
     --no-parent) [ $# -ge 2 ] || { echo "oc-issue-create: --no-parent needs a reason" >&2; usage; }; NO_PARENT="$2"; NO_PARENT_SET=1; shift 2 ;;

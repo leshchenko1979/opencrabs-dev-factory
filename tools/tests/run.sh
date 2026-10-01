@@ -1596,12 +1596,26 @@ section "rc contract --help=0 fleet-wide (C-#3)"
 # catch. Enumerate recursively and assert a FLOOR, so a future layout change
 # reddens here instead of quietly reducing the leg count.
 HELP_N=0
+HOUT_N=0
 for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   [ -x "$t" ] || continue
   case "$t" in */lib/*|*/tests/*|*/archive/*|*.bak|*.bak-*|*.pre-*) continue ;; esac
   tn="$(basename "$t")"
   HELP_N=$((HELP_N+1))
   OC_TOOLS_NOLOG=1 timeout 20 "$t" --help >/dev/null 2>&1     && ok "$tn --help rc=0" || bad "$tn --help rc!=0 (tools/docs/RC-CONTRACT.md violated)"
+  # (#748a) rc=0 alone is NOT the contract. `--help` is an explicitly requested
+  # READ, so the text belongs on STDOUT: `tool --help | grep <flag>` must find it.
+  # Twelve tools printed it to STDERR instead, so stdout was empty and a pipe
+  # found nothing -- while the rc leg above stayed GREEN, because a usage text on
+  # the wrong stream is still a successful exit. The 2026-10-01 audit named seven
+  # (oc-start, oc-issue-create, oc-issue-log, oc-issue-sweep, oc-harvest-sweep,
+  # oc-pr-atomicity, oc-smoke-evidence); the same sweep found FIVE MORE inside
+  # this very loop (the four ship/ tools and oc-skew-scan), which is why the
+  # assertion is fleet-wide rather than a list of names. Assert stdout is
+  # NON-EMPTY, never a byte count: the text is free to grow (#316 debt).
+  HOUT="$(OC_TOOLS_NOLOG=1 timeout 20 "$t" --help 2>/dev/null || true)"
+  if [ -n "$HOUT" ]; then HOUT_N=$((HOUT_N+1))
+  else bad "$tn --help wrote NOTHING to stdout -- usage belongs on STDOUT, not STDERR (#748a, tools/docs/RC-CONTRACT.md)"; fi
   # (#618) The rc check above discards STDERR, so a --help whose body executes
   # phantom commands still reads rc=0. That is how oc-smoke shipped `absent` and
   # `na` running as commands and vanishing from its own help text: an UNQUOTED
@@ -1619,6 +1633,12 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
 done
 [ "$HELP_N" -ge 30 ] && ok "fleet --help floor: $HELP_N tool(s) enumerated" \
   || bad "fleet --help floor: only $HELP_N tool(s) enumerated -- the glob stopped matching (want >= 30)"
+# (#748a) A per-tool `bad` fires only when stdout is EMPTY, so a leg that silently
+# stopped running -- or a glob that enumerated nothing -- would read as a clean
+# pass. Assert the COUNT too: every enumerated tool must have answered with text
+# on stdout. This is the same anti-vacuity shape as the floor above.
+[ "$HOUT_N" -eq "$HELP_N" ] && ok "fleet --help stdout: $HOUT_N/$HELP_N tool(s) put their usage text on STDOUT (#748a)" \
+  || bad "fleet --help stdout: only $HOUT_N of $HELP_N tool(s) put usage text on STDOUT (#748a) -- the leg did not cover the fleet"
 # #691: the edit tool writes a `.bak` pre-image beside every file it edits, and
 # those sidecars are EXECUTABLE copies of the tool, so the glob above enumerated
 # them as fleet tools and ran their --help (7 phantom PASS legs, 2026-09-28).

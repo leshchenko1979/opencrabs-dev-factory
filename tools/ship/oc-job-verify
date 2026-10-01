@@ -49,9 +49,15 @@ VERBOSE=0
 fail() { echo "oc-job-verify: $2" >&2; exit "$1"; }
 say()  { [ "$VERBOSE" = 1 ] && echo "$*" >&2 || true; }
 
-usage() {
-  echo "Usage: oc-job-verify <run-id> <source-ref-40hex> [--features SET] [--wait N] [--repo R] [--json] [--identity-only] [--verbose] [--selftest]" >&2
-  echo "Exit: 0 VERIFIED | 1 invocation | 2 IN-FLIGHT | 3 FAILED | 4 REF-MISMATCH | 5 RUN-NOT-FOUND" >&2
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's LEGACY rc 1 on STDERR
+  # Deliberately does NOT exit: the callers choose the rc (this register's usage
+  # error is 1, not the fleet's 2 -- RC-CONTRACT legacy row), so only the STREAM
+  # is selected here. #748a: `--help` was rc=0 with the text on STDERR, so
+  # `oc-job-verify --help | grep` found nothing while the rc leg stayed green.
+  local fd=2
+  [ "${1:-1}" = 0 ] && fd=1
+  echo "Usage: oc-job-verify <run-id> <source-ref-40hex> [--features SET] [--wait N] [--repo R] [--json] [--identity-only] [--verbose] [--selftest]" >&$fd
+  echo "Exit: 0 VERIFIED | 1 invocation | 2 IN-FLIGHT | 3 FAILED | 4 REF-MISMATCH | 5 RUN-NOT-FOUND" >&$fd
 }
 
 selftest() {
@@ -157,7 +163,7 @@ while [ $# -gt 0 ]; do
     --identity-only) IDENTITY_ONLY=1; shift ;;
     --verbose)  VERBOSE=1; shift ;;
     --selftest) selftest; exit $? ;;
-    -h|--help)  usage; exit 0 ;;
+    -h|--help)  usage 0; exit 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the stream)
     *)
       if [ -z "$RUN_ID" ]; then RUN_ID="$1"
       elif [ -z "$REF" ]; then REF="$1"

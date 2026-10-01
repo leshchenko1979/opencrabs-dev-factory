@@ -79,17 +79,19 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-smoke-evidence" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
-usage() {
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
   # Kept in sync with the header synopsis (#316 debt: a usage text that omits a
   # verb is how --late-entry, --park-owner-eye and --repair-row stayed invisible;
   # every verb below is real and, before this, only three of them were named).
-  echo "usage: $0 [--unit <systemd-user-unit>] [--markers m1,m2] [--negative-control <binary>]" >&2
-  echo "          [--append-log [<path>]] | --selftest" >&2
-  echo "          [--late-entry --sha <sha> [--run <id>] [--actor <uuid>] [--issue <#N>] [--target <name>] [--evidence <text>]]" >&2
-  echo "          [--park-owner-eye <description> [--sha <sha>] [--issue <#N>]]" >&2
-  echo "          [--repair-row --match <text> --replace <text> [--log [<path>]]]" >&2
-  echo "          [--log-stats [<path>]]" >&2
-  exit 2
+  local rc="${1:-2}" fd=2
+  [ "$rc" = 0 ] && fd=1
+  echo "usage: $0 [--unit <systemd-user-unit>] [--markers m1,m2] [--negative-control <binary>]" >&$fd
+  echo "          [--append-log [<path>]] | --selftest" >&$fd
+  echo "          [--late-entry --sha <sha> [--run <id>] [--actor <uuid>] [--issue <#N>] [--target <name>] [--evidence <text>]]" >&$fd
+  echo "          [--park-owner-eye <description> [--sha <sha>] [--issue <#N>]]" >&$fd
+  echo "          [--repair-row --match <text> --replace <text> [--log [<path>]]]" >&$fd
+  echo "          [--log-stats [<path>]]" >&$fd
+  exit "$rc"
 }
 die() { echo "oc-smoke-evidence: $2" >&2; exit "$1"; }
 
@@ -486,7 +488,7 @@ while [ $# -gt 0 ]; do
       grep -qF 'peer-AFTER' "$rfp" || { echo "selftest: the peer's post-repair append was LOST -- its fd was orphaned (rename?)" >&2; exit 1; }
       grep -qF "$R_R1" "$rfp" || { echo "selftest: the peer-leg splice did not land" >&2; exit 1; }
       echo "selftest OK"; exit 0 ;;
-    -h|--help) (usage); exit 0 ;;   # F-L1 (v0.4.77): --help = 0 (subshell absorbs usage's exit 2)
+    -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) usage ;;
   esac
 done

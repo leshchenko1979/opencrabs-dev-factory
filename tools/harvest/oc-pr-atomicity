@@ -44,9 +44,13 @@ VERBOSE=0
 fail() { echo "oc-pr-atomicity: $2" >&2; exit "$1"; }
 say()  { [ "$VERBOSE" = 1 ] && echo "$*" >&2 || true; }
 
-usage() {
-  echo "Usage: oc-pr-atomicity <pr-number> [--repo R] [--verbose] [--selftest]" >&2
-  echo "Exit: 0 ATOMIC | 1 invocation | 2 NON-ATOMIC | 4 PR not found" >&2
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
+  # Deliberately does NOT exit: the callers choose their own rc (the register's
+  # invocation code is 1, not 2), so only the STREAM is selected here.
+  local fd=2
+  [ "${1:-2}" = 0 ] && fd=1
+  echo "Usage: oc-pr-atomicity <pr-number> [--repo R] [--verbose] [--selftest]" >&$fd
+  echo "Exit: 0 ATOMIC | 1 invocation | 2 NON-ATOMIC | 4 PR not found" >&$fd
 }
 
 selftest() {
@@ -124,7 +128,7 @@ while [ $# -gt 0 ]; do
     --repo)     [ $# -ge 2 ] || { echo "oc-pr-atomicity: --repo needs a value" >&2; usage; exit 1; }; REPO="$2"; shift 2 ;;
     --verbose)  VERBOSE=1; shift ;;
     --selftest) selftest; exit $? ;;
-    -h|--help)  usage; exit 0 ;;
+    -h|--help)  usage 0; exit 0 ;;
     *)
       if [ -z "$PR" ]; then PR="$1"; else usage; exit 1; fi
       shift ;;

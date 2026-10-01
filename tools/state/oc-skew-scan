@@ -40,7 +40,12 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-skew-scan" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
-usage() { echo "usage: $0 [--ledger <file>] [--current <v>] | --selftest" >&2; exit 2; }
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
+  local rc="${1:-2}" fd=2
+  [ "$rc" = 0 ] && fd=1
+  echo "usage: $0 [--ledger <file>] [--current <v>] | --selftest" >&$fd
+  exit "$rc"
+}
 die() { echo "oc-skew-scan: $2" >&2; exit "$1"; }
 
 LEDGER=""; CURRENT=""; SELFTEST=0
@@ -49,7 +54,7 @@ while [ $# -gt 0 ]; do
     --ledger) LEDGER="${2:-}"; shift ;;
     --current) CURRENT="${2:-}"; shift ;;
     --selftest) SELFTEST=1 ;;
-    -h|--help) (usage); exit 0 ;;   # F-L1 (v0.4.77): --help = 0 (subshell absorbs usage's exit 2)
+    -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) usage ;;
   esac
   shift

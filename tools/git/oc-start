@@ -57,14 +57,18 @@ BASE="origin/main"
 LEDGER_BIN="${OC_START_LEDGER_BIN:-$_SELF_DIR/state/oc-ledger}"
 WT_BIN="${OC_START_WT_BIN:-$_SELF_DIR/git/oc-wt}"
 
-usage() { [ -n "${1:-}" ] && echo "oc-start: $1" >&2; cat >&2 <<EOS
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
+  local rc="${2:-2}" fd=2
+  [ "$rc" = 0 ] && fd=1
+  [ -n "${1:-}" ] && echo "oc-start: $1" >&2
+  cat >&$fd <<EOS
 usage: $0 <issue-N> --branch <type>/<slug> [--task <task>] [--base REF] [--repo P]
        $0 --selftest
 Exit: 0 STARTED / 2 usage / 3 claim-refused / 4 branch-fail / 5 worktree-fail
 STARTED names the tree resolved by lib/oc-wt-resolve.sh — the same predicate
 oc-wt uses, so the path printed is the path oc-wt add/remove/list agree on.
 EOS
-  exit "${2:-2}"; }
+  exit "$rc"; }
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage "" 0

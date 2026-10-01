@@ -44,7 +44,12 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-log" "$@"; else oc_log_finish() { :; }; oc_log_extra() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
-usage() { echo "usage: $0 <issue-n> <sha> [--state <text>] [--repo <slug>] [--repo-path <dir>] [--dry-run] [--force] | --selftest" >&2; exit 2; }
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
+  local rc="${1:-2}" fd=2
+  [ "$rc" = 0 ] && fd=1
+  echo "usage: $0 <issue-n> <sha> [--state <text>] [--repo <slug>] [--repo-path <dir>] [--dry-run] [--force] | --selftest" >&$fd
+  exit "$rc"
+}
 die() { echo "oc-issue-log: $2" >&2; exit "$1"; }
 
 FORK="${OC_ISSUE_LOG_REPO:-leshchenko1979/opencrabs}"
@@ -138,7 +143,7 @@ FAKEGH
       e_idem="$(jq -r 'select(.tool=="oc-issue-log") | .extra.idem // ""' "$d/tools.log" 2>/dev/null | tail -1)"
       [ "$e_idem" = "skip" ] || { echo "selftest: tools.log extra.idem expected 'skip', got '$e_idem'" >&2; exit 1; }
       echo "selftest OK"; exit 0 ;;
-    -h|--help) (usage); exit 0 ;;   # F-L1 (v0.4.77): --help = 0 (subshell absorbs usage's exit 2)
+    -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) if [ -z "$ISSUE" ]; then ISSUE="$1"; elif [ -z "$SHA" ]; then SHA="$1"; else usage; fi; shift ;;
   esac
 done
