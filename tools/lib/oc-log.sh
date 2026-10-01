@@ -46,11 +46,33 @@ OC_LOG_START=""
 # must never trip on a selftest replaying its own failure fixtures.
 # First-token match for the bare form ONLY: a VALUE that happens to read
 # "selftest" (e.g. `--dir selftest`) must never silence a real invocation.
+#
+# #749b (2026-10-01, toolsmith): the first-token arm still misfired when the
+# VALUE IS the first token. oc-drift-check's first positional is a session uuid
+# and `selftest` is legal there, so `oc-drift-check selftest` ran a REAL check
+# (rc 1, NO-HISTORY) and wrote NO row at all -- and because OC_TOOLS_NOLOG is
+# EXPORTED, the suppression was inherited by its children, so the oc-ledger
+# grandchild went dark too. A row never written is indistinguishable from a run
+# that never happened. The same hole swallowed the tools whose first positional
+# is free text -- oc-log-search (pattern), oc-issue-sweep (query),
+# oc-harvest-sweep (branch) -- measured at 0 rows each.
+#
+# The bare SUBCOMMAND spelling is therefore a property of the TOOLS that
+# dispatch one -- exactly five carry a `selftest)` case arm -- and NOT of the
+# fleet. oc_log_init sets OC_LOG_TOOL BEFORE this predicate runs, so the arm can
+# be scoped to its owners: a free-text positional that reads `selftest` in any
+# other tool now logs normally. Battery section 00d holds this list EQUAL to the
+# real set of arms in both directions, and its negative control (the env hook
+# below) proves the arm is what suppresses the row.
+OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-deploy oc-ledger oc-roster oc-watcher-audit "
+OC_LOG_BARE_SELFTEST_TOOLS="${OC_LOG_BARE_SELFTEST_TOOLS:-$OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT}"
 oc_is_selftest() {
   case " $OC_LOG_ARGS " in
     *" --selftest "*) return 0 ;;
   esac
-  [ "${OC_LOG_ARGS%% *}" = "selftest" ] && return 0
+  case "$OC_LOG_BARE_SELFTEST_TOOLS" in
+    *" ${OC_LOG_TOOL:-} "*) [ "${OC_LOG_ARGS%% *}" = "selftest" ] && return 0 ;;
+  esac
   return 1
 }
 

@@ -602,6 +602,44 @@ if tool oc-questions; then
   rm -rf "$wqd"
 fi
 
+# ---- 00d. the bare-`selftest` arm is TOOL-SCOPED (#749b) --------------------
+# oc_is_selftest()'s first-token arm silenced ANY invocation whose FIRST
+# positional read `selftest`. But oc-drift-check's first positional is a session
+# uuid and `selftest` is legal there, so a REAL check ran (rc 1, NO-HISTORY) and
+# wrote NO row -- and because OC_TOOLS_NOLOG is EXPORTED the suppression was
+# inherited, so its oc-ledger child went dark too. A row never written is
+# indistinguishable from a run that never happened. The same hole swallowed the
+# free-text positionals: oc-log-search (pattern), oc-issue-sweep (query),
+# oc-harvest-sweep (branch). The arm is now scoped to the tools that actually
+# dispatch a bare `selftest)` subcommand.
+# Two directions, so neither can rot alone: the declared list must EQUAL the
+# real set of arms (a new arm with no list entry, or a stale entry, FAILS here),
+# and the env-hook control must make the row VANISH -- proving the arm is what
+# suppressed it rather than something else.
+# Measured 2026-10-01: 0 rows before the fix, 2 after (the tool + its oc-ledger
+# child), 0 again under the control.
+if [ -f "$TOOLS_DIR/lib/oc-log.sh" ]; then
+  _decl="$(sed -n 's/^OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" \(.*\) "$/\1/p' "$TOOLS_DIR/lib/oc-log.sh" | tr ' ' '\n' | grep . | sort)"
+  _act="$(grep -rlE '^[[:space:]]*(--selftest\|)?selftest(\|--selftest)?\)' "$TOOLS_DIR" --include='oc-*' 2>/dev/null \
+          | grep -vE '/(lib|tests|archive)/|\.bak' | xargs -r -n1 basename | sort -u)"
+  if [ -n "$_decl" ] && [ "$_decl" = "$_act" ]; then
+    ok "bare-selftest list == the tools carrying such an arm (#749b): $(printf '%s ' $_decl)"
+  else
+    bad "bare-selftest list != the real arms (#749b): declared=[$(printf '%s ' $_decl)] actual=[$(printf '%s ' $_act)]"
+  fi
+  _dsd="$(mktemp -d)"
+  OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$_dsd/real.log" "$TOOLS_DIR/state/oc-drift-check" selftest >/dev/null 2>&1
+  [ -s "$_dsd/real.log" ] \
+    && ok "a real check whose uuid reads 'selftest' LOGS a row (#749b)" \
+    || bad "a real check whose uuid reads 'selftest' wrote NO row (#749b)"
+  OC_LOG_BARE_SELFTEST_TOOLS=" oc-drift-check " \
+  OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$_dsd/ctl.log" "$TOOLS_DIR/state/oc-drift-check" selftest >/dev/null 2>&1
+  [ -s "$_dsd/ctl.log" ] \
+    && bad "CONTROL DEAD (#749b): re-adding the tool to the list did NOT suppress the row -- the leg above is vacuous" \
+    || ok "control: re-adding the tool to the list makes the row VANISH (#749b)"
+  rm -rf "$_dsd"
+fi
+
 # ---- 1. oc-order-validate --------------------------------------------------
 section "oc-order-validate"
 run_selftest oc-order-validate
