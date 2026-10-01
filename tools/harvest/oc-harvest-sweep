@@ -41,14 +41,19 @@ selftest() {
   total=$((total+1)); "$self" >/dev/null 2>&1; rc=$?
   [ "$rc" = 2 ] && passed=$((passed+1)) || echo "  FAIL no-args rc=$rc (want 2)" >&2
 
-  # #750: a value-taking flag as the LAST argument must be a usage error, not a hang
-  total=$((total+1)); perr="$("$self" --base 2>&1 1>/dev/null)"; rc=$?
+  # #750: a value-taking flag as the LAST argument must be a usage error, not a hang.
+  # #753: and the DRIVE is bounded. If that guard ever regresses this leg loops
+  # forever instead of failing -- pinning a core until someone notices. Measured
+  # 2026-10-01: six detached --selftest runs, ~5 h, load ~11 on 4 cores, nothing
+  # reaping them. A guard inside the tool cannot help a process that started
+  # before the guard existed; a bound can.
+  total=$((total+1)); perr="$(timeout 20 "$self" --base 2>&1 1>/dev/null)"; rc=$?
   { [ "$rc" = 2 ] && grep -qF -- '--base needs a value' <<< "$perr"; } \
-    && passed=$((passed+1)) || echo "  FAIL --base-as-last-arg rc=$rc msg='$perr'" >&2
+    && passed=$((passed+1)) || echo "  FAIL --base-as-last-arg rc=$rc (124 = it HUNG) msg='$perr'" >&2
 
-  total=$((total+1)); perr="$("$self" --port-of 2>&1 1>/dev/null)"; rc=$?
+  total=$((total+1)); perr="$(timeout 20 "$self" --port-of 2>&1 1>/dev/null)"; rc=$?
   { [ "$rc" = 2 ] && grep -qF -- '--port-of needs a value' <<< "$perr"; } \
-    && passed=$((passed+1)) || echo "  FAIL --port-of-as-last-arg rc=$rc msg='$perr'" >&2
+    && passed=$((passed+1)) || echo "  FAIL --port-of-as-last-arg rc=$rc (124 = it HUNG) msg='$perr'" >&2
 
   # ---- fixture repo -------------------------------------------------------
   d="$(mktemp -d)"
