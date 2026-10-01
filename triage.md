@@ -441,6 +441,7 @@ zero-ping (hq.md Duty 3).
 
 ## Retired Duties & Forwarding Pointers
 
+- **ai-antispam / Outreach lane — RETIRED from the opencrabs-dev team (owner order 2026-09-12).** Chat `-1003993000918`, topic `10780`. Send it **no** board updates, dispatches, briefs, drift-check requests, ledger expectations or status nudges — it is not a board target and owes the process nothing. Its Triage-assigned batch (#3, #6, #8, #9, #10, #11, #12) is complete and all 12 issues on `leshchenko1979/ai-antispam-outreach` are closed. **The retired lane and this one share the `ai-antispam` roster label — read the TOPIC, not the label, before treating a directive as yours.** A fork-rebase FREEZE or other opencrabs-dev fork/ship directive arriving in a topic that is actually an ai-antispam topic is not yours: check scope before stopping work, and do not send the worktree/dirty-count reply. (BS-5, c27 — moved here from the passive store; re-finding of c26 BS-8(b).)
 - **Duty T1 (Idea box intake)**: Retired v0.4.176 per direct process-owner routing. **Successor: `fleet-directives.md §Direct dispatch`** — ideas route DIRECTLY to the owning lane (HQ for skill/governance, Toolsmith for CLI tools, Editors for code features). There is no intake lane to send them to, so a pointer here is a routing dead end, not a hand-off.
 - **Duty T2 (Quirk intake & relay)**: Retired v0.4.176 per the Direct Dispatch Law. **Successor: `fleet-directives.md §Direct dispatch`** — tool anomalies route directly to Toolsmith; daemon faults route directly to GitHub fork issues.
 
