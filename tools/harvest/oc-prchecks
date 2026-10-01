@@ -587,7 +587,7 @@ do_selftest() {
   # loop, reaches the ref lookup, and ALSO exits 2 ("sha ... not found"), so an
   # rc-only leg cannot discriminate the retirement from the not-found path
   # (measured 2026-10-01 while neutering this arm — #741).
-  if [ "$T_RC" -eq 2 ] && printf '%s' "$T_OUT" | grep -q -- '--label retired'; then
+  if [ "$T_RC" -eq 2 ] && grep -q -- '--label retired' <<< "$T_OUT"; then
     t_ok "--label retired -> 2 (usage) naming the retirement"
   else
     t_bad "--label retired (rc=$T_RC out=$T_OUT)"
