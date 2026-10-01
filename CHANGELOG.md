@@ -1,5 +1,60 @@
 # Changelog — opencrabs-dev
 
+## v0.4.279 — c27 deferred-findings batch: the phantom-flag refusals, the tool-table collapse, and the B-1 cure refused
+
+Bundles **`76404b63`**. Clears the bucket the c27 verdict parked under the header **"OWNER-GATED / next batch (accepted, not landed here)"** — a straight breach of the owner order of 2026-09-25 (`fleet-directives.md:94`, verbatim): *"findings are not wasted but fixed in their entirety. remove the human gate fro the duty 4 and 6 fixing process"*. Twelve findings landed; one refused with evidence.
+
+### 1 · Three phantom refusals — the lens remedies prescribed tools that do not exist
+
+Every c27 lens remedy names a tool or flag, so each was verified against the tree **before** it could enter law. Three failed:
+
+| Remedy named | Measured | What landed instead |
+|---|---|---|
+| `oc-attrib --session <uuid>` (J-2) | **no `--session` flag** — `grep -nE '\-\-session' tools/state/oc-attrib` → rc 1 | the real interface: `oc-attrib --repo <path> --deployed` |
+| `oc-upstream-delta --prs` (J-6) | **no `--prs` flag** — `grep -nE '\-\-prs' …` → rc 1 | `gh pr list --state open` (one call for the whole set) |
+| `review.py schema` / `validate` (J-1) | **no such file in this tree** (finding I-1) | a REFUSAL with the reason stated + a ROUTE |
+
+This is the **I-1 defect class repeating**: a remedy that prescribes a runner which is not there. Writing any of the three into law verbatim would have planted a verb that cannot execute — the exact failure c27 opened with. Each missing tool half is routed to Toolsmith with its finding ID rather than invented here.
+
+### 2 · The landed findings
+
+| ID | Site | Change |
+|---|---|---|
+| **J-2** | `fleet-directives.md:145` | the attribution guard RUNS `oc-attrib --repo <path> --deployed` instead of telling the lane to re-derive three sources by hand |
+| **J-3** | `editor.md` + `fleet-directives.md` §W3 | checkout-ref verification is `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity reported but never trusted |
+| **J-4** | `harvest.md` | fault-scope test is `oc-pr-fault-scope <pr#> --run <run-id>` — rc 0 IN-SCOPE / rc 1 BASE-FAULT (do NOT ping) |
+| **J-5** | `editor.md` | trailer-block verification is `oc-attrib --repo <path> --trailers-only --range <A..B>`; a hand-rolled `git interpret-trailers` parse was agent-memory-as-gate-input |
+| **J-6** | `triage.md` | one `gh pr list` for the whole census set, not a per-PR `gh pr view` loop |
+| **J-1** | `hq.md` | key-set closure stays an explicit hand assertion, with its reason stated (no instrument here carries it) |
+| **G-9** | `triage.md` | nine `###` patrol headings under `## Duty T4` — cohesion first, no split |
+| **G-10** | `editor.md` | the completion criterion carries the checkable formula label |
+| **I-3** | `review-lenses.md` | lens A's ref scope now covers every cross-repo pointer, resolved against its declared home |
+| **I-6** | `review-lenses.md` | the accuracy record cites a locator that exists (`workers-ledger.json` retraction/rejection rows) |
+| **B-2 / B-3** | `SKILL.md` | seven over-long tool-table rows collapsed to `tool — purpose` + the `tools/docs/RC-CONTRACT.md` register pointer |
+| **BS-1** | `AGENTS.md` §Skill load | the stale five-file budget enumeration replaced by the register's canon: the budget binds the ONE brain file a session loads in full (`AGENTS.md`); the `CONTEXTUAL_BRAIN_FILES` cost nothing per session |
+
+### 3 · B-1 — the prescribed cure is refused, with the measurement
+
+B-1 (MAJOR) says `fleet-directives.md` at 732 L is +232 over the owner's 500-line budget, and prescribes: **move the `[LANE]`-tagged sections to a companion file**.
+
+**That cure is a regression of a decision already made and reverted.** The 2026-09-18 split did exactly this, and the register records the reversal verbatim: *"The 2026-09-18 split demoted sections whose law in fact binds every lane; citation is not scope."* (`CHANGELOG.md:1719`). `[LANE]` is not a lane-scope marker — it is **the must-read-at-reload marker** (`CHANGELOG.md:1743`, `:3078`): the sections it tags are the ones every worker is required to read in full after compaction. Moving them out of the always-loaded register removes law from the only surface every lane provably reads.
+
+The residue is genuine and is **routed to the owner as a budget decision**, not re-executed blind: either the register's 500-line budget gets an explicit exemption, or the demotion is re-attempted with the anchor sweep the revert proved was missing.
+
+### 4 · LOC delta (before → after, lines)
+
+| File | Before | After | Δ |
+|---|---|---|---|
+| `SKILL.md` | 499 | 499 | +0 |
+| `editor.md` | 658 | 660 | +2 |
+| `fleet-directives.md` | 732 | 732 | +0 |
+| `harvest.md` | 430 | 431 | +1 |
+| `hq.md` | 273 | 274 | +1 |
+| `review-lenses.md` | 303 | 306 | +3 |
+| `triage.md` | 453 | 466 | +13 |
+
+`SKILL.md` stays inside its budget at 499; `fleet-directives.md` is unchanged (B-1 not landed — see §3).
+
 ## v0.4.278 — Duty-4/6 cycle c27: the phantom home, the dead tool names, and the biography purge
 
 Duty-6 review cycle **`20261001-c27`**, opened 2026-10-01T07:09Z on a **FIRE** cadence (7 skill-bumps past boundary `n=12391`), corpus at `c00947eb`. Eleven lenses ran as isolated read-only sub-agents; `oc-review-persist check-cycle --strict-receipt` closed the census at **11 persisted / 0 waived / 0 unreceipted** (rc 0). **99 findings** — 2 BLOCKER · 30 MAJOR · 55 MINOR · 12 NIT. This entry carries the accepted findings landed in this batch, and every provenance token stripped out of live rule text by A-8/A-9/A-14.
