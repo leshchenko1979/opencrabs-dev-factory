@@ -50,11 +50,71 @@ usage() {
 }
 
 selftest() {
-  local passed=0 total=3 rc
-  "$0"     >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  "$0" abc >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  "$0" -1  >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  echo "selftest OK: $passed/$total arg-shape cases (no network)"
+  local passed=0 total=10 rc d perr jout
+  d="$(mktemp -d)"
+  # gh is stubbed on PATH and dispatches on the API PATH it is asked for, so
+  # every gate below runs with no network and no repo.
+  mkdir -p "$d/bin"
+  printf '%s\n' '#!/bin/sh' \
+    '[ "${STUB_API_FAIL:-0}" = "1" ] && exit 1' \
+    'case "$2" in' \
+    '  *pulls/*/commits*) printf "%s\n" "$STUB_SHAS" ;;' \
+    '  *pulls/*)          printf "%s\n" "$STUB_PR" ;;' \
+    '  *commits/*)        printf "%s\n" "$STUB_MSG" ;;' \
+    'esac' \
+    'exit 0' > "$d/bin/gh"
+  python3 -c 'import os,sys; os.chmod(sys.argv[1],0o755)' "$d/bin/gh" 2>/dev/null \
+    || chmod +x "$d/bin/gh"
+  local sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee"
+  local pr="5"
+
+  # (1-4) ARG SHAPE — plus the --repo value guard added for #744.
+  "$0" >/dev/null 2>&1;              rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" abc >/dev/null 2>&1;          rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" -1 >/dev/null 2>&1;           rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" "$pr" --repo >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+
+  # (5) PR EXISTS — the API call fails -> rc 4
+  perr="$(PATH="$d/bin:$PATH" STUB_API_FAIL=1 "$0" "$pr" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'not found on' <<< "$perr" && passed=$((passed+1))
+
+  # (6-9) four rc-2 arms. All four return 2, so each asserts its OWN message.
+  # (6) BODY CLAIM — the body names no issue at all
+  perr="$(PATH="$d/bin:$PATH" STUB_PR='{"state":"open","title":"t","body":"no reference here"}' \
+    STUB_SHAS="$sha" STUB_MSG="Issue-Ref: #42" "$0" "$pr" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 2 ] && grep -qF 'claims NO issue' <<< "$perr" && passed=$((passed+1))
+  # (7) ONE ISSUE — the body claims two distinct issues
+  perr="$(PATH="$d/bin:$PATH" STUB_PR='{"state":"open","title":"t","body":"Closes #42\nRefs #43"}' \
+    STUB_SHAS="$sha" STUB_MSG="Issue-Ref: #42" "$0" "$pr" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 2 ] && grep -qF 'MIXED' <<< "$perr" && passed=$((passed+1))
+  # (8) PER-COMMIT — the commit carries no Issue-Ref trailer
+  perr="$(PATH="$d/bin:$PATH" STUB_PR='{"state":"open","title":"t","body":"Closes #42"}' \
+    STUB_SHAS="$sha" STUB_MSG="just a subject" "$0" "$pr" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 2 ] && grep -qF 'no Issue-Ref trailer' <<< "$perr" && passed=$((passed+1))
+  # (9) PER-COMMIT — the trailer names a DIFFERENT issue than the body claims
+  perr="$(PATH="$d/bin:$PATH" STUB_PR='{"state":"open","title":"t","body":"Closes #42"}' \
+    STUB_SHAS="$sha" STUB_MSG="Issue-Ref: #99" "$0" "$pr" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 2 ] && grep -qF '!= claimed' <<< "$perr" && passed=$((passed+1))
+
+  # (10) ATOMIC — one claim, and the commit's trailer names it -> rc 0
+  jout="$(PATH="$d/bin:$PATH" STUB_PR='{"state":"open","title":"t","body":"Closes #42"}' \
+    STUB_SHAS="$sha" STUB_MSG="fix: something
+
+Issue-Ref: #42" "$0" "$pr" 2>/dev/null)"
+  rc=$?
+  [ "$rc" = 0 ] && grep -qF '"atomic": true' <<< "$jout" && passed=$((passed+1))
+
+  rm -rf "$d"
+  if [ "$passed" = "$total" ]; then
+    echo "selftest OK: $passed/$total cases (no network)"
+  else
+    echo "selftest FAIL: $passed/$total cases (no network)" >&2
+  fi
   [ "$passed" = "$total" ]
 }
 
