@@ -81,6 +81,12 @@ set -e            # F-lens (HQ GO batch 2026-09-09): a bare-typo command like th
                   # is the #124 time-bomb class.
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-prchecks" "$@"; else oc_log_finish() { :; }; fi
+# #727: the re-exec target and the argv to replay, captured BEFORE the parse loop
+# shifts "$@" away. SELF is read AFTER oc_snap_guard (line above), so it names the
+# IMMUTABLE MIRROR copy when the guard is active — re-execing the mutable original
+# would re-open the in-place-rewrite hole (fork #167) for the detached run.
+SELF="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+ORIG_ARGS=("$@")
 _OC_PATCH_LIB="$OC_TOOLS_DIR/lib/oc-patch.sh"   # #631: oc_job_sha for the adoption sha pin
 [ -f "$_OC_PATCH_LIB" ] && . "$_OC_PATCH_LIB"
 # Exit-honesty guard (n=1725 A, Triage verdict n=1721; field tools.log:3190,
@@ -355,6 +361,11 @@ do_selftest() {
   t_ok()  { pass=$((pass+1)); echo "selftest: $1  OK"; }
   t_bad() { fail=$((fail+1)); echo "selftest: $1 FAIL"; }
   export OC_PRCHECKS_PIN_TRIES=1   # #631: shim answers instantly; no wait loop in tests
+  # #727 hermeticity: with this exported, `auto` resolves to "OUTSIDE the daemon
+  # cgroup", so the detach never fires in legs that have nothing to do with
+  # detaching — the result of every other leg would otherwise depend on WHERE the
+  # battery runs. The detach legs set OC_PRCHECKS_IN_UNIT_CGROUP=1 explicitly.
+  export OC_PRCHECKS_SELFTEST=1
   run_t() { # $1=scenario $2..=args ; echoes rc in $T_RC, out in $T_OUT
     mk_shim "$D/gh" "$1"; shift
     # set -e survival (v0.4.124): negative-path scenarios EXPECT nonzero rc —
@@ -365,7 +376,8 @@ do_selftest() {
       OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
       OC_TOOLS_NOLOG=1 "$SELF" "$@" 2>&1)" && T_RC=0 || T_RC=$?
   }
-  SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  # SELF is set once at the top level (#727) — it must exist before the detach
+  # can re-exec, so it is no longer a selftest-local.
 
   run_t none abc123;                 [ "$T_RC" -eq 2 ] && t_ok "short sha -> 2" || t_bad "short sha (rc=$T_RC)"
   run_t unknown_ref some-branch;     [ "$T_RC" -eq 2 ] && t_ok "unknown ref -> 2" || t_bad "unknown ref (rc=$T_RC)"
@@ -767,6 +779,193 @@ do_selftest() {
   else t_bad "no_cancel race guard (rc=$ncl_rc tries=$ncl_tries hits=$ncl_hits out=$ncl_out)"; fi
   unset GHDISPATCH_LOG
 
+  # ==========================================================================
+  # #727: cgroup-safe detach contract (legs 21a-21h)
+  #   opencrabs-ops.service runs KillMode=control-group, so a DIRECT
+  #   `oc-prchecks` wait armed from a session dies with a daemon restart — no
+  #   verdict, no report. These legs pin the escape: it fires ONLY inside the
+  #   unit's cgroup, ONLY for a long wait, ONLY once, with argv and stdio intact.
+  # ==========================================================================
+  # Fake detach: records the argv the re-exec handed it (proving ORIG_ARGS
+  # survived the parse loop) and writes a stdio marker that can only reach a
+  # FILE if the re-exec redirect exists (the 0-byte-log class, LAW 17).
+  cat > "$D/fake-detach" <<'FDET'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_DETACH_LOG:-/dev/null}"
+echo "FAKE-DETACH-STDIO-BOUND"
+exit 0
+FDET
+  chmod +x "$D/fake-detach"
+
+  # 21a. INSIDE the cgroup + a long wait -> the detach MUST fire, and the
+  #      re-exec must carry the SAME argv (a drained "$@" would die rc 2 with
+  #      "missing <branch-or-sha>" — the failure ORIG_ARGS exists to prevent).
+  rm -f "$D/detach-a.log" "$D/detach-a-stdio.log"
+  DET_RC=0
+  DET_OUT="$(OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD="$D/fake-detach" \
+    OC_PRCHECKS_LOG="$D/detach-a-stdio.log" FAKE_DETACH_LOG="$D/detach-a.log" \
+    "$SELF" "$SHA" --wait 300 2>&1)" || DET_RC=$?
+  [ "$DET_RC" -eq 0 ] && t_ok "21a detach: re-exec path exits 0" || t_bad "21a detach rc=$DET_RC out=$DET_OUT"
+  [ -s "$D/detach-a.log" ] && t_ok "21a detach: re-exec FIRED inside the cgroup" || t_bad "21a detach: no re-exec (out=$DET_OUT)"
+  grep -q -- "--wait 300" "$D/detach-a.log" 2>/dev/null && t_ok "21a detach: argv preserved (--wait 300)" || t_bad "21a detach: argv LOST ($(cat "$D/detach-a.log" 2>/dev/null))"
+  grep -q -- "$SHA" "$D/detach-a.log" 2>/dev/null && t_ok "21a detach: ref preserved" || t_bad "21a detach: ref LOST"
+  grep -q "FAKE-DETACH-STDIO-BOUND" "$D/detach-a-stdio.log" 2>/dev/null && t_ok "21a detach: stdio bound to the detached log" || t_bad "21a detach: stdio NOT bound (0-byte-log class)"
+  case "$DET_OUT" in *"Re-executing outside"*) t_ok "21a detach: announces the escape on stderr" ;; *) t_bad "21a detach: no stderr notice (out=$DET_OUT)" ;; esac
+
+  # 21b. LOOP GUARD: a re-entered copy (OC_PRCHECKS_DETACHED=1) must NOT
+  #      re-exec — otherwise the detach recurses without bound.
+  mk_shim "$D/gh" none
+  rm -f "$D/detach-b.log"
+  DET_RC=0
+  DET_OUT="$(OC_GH="$D/gh" OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACHED=1 OC_PRCHECKS_DETACH_CMD="$D/fake-detach" \
+    FAKE_DETACH_LOG="$D/detach-b.log" \
+    "$SELF" abc123 --wait 300 2>&1)" || DET_RC=$?
+  [ ! -s "$D/detach-b.log" ] && t_ok "21b detach: loop guard blocks the re-exec" || t_bad "21b detach: re-exec despite OC_PRCHECKS_DETACHED=1"
+
+  # 21c. OUTSIDE the cgroup -> no detach at all. The escape must be a response
+  #      to the environment, never an unconditional re-exec.
+  rm -f "$D/detach-c.log"
+  DET_RC=0
+  DET_OUT="$(OC_GH="$D/gh" OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=0 OC_PRCHECKS_DETACH_CMD="$D/fake-detach" \
+    FAKE_DETACH_LOG="$D/detach-c.log" \
+    "$SELF" abc123 --wait 300 2>&1)" || DET_RC=$?
+  [ ! -s "$D/detach-c.log" ] && t_ok "21c detach: not taken OUTSIDE the cgroup" || t_bad "21c detach: fired outside the cgroup"
+
+  # 21d. KILL SWITCH: OC_PRCHECKS_DETACH_CMD=0 disables the escape outright,
+  #      and says so — an operator must never wonder which path ran.
+  rm -f "$D/detach-d.log"
+  DET_RC=0
+  DET_OUT="$(OC_GH="$D/gh" OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD=0 \
+    FAKE_DETACH_LOG="$D/detach-d.log" \
+    "$SELF" abc123 --wait 300 2>&1)" || DET_RC=$?
+  [ ! -s "$D/detach-d.log" ] && t_ok "21d detach: OC_PRCHECKS_DETACH_CMD=0 -> no re-exec" || t_bad "21d detach: re-exec despite the kill switch"
+  case "$DET_OUT" in *"detach disabled"*) t_ok "21d detach: kill switch warns" ;; *) t_bad "21d detach: no kill-switch warning (out=$DET_OUT)" ;; esac
+
+  # 21e. WAIT GATE: a SHORT wait inside the cgroup must NOT detach. The blast
+  #      radius is exactly the long-wait class, so short gates keep inline stdout.
+  rm -f "$D/detach-e.log"
+  DET_RC=0
+  DET_OUT="$(OC_GH="$D/gh" OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD="$D/fake-detach" \
+    FAKE_DETACH_LOG="$D/detach-e.log" \
+    "$SELF" abc123 --wait 60 2>&1)" || DET_RC=$?
+  [ ! -s "$D/detach-e.log" ] && t_ok "21e detach: short wait (60 < 300) does not detach" || t_bad "21e detach: detach fired on a short wait"
+
+  # 21f. CAPS: the DEFAULT command must carry the resource caps. A scope is a
+  #      SIBLING in app.slice where MemoryMax is infinity, so escaping the
+  #      daemon's cgroup also escapes its 2G cap (#720). A fake systemd-run on
+  #      PATH records the constructed argv; nothing is really launched.
+  mkdir -p "$D/fakebin"
+  cat > "$D/fakebin/systemd-run" <<'FSD'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_SYSTEMDRUN_LOG:-/dev/null}"
+exit 0
+FSD
+  chmod +x "$D/fakebin/systemd-run"
+  rm -f "$D/sdrun.log"
+  DET_RC=0
+  DET_OUT="$(PATH="$D/fakebin:$PATH" OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD= FAKE_SYSTEMDRUN_LOG="$D/sdrun.log" \
+    "$SELF" abc123 --wait 300 2>&1)" || DET_RC=$?
+  grep -q -- '--scope' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: --scope used" || t_bad "21f detach caps: no --scope ($(cat "$D/sdrun.log" 2>/dev/null))"
+  grep -q -- '-p MemoryMax=512M' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: -p MemoryMax=512M" || t_bad "21f detach caps: MemoryMax missing"
+  grep -q -- '-p CPUQuota=50%' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: -p CPUQuota=50%" || t_bad "21f detach caps: CPUQuota missing"
+  grep -q -- '--unit oc-prchecks-' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: named scope (the kill handle)" || t_bad "21f detach caps: no --unit — an anonymous scope is unkillable by name"
+
+  # 21g. FALLBACK: with NO systemd-run reachable, the tool must fall back to
+  #      `setsid -w` (blocks and passes rc through — never bare `setsid`, which
+  #      would lose the verdict) and warn. PATH is a symlink farm of the real
+  #      PATH minus systemd-run, so nothing else changes.
+  #      THE FARM HOLDS SYMLINKS, SO NOTHING MAY EVER BE WRITTEN INTO IT.
+  #      A shell `>` FOLLOWS symlinks, so `cat > "$D/nosd/setsid"` did not
+  #      create a file in the farm — it followed the farm's `setsid` symlink
+  #      and OVERWROTE THE REAL /usr/bin/setsid WITH THE FIXTURE. Measured
+  #      2026-10-01T08:46:35Z: the impostor (71 B, `exit 0`, never detaches)
+  #      replaced the system binary mid-battery, and every detach leg that ran
+  #      AFTER it read the impostor — three suites went red on a box where
+  #      nothing was actually broken. See #735.
+  #      Two defences, both structural:
+  #        (1) `setsid` is EXCLUDED from the farm, exactly like `systemd-run`;
+  #        (2) the fake lives in its OWN directory PREPENDED to PATH, so no
+  #            write ever targets a farm entry — the pattern, not just this
+  #            instance, is removed.
+  #      A red battery is cheap; a silently-clobbered system binary is not.
+  mkdir -p "$D/nosd" "$D/fakebin-g"
+  printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r _p; do
+    [ -d "$_p" ] || continue
+    for _f in "$_p"/*; do
+      [ -f "$_f" ] || continue
+      _b="${_f##*/}"
+      [ "$_b" = "systemd-run" ] && continue
+      [ "$_b" = "setsid" ] && continue
+      [ -e "$D/nosd/$_b" ] && continue
+      ln -s "$_f" "$D/nosd/$_b" 2>/dev/null || true
+    done
+  done
+  cat > "$D/fakebin-g/setsid" <<'FSS'
+#!/bin/sh
+printf '%s\n' "$*" >> "${FAKE_SETSID_LOG:-/dev/null}"
+exit 0
+FSS
+  chmod +x "$D/fakebin-g/setsid"
+  rm -f "$D/setsid.log" "$D/detach-g-out.txt"
+  BASH_BIN="$(command -v bash)"
+  env PATH="$D/fakebin-g:$D/nosd" OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD= FAKE_SETSID_LOG="$D/setsid.log" \
+    "$BASH_BIN" "$SELF" abc123 --wait 300 >"$D/detach-g-out.txt" 2>&1 || true
+  grep -q "systemd-run unavailable" "$D/detach-g-out.txt" 2>/dev/null && t_ok "21g detach fallback: warns systemd-run unavailable" || t_bad "21g detach fallback: no warning ($(cat "$D/detach-g-out.txt" 2>/dev/null))"
+  grep -q -- "-w" "$D/setsid.log" 2>/dev/null && t_ok "21g detach fallback: uses setsid -w (rc-preserving)" || t_bad "21g detach fallback: setsid -w not used"
+
+  # 21h. NEGATIVE CONTROL for 21a: the SAME invocation against a throwaway copy
+  #      with the gated call site NEUTERED to a no-op must NOT detach. Without it
+  #      21a would only prove that some code ran — the call site itself has to be
+  #      what fires. (Neuter-the-code: the fleet's "the tool's own selftest
+  #      certified the wrong behaviour" class.) lib/ is symlinked so the copy
+  #      behaves exactly like the real tool minus the one line under test.
+  #
+  #      Two traps this leg is written around, both measured live:
+  #        (1) the neuter MUST keep the file syntactically valid. The first cut
+  #            used `grep -v DETACH-CALL-SITE`, which also deleted THIS LEG'S OWN
+  #            marker check two blocks down, orphaning an `else` -> `bash -n`
+  #            rc 2 -> the copy died before reaching the call site -> the log
+  #            stayed empty -> the control PASSED VACUOUSLY. The marker is
+  #            therefore matched ANCHORED to the call-site line, so no other
+  #            line in the file can satisfy or destroy it.
+  #        (2) "no detach" is satisfied just as well by a copy that never ran, so
+  #            the leg also asserts the copy REACHED THE SHAPE GATE (the same
+  #            `abc123` short-sha refusal leg 2 pins) — that is what makes the
+  #            absence of a detach evidence rather than silence.
+  cp "$SELF" "$D/nc-prchecks"
+  sed 's|^  prchecks_ensure_detached   # DETACH-CALL-SITE$|  :  # NEUTERED-21h|' \
+    "$D/nc-prchecks" > "$D/nc-prchecks.tmp"
+  mv "$D/nc-prchecks.tmp" "$D/nc-prchecks"
+  chmod +x "$D/nc-prchecks"
+  mkdir -p "$D/lib"
+  ln -sf "$OC_TOOLS_DIR/lib/oc-log.sh"   "$D/lib/oc-log.sh"
+  ln -sf "$OC_TOOLS_DIR/lib/oc-patch.sh" "$D/lib/oc-patch.sh"
+  if grep -q '^  prchecks_ensure_detached   # DETACH-CALL-SITE$' "$D/nc-prchecks"; then
+    t_bad "21h detach NEGATIVE CONTROL: neuter failed (call site still present)"
+  elif ! "$BASH_BIN" -n "$D/nc-prchecks" 2>/dev/null; then
+    t_bad "21h detach NEGATIVE CONTROL: neutered copy is a SYNTAX ERROR — the control would pass vacuously"
+  else
+    rm -f "$D/detach-nc.log"
+    timeout 30 env OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+      OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD="$D/fake-detach" \
+      FAKE_DETACH_LOG="$D/detach-nc.log" \
+      "$BASH_BIN" "$D/nc-prchecks" abc123 --wait 300 >"$D/detach-nc-out.txt" 2>&1 || true
+    if [ -s "$D/detach-nc.log" ]; then
+      t_bad "21h detach NEGATIVE CONTROL: detach fired with the call site REMOVED — 21a proves nothing"
+    elif grep -q "short sha refused" "$D/detach-nc-out.txt" 2>/dev/null; then
+      t_ok "21h detach NEGATIVE CONTROL: neutered copy RUNS, reaches the shape gate, does not detach (21a is not vacuous)"
+    else
+      t_bad "21h detach NEGATIVE CONTROL: neutered copy never reached the shape gate — it did not really run (out=$(head -c 300 "$D/detach-nc-out.txt" 2>/dev/null))"
+    fi
+  fi
+
   echo "selftest: $pass/$((pass+fail)) passed"
   [ "$fail" -eq 0 ]
 }
@@ -825,6 +1024,97 @@ if [ "$WAIT_SUBCOMMAND" -eq 1 ]; then
 fi
 if [ "$RESUME_MODE" -eq 1 ]; then   # #74 H2: positional is a NUMERIC run id, not a sha/branch
   case "$REF" in ''|*[!0-9]*) usage "resume needs a numeric run id (got '$REF')" ;; esac
+fi
+
+# ---------- cgroup-safe detach for long waits (#727) --------------------------
+# opencrabs-ops.service runs KillMode=control-group, so a daemon restart SIGTERMs
+# EVERY process in its cgroup: a `nohup`/`setsid` waiter is no safer than a
+# foreground one, and `setsid` does NOT escape a cgroup (verified live). A long CI
+# wait armed from a session therefore dies mid-wait with NO verdict and NO failure
+# report — the exact class this tool exists to eliminate.
+#
+# This is not a new contract. Commit 14780053 (2026-09-08) gave oc-waiter exactly
+# this escape (`systemd-run --user --scope`, unit oc-waiter-<id>); retiring that
+# tool (v0.4.135) deleted the fix with it, and the hand-rolled waiters came back.
+# The shape survived in oc-ship-chain:526-560 and oc-deploy:341, so a CHAIN-run
+# gate inherits it transitively — the hole is a DIRECT call, which is precisely
+# what editor and harvest lanes do.
+#
+# Env:
+#   OC_PRCHECKS_UNIT           the unit whose cgroup counts as "inside"
+#                              (default opencrabs-ops.service)
+#   OC_PRCHECKS_IN_UNIT_CGROUP auto|1|0 — test hook; `auto` reads /proc/self/cgroup
+#   OC_PRCHECKS_SELFTEST       1 = the selftest exports it, so `auto` resolves to 0
+#                              and no leg depends on where the battery happens to run
+#   OC_PRCHECKS_DETACH_CMD     default `systemd-run --user --scope --collect
+#                              -p MemoryMax=512M -p CPUQuota=50%`; `0` disables the
+#                              detach outright. It MUST BLOCK and pass the child's rc
+#                              through — `setsid -w`, never bare `setsid`, or GREEN/
+#                              RED is lost and a RED gate reads as success.
+#   OC_PRCHECKS_DETACHED       loop guard (the re-exec exports it)
+#   OC_PRCHECKS_DETACH_MIN     shortest WAIT_SECS that earns a detach (default 300)
+#   OC_PRCHECKS_LOG            where the detached re-exec binds stdout+stderr
+#                              (default /tmp/oc-prchecks-detached-<pid>.log)
+prchecks_in_bounce_cgroup() { # rc 0 = this process IS inside the unit's cgroup
+  local unit="${OC_PRCHECKS_UNIT:-opencrabs-ops.service}" cg dflt=auto
+  # SELFTEST HERMETICITY: under `auto` this reads the HOST's /proc/self/cgroup, so
+  # without the export a leg's result would depend on WHERE the battery runs. The
+  # detach legs set OC_PRCHECKS_IN_UNIT_CGROUP explicitly.
+  [ "${OC_PRCHECKS_SELFTEST:-0}" = "1" ] && dflt=0
+  case "${OC_PRCHECKS_IN_UNIT_CGROUP:-$dflt}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  [ -r /proc/self/cgroup ] || return 1
+  cg="$(cat /proc/self/cgroup 2>/dev/null || true)"
+  case "$cg" in *"/$unit"|*"/$unit/"*) return 0 ;; esac
+  return 1
+}
+
+prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG_ARGS)
+  [ "${OC_PRCHECKS_DETACHED:-0}" = "1" ] && return 0   # already detached (loop guard)
+  prchecks_in_bounce_cgroup || return 0
+  local cmd="${OC_PRCHECKS_DETACH_CMD:-}"
+  if [ "$cmd" = "0" ]; then
+    echo "$PROG: detach disabled (OC_PRCHECKS_DETACH_CMD=0) — this wait dies with a daemon restart (#727)" >&2
+    return 0
+  fi
+  if [ -z "$cmd" ]; then
+    if command -v systemd-run >/dev/null 2>&1; then
+      # A scope is a SIBLING of the service in app.slice, where MemoryMax is
+      # infinity: escaping the daemon's cgroup also escapes the daemon's 2G cap,
+      # so the caps are not decoration (#720 — an uncapped escape can eat the box).
+      #      --unit is NOT cosmetic (design §Risks, accepted-risk mitigation):
+      #      the named scope IS the kill handle for a waiter whose pid is
+      #      otherwise unreachable — `systemctl --user stop oc-prchecks-<id>` —
+      #      and it is what makes the escape auditable. An anonymous
+      #      `run-r<hex>.scope` gives an operator nothing to aim at, which is
+      #      the very invisibility #727 exists to end. `$$` is the detaching
+      #      process's pid, stable across the exec and unique among the living.
+      cmd="systemd-run --user --scope --collect --unit oc-prchecks-$$ -p MemoryMax=512M -p CPUQuota=50%"
+    else
+      cmd="setsid -w"
+      echo "$PROG: systemd-run unavailable — falling back to '$cmd' (blocks and passes rc, but does NOT escape the cgroup)" >&2
+    fi
+  fi
+  # Bind stdio to a FILE. The scope survives the cgroup teardown while the
+  # launching call still owns the pipes, so an unredirected re-exec dies EPIPE on
+  # its first stderr write — the oc-ship-chain 0-byte-log field case (LAW 17).
+  local dlog="${OC_PRCHECKS_LOG:-/tmp/oc-prchecks-detached-$$.log}"
+  echo "$PROG: this CI wait is INSIDE ${OC_PRCHECKS_UNIT:-opencrabs-ops.service}'s cgroup — a daemon restart would SIGTERM it mid-wait with NO verdict (#727). Re-executing outside via: $cmd" >&2
+  echo "$PROG: detached log: $dlog" >&2
+  OC_PRCHECKS_DETACHED=1 exec $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1
+}
+
+# The call site sits AFTER the parse loop and the wait-subcommand defaults (so
+# --help, --selftest and every usage error have already exited and can never
+# re-exec) and BEFORE step 0 — from here on the work is network-bound and long.
+# Gated on the WAIT LENGTH: detaching a short wait buys nothing and costs the
+# caller its inline stdout, so the blast radius stays exactly the class that gets
+# damaged — a long wait lost with no verdict. CHECKPOINT_FILE (runs/in-flight/<sha>)
+# remains the machine-readable handoff for a caller that must not poll the log.
+if [ "${WAIT_SECS:-0}" -ge "${OC_PRCHECKS_DETACH_MIN:-300}" ]; then
+  prchecks_ensure_detached   # DETACH-CALL-SITE
 fi
 
 # ---------- step 0: --repo SLUG-or-PATH (v0.4.48 Duty-7 fix) -----------------
