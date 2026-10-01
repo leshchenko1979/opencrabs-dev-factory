@@ -55,12 +55,94 @@ usage() {
 }
 
 selftest() {
-  local passed=0 total=4 rc
-  "$0" >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  "$0" abc 91a6146be3ddf777927cbd71af24c3ab8907fc8f >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  "$0" 32982457449 shortsha >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  "$0" 32982457449 >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
-  echo "selftest OK: $passed/$total arg-shape cases (no network)"
+  local passed=0 total=12 rc d perr jout
+  d="$(mktemp -d)"
+  # gh is stubbed on PATH: the stub picks its payload from the --json value the
+  # tool asks for, so every gate below runs with no network and no remote.
+  mkdir -p "$d/bin"
+  printf '%s\n' '#!/bin/sh' \
+    '[ "${STUB_VIEW_FAIL:-0}" = "1" ] && [ "$1" = run ] && [ "$2" = view ] && exit 1' \
+    'json=""; prev=""' \
+    'for a in "$@"; do' \
+    '  if [ "$prev" = "--json" ]; then json="$a"; break; fi' \
+    '  prev="$a"' \
+    'done' \
+    'case "$json" in' \
+    '  jobs)    printf "%s\n" "$STUB_JOBS" ;;' \
+    '  status*) printf "%s\n" "$STUB_VIEW" ;;' \
+    'esac' \
+    'exit 0' > "$d/bin/gh"
+  python3 -c 'import os,sys; os.chmod(sys.argv[1],0o755)' "$d/bin/gh" 2>/dev/null \
+    || chmod +x "$d/bin/gh"
+
+  local ref="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee"
+  local head="ffffffffffffffffffffffffffffffffffffffff"   # carrier tip, never identity
+  local other="9999999999999999999999999999999999999999"
+  local run="32982457449"
+
+  # (1-4) ARG SHAPE — unchanged, and still the only legs needing no fixture.
+  "$0" >/dev/null 2>&1;                                rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" abc "$ref" >/dev/null 2>&1;                     rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" "$run" shortsha >/dev/null 2>&1;                rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  "$0" "$run" >/dev/null 2>&1;                         rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+
+  # (5) RUN-NOT-FOUND — gh cannot resolve the run -> rc 5
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW_FAIL=1 "$0" "$run" "$ref" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 5 ] && grep -qF 'not found on' <<< "$perr" && passed=$((passed+1))
+
+  # (6) IN-FLIGHT — status is not completed and no --wait -> rc 2
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"in_progress\",\"conclusion\":null,\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS='{"jobs":[]}' "$0" "$run" "$ref" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 2 ] && grep -qF 'IN-FLIGHT' <<< "$perr" && passed=$((passed+1))
+
+  # (7) FAILED — completed but conclusion != success -> rc 3
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"failure\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS='{"jobs":[]}' "$0" "$run" "$ref" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 3 ] && grep -qF 'FAILED' <<< "$perr" && passed=$((passed+1))
+
+  # (8-10) IDENTITY — three distinct rc-4 arms. All three return 4, so each leg
+  # asserts the gate's OWN message; rc alone could not tell them apart.
+  # (8) no job name carries an embed at all
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS='{"jobs":[{"name":"ORDER gates"}]}' "$0" "$run" "$ref" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'embed found in job names' <<< "$perr" && passed=$((passed+1))
+  # (9) embed present, sha is a DIFFERENT ref
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"ship / Linux amd64 ($other, telegram,code-graph)\"}]}" \
+    "$0" "$run" "$ref" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'job embed sha' <<< "$perr" && passed=$((passed+1))
+  # (10) sha matches, a REQUESTED FEATURE is absent from the embed
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"ship / Linux amd64 ($ref, telegram)\"}]}" \
+    "$0" "$run" "$ref" --features telegram,code-graph 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'missing requested' <<< "$perr" && passed=$((passed+1))
+
+  # (11) VERIFIED — sha and every requested feature present -> rc 0
+  jout="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"ship / Linux amd64 ($ref, telegram,code-graph)\"}]}" \
+    "$0" "$run" "$ref" --features telegram,code-graph --json 2>/dev/null)"
+  rc=$?
+  [ "$rc" = 0 ] && grep -qF '"verified": true' <<< "$jout" && passed=$((passed+1))
+
+  # (12) --identity-only on a RED run -> rc 0: the whole point of the flag is to
+  # answer "which sha produced this failure?" without the outcome gates firing.
+  PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"failure\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"ship / Linux amd64 ($ref, telegram)\"}]}" \
+    "$0" "$run" "$ref" --identity-only >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && passed=$((passed+1))
+
+  rm -rf "$d"
+  if [ "$passed" = "$total" ]; then
+    echo "selftest OK: $passed/$total cases (no network)"
+  else
+    echo "selftest FAIL: $passed/$total cases (no network)" >&2
+  fi
   [ "$passed" = "$total" ]
 }
 
