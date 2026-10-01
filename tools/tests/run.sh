@@ -126,10 +126,23 @@ run_selftest() {
   # A plain `rm -rf` right after the call, NOT a global trap: chunk mode
   # re-extracts and sources the prelude (everything before the first `# ---- N`
   # marker) once per section, so a prelude-level trap would be set N times.
-  local sd
+  local sd _rc _st
   sd="$(mktemp -d)"
-  run_capture "$t --selftest" env OC_DEPLOY_STATE_DIR="$sd" "$_tp" --selftest
+  # #753: every selftest is BOUNDED. run_capture() has no bound of its own, so a
+  # selftest that hangs used to hang the whole battery -- silently, forever.
+  # Measured 2026-10-01: six detached oc-harvest-sweep --selftest runs spun ~5 h
+  # at 37-39% CPU each (load ~11 on 4 cores) and nothing reaped them.
+  # 1800s default: the longest battery section measured is 296.5s (oc-ledger
+  # kernel, tools/tests/battery-last.json ts=2026-10-01T13:51:50Z, PASS 310/0),
+  # so this cannot red a slow-but-legitimate selftest. Override: OC_SELFTEST_TIMEOUT.
+  # --kill-after reaps a child that ignores TERM; timeout signals the whole
+  # process group, so a selftest's own grandchildren die with it.
+  _st="${OC_SELFTEST_TIMEOUT:-1800}"
+  run_capture "$t --selftest" timeout --kill-after=30 "$_st" env OC_DEPLOY_STATE_DIR="$sd" "$_tp" --selftest
+  _rc=$?
+  [ "$_rc" = 124 ] && note "       | $t --selftest HUNG -- killed at the ${_st}s bound (#753)"
   rm -rf "$sd"
+  return "$_rc"
 }
 
 # ---- battery driver: --jobs N parallel mode + internal --chunk mode (v0.4.131)
