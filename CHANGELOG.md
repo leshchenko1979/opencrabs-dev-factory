@@ -80,8 +80,10 @@ Cycle-time ruling: **base-repair ownership is NOT a standing Triage duty** — t
 ### Bundled commits (C8)
 
 - `c00947eb` — law(changelog): v0.4.277 names its bundled commit (C8) + records the sync
+- `c4541928` — fix(tools): oc-prchecks `--wait` detaches into its own named scope (#727)
+- `da646070` — fix(tools): oc-commit `--session-id-only` — the escape from mandatory Issue-Ref derivation (#728)
 
-**Synced:** bump to **0.4.278** covering Duty-4/6 cycle `20261001-c27`.
+**Synced:** bump to **0.4.278** (ledger event `n=13976`) covering Duty-4/6 cycle `20261001-c27`. The tag also carries the **Toolsmith lane's** `#727`/`#728` batch, which landed between the cycle boundary and this sync — named here because the version record is the only place a bundled fix's ship date exists.
 
 ## v0.4.277 — all fork CI lives on the carrier branch
 
