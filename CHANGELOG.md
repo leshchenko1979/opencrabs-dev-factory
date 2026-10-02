@@ -2,7 +2,7 @@
 
 ## v0.4.282 — q46 → D and #761 steps 1-2: the fence drops, and the fork-only boundary takes its first durable shape
 
-Bundles **`957c5003`** + **`31f8f394`** (HQ law), **`9637cdb9`** (the fence's tool half), **`be40ae00`** (#761 steps 1-2), **`09e30956`** (battery receipt sweep).
+Bundles **`957c5003`** + **`31f8f394`** (HQ law), **`9637cdb9`** (the fence's tool half), **`be40ae00`** (#761 steps 1-2), **`09e30956`** (battery receipt sweep). The range also carries Toolsmith's **#739** pair, which landed inside this window: **`230dfb9d`** — `fix(tools): oc-vendor-drift and oc-claims-single-source wrote no unified-log row at all` (the `exec python3` replacing the shell image, so the documented `trap … EXIT` could never fire; 5 files, +427/−2) — and its receipt sweep **`b2854ce5`**.
 
 Two owner rulings land together, and they are one story read from both ends: the fence that held harvests behind a quiet lane is **gone**, and the register that declares what is *deliberately* fork-only finally has fields worth declaring.
 
