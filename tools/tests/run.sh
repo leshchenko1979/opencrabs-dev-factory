@@ -1622,6 +1622,31 @@ section "oc-harvest-census"
 run_selftest oc-harvest-census
 if tool oc-harvest-census; then
   "$TOOLS_DIR/harvest/oc-harvest-census" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
+  # #761 CLI surface, exercised through the SHIPPED executable rather than the
+  # in-process selftest: the not-upstreamable annotations must be reachable from
+  # the arg parser AND survive a re-record that omits them (the carry-forward
+  # rule). A temp registry is used so the LIVE one is never touched; the `record`
+  # path only writes when the state file already exists, so it is seeded first.
+  _hcx_reg="$(mktemp "${TMPDIR:-/tmp}/oc-census-cli.XXXXXX")"
+  printf '{"manual_records": []}\n' > "$_hcx_reg"
+  _hcx_ok=1
+  "$TOOLS_DIR/harvest/oc-harvest-census" record --unit "battery-ann" --status not-upstreamable \
+      --reason "battery probe" --issue "1" --branches "b1,b2" --revert "git revert x" \
+      --verified-at "2026-01-01T00:00:00Z" --state-file "$_hcx_reg" >/dev/null 2>&1 || _hcx_ok=0
+  "$TOOLS_DIR/harvest/oc-harvest-census" record --unit "battery-ann" --pr 0 \
+      --state-file "$_hcx_reg" >/dev/null 2>&1 || _hcx_ok=0
+  python3 -c '
+import json, sys
+rows = [r for r in json.load(open(sys.argv[1])).get("manual_records", []) if r.get("unit") == "battery-ann"]
+sys.exit(0 if (len(rows) == 1
+               and rows[0].get("status") == "not-upstreamable"
+               and rows[0].get("branches") == ["b1", "b2"]
+               and rows[0].get("revert") == "git revert x"
+               and rows[0].get("verified_at") == "2026-01-01T00:00:00Z") else 1)
+' "$_hcx_reg" || _hcx_ok=0
+  rm -f "$_hcx_reg"
+  [ "$_hcx_ok" = "1" ] && ok "#761 CLI: not-upstreamable annotations round-trip through the shipped executable" \
+                       || bad "#761 CLI: record --status/--branches/--revert/--verified-at did not round-trip"
 fi
 
 section "oc-rebase-safety"

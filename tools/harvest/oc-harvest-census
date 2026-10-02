@@ -70,7 +70,14 @@ usage() {
 Usage:
   $PROG scan [--repo <path>] [--upstream <owner/repo>] [--json]
   $PROG check <issue-number-or-slug> [--repo <path>] [--subject <text>] [--base <ref>]
-  $PROG record --unit <slug> --pr <number> [--issue <N>] [--state-file <path>]
+  $PROG record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
+               [--status filed|not-upstreamable] [--reason <text>]
+               [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
+               [--state-file <path>]
+      Records/updates a manual_records row (upsert keyed on UNIT, #761).
+      --pr is required only for the default 'filed' status. --branches,
+      --revert and --verified-at are OPTIONAL annotations on a
+      not-upstreamable row and are carried forward on a re-record.
   $PROG purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
   $PROG sync [--repo <path>] [--state-file <path>]
   $PROG clusters [--repo <path>] [--open-fix] [--json] [--clock]
@@ -85,7 +92,7 @@ Usage:
 
 Exit codes:
   0: ELIGIBLE / Clean / Success / --help
-  1: REFUSED (already MERGED, IN_FLIGHT upstream, SOAK, HELD_DEPENDENT_SOAK, HELD_IN_FLIGHT_LANE, HELD_BASE_RED) / Finding
+  1: REFUSED (already MERGED, IN_FLIGHT upstream, SOAK, HELD_DEPENDENT_SOAK, HELD_IN_FLIGHT_LANE, HELD_BASE_RED, FORK_ONLY_SURFACE) / Finding
   2: Usage error
   3: Git or GitHub API failure
 EOF
@@ -764,6 +771,61 @@ def derive_symbols(commits_list, repo_path):
             pairs.append((cur_file, sym))
     return pairs, stats
 
+# #633: the `+`-side DECLARATION a diff introduces -- the parent's OWN surface.
+# One declaration per added line; a line that declares nothing is not a hit.
+_ADDED_DECL_RE = re.compile(
+    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:default\s+)?(?:const\s+)?(?:async\s+)?'
+    r'(?:unsafe\s+)?(?:extern\s+"[^"]*"\s+)?'
+    r'(?:fn|static|struct|enum|trait|union|type|mod|const)\s+([A-Za-z_][A-Za-z0-9_]*)')
+_ADDED_IMPL_RE = re.compile(r'^\s*(?:unsafe\s+)?impl\b[^A-Za-z_]*([A-Za-z_][A-Za-z0-9_]*)')
+
+def derive_added_declarations(commits_list, repo_path):
+    # #633: the symbols a parent ADDED, read from the `+` side of its own diff.
+    #
+    # `derive_symbols` answers a DIFFERENT question -- the nearest ENCLOSING fn
+    # of each hunk -- so a parent whose work sits inside a shared container
+    # (`AgentService`, `BrainLoader`, `main`) resolves every symbol against
+    # upstream boilerplate and reads "already harvested" while its own feature
+    # is entirely absent upstream. #295 is the measured instance: the derived
+    # symbols were AgentService / BrainLoader / main (all present upstream)
+    # while TELEGRAM_CHANNEL_CAPABILITIES_BODY and
+    # inject_telegram_channel_capabilities were absent -- and the tool's OWN
+    # `check 295` refused the same unit, so the predicate contradicted the
+    # target check.
+    #
+    # A declaration introduced on the `+` side IS the parent's own surface, so
+    # testing presence for THOSE is what separates "the parent's work landed"
+    # from "the file still exists".
+    #
+    # Returns (file, name) pairs in first-seen order, de-duplicated; [] when the
+    # parent introduced no declaration at all -- which the caller reads as
+    # inconclusive and answers with the enclosing-symbol derivation.
+    pairs = []
+    seen = set()
+    for c in commits_list:
+        sha = c.get('sha', '') if isinstance(c, dict) else str(c)
+        if not sha or not os.path.isdir(repo_path):
+            continue
+        res = subprocess.run(['git', '-C', repo_path, 'show', '--format=', '--unified=0', sha],
+                             capture_output=True, text=True)
+        if res.returncode != 0 or not res.stdout:
+            continue
+        cur_file = None
+        for line in res.stdout.split('\n'):
+            if line.startswith('+++ b/'):
+                cur_file = line[6:].strip()
+                continue
+            if not cur_file or line.startswith('+++') or not line.startswith('+'):
+                continue
+            m = _ADDED_DECL_RE.match(line[1:]) or _ADDED_IMPL_RE.match(line[1:])
+            if not m:
+                continue
+            key = (cur_file, m.group(1))
+            if key not in seen:
+                seen.add(key)
+                pairs.append(key)
+    return pairs
+
 def subject_present_upstream(pairs, repo_path, base_ref='adolfousier/main'):
     # FILE-SCOPED subject test: a symbol counts only when it resolves in the
     # UPSTREAM copy of the SAME file. A global `git grep -c S <base_ref> -- src/`
@@ -866,6 +928,140 @@ def symbol_header_diverged(f_path, sym, repo_path, base_ref, cache):
         return None
     return fork_hdr, upstream_hdr
 
+# #761 step 2b: tokens that can NEVER constitute a fork-only DEPENDENCY -- Rust
+# keywords, primitive/derivable type names, and the ubiquitous prelude/std
+# surface. Skipped before the declaration lookup so a hunk's incidental
+# vocabulary (`u8`, `Vec`, `clone`) is not read as a dependency. Deliberately
+# generous: a miss here only costs a refusal the DECLARATION test below would
+# have rejected anyway, because membership in the fork's declared names is the
+# real predicate.
+_NON_DECL_TOKENS = frozenset((
+    'as', 'async', 'await', 'break', 'const', 'continue', 'crate', 'dyn', 'else', 'enum',
+    'extern', 'false', 'fn', 'for', 'if', 'impl', 'in', 'let', 'loop', 'match', 'mod', 'move',
+    'mut', 'pub', 'ref', 'return', 'self', 'Self', 'static', 'struct', 'super', 'trait',
+    'true', 'type', 'unsafe', 'use', 'where', 'while', 'union', 'default', 'box', 'macro',
+    'try', 'yield', 'abstract', 'become', 'do', 'final', 'override', 'typeof', 'unsized',
+    'virtual', 'u8', 'u16', 'u32', 'u64', 'u128', 'usize', 'i8', 'i16', 'i32', 'i64', 'i128',
+    'isize', 'f32', 'f64', 'bool', 'char', 'str', 'String', 'Vec', 'Option', 'Result', 'Some',
+    'None', 'Ok', 'Err', 'Box', 'Arc', 'Rc', 'HashMap', 'HashSet', 'BTreeMap', 'fmt', 'Debug',
+    'Clone', 'Display', 'Iterator', 'Into', 'From', 'Default', 'PartialEq', 'Eq', 'Ord',
+    'PartialOrd', 'to_string', 'to_owned', 'to_vec', 'new', 'iter', 'into_iter', 'len', 'push',
+    'unwrap', 'unwrap_or', 'unwrap_or_else', 'expect', 'map', 'map_err', 'filter', 'collect',
+    'is_empty', 'as_str', 'as_ref', 'clone', 'write', 'writeln', 'format', 'print', 'println',
+    'eprintln', 'panic', 'vec', 'assert', 'assert_eq', 'assert_ne', 'derive', 'cfg', 'test',
+    'allow', 'warn', 'deny', 'inline', 'main',
+))
+
+_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+def _decl_names_in(body):
+    # The names a body DECLARES, by the same grammar `derive_added_declarations`
+    # reads off the `+` side, so both halves of the #633/#761 comparison speak
+    # one language. Parameters and locals are deliberately NOT declarations: a
+    # renamed parameter is a divergence, not a fork-only surface.
+    names = set()
+    for line in body.split('\n'):
+        m = _ADDED_DECL_RE.match(line) or _ADDED_IMPL_RE.match(line)
+        if m:
+            names.add(m.group(1))
+    return names
+
+def _is_test_path(f_path):
+    # A hunk in a test path is DROPPED at packaging -- the per-hunk advisory's
+    # own wording -- so it cannot block a port and must never drive a refusal.
+    p = '/' + f_path.replace('\\', '/').lstrip('/')
+    return '/tests/' in p or p.startswith('/tests/') or '/test_' in p or p.endswith('_test.rs')
+
+def fork_only_surface_references(commits_list, repo_path, base_ref='adolfousier/main'):
+    # #761 step 2b (#758): the DECLARATION-LEVEL dependency test -- "does the
+    # surface the fix repairs exist upstream?", not "does the symbol's NAME
+    # occur upstream?".
+    #
+    # #758's measured case is #757: its source hunk sits inside `pace_rich`,
+    # which upstream carries BY NAME under a diverged signature, so the by-name
+    # advisory saw nothing -- while the hunk's body references
+    # `spacing_floor_ms` / `spacing_wait` / `spacing_ok` / `RichAdmission`, all
+    # introduced by the landed-but-unharvested #676 and carrying 0 occurrences
+    # upstream. `git apply --check` of the unit patch onto the upstream tip
+    # failed on BOTH files, yet `check 757` printed ELIGIBLE. That is a false
+    # green on PORTABILITY: a lane branches and ports, then eats a RED build.
+    #
+    # The test is declaration-level and file-scoped, so it costs a pair of blob
+    # reads per touched file and needs NO build -- the universal case stays the
+    # CI gate's job, exactly as this file's own comment says.
+    #
+    # SCOPE IS THE UNIT, NOT THE COMMIT. A unit is many commits, and a
+    # declaration one of them ADDS is available to all the others: the first cut
+    # of this test computed the declared set per COMMIT, so a unit that added
+    # `mod tests` in one commit and referenced it in another read as depending
+    # on fork-only substance -- measured live on #150, where commit `82abe39a`
+    # adds `mod tests {` and later commits reference it. The port carries the
+    # whole unit, so the whole unit's additions are what a reference is measured
+    # against.
+    #
+    # Distinct from the signature divergence NOTE (#758's own landed half): that
+    # discloses a DEFINITION mismatch and must never refuse, because a fix can
+    # legitimately apply to a diverged-but-compatible symbol. This refuses on
+    # something else entirely -- the fix's dependency on declarations upstream
+    # does not carry.
+    #
+    # Returns {f_path: [ident, ...]}, empty files omitted; {} when nothing is
+    # derivable (fail-closed: no evidence, no refusal).
+    unit_added = {}
+    unit_touch_sha = {}
+    for c in commits_list:
+        sha = c.get('sha', '') if isinstance(c, dict) else str(c)
+        if not sha or not os.path.isdir(repo_path):
+            continue
+        res = subprocess.run(['git', '-C', repo_path, 'show', '--format=', '--unified=0', sha],
+                             capture_output=True, text=True)
+        if res.returncode != 0 or not res.stdout:
+            continue
+        cur_file = None
+        for line in res.stdout.split('\n'):
+            if line.startswith('+++ b/'):
+                cur_file = line[6:].strip()
+                continue
+            if not cur_file or line.startswith('+++') or not line.startswith('+'):
+                continue
+            unit_added.setdefault(cur_file, []).append(line[1:])
+            unit_touch_sha[cur_file] = sha
+    out = {}
+    for f_path, lines in unit_added.items():
+        if _is_test_path(f_path):
+            continue
+        # A file upstream does not carry is class 2's business (orphan path /
+        # held parent), not a declaration-level dependency.
+        if not check_upstream_file_existence(f_path, base_ref, repo_path):
+            continue
+        u_res = subprocess.run(['git', '-C', repo_path, 'show', '%s:%s' % (base_ref, f_path)],
+                               capture_output=True, text=True)
+        if u_res.returncode != 0:
+            continue
+        # The fork's declarations for this file, read at the unit's own tip so
+        # the comparison is unit-state against upstream-state.
+        f_res = subprocess.run(['git', '-C', repo_path, 'show', '%s:%s' % (unit_touch_sha[f_path], f_path)],
+                               capture_output=True, text=True)
+        if f_res.returncode != 0:
+            continue
+        fork_decls = _decl_names_in(f_res.stdout)
+        up_decls = _decl_names_in(u_res.stdout)
+        declared_here = set()
+        referenced = set()
+        for ln in lines:
+            m = _ADDED_DECL_RE.match(ln) or _ADDED_IMPL_RE.match(ln)
+            if m:
+                declared_here.add(m.group(1))
+            referenced |= set(_IDENT_RE.findall(ln))
+        # A declaration the UNIT itself introduces is not a dependency on
+        # fork-only substance -- the port brings it along.
+        referenced -= declared_here
+        referenced -= _NON_DECL_TOKENS
+        fo = sorted(i for i in referenced if i in fork_decls and i not in up_decls)
+        if fo:
+            out[f_path] = fo
+    return out
+
 def issue_subject_upstream(iss, repo_path, base_ref='adolfousier/main'):
     # Class-2 SUB-RULE (#365): the provenance lookup answers "which fork issue
     # introduced this path?" — never "is that issue's work upstream yet?".
@@ -893,6 +1089,26 @@ def issue_subject_upstream(iss, repo_path, base_ref='adolfousier/main'):
         return None
     if not shas:
         return None
+    # #633: ask about the declarations the parent ADDED, never the enclosing fn
+    # of its hunks. A parent whose work sits inside a shared container resolves
+    # every enclosing symbol against upstream boilerplate and reads "harvested"
+    # while its own feature is absent upstream (#295: AgentService /
+    # BrainLoader / main present upstream, TELEGRAM_CHANNEL_CAPABILITIES_BODY
+    # absent).
+    #
+    # Only declarations in files upstream actually CARRIES are testable here. A
+    # file absent upstream is class 2's business (orphan path / held parent),
+    # and #341's live shape turns on exactly that: its parent #148 added a
+    # validator that upstream then DELETED deliberately, so testing that added
+    # declaration would flip an already-harvested parent to unharvested and
+    # block a standalone fix. With no testable declaration the enclosing-symbol
+    # derivation answers instead -- the pre-#633 behaviour, preserved so this
+    # fix narrows the predicate without moving the shapes it already got right.
+    testable = [(f, n) for f, n in derive_added_declarations(shas, repo_path)
+                if check_upstream_file_existence(f, base_ref, repo_path)]
+    if testable:
+        present, _absent = subject_present_upstream(testable, repo_path, base_ref)
+        return bool([1 for _f, sym in present if sym])
     pairs, _stats = derive_symbols(shas, repo_path)
     present, _absent = subject_present_upstream(pairs, repo_path, base_ref)
     return bool([1 for _f, sym in present if sym])
@@ -1885,6 +2101,35 @@ if action == 'check':
                 fork_hdr, upstream_hdr = diverged
                 print('NOTE(HUNK_SYMBOL_DIVERGED): %s :: %s resolves in %s by NAME but its definition has DIVERGED -- fork %r vs upstream %r; the hunk may not apply, verify before packaging' % (f_path, sym, base_ref, fork_hdr[:140], upstream_hdr[:140]))
 
+        # #761 step 2b (#758): the DECLARATION-LEVEL dependency test.
+        #
+        # The two legs above ask about the hunk's enclosing SYMBOL -- is it
+        # present by name, has its definition diverged -- and neither catches a
+        # hunk whose enclosing symbol is upstream-present AND identically signed
+        # while its BODY depends on a declaration upstream does not carry. That
+        # is #757 exactly: `pace_rich` exists upstream under a compatible
+        # signature, while the hunk's body reaches `spacing_floor_ms` /
+        # `spacing_wait` / `spacing_ok` / `RichAdmission`, all introduced by the
+        # landed-but-unharvested #676 and carrying 0 occurrences upstream. The
+        # unit read ELIGIBLE while `git apply --check` of its patch against the
+        # upstream tip failed on BOTH files.
+        #
+        # This REFUSES, and it refuses on the DEPENDENCY -- not on the signature
+        # divergence the NOTE above discloses. #758's own landed half stands
+        # untouched: a diverged-but-compatible symbol is not a port blocker and
+        # must never refuse; a dependency on declarations upstream does not
+        # carry IS one, because the lane would branch, port, and eat a RED
+        # build. Refusal is the fail-closed direction -- holding a harvest costs
+        # nothing.
+        #
+        # Fail-closed in the other direction too: an empty derivation ({}) raises
+        # nothing. Absence of evidence is not evidence, and this leg refuses only
+        # on a positively-identified fork-only declaration.
+        dep_refs = fork_only_surface_references(matching_commits, repo_path, base_ref)
+        if dep_refs:
+            _dep_shown = '; '.join('%s :: %s' % (f, ', '.join(ns[:4])) for f, ns in sorted(dep_refs.items()))
+            refuse('REFUSED: Target %s depends on declarations absent from %s [FORK_ONLY_SURFACE: %s]' % (target, base_ref, _dep_shown))
+
         file_actions = get_affected_file_actions_for_commits(matching_commits, repo_path)
         for f_path, actions in file_actions.items():
             if any(a in ('D', 'M') for a in actions):
@@ -2470,6 +2715,7 @@ cmd_check() {
 
 cmd_record() {
   local unit="" pr="" issue="" issues_str="" status="" reason=""
+  local branches="" revert="" verified_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --unit) [ $# -ge 2 ] || { echo "oc-harvest-census: --unit needs a value" >&2; usage; }; unit="$2"; shift 2 ;;
@@ -2479,6 +2725,9 @@ cmd_record() {
       --issues) [ $# -ge 2 ] || { echo "oc-harvest-census: --issues needs a value" >&2; usage; }; issues_str="$2"; shift 2 ;;
       --status) [ $# -ge 2 ] || { echo "oc-harvest-census: --status needs a value" >&2; usage; }; status="$2"; shift 2 ;;
       --reason) [ $# -ge 2 ] || { echo "oc-harvest-census: --reason needs a value" >&2; usage; }; reason="$2"; shift 2 ;;
+      --branches) [ $# -ge 2 ] || { echo "oc-harvest-census: --branches needs a value" >&2; usage; }; branches="$2"; shift 2 ;;
+      --revert) [ $# -ge 2 ] || { echo "oc-harvest-census: --revert needs a value" >&2; usage; }; revert="$2"; shift 2 ;;
+      --verified-at) [ $# -ge 2 ] || { echo "oc-harvest-census: --verified-at needs a value" >&2; usage; }; verified_at="$2"; shift 2 ;;
       --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       *) usage ;;
@@ -2503,7 +2752,7 @@ cmd_record() {
     python3 -c '
 import sys, json, os, datetime, re
 reg_file, unit, pr, issue, issues_str = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
-status, reason = sys.argv[6], sys.argv[7]
+status, reason, branches, revert, verified_at = sys.argv[6], sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10]
 with open(reg_file) as f:
     data = json.load(f)
 records = data.setdefault("manual_records", [])
@@ -2528,20 +2777,39 @@ if status and status != "filed":
     record_entry["status"] = status
 if reason:
     record_entry["reason"] = reason
-# Idempotent upsert keyed on (unit, pr, issue): re-recording the same unit
-# updates the existing entry instead of appending a duplicate (#325).
-key = (record_entry["unit"], record_entry["pr"], record_entry["issue"])
+# #761: three OPTIONAL fields for a not-upstreamable row -- absent unless
+# supplied, so the 61 pre-existing rows keep their exact shape and meaning.
+# `branches` = the branch/commit set carrying the unit; `revert` = the revert
+# recipe; `verified_at` = when the sync leg last re-checked the premise.
+# They join the carry-forward set below so a re-record never drops them.
+if branches:
+    record_entry["branches"] = [b.strip() for b in branches.split(",") if b.strip()]
+if revert:
+    record_entry["revert"] = revert
+if verified_at:
+    record_entry["verified_at"] = verified_at
+# #761/#733: the row IDENTITY is the UNIT -- never (unit, pr, issue).
+# oc_claims.manual_record_matches() matches a target on unit OR issue, so
+# `unit` is the only identity anything downstream consumes; the old
+# (unit, pr, issue) key invented a SECOND identity the consumer never had.
+# A re-record that omitted --issue therefore landed on a different key and
+# APPENDED a duplicate instead of updating, and purge refuses by design
+# (harvest.md:418), so the duplicate was permanent. Live corpse when this
+# landed: unit 725 carried two rows.
+key = str(record_entry["unit"])
 replaced = 0
 for i, existing in enumerate(records):
-    if (existing.get("unit"), existing.get("pr"), existing.get("issue")) == key:
-        # #564: the upsert REPLACES the whole row, so a re-record without --status
-        # would silently DROP a status a prior lane set -- the same shape as the
-        # old "write-only, dumps a two-key dict, erases manual_records" defect.
-        # Carry the prior values forward when this call does not supply them.
-        if "status" not in record_entry and existing.get("status"):
-            record_entry["status"] = existing["status"]
-        if "reason" not in record_entry and existing.get("reason"):
-            record_entry["reason"] = existing["reason"]
+    if str(existing.get("unit")) == key:
+        # #564/#761: the upsert REPLACES the whole row, so a re-record that
+        # omits a field would silently DROP what a prior lane set -- the same
+        # shape as the old "write-only, dumps a two-key dict, erases
+        # manual_records" defect. Carry the prior values forward for EVERY
+        # field this call did not supply, uniformly.
+        for _fld in ("status", "reason", "issue", "issues", "branches", "revert", "verified_at"):
+            if record_entry.get(_fld) in (None, "", [], {}) and existing.get(_fld) not in (None, "", [], {}):
+                record_entry[_fld] = existing[_fld]
+        if not int(record_entry.get("pr") or 0) and existing.get("pr"):
+            record_entry["pr"] = existing["pr"]
         records[i] = record_entry
         replaced = 1
         break
@@ -2550,10 +2818,11 @@ if not replaced:
 with open(reg_file, "w") as f:
     json.dump(data, f, indent=2)
 verb = "Updated" if replaced else "Recorded"
-_what = ("NOT UPSTREAMABLE" if status == "not-upstreamable"
-         else ("PR #%s" % pr if int(pr) else "NO PR recorded"))
-print(f"{verb} Unit {unit} -> {_what} (issues: {sorted(list(all_issues))}) in {reg_file}")
-' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason"
+_what = ("NOT UPSTREAMABLE" if record_entry.get("status") == "not-upstreamable"
+         else ("PR #%s" % record_entry["pr"] if int(record_entry.get("pr") or 0) else "NO PR recorded"))
+_final_issues = record_entry.get("issues", [])
+print(f"{verb} Unit {unit} -> {_what} (issues: {_final_issues}) in {reg_file}")
+' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason" "$branches" "$revert" "$verified_at"
   else
     echo "Recorded Unit $unit -> PR #$pr (registry uninitialized)"
   fi
@@ -2786,6 +3055,86 @@ build_gate4_fixture() {
     printf '%s {\n    2\n}\n' "$_fx_sig" > "$_fx_dir/src/base.rs"
     git -C "$_fx_dir" add -A
     git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#906"
+    git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+    return 0
+  fi
+
+  if [ "$_fx_mode" = "parent_added_absent" ] || [ "$_fx_mode" = "parent_added_present" ]; then
+    # #633 shape: the parent's hunks sit INSIDE an upstream-present symbol, so
+    # the enclosing-symbol derivation read "parent already harvested" -- while
+    # the declaration the parent actually ADDED is fork-only. `parent_added_absent`
+    # is the defect; `parent_added_present` is the POSITIVE CONTROL (the parent's
+    # added declaration IS upstream), so a predicate that simply returned False
+    # for every parent could not pass both.
+    printf 'pub fn shared_fn() -> u8 {\n    1\n}\n' > "$_fx_dir/src/shared.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "shared base"
+    git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+
+    if [ "$_fx_mode" = "parent_added_absent" ]; then
+      # Parent #900 adds a FORK-ONLY declaration inside the upstream-present file.
+      printf 'pub fn shared_fn() -> u8 {\n    1\n}\n\npub fn fork_feature() -> u8 {\n    3\n}\n' > "$_fx_dir/src/shared.rs"
+      printf 'pub fn orphan_fn() -> u8 {\n    2\n}\n' > "$_fx_dir/src/orphan.rs"
+      git -C "$_fx_dir" add -A
+      git -C "$_fx_dir" commit -q -m "parent work" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+    else
+      # POSITIVE CONTROL: the parent's added declaration IS upstream (its own
+      # commit is the upstream ref), and a LATER commit under the same issue
+      # adds the orphan path that did not travel.
+      printf 'pub fn shared_fn() -> u8 {\n    1\n}\n\npub fn base_fn() -> u8 {\n    3\n}\n' > "$_fx_dir/src/shared.rs"
+      git -C "$_fx_dir" add -A
+      git -C "$_fx_dir" commit -q -m "parent work (harvested)" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+      git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+      printf 'pub fn orphan_fn() -> u8 {\n    2\n}\n' > "$_fx_dir/src/orphan.rs"
+      git -C "$_fx_dir" add -A
+      git -C "$_fx_dir" commit -q -m "parent post-harvest work" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+    fi
+
+    # Target #901: an upstream-present symbol (class 3 passes) plus the orphan
+    # path (so gate 4's file loop reaches class 2).
+    printf 'pub fn shared_fn() -> u8 {\n    5\n}\n' > "$_fx_dir/src/shared.rs"
+    printf 'pub fn orphan_fn() -> u8 {\n    6\n}\n' > "$_fx_dir/src/orphan.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#901"
+    git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+    return 0
+  fi
+
+  if [ "$_fx_mode" = "fork_only_dep" ] || [ "$_fx_mode" = "fork_only_dep_ok" ]; then
+    # #758 / #761 step 2b shape: the hunk's enclosing symbol IS upstream by NAME
+    # (so neither the fork-only advisory nor UPSTREAM_VOID fires) and its
+    # signature is IDENTICAL -- yet the hunk's body references a declaration
+    # upstream does not carry, so the port cannot resolve. `fork_only_dep` is the
+    # defect (#757: `pace_rich` upstream, `spacing_floor_ms` fork-only);
+    # `fork_only_dep_ok` is the POSITIVE CONTROL -- the referenced declaration IS
+    # upstream -- so a predicate that simply refused every unit could not pass
+    # both legs. Signature is deliberately NOT diverged in either mode: the
+    # refusal must key on the DEPENDENCY, not on the divergence NOTE.
+    printf 'pub fn base_fn() -> u8 {\n    1\n}\n' > "$_fx_dir/src/dep.rs"
+    if [ "$_fx_mode" = "fork_only_dep_ok" ]; then
+      printf 'pub fn base_fn() -> u8 {\n    1\n}\n\npub fn shared_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
+    fi
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "dep base"
+    git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+
+    if [ "$_fx_mode" = "fork_only_dep" ]; then
+      # Parent #900 adds the fork-only declaration the target will depend on.
+      printf 'pub fn base_fn() -> u8 {\n    1\n}\n\npub fn fork_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
+      git -C "$_fx_dir" add -A
+      git -C "$_fx_dir" commit -q -m "parent adds fork-only helper" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+    fi
+
+    # Target #901: the enclosing symbol `base_fn` is upstream-present with an
+    # IDENTICAL signature; only the hunk's BODY differs, and it references the
+    # (fork-only, resp. upstream) helper.
+    if [ "$_fx_mode" = "fork_only_dep" ]; then
+      printf 'pub fn base_fn() -> u8 {\n    fork_helper()\n}\n\npub fn fork_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
+    else
+      printf 'pub fn base_fn() -> u8 {\n    shared_helper()\n}\n\npub fn shared_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
+    fi
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#901"
     git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
     return 0
   fi
@@ -3829,6 +4178,31 @@ sys.exit(0 if row and row[0].get("status") == "not-upstreamable" else 1)
     return 1
   fi
 
+  # 9f. #761: the three OPTIONAL not-upstreamable annotations round-trip. They
+  #     are written ONLY when supplied (so the 61 pre-existing rows keep their
+  #     exact shape), but a later re-record that omits them must not silently
+  #     DROP them -- the #564 carry-forward rule, extended to the #761 fields.
+  bash "$0" record --unit "ann-unit" --status not-upstreamable \
+      --reason "carried upstream in issue 1510" --issue "999995" \
+      --branches "feat/a,feat/b" --revert "git revert deadbeef" \
+      --verified-at "2026-10-02T00:00:00Z" --state-file "$nu_reg" >/dev/null 2>&1 || true
+  bash "$0" record --unit "ann-unit" --pr 0 --state-file "$nu_reg" >/dev/null 2>&1 || true
+  if python3 -c '
+import json, sys
+recs = json.load(open(sys.argv[1])).get("manual_records", [])
+rows = [r for r in recs if r.get("unit") == "ann-unit"]
+sys.exit(0 if (len(rows) == 1
+               and rows[0].get("status") == "not-upstreamable"
+               and rows[0].get("branches") == ["feat/a", "feat/b"]
+               and rows[0].get("revert") == "git revert deadbeef"
+               and rows[0].get("verified_at") == "2026-10-02T00:00:00Z") else 1)
+' "$nu_reg"; then
+    ok "#761 branches/revert/verified_at round-trip through a re-record"
+  else
+    echo "  bad  - #761 expected the three not-upstreamable fields carried forward on a re-record"
+    return 1
+  fi
+
   # 10. SHA prefix lookup tests
   rc=0
   out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "8888888" 2>&1)" || rc=$?
@@ -3979,6 +4353,28 @@ sys.exit(0 if row and row[0].get("status") == "not-upstreamable" else 1)
     return 1
   fi
 
+  # 24b. #733 duplicate control: the row IDENTITY is the UNIT, never
+  #      (unit, pr, issue). A re-record carrying a DIFFERENT triple -- here the
+  #      second call changes --pr and omits --issue -- must still UPDATE that
+  #      unit's row. The old key invented a SECOND identity the consumer never
+  #      had, so this shape landed on a new key and APPENDED a duplicate that
+  #      purge refuses to remove (#707), making it permanent; a live unit
+  #      carried two rows when #733 was found. Case 24 re-records the SAME
+  #      triple, which passes under BOTH keys -- it is not a control for this.
+  bash "$0" record --unit "ident-unit" --pr "555001" --issue "555001" --state-file "$mock_reg" >/dev/null 2>&1 || true
+  bash "$0" record --unit "ident-unit" --pr "555002" --state-file "$mock_reg" >/dev/null 2>&1 || true
+  if python3 -c '
+import json, sys
+recs = json.load(open(sys.argv[1])).get("manual_records", [])
+rows = [r for r in recs if r.get("unit") == "ident-unit"]
+sys.exit(0 if (len(rows) == 1 and str(rows[0].get("pr")) == "555002") else 1)
+' "$mock_reg"; then
+    ok "#733 re-record with a DIFFERENT (pr, issue) updates the unit row, no duplicate"
+  else
+    echo "  bad  - #733 unit-identity upsert expected exactly 1 ident-unit row carrying pr=555002"
+    return 1
+  fi
+
   # 25. #365 class-2 sub-rule: a path introduced by an ALREADY-HARVESTED parent
   #     must NOT refuse HELD_PARENT_UNHARVESTED — the parent's subsystem is
   #     upstream, so the path falls through to the class-3 subject test (#341's
@@ -4042,6 +4438,97 @@ sys.exit(0 if row and row[0].get("status") == "not-upstreamable" else 1)
   build_gate4_fixture "$fx_nosym" nosym
   fx_nosym_subj="$selftest_tmp/fx_nosym_subj"
   build_gate4_fixture "$fx_nosym_subj" nosym "base_fn"
+
+  # 26b. #633: the parent's ADDED declarations decide, never the enclosing fn of
+  #      its hunks. The parent's work sits INSIDE an upstream-present symbol, so
+  #      the enclosing-symbol derivation resolved shared boilerplate and read
+  #      "parent already harvested" -- the false green measured on #295/#513.
+  #      The declaration the parent actually ADDED is fork-only, so the parent
+  #      must read UNHARVESTED and the path must be held.
+  fx_added_absent="$selftest_tmp/fx_added_absent"
+  build_gate4_fixture "$fx_added_absent" parent_added_absent
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_added_absent" "$selftest_tmp/mock_reg_fx.json" "901" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_PARENT_UNHARVESTED" && ! oc_has "$out" "already harvested"; then
+    ok "#633: hunks in shared boilerplate + added decl absent upstream -> REFUSED"
+  else
+    echo "  bad  - #633 absent fixture expected rc=1 HELD_PARENT_UNHARVESTED and NO 'already harvested', got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 26c. POSITIVE CONTROL for 26b: the SAME shape with the parent's added
+  #      declaration genuinely present upstream must still read HARVESTED. A
+  #      predicate that simply returned False for every parent would pass 26b
+  #      and fail here, so the pair discriminates rather than just asserting.
+  fx_added_present="$selftest_tmp/fx_added_present"
+  build_gate4_fixture "$fx_added_present" parent_added_present
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_added_present" "$selftest_tmp/mock_reg_fx.json" "901" 2>&1)" || rc=$?
+  # OUTCOME only, deliberately. The ADVISORY TEXT that names the harvested parent
+  # is case 33's property ("sub-rule fires and NAMES the harvested parent #900"),
+  # and the suite's own contract for cases 25/27 is that they assert the OUTCOME
+  # while 33/34 pin the discriminating TEXT. Asserting the text here as well made
+  # this leg the FIRST failure under the mutation guard's `parent_number_dropped`
+  # mutant, and a leg that is sensitive to ANOTHER shape's mutant breaks the
+  # guard's contract -- it requires each shape's own leg to redden first, in a
+  # suite that aborts at the first failure. rc=0 + ELIGIBLE still discriminates:
+  # a predicate that always answered False refuses this fixture
+  # HELD_PARENT_UNHARVESTED, so the pair with 26b still holds.
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && ! oc_has "$out" "HELD_PARENT_UNHARVESTED"; then
+    ok "#633 positive control: added decl present upstream -> parent HARVESTED"
+  else
+    echo "  bad  - #633 present fixture expected rc=0 ELIGIBLE + no HELD_PARENT_UNHARVESTED, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 26d. #758 / step 2b: the hunk's enclosing symbol is upstream-present by NAME
+  #      with an IDENTICAL signature, so neither the fork-only advisory, the
+  #      divergence NOTE nor UPSTREAM_VOID fires -- but the hunk's BODY depends
+  #      on a declaration upstream does not carry. That is #757's live shape
+  #      (`pace_rich` upstream, `spacing_floor_ms`/`RichAdmission` fork-only,
+  #      introduced by the landed-but-unharvested #676). Must REFUSE
+  #      [FORK_ONLY_SURFACE], and must NOT be dressed as a divergence NOTE.
+  fx_dep_absent="$selftest_tmp/fx_dep_absent"
+  build_gate4_fixture "$fx_dep_absent" fork_only_dep
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_dep_absent" "$selftest_tmp/mock_reg_fx.json" "901" 2>&1)" || rc=$?
+  # The purity check is scoped to the REFUSING LINE, not to the whole output. The
+  # property under test is that the DEPENDENCY leg is what refuses, never the
+  # divergence NOTE. Asserting NOTE-absence across the whole output made this leg
+  # sensitive to the `symbol_always_fire` mutant that case 36 owns, so it went red
+  # FIRST and the guard lost its fix on 36's negative control. Reading the line
+  # that carries FORK_ONLY_SURFACE pins the same property without the coupling.
+  _dep_line="$(printf '%s\n' "$out" | grep -m1 'FORK_ONLY_SURFACE' || true)"
+  if [ "$rc" -eq 1 ] && oc_has "$_dep_line" "FORK_ONLY_SURFACE" && oc_has "$_dep_line" "fork_helper" \
+     && ! oc_has "$_dep_line" "DIVERGED"; then
+    ok "#758: hunk body depends on a fork-only declaration -> REFUSED [FORK_ONLY_SURFACE]"
+  else
+    echo "  bad  - fork-only-dep fixture expected rc=1 on a REFUSED line carrying FORK_ONLY_SURFACE naming fork_helper (never a divergence NOTE), got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 26e. POSITIVE CONTROL for 26d: the SAME shape -- upstream-present enclosing
+  #      symbol, identical signature, body-only hunk -- whose referenced
+  #      declaration IS upstream must stay ELIGIBLE. A predicate that refused
+  #      every unit whose hunk body names anything would pass 26d and fail here.
+  fx_dep_present="$selftest_tmp/fx_dep_present"
+  build_gate4_fixture "$fx_dep_present" fork_only_dep_ok
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_dep_present" "$selftest_tmp/mock_reg_fx.json" "901" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && ! oc_has "$out" "FORK_ONLY_SURFACE"; then
+    ok "#758 positive control: hunk body depends on an upstream declaration -> ELIGIBLE"
+  else
+    echo "  bad  - upstream-dep fixture expected rc=0 ELIGIBLE and NO FORK_ONLY_SURFACE, got rc=$rc ($out)"
+    return 1
+  fi
 
   # 27. AC1: no derivable symbol AND no declared subject -> still refuse.
   rc=0

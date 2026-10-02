@@ -184,7 +184,7 @@ else
   bad "baseline census rc=$rc_base (expected 0)"
 fi
 
-for label in case_a_dropped refuse_all_absent parent_number_dropped empty_derivation_unnamed registry_filter_dropped symbol_always_none symbol_always_fire; do
+for label in case_a_dropped refuse_all_absent parent_number_dropped empty_derivation_unnamed registry_filter_dropped symbol_always_none symbol_always_fire dep_always_none dep_upstream_test_dropped; do
   case "$label" in
     case_a_dropped)           want_ok="#253 shape:"            want_bad="subject-absent fixture" ;;
     refuse_all_absent)        want_ok="#341 shape:"            want_bad="orphan-subject fixture" ;;
@@ -193,6 +193,8 @@ for label in case_a_dropped refuse_all_absent parent_number_dropped empty_deriva
     registry_filter_dropped)  want_ok="check registry-only in-flight overlap -> ELIGIBLE exit 0 (shared-registry exemption)" want_bad="registry-only overlap" ;;
     symbol_always_none)       want_ok="#758 diverged header:"   want_bad="diverged-header fixture" ;;
     symbol_always_fire)       want_ok="#758 negative control:"  want_bad="same-signature fixture" ;;
+    dep_always_none)          want_ok="#758: hunk body depends on a fork-only declaration" want_bad="fork-only-dep fixture" ;;
+    dep_upstream_test_dropped) want_ok="#758 positive control:" want_bad="upstream-dep fixture" ;;
   esac
 
   # The aimed leg must be GREEN on the pristine tree, or there is nothing to
@@ -276,6 +278,33 @@ MUTATIONS = {
         "        return None\n",
         "    if upstream_hdr is None or fork_hdr is None:\n"
         "        return None\n",
+    ),
+    # #761 step 2b (#758): the DECLARATION-LEVEL dependency leg. Reverting it to
+    # an empty derivation is the pre-2b state -- the false green #758 reports --
+    # so the fork-only-dep leg must go red first. Anchors on the CALL, not the
+    # function body, because the body is where the four narrowings live and a
+    # body anchor would drift the moment one of them is sharpened.
+    "dep_always_none": (
+        "        dep_refs = fork_only_surface_references(matching_commits, repo_path, base_ref)\n",
+        "        dep_refs = {}\n",
+    ),
+    # #761 step 2b: drop the UPSTREAM half of the fork-only test (`i not in
+    # up_decls`), so a referenced declaration the fork carries is read as a
+    # dependency whether or not upstream carries it. The fork-only leg still
+    # fires (its helper IS fork-declared), so the pair's POSITIVE CONTROL is the
+    # first leg reddened -- the referenced declaration IS upstream, and the
+    # upstream-blind test refuses it anyway.
+    #
+    # This REPLACES an earlier mutant (`dep_decl_exclusion_dropped`, which
+    # dropped the `referenced -= declared_here` exclusion). MEASURED VACUOUS
+    # 2026-10-02: mutant selftest rc=0 with 0 bad legs, both pair legs green --
+    # because each fixture's added line is a bare CALL, so `declared_here` is
+    # empty and the exclusion is a no-op. A mutant that reddens nothing proves
+    # nothing, and the guard's own "baseline has no green leg" pre-check cannot
+    # see it: the leg IS green on the pristine tree, it just never moves.
+    "dep_upstream_test_dropped": (
+        "        fo = sorted(i for i in referenced if i in fork_decls and i not in up_decls)\n",
+        "        fo = sorted(i for i in referenced if i in fork_decls)\n",
     ),
 }
 if label not in MUTATIONS:
