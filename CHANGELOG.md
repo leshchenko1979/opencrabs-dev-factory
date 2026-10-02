@@ -1,5 +1,45 @@
 # Changelog — opencrabs-dev
 
+## v0.4.282 — q46 → D and #761 steps 1-2: the fence drops, and the fork-only boundary takes its first durable shape
+
+Bundles **`957c5003`** + **`31f8f394`** (HQ law), **`9637cdb9`** (the fence's tool half), **`be40ae00`** (#761 steps 1-2), **`09e30956`** (battery receipt sweep).
+
+Two owner rulings land together, and they are one story read from both ends: the fence that held harvests behind a quiet lane is **gone**, and the register that declares what is *deliberately* fork-only finally has fields worth declaring.
+
+**q46 → D — the In-Flight Lane Fence is DROPPED.** The fence (v0.4.187, cycle `20260915-c18`) was built to stop a port capturing a **MOVING TARGET**, but its release clause was a **COMPLETION** condition ("finishes, hot-swaps, and lands") with nothing for a lane that simply *stopped* — and its busy set is `get_active_claims`, whose own docstring reads *"Every still-OPEN claim"* (`tools/lib/oc_claims.py:777`). A lane that claims and goes quiet therefore held the fence **indefinitely**, which is exactly the defect the owner named. His answer replaces the fence with the **portability predicate alone**.
+
+The residual is disclosed, not papered over: the two guards ask **different axes** — the predicate asks *does upstream carry the surface this fix repairs*, the fence asked *is a lane still moving this subsystem*. So a harvest may now run against a subsystem an active lane is still changing; re-introduction needs a **fresh owner ruling**, never a lane's judgment. Recorded in the tool tombstone, in RC-CONTRACT row 34, and in both law copies.
+
+The fence had **two live law copies** — `harvest.md:317` and `upstream-merge-runbook.md:336` — and both were retired **in place**; a clause the corpus carries twice is a clause that gets half-removed. `31f8f394` then scoped the drop: `upstream-merge-runbook.md` had declared the fence dropped while, further down the same file, the **census's** own `HELD_IN_FLIGHT_LANE` leg was still live and described as one of four independent fences — a reader of the first passage would conclude no in-flight fence exists anywhere. The census leg is **UNTOUCHED** and parked as **q51**.
+
+**#761 steps 1-2 — the fork-only boundary takes shape.** q48 → **A** and q49 → **C** converge on **one field**, which is why they are one design: the bar gate **writes** the `not-upstreamable` row it just decided; the fork-only register **reads** the same rows. The register already existed (`harvest-registry.json` → `manual_records`, 9 live `not-upstreamable` rows), and `harvest.md:416` forbids a parallel one verbatim — *"`manual_records` IS this field — formalise it, do not fork it"* — so `fork-only.json` was dropped and the existing marker was extended instead.
+
+| leg | change |
+|---|---|
+| **Row schema** (#761 step 1) | three **OPTIONAL** `not-upstreamable` fields — `branches`, `revert`, `verified_at`. Absent unless supplied, so the **61 pre-existing rows keep their exact shape**; they join the carry-forward set so a re-record never drops them |
+| **Row identity** (#733) | identity is the **`unit`**, never `(unit, pr, issue)`: `manual_record_matches()` matches on unit **OR** issue, so the triple invented a second identity and an `--issue`-less re-record **appended a permanent duplicate** (purge refuses by design). Unit **725** was the live corpse |
+| **Parent provenance** (#633) | `issue_subject_upstream` now asks about the declarations the parent **ADDED**, never the enclosing function of its hunks — a parent working inside a shared container used to read "already harvested" while its own feature was absent upstream |
+| **Predicate** (#761 step 2b, #758) | new `fork_only_surface_references` — **declaration-level, not name-level**. Refuses a hunk whose body depends on a declaration the fork carries and upstream does not: `[FORK_ONLY_SURFACE: <path> :: <names>]`. Four narrowings: unit-scoped, self-introduced declarations excluded, test paths skipped, absent-upstream files left to class 2 |
+| **Discoverability** (#730) | `record --help` now lists `--status` / `--reason` / `--branches` / `--revert` / `--verified-at`, so the only path to a `not-upstreamable` row is no longer undiscoverable |
+
+**Verification (all same-turn reads).** Round-trip against a **copy** of the live registry: `record --unit TESTUNIT --status not-upstreamable --branches b1,b2 --revert … --verified-at …` → the row carries `branches: ["b1","b2"]`, the revert recipe and the timestamp, **rc=0**. A re-record supplying **none** of them said **"Updated"**, not "Recorded", left **1** row for that unit, and **carried all three forward** — the #733 append is fixed (61 → 61, no new row). Legacy shape intact: still **9** `not-upstreamable`, **0** rows carrying the new fields. Census selftest **108/108 OK** rc=0 · dispatch **53/53 OK** rc=0 · battery **PASS 324 / FAIL 0** rc=0 (wall 430 s, jobs=4) · #307 mutation guard **9/9 mutants caught**.
+
+**Disclosed residual.** The 725 pair **persists** — the unit-key upsert updates the first matching row and the second stays, because removal is forbidden (`harvest.md:418`). The **append** bug is fixed; the legacy duplicate is not collapsible by design. The two existing rows stand as two revisions of one declaration.
+
+| file | change | LOC |
+|---|---|---:|
+| `tools/harvest/oc-harvest-census` | row schema + identity + parent provenance + predicate | +525 / −22 |
+| `tools/harvest/oc-harvest-dispatch` | Gate 2d removal (q46 → D) | +35 / −35 |
+| `tools/tests/run.sh` | new battery case: the `record` round-trip through the shipped executable | +25 |
+| `tools/tests/negctl-307-mutation-guard.sh` | the vacuous mutant replaced by one that reddens the positive control | +31 / −… |
+| `tools/docs/RC-CONTRACT.md` | rows 33 (census) + 34 (dispatch) | +4 / −… |
+| `harvest.md` | fence dropped, then scoped (2 lines) | +944 → +850 bytes |
+| `upstream-merge-runbook.md` | fence dropped, then scoped (1 line) + census cross-reference | +368 → +671 bytes |
+
+**Closed:** #633, #733 (with run receipts). **#758 was already CLOSED** at 11:04Z — its detection half landed in `86b7d149`, an ancestor — so nothing here re-closes it.
+
+**Two corrections worth keeping.** (1) The **323 → 324** battery move needed a **battery-level** case, not census legs: `run_selftest` counts a whole tool selftest as **ONE** battery case, so census-internal legs can never move the total. (2) The first mutation-guard mutant was **VACUOUS, and it was measured** — `dep_decl_exclusion_dropped` gave rc=0 and 0 bad legs because each fixture's added line is a bare **call**, so the exclusion is a no-op; a mutant that reddens nothing proves nothing. Replaced with `dep_upstream_test_dropped`, proven to redden the pair's positive control first.
+
 ## v0.4.281 — q44 "combine: move + exempt": the register sheds role-scoped law, and is exempted from the budget
 
 The owner answered `q44` with **"Combine: move + exempt"** — both halves, not a choice between them. `q44` existed because B-1's prescribed cure (move the `[LANE]`-tagged sections out) was a decision already reverted once, and re-executing it blind would have repeated a measured mistake.
