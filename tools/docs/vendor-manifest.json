@@ -5,8 +5,8 @@
     {
       "local": "tools/state/oc-questions",
       "upstream_path": "TEMPLATE/tools/questions",
-      "ref": "b131dfab694f171c2c8b308f7b81f8be940e62f3",
-      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Flattened 2026-09-29; identical bytes at d57a5835 and e490a492.",
+      "ref": "c43178d66acbfd233aa36f521238435183531c3d",
+      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-02 at origin/main c43178d; the content last changed upstream at 054b2bd (the redeliver landing) and this copy carries it byte-for-byte after the four declared deltas.",
       "delta": [
         {
           "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
@@ -33,7 +33,7 @@
     {
       "local": "tools/state/oc-questions-render.mjs",
       "upstream_path": "TEMPLATE/tools/questions-render.mjs",
-      "ref": "b131dfab694f171c2c8b308f7b81f8be940e62f3",
+      "ref": "c43178d66acbfd233aa36f521238435183531c3d",
       "why": "The json-render catalog the register renders its page through. Byte-identical: no deployment naming is embedded in it.",
       "delta": []
     }
