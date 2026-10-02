@@ -1,5 +1,30 @@
 # Changelog — opencrabs-dev
 
+## v0.4.283 — q51 → B: the census fence falls, and the fork-only boundary closes its second half
+
+Bundles **`e8049354`** + **`8be92beb`** (q51), **`58be1d05`** (#761 step 3), **`875cd7ef`** (#761 step 4), with **`84ddf658`** (battery receipt sweep). The range also carries the questions-lane pair **`2b60d931`** + **`2e4195b4`** and the re-vendor **`d377e7ad`**, which landed inside this window.
+
+**q51 → B — the census's own In-Flight Lane Fence is DROPPED.** q46 → D removed the fence's DISPATCH enforcement point but parked its second one as an open question; the owner's «Go» on the q51 report (the recommended option B) removes the census point too. The law half is `e8049354`: **five sites across two files** — `harvest.md` §Phase 7c, and `upstream-merge-runbook.md` `:336` (the fence clause), `:395` (the v0.4.233 expiry classification, whose no-expiry class now names `HELD_PARENT_UNHARVESTED` alone), `:417` ("four independent rc=1 fences" → **three**) and `:418` (the gate chain, gate 3 annotated DROPPED rather than renumbered). The tool half is `8be92beb`: gate 3 removed from `oc-harvest-census`.
+
+**The catch worth remembering:** the fence had two live law copies, and the second was hiding in the same file that had already declared the first dead — `upstream-merge-runbook.md:336` said the fence was gone while `:417`, further down the same file, still described the census's `HELD_IN_FLIGHT_LANE` as one of **four** independent fences. A reader of the first passage would conclude no in-flight fence exists anywhere. Both copies now agree.
+
+**Nothing load-bearing went with the tool cut.** The shared footprint resolver (`run_engine test-active-claims`, the #307 anchored-footprint legs) and `filter_substantive_overlap` serve sibling gates and four other tools (`oc-ledger`, `oc-health`, `oc-roster`, `oc-issue-dispatch`) and STAY. Capabilities that were properties OF the fence (holder-liveness / dormancy disclosure, phantom-holder skip, per-(lane,issue) row dedup) died with it; four more were **re-vehicled** onto surviving legs (the #375 registry-exemption anti-vacuity proof → gate 2; #493 / #533 / #307 → `cycle_note`) rather than deleted. The #307 mutation guard's `registry_filter_dropped` anchor was re-anchored from the fence's 12-space filter pair (deleted) to gate 2's 20-space pair — left alone it would have matched **0 times** and gone INERT (the #759 failure mode). The blocker re-validation advisory (#536, leg v) was GATE-3-ONLY with no surviving consumer and is **retired, not re-vehicled** (ponytail-lazy; reversible by a fresh ruling).
+
+**#761 step 3 — the fork-only sync re-verification leg (`58be1d05`).** `upstream-merge-runbook.md` §Process gains **step 12**: at each sync, walk every OPEN `not-upstreamable` row and re-verify its three premises — the SURFACE (declaration-level predicate, never a by-name match), the BRANCH SET, and the REASON — REPORTING every row whose premise changed **by row id**, and stamping `verified_at` on rows re-verified unchanged. Removal is forbidden (`harvest.md` §Phase 7c) and silence is not retention: a stale row is a FINDING, never a quiet skip. The tool leg (`oc-harvest-census` walk, dry-run by default) is dispatched to the Toolsmith lane; the law leads the tool by one dispatch.
+
+**#761 step 4 — the fork-only teardown exemption (`875cd7ef`).** `editor.md` Phase 2 gains the exemption: a unit carrying an OPEN `not-upstreamable` row **keeps its worktree**, because the worktree is the local anchor a sync's force-push would erase — the one event that can invalidate the declaration's premise. **RELEASE = the row is CLOSED, or re-verified as now-TRAVELLING.** The bug-fix completion formula carries the matching qualifier.
+
+| file | change | LOC |
+|---|---|---:|
+| `harvest.md` | q51 law — the fence clause's SCOPE | 458 → 458 lines, 45,822 → 46,376 bytes (**+554**) |
+| `upstream-merge-runbook.md` | q51 law (4 sites) + step 12 | 510 → 514 lines (**+4**), 93,022 → 95,736 bytes (**+2,714**) |
+| `editor.md` | step 4 teardown exemption + formula qualifier | 761 → 762 lines (**+1**), 80,189 → 81,400 bytes (**+1,211**) |
+| `tools/harvest/oc-harvest-census` (+ mutation guard, RC-CONTRACT) | gate 3 removed | 3 files, **+208/−544** |
+
+**Verification (same-turn reads).** Census selftest **97/97 OK** rc=0 (baseline 108; delta −11 = 16 removed / 5 added) · #307 mutation guard **PASSED, all 9 mutants caught**, `registry_filter_dropped` CAUGHT with anchor occurrences=1 · dispatch selftest **53/53 OK** rc=0 (untouched regression control) · battery **PASS 324 / FAIL 0** rc=0 (wall 336 s, jobs=4, receipt `2026-10-02T22:12:39Z`) · `e8049354` / `58be1d05` / `875cd7ef` each re-measured against the commit for the LOC table above.
+
+**Disclosed residual, unchanged from q46.** The two guards ask **different axes** — the portability predicate asks *does upstream carry the surface this fix repairs*, the fence asked *is a lane still moving this subsystem*. With both fence points gone, a harvest may run against a subsystem an active lane is still changing; re-introduction needs a **fresh owner ruling**, never a lane's judgment. The **725** duplicate in `manual_records` also persists (removal forbidden by design; the unit-key upsert fixed the append, not the legacy pair).
+
 ## v0.4.282 — q46 → D and #761 steps 1-2: the fence drops, and the fork-only boundary takes its first durable shape
 
 Bundles **`957c5003`** + **`31f8f394`** (HQ law), **`9637cdb9`** (the fence's tool half), **`be40ae00`** (#761 steps 1-2), **`09e30956`** (battery receipt sweep). The range also carries Toolsmith's **#739** pair, which landed inside this window: **`230dfb9d`** — `fix(tools): oc-vendor-drift and oc-claims-single-source wrote no unified-log row at all` (the `exec python3` replacing the shell image, so the documented `trap … EXIT` could never fire; 5 files, +427/−2) — and its receipt sweep **`b2854ce5`**.
