@@ -2,7 +2,7 @@
 
 ## v0.4.283 — q51 → B: the census fence falls, and the fork-only boundary closes its second half
 
-Bundles **`e8049354`** + **`8be92beb`** (q51), **`58be1d05`** (#761 step 3), **`875cd7ef`** (#761 step 4), with **`84ddf658`** (battery receipt sweep). The range also carries the questions-lane pair **`2b60d931`** + **`2e4195b4`** and the re-vendor **`d377e7ad`**, which landed inside this window.
+Bundles **`e8049354`** + **`8be92beb`** (q51), **`58be1d05`** (#761 step 3), **`875cd7ef`** (#761 step 4), with **`84ddf658`** (battery receipt sweep). The range also carries the questions-lane pair **`2b60d931`** + **`2e4195b4`**, the re-vendor **`d377e7ad`**, and **`2a4081d7`** — the v0.4.282 C8 naming fix, which post-dates the `v0.4.282` tag and therefore rides this window rather than its own.
 
 **q51 → B — the census's own In-Flight Lane Fence is DROPPED.** q46 → D removed the fence's DISPATCH enforcement point but parked its second one as an open question; the owner's «Go» on the q51 report (the recommended option B) removes the census point too. The law half is `e8049354`: **five sites across two files** — `harvest.md` §Phase 7c, and `upstream-merge-runbook.md` `:336` (the fence clause), `:395` (the v0.4.233 expiry classification, whose no-expiry class now names `HELD_PARENT_UNHARVESTED` alone), `:417` ("four independent rc=1 fences" → **three**) and `:418` (the gate chain, gate 3 annotated DROPPED rather than renumbered). The tool half is `8be92beb`: gate 3 removed from `oc-harvest-census`.
 
