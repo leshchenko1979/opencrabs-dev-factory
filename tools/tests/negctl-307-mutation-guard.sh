@@ -120,12 +120,17 @@ echo
 echo "[1] oc-harvest-census --selftest"
 rc_base="$(run_st census "$WORK/baseline/$CENSUS_REL")"
 if [ "$rc_base" = "0" ]; then ok "baseline census GREEN (rc=0)"; else bad "baseline census rc=$rc_base (expected 0)"; fi
-rc_mut="$(run_st census-mut "$WORK/mutant/oc-harvest-census")"
-if [ "$rc_mut" != "0" ]; then
+rc_mut="$(run_st census-mut "$WORK/mutant/$CENSUS_REL")"
+# #759: a mutant invoked at a path that does not RESOLVE exits 126/127 (command
+# not found). That is non-zero, so a bare `!= 0` test called it CAUGHT -- the
+# guard reported its STRONGEST verdict on its WEAKEST evidence, and a control
+# that never ran read as one that ran and caught the regression. 126/127 are
+# harness faults, never a catch.
+if [ "$rc_mut" != "0" ] && [ "$rc_mut" != "126" ] && [ "$rc_mut" != "127" ]; then
   ok "mutant census CAUGHT (rc=$rc_mut)"
   grep -m1 -iE 'prose|fence|#307' "$WORK/last.out" | sed 's/^/         /' || true
 else
-  bad "mutant census PASSED — the prose-only control does not catch the regression"
+  bad "mutant census NOT CAUGHT (rc=$rc_mut — 126/127 means the mutant never RAN) — the prose-only control does not catch the regression"
 fi
 
 # --- (2) dispatch -----------------------------------------------------------
@@ -133,12 +138,12 @@ echo
 echo "[2] oc-harvest-dispatch --selftest"
 rc_base="$(run_st dispatch "$WORK/baseline/$DISPATCH_REL")"
 if [ "$rc_base" = "0" ]; then ok "baseline dispatch GREEN (rc=0)"; else bad "baseline dispatch rc=$rc_base (expected 0)"; fi
-rc_mut="$(run_st dispatch-mut "$WORK/mutant/oc-harvest-dispatch")"
-if [ "$rc_mut" != "0" ]; then
+rc_mut="$(run_st dispatch-mut "$WORK/mutant/$DISPATCH_REL")"
+if [ "$rc_mut" != "0" ] && [ "$rc_mut" != "126" ] && [ "$rc_mut" != "127" ]; then
   ok "mutant dispatch CAUGHT (rc=$rc_mut)"
   grep -m1 -E 'bad 11e|bad 11f|#307' "$WORK/last.out" | sed 's/^/         /' || true
 else
-  bad "mutant dispatch PASSED — legs 11e/11f do not catch the regression"
+  bad "mutant dispatch NOT CAUGHT (rc=$rc_mut — 126/127 means the mutant never RAN) — legs 11e/11f do not catch the regression"
 fi
 
 # --- (3) lib unit cases -----------------------------------------------------
@@ -241,10 +246,16 @@ MUTATIONS = {
     # block follows `substantive_overlap` with `c_uuid`, which is what makes
     # this anchor unique (verified: short form occurs 2x, this form 1x).
     "registry_filter_dropped": (
+        # #759: the anchor was a FOUR-line block whose last two lines were the
+        # `_fkey` / `_seen_fences` duplicate-claim block's tail. A later refactor
+        # inserted that block BETWEEN `if substantive_overlap:` and
+        # `overlap_sample`, so the anchor matched 0 times and the control went
+        # INERT ("could not apply the mutation"). The first two lines are
+        # already unique -- and were verified to redden exactly the #375 leg --
+        # so the orphaned tail is dropped rather than re-pinned to fragile
+        # comment lines that will drift again.
         "            substantive_overlap = filter_substantive_overlap(overlap)\n"
-        "            if substantive_overlap:\n"
-        "                overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])\n"
-        "                c_uuid = claim.get('uuid', '')[:8]",
+        "            if substantive_overlap:\n",
         "            substantive_overlap = overlap\n"
         "            if substantive_overlap:\n"
         "                overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])\n"

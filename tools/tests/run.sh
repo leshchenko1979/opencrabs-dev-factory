@@ -2241,11 +2241,26 @@ rm -rf "$ANC" "$RT"
 # DIRECT child of a tools dir. That is the exact shape the regroup broke, and it
 # has no false positives on runtime-composed paths (`$WORK/mut_<label>/...`) or
 # on prose naming an old layout.
+#
+# #759: the segment alternation used to be a HAND-LISTED set of scratch-dir
+# spellings -- `baseline/`, `mut_*/`, `mut/` -- and `mutant/`, the spelling the
+# census and dispatch arms actually used, was not on it. Those two flat paths
+# were therefore never flagged, and the arms reported CAUGHT for a mutant that
+# never ran (rc=127). A hand-maintained spelling list is exactly what drifted, so
+# the pattern now accepts ANY single leading segment and leans on the kind-dir
+# exclusion below to stay quiet on legitimate paths. The real backstop is the
+# 126/127 rejection in the guard's own §1/§2 assertions, which catches a path
+# break whatever it is spelled.
 for _nc in "$TOOLS_DIR"/tests/negctl-*; do
   [ -e "$_nc" ] || continue
+  # #759: skip the harness's GENERATED-IGNORED pre-image sidecars. They match
+  # `negctl-*`, and a stale one carries the very flat paths this section exists
+  # to flag -- so scanning them reddens the battery on a file that is not a
+  # control at all (and is reaped on the hygiene cadence anyway).
+  case "$_nc" in *.bak|*.bak-*) continue;; esac
   _nb="$(basename "$_nc")"
   # A flat invocation: a variable path ending in a tools dir, then /oc-<name>.
-  _flat="$(grep -nE '\$[A-Za-z_][A-Za-z0-9_]*/(baseline/|mut_[a-z_]*/|mut/)?oc-[a-z0-9-]+' "$_nc" \
+  _flat="$(grep -nE '\$[A-Za-z_][A-Za-z0-9_]*/([A-Za-z0-9_.-]+/)?oc-[a-z0-9-]+' "$_nc" \
             | grep -vE '/(state|git|audit|ship|issue|harvest|smoke|notify|tests|lib|tools)/' \
             | head -3)"
   [ -z "$_flat" ] \
