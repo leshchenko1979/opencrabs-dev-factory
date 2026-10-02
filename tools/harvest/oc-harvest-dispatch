@@ -10,7 +10,9 @@
 #    - Supersession audit -> rejects if obsolete/superseded
 #    - 24h deployment soak check -> rejects if feat is fresh
 #    - Subsystem cohesion check -> rejects if touches files of soaking feat (HELD_DEPENDENT_SOAK)
-#    - In-flight lane fencing -> rejects if touches files of active editor claim (HELD_IN_FLIGHT_LANE)
+#    - In-flight lane fencing (HELD_IN_FLIGHT_LANE) -- REMOVED 2026-10-02 (owner ruling
+#      q46 -> option D). Harvest eligibility now rests on the portability predicate
+#      alone; see the Gate 2d tombstone inside vet_candidate() for the full ruling.
 # 2. Capacity-Gated Dispatch:
 #    - Queries workers-ledger.json to verify target editor is strictly idle with 0 open claims
 #    - Formats standard self-contained wire envelope
@@ -24,7 +26,7 @@
 #
 # Exit codes:
 #   0: APPROVED / Clean / Success / --help
-#   1: REJECTED (already merged, superseded, empty diff, in-flight, soak, dependent-soak, in-flight-lane, parent-unharvested, blocked-by)
+#   1: REJECTED (already merged, superseded, empty diff, in-flight, soak, dependent-soak, parent-unharvested, blocked-by)
 #   2: Usage error
 #   3: Git or GitHub API failure
 #   4: CAPACITY_EXHAUSTED / Target lane busy with active claims
@@ -947,39 +949,37 @@ def vet_candidate(candidate_arg, repo_path, base_ref, upstream_repo, mock_prs=No
                                 'exit_code': 1
                             }
 
-    # Gate 2d: In-Flight Lane Fencing Check (HELD_IN_FLIGHT_LANE)
-    ledger_path = mock_ledger or os.environ.get('OC_HARVEST_MOCK_LEDGER') or os.path.join(st_dir, 'workers-ledger.json')
-    active_claims = oc_claims.get_active_claims(ledger_path, repo_path)
-    if target_files_set and active_claims:
-        for claim in active_claims:
-            c_iss = claim.get('issue')
-            if issue_num is not None and c_iss == issue_num:
-                continue
-            c_files = set(claim.get('files', []))
-            overlap = target_files_set.intersection(c_files)
-            # Registry-only overlap is NOT a substantive conflict (#375). Every
-            # test-bearing change registers its module in src/tests/mod.rs, so a
-            # raw intersection fences ANY test-bearing harvest against ANY lane
-            # holding a test claim. Gate 2c (HELD_DEPENDENT_SOAK) already filters
-            # via filter_substantive_overlap; this gate did not. The filter was
-            # introduced scoped to the soak gate by name (6d9735da) with no
-            # rationale, and the HQ amendment that created both gates names them
-            # as parallel cases of one predicate -- the asymmetry was an omission,
-            # not a design.
-            substantive_overlap = filter_substantive_overlap(overlap)
-            if substantive_overlap:
-                overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])
-                c_uuid = claim.get('uuid', '')[:8]
-                iss_label = str(c_iss) if c_iss else '?'
-                return {
-                    'status': 'REJECTED',
-                    'verdict': f'HELD_IN_FLIGHT_LANE: Candidate touches files of active lane {c_uuid} claim #{iss_label} (overlap: {overlap_sample})',
-                    'issue': issue_num,
-                    'commits': commits,
-                    'files': affected_files,
-                    'exit_code': 1
-                }
-
+    # Gate 2d (In-Flight Lane Fencing, HELD_IN_FLIGHT_LANE) -- REMOVED.
+    #
+    # Owner ruling 2026-10-02 (open question q46 -> option D). The fence held a
+    # harvest while an active editor lane worked the subsystem, releasing only on
+    # COMPLETION -- finishes, hot-swaps, and lands -- and the busy set it read was
+    # EVERY still-OPEN claim (tools/lib/oc_claims.py) -- so a quiet or dead lane's
+    # unclosed claim held a harvest INDEFINITELY. That is the defect q46 was
+    # raised on. Harvest eligibility now rests on the PORTABILITY predicate ALONE
+    # (Gates 1/2/2c/2e/2f around this point).
+    #
+    # Disclosed residual -- the predicate and this fence guard DIFFERENT AXES: the
+    # predicate asks whether upstream carries the surface this repairs; the fence
+    # asked whether a lane is still moving this subsystem. So a harvest may now
+    # run against a subsystem an active lane is still changing. The owner
+    # accepted that trade; his answer named the predicate as the replacement.
+    # Re-introduction requires a FRESH owner ruling, never a lane's judgment.
+    # Canon: harvest.md Phase 7c; upstream-merge-runbook.md, Upstream-merge
+    # cadence, HARVEST LAW, NO-HOLD.
+    #
+    # NOT retired with this gate: the #307 anchored-footprint legs (selftest
+    # 11e/11f) exercise the SHARED resolver -- get_active_claims /
+    # resolve_issue_commits in tools/lib/oc_claims.py -- which stays LIVE for
+    # oc-ledger, oc-health, oc-roster and oc-issue-dispatch. They are lib legs,
+    # not fence legs, and are the only observable for the #307 anchoring fix.
+    #
+    # NOT in scope: the census carries its OWN in-flight lane fence (gate 3 in
+    # oc-harvest-census), documented in live law as one of four independent
+    # census fences (upstream-merge-runbook.md, the PASS done stamp section).
+    # This ruling named the dispatch gate only; the census gate is parked for a
+    # separate owner decision.
+    #
     # Gate 2e & 2f: Native Sub-Issues (parent) and Dependencies (blockedBy) (Issue #255)
     if issue_num:
         hier = get_fork_issue_hierarchy(issue_num, repo_path=repo_path)
