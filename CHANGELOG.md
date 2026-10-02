@@ -1,5 +1,31 @@
 # Changelog — opencrabs-dev
 
+## v0.4.281 — q44 "combine: move + exempt": the register sheds role-scoped law, and is exempted from the budget
+
+The owner answered `q44` with **"Combine: move + exempt"** — both halves, not a choice between them. `q44` existed because B-1's prescribed cure (move the `[LANE]`-tagged sections out) was a decision already reverted once, and re-executing it blind would have repeated a measured mistake.
+
+**The move — `4057ad6a`.** Ten sections whose law binds **ONE role** were relocated byte-exact into the file that owns that role: `editor.md` ×6, `triage.md` ×2, `harvest.md` ×2. The split test is **BINDING SCOPE** — never the `[LANE]` citation tag, whose use as a scope marker was reverted on 2026-09-18 (`CHANGELOG.md:73`: *"citation is not scope"*; `[LANE]` is the must-read-at-reload marker). Two sections that *look* role-scoped **by name** were deliberately KEPT because they bind every lane: **§Attribution & Goal Hygiene** (77 lines) and **§Decision Rollcall** (46 lines). **§Swap-head signature** and **§HQ does not execute lane work** stay too — the 2026-09-19 tier-C pull-back restored them on purpose, and re-moving them would re-do a revert.
+
+**The anchor sweep — the step the 2026-09-18 split omitted, and the reason it was reverted.** Relocating law without repointing its references leaves the corpus citing a section that is no longer there. Every in-corpus pointer to a moved section was corrected: **11 sites across 5 files**, three of them **inside the moved text itself** (`editor.md` → §Docs-Only LEG1 Gate Skip / §Post-Rewrite Swap Recovery; `triage.md` → §Owner-Dependent Smoke Legs L1, now repointed to `editor.md`). `reviews/**` (append-only reports) and `CHANGELOG.md` (history) were excluded by design.
+
+**The exemption.** The register is now **explicitly exempt** from the 500-line law-file budget, recorded **beside the budget law itself** in §Upstream Coding & Testing Standards — not in a distant footnote. The exemption covers only what survives the relocation test; the relocation half is the enforceable half.
+
+**Verification (all same-turn reads).** Register md5 pre-image `b99aef9991eae1cef75aecc519f3d590` (matches the recorded value). Heading reconciliation: 47 before → 10 moved → **37** after, with **34 kept byte-exact + 2 swept + 1 amended (the budget section) + 10 moved = 47** — no section lost. All 10 moved blocks present byte-exact in their targets (29,292 bytes relocated; 29,292 + 110,621 = 139,913 = the HEAD register's 138,229 + the separator newlines + the 1,457-byte exemption clause + the legend growth). `./tools/audit/oc-lint-laws` → **rc 0**, clean.
+
+| file | before | after | delta |
+|---|---:|---:|---:|
+| `fleet-directives.md` | 732 | 540 | **−192** |
+| `editor.md` | 660 | 761 | **+101** |
+| `harvest.md` | 431 | 458 | **+27** |
+| `triage.md` | 467 | 543 | **+76** |
+| `upstream-merge-runbook.md` | 510 | 510 | 0 |
+| `hq.md` | 274 | 274 | 0 |
+| `toolsmith.md` | 165 | 165 | 0 |
+| `SKILL.md` | 499 | 499 | 0 |
+| **TOTAL** | **3738** | **3750** | **+12** |
+
+The **+12** is honest and expected: each of the 10 relocated blocks gains one separator newline, and the register gains the exemption clause while losing the stale "2026-09-18 split" legend. The move is a **relocation**, not a reduction — the corpus carries the same law.
+
 ## v0.4.280 — the stranded-law batch: four brain-scrub findings land where lanes actually read
 
 Bundles **`c954d711`** (BS-5, the law edit), **`3479ac77`** (this bump + entry), and two commits that landed inside the sync window: **`b7c7024a`** — `fix(tools): use <<< in the #741 --label selftest leg` (Toolsmith's fix for the `printf|grep -q` site that reddened the battery gate and held this sync at `die 5`) — and **`0328902a`** — `law(changelog): v0.4.279 names the two bundled Toolsmith commits (C8)`. Plus four live brain-file edits that carry no commit (the profile root is not a git repo): `AGENTS.md` ×3 (BS-1, BS-3, BS-8) and `INTEGRATIONS.md` ×1 (BS-4). Second half of the c27 §3.4 bucket; v0.4.279 landed the first half.
