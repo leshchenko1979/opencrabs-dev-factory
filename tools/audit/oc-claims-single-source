@@ -106,6 +106,29 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS_DIR = _resolve_tools_dir(_HERE)
 CANONICAL_REL = os.path.join("lib", "oc_claims.py")
 
+# Unified tools log (#739) - tools/lib/oc_log.py is the ONE Python home for the
+# parity with tools/lib/oc-log.sh. This tool previously wrote NO row at all, so
+# its absence from tools.log was indistinguishable from disuse. DEGRADES TO
+# SILENCE on import failure -- scanning is this tool's job and a missing log
+# module must not fail it -- but the gap is REPORTED to stderr, because a silent
+# instrumentation failure is precisely what #739 was.
+sys.path.insert(0, os.path.join(TOOLS_DIR, "lib"))
+try:
+    from oc_log import oc_log_init, oc_log_extra, oc_log_finish
+except Exception as _oc_log_err:  # pragma: no cover
+    sys.stderr.write(
+        "oc-claims-single-source: tools/lib/oc_log.py unavailable (%s) - "
+        "running UNLOGGED (#739)\n" % _oc_log_err)
+
+    def oc_log_init(*_a, **_k):
+        return None
+
+    def oc_log_extra(*_a, **_k):
+        return None
+
+    def oc_log_finish(*_a, **_k):
+        return None
+
 # Keyed by VALUE, never by name - see the docstring for why.
 CLOSING_KIND_VALUES = frozenset(("close", "confirm", "reject", "done", "unclaim"))
 LANDED_KIND_VALUES = frozenset(("close", "done"))
@@ -904,4 +927,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    # Armed before main() so the rc the process ACTUALLY exits with is the rc the
+    # row carries -- including a usage error (rc 2) (#739).
+    oc_log_init("oc-claims-single-source")
+    _rc = main(sys.argv)
+    oc_log_finish(_rc)
+    sys.exit(_rc)

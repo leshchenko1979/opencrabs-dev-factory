@@ -33,6 +33,21 @@
 set -uo pipefail
 
 ORIG_ARGS=("$@")
+
+# --- unified tools log (#739) ------------------------------------------------
+# Armed BEFORE the arg loop, so a usage refusal (rc 2) is logged too: this tool
+# wrote NO row at all, and an unlogged refusal is indistinguishable from a run
+# that never happened. The lib's documented wiring needs BOTH halves --
+# oc_log_init AND an EXIT trap -- and the real path further down used to `exec`
+# python3, which REPLACES the shell image and would leave that trap dead. That
+# path no longer execs (see the CHECKER invocation below).
+_oc_log_lib="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)/oc-log.sh"
+if [ -f "$_oc_log_lib" ]; then
+    . "$_oc_log_lib"
+    oc_log_init "oc-vendor-drift" "$@"
+    trap 'oc_log_finish $?' EXIT
+fi
+
 MODE="check"
 JSON=0
 REPO_OVERRIDE=""
@@ -215,7 +230,10 @@ sys.exit(1 if bad else 0)
 PY
 fi
 
-exec python3 - "$0" "$MANIFEST" "$REPO_ROOT" "${ORIG_ARGS[@]}" <<'PY'
+# NOT `exec`: the checker must stay a CHILD of this shell so the EXIT trap armed
+# at the top can write the unified-log row -- `exec` replaces the image and the
+# trap dies with it (#739).
+python3 - "$0" "$MANIFEST" "$REPO_ROOT" "${ORIG_ARGS[@]}" <<'PY'
 # --- CHECKER BEGIN --- (pure python; single source for selftest + runtime)
 import json, os, re, subprocess, sys
 
@@ -372,3 +390,8 @@ if unreachable == len(results):
     sys.exit(3)
 sys.exit(0)
 PY
+
+# Propagate the checker's status EXPLICITLY (rather than relying on it being the
+# last command) so the EXIT trap above logs the TRUE rc for every outcome.
+_oc_rc=$?
+exit "$_oc_rc"

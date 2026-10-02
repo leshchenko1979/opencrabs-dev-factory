@@ -578,6 +578,28 @@ else
   bad "lib/oc-log.sh missing"
 fi
 
+# ---- 00a2. lib/oc_log.py -- the PYTHON twin of oc-log.sh (#739) -------------
+# The shell lib is the contract; this module is its Python parity, so a Python
+# tool and a shell tool write the SAME row shape to the same file. Its selftest
+# is hermetic (it points OC_TOOLS_LOG at a temp dir and restores the env), and
+# its OWN last leg is the suppression control: without a row that VANISHES under
+# OC_TOOLS_NOLOG=1, "writes a row" only measures that a file can be written.
+if [ -f "$TOOLS_DIR/lib/oc_log.py" ]; then
+  if python3 -m py_compile "$TOOLS_DIR/lib/oc_log.py" 2>/dev/null; then
+    ok "lib/oc_log.py compiles (py_compile)"
+  else
+    bad "lib/oc_log.py does not compile"
+  fi
+  _lp_out="$(python3 "$TOOLS_DIR/lib/oc_log.py" --selftest 2>&1)"; _lp_rc=$?
+  case "$_lp_out" in
+    *"0 failed"*) ok "lib/oc_log.py selftest: $(printf '%s' "$_lp_out" | tail -1)" ;;
+    *)            bad "lib/oc_log.py selftest: $(printf '%s' "$_lp_out" | tail -1)" ;;
+  esac
+  [ "$_lp_rc" -eq 0 ] || bad "lib/oc_log.py selftest rc=$_lp_rc"
+else
+  bad "lib/oc_log.py missing (#739)"
+fi
+
 # ---- 00b. unified-log WIRE test (real tool -> tmp OC_TOOLS_LOG) -------------
 section "unified-log wire (real tool -> tmp log)"
 if tool oc-attrib; then
@@ -594,6 +616,34 @@ if tool oc-attrib; then
     && ok "wire: 1 JSONL line, tool/exit/args correct" || bad "wire test: rc=$wrc lines=$([ -f "$WL" ] && wc -l < "$WL" || echo none)"
   rm -rf "$wd"
 fi
+
+# ---- 00b2. the two tools #739 found UNLOGGED now write a row ----------------
+# Both wrote NO row in ANY invocation, so their absence from the unified log was
+# indistinguishable from disuse -- which is what let the #740 vendor-drift RED
+# leave no log trace at all. Assert the ROW, not the source line, and carry the
+# suppression control: a leg that only checks "the file is non-empty" would pass
+# for a tool that logs even when told not to.
+for _ut in oc-vendor-drift oc-claims-single-source; do
+  _utp="$(tool_path "$_ut" 2>/dev/null)"
+  [ -n "$_utp" ] || { bad "missing tool: $_ut"; continue; }
+  # per-tool invocation: oc-claims-single-source needs --scan; oc-vendor-drift takes none
+  case "$_ut" in
+    oc-claims-single-source) _utargs=(--scan "$TOOLS_DIR/audit") ;;
+    *)                       _utargs=() ;;
+  esac
+  _ud="$(mktemp -d)"; _ul="$_ud/tools.log"
+  OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$_ul" OC_ACTOR="battery-wire-739" \
+    "$_utp" "${_utargs[@]+"${_utargs[@]}"}" >/dev/null 2>&1
+  jq -e --arg t "$_ut" 'select(.tool==$t and .actor=="battery-wire-739")' "$_ul" >/dev/null 2>&1 \
+    && ok "$_ut writes a unified-log row (#739)" \
+    || bad "$_ut wrote NO unified-log row (#739)"
+  rm -f "$_ul"
+  OC_TOOLS_NOLOG=1 OC_TOOLS_LOG="$_ul" "$_utp" "${_utargs[@]+"${_utargs[@]}"}" >/dev/null 2>&1
+  [ -s "$_ul" ] \
+    && bad "CONTROL DEAD (#739): OC_TOOLS_NOLOG=1 still wrote a row for $_ut" \
+    || ok "control: OC_TOOLS_NOLOG=1 suppresses $_ut (#739)"
+  rm -rf "$_ud"
+done
 
 # ---- 00c. the ACTOR contract on a VENDORED python tool (#749a) --------------
 # oc-questions re-implements, in Python, the actor resolution that
