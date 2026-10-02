@@ -19,10 +19,12 @@
 # abort the suite on first failure, so "first bad leg == the leg aimed at" is
 # the strongest assertion available without splitting the suite.
 #
-# #375 — the shared-declaration-registry exemption in the HELD_IN_FLIGHT_LANE
-# fence. A fifth mutation (same §4 machinery) drops the filter call and requires
-# the registry-only leg to be the FIRST failure, proving that leg is
-# load-bearing rather than decoration.
+# #375 — the shared-declaration-registry exemption. A fifth mutation (same §4
+# machinery) drops the filter call at the DEPENDENT-SOAK gate and requires the
+# registry-only leg to be the FIRST failure, proving that leg is load-bearing
+# rather than decoration. The leg rode the in-flight fence until that fence was
+# retired (owner ruling q51 -> option B, 2026-10-02); the capability did not
+# retire with it, so the leg and this mutation were re-vehicled onto gate 2.
 #
 # #758 — the hunk-advisory's declaration-header divergence check. Two mutations
 # (same §4 machinery): one forces the check to never fire, the other to always
@@ -174,7 +176,7 @@ fi
 # some UNRELATED leg would be caught, and a mutant that reddened nothing at all
 # is caught by the rc check.
 echo
-echo "[4] #365 gate-4 subject predicate + #375 in-flight registry exemption (oc-harvest-census --selftest)"
+echo "[4] #365 gate-4 subject predicate + #375 registry exemption (oc-harvest-census --selftest)"
 
 base365="$WORK/base365.out"
 rc_base="$(run_st base365 "$SRC/$CENSUS_REL" "$base365")"
@@ -190,7 +192,7 @@ for label in case_a_dropped refuse_all_absent parent_number_dropped empty_deriva
     refuse_all_absent)        want_ok="#341 shape:"            want_bad="orphan-subject fixture" ;;
     parent_number_dropped)    want_ok="parent-harvested shape:" want_bad="harvested-parent fixture" ;;
     empty_derivation_unnamed) want_ok="inconclusive shape:"    want_bad="inconclusive fixture" ;;
-    registry_filter_dropped)  want_ok="check registry-only in-flight overlap -> ELIGIBLE exit 0 (shared-registry exemption)" want_bad="registry-only overlap" ;;
+    registry_filter_dropped)  want_ok="registry-only overlap -> ELIGIBLE exit 0 (shared-registry exemption, re-vehicled onto gate 2)" want_bad="registry-only overlap" ;;
     symbol_always_none)       want_ok="#758 diverged header:"   want_bad="diverged-header fixture" ;;
     symbol_always_fire)       want_ok="#758 negative control:"  want_bad="same-signature fixture" ;;
     dep_always_none)          want_ok="#758: hunk body depends on a fork-only declaration" want_bad="fork-only-dep fixture" ;;
@@ -242,26 +244,24 @@ MUTATIONS = {
         "tested = ', '.join(absent_syms[:6]) or 'none derived'",
         "tested = ', '.join(absent_syms[:6]) or 'symbols omitted'",
     ),
-    # #375: drop the shared-declaration-registry filter from the IN-FLIGHT
-    # fence, so a registry-only overlap fences again. The anchor is FOUR lines
-    # because the soak gate carries the SAME first line -- only the in-flight
-    # block follows `substantive_overlap` with `c_uuid`, which is what makes
-    # this anchor unique (verified: short form occurs 2x, this form 1x).
+    # #375: drop the shared-declaration-registry filter from the DEPENDENT-SOAK
+    # gate, so a registry-only overlap refuses again.
+    #
+    # VEHICLE MIGRATION (owner ruling q51 -> option B, 2026-10-02): this mutant
+    # used to drop the filter at the IN-FLIGHT fence, whose call sat at
+    # 12-space indent and was the only 12-space occurrence. Retiring that fence
+    # deleted the occurrence, so the anchor matched 0 times and the control went
+    # INERT ("could not apply the mutation") -- the #759 failure mode repeating.
+    # The filter call itself SURVIVES at the dependent-soak gate; its two-line
+    # 20-space pair is now verified unique in the file (count=1), so the anchor
+    # moved there. The replacement is the same two lines with the filter call
+    # removed -- the extra `overlap_sample` / `c_uuid` tail the old anchor
+    # carried is gone, because gate 2 does not follow with those lines.
     "registry_filter_dropped": (
-        # #759: the anchor was a FOUR-line block whose last two lines were the
-        # `_fkey` / `_seen_fences` duplicate-claim block's tail. A later refactor
-        # inserted that block BETWEEN `if substantive_overlap:` and
-        # `overlap_sample`, so the anchor matched 0 times and the control went
-        # INERT ("could not apply the mutation"). The first two lines are
-        # already unique -- and were verified to redden exactly the #375 leg --
-        # so the orphaned tail is dropped rather than re-pinned to fragile
-        # comment lines that will drift again.
-        "            substantive_overlap = filter_substantive_overlap(overlap)\n"
-        "            if substantive_overlap:\n",
-        "            substantive_overlap = overlap\n"
-        "            if substantive_overlap:\n"
-        "                overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])\n"
-        "                c_uuid = claim.get('uuid', '')[:8]",
+        "                    substantive_overlap = filter_substantive_overlap(overlap)\n"
+        "                    if substantive_overlap:\n",
+        "                    substantive_overlap = overlap\n"
+        "                    if substantive_overlap:\n",
     ),
     # #758: force the declaration-header divergence check to NEVER fire -- the
     # diverged-header leg must go red first, because a check that can never

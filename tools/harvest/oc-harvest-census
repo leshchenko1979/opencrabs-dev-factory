@@ -14,7 +14,8 @@
 #       - Exits 1 (REFUSED) if matching unit is already MERGED or IN_FLIGHT.
 #       - Exits 1 (REFUSED) if matching unit is within 24h feature soak window.
 #       - Exits 1 (REFUSED) if matching unit touches files of an unharvested/soaking feature (HELD_DEPENDENT_SOAK).
-#       - Exits 1 (REFUSED) if matching unit touches files of an active in-flight lane (HELD_IN_FLIGHT_LANE).
+#       - (RETIRED 2026-10-02, owner ruling q51 -> option B) the in-flight lane
+#         fence was removed; touching an active lane's files is no longer a refusal.
 #       - Exits 1 (REFUSED) if the BASE tip the unit is cut from carries a
 #         BASE-RED marker written by oc-pr-fault-scope (HELD_BASE_RED, #630).
 #       - Exits 0 (ELIGIBLE) if unit is confirmed UNHARVESTED.
@@ -92,7 +93,7 @@ Usage:
 
 Exit codes:
   0: ELIGIBLE / Clean / Success / --help
-  1: REFUSED (already MERGED, IN_FLIGHT upstream, SOAK, HELD_DEPENDENT_SOAK, HELD_IN_FLIGHT_LANE, HELD_BASE_RED, FORK_ONLY_SURFACE) / Finding
+  1: REFUSED (already MERGED, IN_FLIGHT upstream, SOAK, HELD_DEPENDENT_SOAK, HELD_BASE_RED, FORK_ONLY_SURFACE) / Finding
   2: Usage error
   3: Git or GitHub API failure
 EOF
@@ -136,47 +137,6 @@ def parse_iso_ts(ts_str):
         return int(datetime.datetime.fromisoformat(ts_str).timestamp())
     except Exception:
         return 0
-
-DORMANT_CLAIM_HOURS = 24.0
-
-
-def claim_activity(claim, state_dir, now_ts):
-    """Return (age_hours, dormant, phantom) from the target session DB, fail-open.
-
-    phantom=True means the DB was READ successfully and holds NO row for the
-    holder - #404's predicate (`known_ids` at oc-roster:244): a claim author the
-    session DB has never seen. That is a KNOWN state, not an unknown one, and it
-    is kept distinct from an unreadable DB so the fence can tell them apart: a
-    phantom can never finish OR release its claim, so fencing on it is a hold no
-    legitimate action clears (#653). Measured discriminator: a no-row query is
-    rc=0 with EMPTY stdout; an unreadable DB is rc=3.
-    """
-    uuid = claim.get('uuid', '')
-    if not uuid:
-        return None, False, False
-    db_path = os.environ.get('OC_LEDGER_DB') or os.path.join(
-        os.path.dirname(state_dir), 'opencrabs.db')
-    sqlite_tool = os.path.join(_TOOLS_DIR, 'lib', 'oc_sqlite')
-    sql = "SELECT updated_at FROM sessions WHERE id='%s'" % uuid.replace("'", "''")
-    try:
-        result = subprocess.run([sqlite_tool, db_path, sql], capture_output=True,
-                                text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return None, False, False
-    if result.returncode != 0:
-        # UNREADABLE: a transient read fault must never clear a fence.
-        return None, False, False
-    if not result.stdout.strip():
-        # READABLE, NO ROW: the holder is a phantom (#404). Known, not unknown.
-        return None, False, True
-    try:
-        updated = int(result.stdout.strip().splitlines()[0].split('|')[0])
-        if updated > 10 ** 12:
-            updated //= 1000
-        age = max(0.0, (now_ts - updated) / 3600.0)
-        return age, age >= DORMANT_CLAIM_HOURS, False
-    except (TypeError, ValueError):
-        return None, False, False
 
 
 def load_swap_history(state_dir):
@@ -1641,144 +1601,6 @@ def cycle_note(active_claims, target_iss):
             notes.append('NOTE: mutual in-flight cycle #%s <-> #%s on %s; precedence: older claim #%s keeps, newer yields' % (target_iss, claim.get('issue') or '?', ', '.join(sorted(overlap)[:3]), older.get('issue') or '?'))
     return notes
 
-# ---- Leg (v): re-validate the claim's OWN recorded blocker (#536) ------------
-# Legs (i)-(iv) bound WHEN a claim was filed (liveness/age) and how cycles
-# resolve, but NOT ONE of them reads the claim's own reason — so a claim whose
-# blocker has already expired still fences exactly as though live. Measured
-# case: lane aaa8d8ae's #443 claim was recorded DESIGN-GATED with "no code in
-# flight", yet all four of its commits were ancestors of origin/main and
-# origin/main == deployed.sha BEFORE the release ruling. The claim had outlived
-# its own stated blocker and nothing re-validated it.
-#
-# CLOSED SET of blocker TYPES only, never a semantic read of free text:
-#   design-gate    the claim names a session plan; is approved_at still null?
-#   code-in-flight the claim's ANCHORED footprint; do those paths now carry a
-#                  commit on origin/main since the claim was filed?
-# The note is ADVISORY and printed BESIDE the fence — it never becomes a gate
-# verdict and never changes rc. When neither type parses (no plan reference, no
-# anchored footprint, unreadable plan), the SKIP DISCLOSURE is printed instead
-# of nothing: an unverifiable check that reports clean is the #485 defect in a
-# new costume, and a silent skip is indistinguishable from "blocker still
-# holds". Same posture as the oc-ledger C8 anchor guard.
-BLOCKER_DESIGN = re.compile(r'design[\s-]*gated', re.I)
-BLOCKER_FLIGHT = re.compile(r'in[\s-]*flight|fix queued|code in flight', re.I)
-# The uuid must be DECLARED as a plan reference. A bare 8-hex token is not one:
-# claim prose routinely carries card/message/thread ids, and matching one of
-# those to a plan filename would yield a confident verdict about the wrong plan.
-BLOCKER_PLAN_REF = re.compile(
-    r'\b(?:session\s+)?plan[\s:#]*([0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?)\b',
-    re.I)
-
-
-def _plan_dirs(st_dir):
-    """Directories the session-plan files live in, most specific first.
-
-    Both are live in this fleet: the engine writes under
-    <profile>/agents/session/ while <profile>/session/ carries the older set, so
-    searching either alone silently misses plans — and a miss reads as
-    "the plan is not on disk", which is a DIFFERENT verdict from "approved".
-    OC_PLAN_DIRS (colon-separated) overrides the search for fixtures.
-    """
-    override = os.environ.get('OC_PLAN_DIRS')
-    if override:
-        return [d for d in override.split(':') if d]
-    base = os.path.dirname(st_dir.rstrip('/')) if st_dir else ''
-    return [os.path.join(base, 'agents/session'), os.path.join(base, 'session'),
-            os.path.join(st_dir, 'agents/session'), os.path.join(st_dir, 'session')]
-
-
-def _plan_approved_at(plan_dirs, prefix):
-    """(found, approved_at) for the session plan whose uuid starts `prefix`.
-
-    Returns (False, None) when no plan matches, which the caller reports as a
-    SKIP rather than as a held blocker: "no plan on disk" must never be rendered
-    as a verdict about the blocker.
-    """
-    for d in plan_dirs:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            names = sorted(os.listdir(d))
-        except OSError:
-            continue
-        for name in names:
-            if not (name.startswith('.opencrabs_plan_') and name.endswith('.json')):
-                continue
-            if prefix[:8] not in name:
-                continue
-            try:
-                with open(os.path.join(d, name)) as f:
-                    return True, json.load(f).get('approved_at')
-            except Exception:
-                return True, None
-    return False, None
-
-
-def blocker_note(claim, repo_path, st_dir, now_ts=None):
-    """One ADVISORY line re-validating the claim's own recorded blocker (#536).
-
-    Never raises and never returns a gate verdict: an unresolvable input yields
-    the skip disclosure, so the caller can print a note whose absence is always
-    explained. Returns None when the claim records no blocker from the closed
-    set at all — that is "not a blocker-bearing claim", which is a different
-    answer from "a blocker-bearing claim whose blocker cannot be resolved".
-    """
-    what = claim.get('what') or ''
-    if BLOCKER_DESIGN.search(what):
-        m = BLOCKER_PLAN_REF.search(what)
-        if not m:
-            return ('NOTE(blocker): claim #%s says design-gated but names no session plan '
-                    '— blocker NOT re-validated (skip)' % (claim.get('issue') or '?'))
-        found, approved_at = _plan_approved_at(_plan_dirs(st_dir), m.group(1))
-        if not found:
-            return ('NOTE(blocker): claim #%s design-gated on plan %s, which is not on disk '
-                    '— blocker NOT re-validated (skip)' % (claim.get('issue') or '?', m.group(1)[:8]))
-        if approved_at:
-            return ('NOTE(blocker): claim #%s says design-gated but its plan %s now carries '
-                    'approved_at=%s — the recorded blocker has EXPIRED; review the fence'
-                    % (claim.get('issue') or '?', m.group(1)[:8], approved_at))
-        return ('NOTE(blocker): claim #%s says design-gated and plan %s still has '
-                'approved_at=null — blocker holds' % (claim.get('issue') or '?', m.group(1)[:8]))
-
-    if BLOCKER_FLIGHT.search(what):
-        files = [f for f in (claim.get('files') or []) if f]
-        if not files:
-            return ('NOTE(blocker): claim #%s says in-flight but carries no anchored footprint '
-                    '— blocker NOT re-validated (skip)' % (claim.get('issue') or '?'))
-        if not repo_path or not os.path.isdir(repo_path):
-            return ('NOTE(blocker): claim #%s says in-flight but no repo is readable '
-                    '— blocker NOT re-validated (skip)' % (claim.get('issue') or '?'))
-        rv = subprocess.run(['git', '-C', repo_path, 'rev-parse', '--verify', 'origin/main'],
-                            capture_output=True, text=True)
-        if rv.returncode != 0:
-            return ('NOTE(blocker): claim #%s says in-flight but origin/main does not resolve '
-                    '— blocker NOT re-validated (skip)' % (claim.get('issue') or '?'))
-        since = claim.get('filed_ts')
-        if not since:
-            return ('NOTE(blocker): claim #%s says in-flight but records no filing time '
-                    '— blocker NOT re-validated (skip); an unbounded window would read '
-                    'every path as touched' % (claim.get('issue') or '?'))
-        touched, commits = [], 0
-        for path in files:
-            r = subprocess.run(['git', '-C', repo_path, 'log', 'origin/main',
-                                '--since=%s' % since, '--format=%H', '--', path],
-                               capture_output=True, text=True)
-            n = len([ln for ln in r.stdout.split() if ln])
-            if n:
-                touched.append(path)
-                commits += n
-        if touched:
-            sample = ', '.join(sorted(touched)[:2])
-            return ('NOTE(blocker): claim #%s says in-flight but %d/%d named path(s) now carry '
-                    '%d commit(s) on origin/main since the claim (%s) — the recorded blocker may '
-                    'have EXPIRED' % (claim.get('issue') or '?', len(touched), len(files),
-                                      commits, sample))
-        return ('NOTE(blocker): claim #%s says in-flight and none of its %d named path(s) moved '
-                'on origin/main since the claim — blocker holds'
-                % (claim.get('issue') or '?', len(files)))
-
-    return None
-
 
 if action == 'check':
     m_iss = re.fullmatch(r'#?(\d+)', target) or re.fullmatch(r'issue-?(\d+)', target, re.IGNORECASE)
@@ -1955,69 +1777,51 @@ if action == 'check':
                         # this leg and the caller retains rc=1.
 
 
-    # 3. IN-FLIGHT LANE FENCING (HELD_IN_FLIGHT_LANE)
-    # Check if target touches files belonging to an active lane with an open claim
+    # 3. IN-FLIGHT LANE FENCING (HELD_IN_FLIGHT_LANE) -- REMOVED.
+    #
+    # Owner ruling 2026-10-02 (open question q51 -> option B). The q46 ruling
+    # that dropped the DISPATCH fence named that enforcement point only; q51
+    # put the census point in front of the owner and he extended the ruling to
+    # it. The fence held a unit while an active editor lane worked the
+    # subsystem, releasing only on COMPLETION, and the busy set it read was
+    # EVERY still-OPEN claim (tools/lib/oc_claims.py) -- so a quiet or dead
+    # lane's unclosed claim held a harvest INDEFINITELY. That is the defect q46
+    # was raised on.
+    #
+    # Disclosed residual -- the portability predicate and this fence guard
+    # DIFFERENT AXES: the predicate asks whether upstream carries the surface
+    # this repairs; the fence asked whether a lane is still moving this
+    # subsystem. A harvest may now run against a subsystem an active lane is
+    # still changing. The owner accepted that trade; his answer named the
+    # portability predicate as the replacement. Re-introduction requires a
+    # FRESH owner ruling, never a lane's judgment. Canon: harvest.md Phase 7c;
+    # upstream-merge-runbook.md, Upstream-merge cadence, HARVEST LAW, NO-HOLD.
+    #
+    # CAPABILITIES THAT DIE WITH THIS GATE -- named, not silently dropped:
+    #   - holder liveness / dormancy disclosure (#534): holder_age + DORMANT
+    #   - phantom-holder skip (#404 / #653): a claim author the session DB has
+    #     never seen was skipped with a remedy note instead of fencing forever
+    #   - blocker re-validation advisory (leg v, #536): the fencing claim's own
+    #     recorded blocker was re-read and printed beside the fence
+    #   - fence row dedup (#459 / #653): the fence unit was (lane, issue), not
+    #     the ledger ROW, so one lane fenced once per issue, not once per row
+    # Each is a property OF the fence. None has a surviving vehicle, so each
+    # went with it rather than being re-vehicled onto a leg it does not fit.
+    #
+    # NOT retired with this gate: the SHARED resolver get_active_claims /
+    # resolve_issue_commits in tools/lib/oc_claims.py, which stays LIVE for
+    # oc-ledger, oc-health, oc-roster and oc-issue-dispatch; and
+    # filter_substantive_overlap, which serves the sibling soak gate (2),
+    # cycle_note and cluster_links. The #307 anchored-footprint fix and its
+    # mutation guard stay LIVE.
+    #
+    # cycle_note (leg iv, below) SURVIVES. It is a DIFFERENT guard -- a MUTUAL
+    # cycle between the target's OWN claim and a foreign claim, with a
+    # deterministic precedence rule -- and this ruling did not name it.
+    #
+    # The ledger is still read here because cycle_note consumes it.
     ledger_path = mock_ledger or os.path.join(st_dir, 'workers-ledger.json')
     active_claims = oc_claims.get_active_claims(ledger_path, repo_path)
-    if target_files and active_claims:
-        _seen_fences = set()
-        for claim in active_claims:
-            c_iss = claim.get('issue')
-            if target_iss is not None and c_iss == target_iss:
-                continue # own claim is not a foreign conflict
-            c_files = set(claim.get('files', []))
-            # Files arrive ANCHORED from get_active_claims (#307). An empty set
-            # is a real answer — "no commit anchors to this claim's issue" — and
-            # is never a gap to refill by grepping commit prose for `#N`.
-            overlap = target_files.intersection(c_files)
-            # Registry-only overlap is NOT a substantive conflict (#375). Every
-            # test-bearing change registers its module in src/tests/mod.rs, so a
-            # raw intersection fences ANY test-bearing harvest against ANY lane
-            # holding a test claim. §2 (HELD_DEPENDENT_SOAK) already filters via
-            # filter_substantive_overlap; this gate did not. The filter was
-            # introduced scoped to the soak gate by name (6d9735da) with no
-            # rationale, and the HQ amendment that created both gates names them
-            # as parallel cases of one predicate — the asymmetry was an omission,
-            # not a design.
-            substantive_overlap = filter_substantive_overlap(overlap)
-            if substantive_overlap:
-                # A lane may hold MORE THAN ONE claim row on the same issue (the
-                # ledger permits a re-claim, and #459 carries two). The fence's
-                # unit is (lane, issue), not the row: without this, one lane
-                # fences once per row, printing an identical REFUSED line twice
-                # and inflating the "N refusal legs apply" count by phantom legs.
-                _fkey = (claim.get('uuid', ''), c_iss)
-                if _fkey in _seen_fences:
-                    continue
-                _seen_fences.add(_fkey)
-                overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])
-                c_uuid = claim.get('uuid', '')[:8]
-                claim_age, claim_dormant, claim_phantom = claim_activity(claim, st_dir, now_ts)
-                if claim_phantom:
-                    # #653 / #404: the holder is a uuid the session DB has never
-                    # seen. It can never finish or release this claim, so fencing
-                    # on it is a permanent hold no legitimate action clears - and
-                    # #404 forbids a phantom from entering a freeze list at all.
-                    # Disclosed, not silent: the reader must see WHY the fence was
-                    # skipped, and the remedy is a ledger release, not a wait.
-                    print('NOTE(HELD_IN_FLIGHT_LANE): skipped - claim #%s is held by %s..., '
-                          'a claim author the session DB has never seen (#404 phantom). '
-                          'No lane can finish or release it; the fence is not applied. '
-                          'Remedy: oc-ledger unclaim %s (or re-enroll the lane).'
-                          % (c_iss or '?', c_uuid, c_uuid))
-                    continue
-                age_note = ' holder_age=unknown' if claim_age is None else ' holder_age=%.1fh%s' % (claim_age, ' DORMANT' if claim_dormant else '')
-                advisory = ' ADVISORY: review/release dormant holder claim' if claim_dormant else ''
-                refuse('REFUSED: Target %s touches files of active lane %s claim #%s [HELD_IN_FLIGHT_LANE: %s]%s%s' % (target, c_uuid, c_iss or '?', overlap_sample, age_note, advisory))
-                # Leg (v), #536: re-validate the claim's OWN recorded blocker
-                # beside the fence. Printed DIRECTLY, not through refuse(): a
-                # blocker note is advisory evidence about the claim, never a
-                # refusal leg of its own, and routing it through refuse() would
-                # both inflate the "N refusal legs apply" count and imply the
-                # note carries a clearance clock of its own. rc is untouched.
-                _bn = blocker_note(claim, repo_path, st_dir, now_ts)
-                if _bn:
-                    print(_bn)
 
     for cycle in cycle_note(active_claims, target_iss):
         refuse(cycle)
@@ -3689,72 +3493,119 @@ C405EOF
     return 1
   fi
 
-  # 3d. Check on ACTIVE LANE CONFLICT unit (#500) -> exits 1 REFUSED HELD_IN_FLIGHT_LANE
+  # 3d. Check on ACTIVE LANE CONFLICT unit (#500). RE-VEHICLED (owner ruling
+  #     q51 -> option B, 2026-10-02): the in-flight lane fence was REMOVED, so
+  #     this target no longer refuses through it. The capability that survives on
+  #     the SAME fixture is cycle_note -- the target's OWN claim #500 and the
+  #     foreign claims #600/#704 all hold src/active/lane.rs, so the mutual-cycle
+  #     leg still refuses rc=1 with its precedence rule.
+  #     This leg now asserts the RETIREMENT alongside the surviving refusal:
+  #     rc=1 AND a cycle note AND NO HELD_IN_FLIGHT_LANE token. That pairing is
+  #     the anti-vacuity structure -- the cycle note proves the fixture is live,
+  #     so the absent token means the fence is retired, never that the fixture
+  #     went quiet.
   rc=0
   out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_IN_FLIGHT_LANE"; then
-    ok "check in-flight lane conflict -> REFUSED HELD_IN_FLIGHT_LANE exit 1"
+  if [ "$rc" -eq 1 ] \
+     && oc_has "$out" 'mutual in-flight cycle #500 <-> #600' \
+     && ! oc_has "$out" 'HELD_IN_FLIGHT_LANE'; then
+    ok "active-lane conflict refuses via the cycle leg; the retired fence token is GONE (q51 -> B)"
   else
-    echo "  bad  - check in-flight lane conflict expected rc=1 HELD_IN_FLIGHT_LANE, got rc=$rc ($out)"
+    echo "  bad  - active-lane conflict expected rc=1 + cycle note and NO fence token, got rc=$rc ($out)"
     return 1
   fi
 
-    # 3d1. FULL IN-FLIGHT FENCE SET (#533). Two foreign claims overlap the same
-    #     substantive target file; one invocation must report both claim numbers.
-  #     MUTATION KILL: restore the claim-loop break and this leg sees only one.
+  # 3d1. FULL OVERLAP-SET AGGREGATION (#533). RE-VEHICLED onto cycle_note: two
+  #      foreign claims (#600, #704) overlap the same substantive target file, and
+  #      ONE invocation must report BOTH. The #533 property -- every overlapping
+  #      claim is reported, never just the first -- is unchanged; only its vehicle
+  #      moved from the retired fence to the surviving cycle leg.
+  #      MUTATION KILL: restore a `break` in cycle_note's claim loop and this leg
+  #      sees only one note.
   rc=0
   out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
-  fence_count="$(printf '%s\n' "$out" | grep -c 'HELD_IN_FLIGHT_LANE' || true)"
-  if [ "$rc" -eq 1 ] && [ "$fence_count" -eq 2 ] \
-     && oc_has "$out" 'claim #600' \
-     && oc_has "$out" 'claim #704'; then
-    ok "full in-flight fence set: all overlapping claims reported (#533)"
+  cycle_count="$(printf '%s\n' "$out" | grep -c 'mutual in-flight cycle #500' || true)"
+  if [ "$rc" -eq 1 ] && [ "$cycle_count" -eq 2 ] \
+     && oc_has "$out" 'cycle #500 <-> #600' \
+     && oc_has "$out" 'cycle #500 <-> #704'; then
+    ok "full overlapping-claim set reported: both cycles named (#533, re-vehicled onto cycle_note)"
   else
-    echo "  bad  - full fence set expected rc=1 and claims #600/#704, got rc=$rc count=$fence_count ($out)"
+    echo "  bad  - cycle aggregation expected rc=1 and cycles #600/#704, got rc=$rc count=$cycle_count ($out)"
     return 1
   fi
 
-  # 3d2. REGISTRY-ONLY POSITIVE CONTROL (#375) -> must NOT fence, exits 0 ELIGIBLE.
-  #      Fixture: target #501's ONLY file is `src/tests/mod.rs`, which is in
-  #      SHARED_DECLARATION_REGISTRIES, and active claim #601 (a DIFFERENT issue)
-  #      holds exactly that file. A raw intersection fences here; the filtered
-  #      predicate does not, because co-occurrence on a module-declaration
-  #      registry is not a substantive conflict — every test-bearing change
-  #      registers its module there.
-  #      This is the ANTI-VACUITY proof for #375: it fails (HELD_IN_FLIGHT_LANE)
-  #      the moment the filter call is removed from §3. 3d above remains the
-  #      NEGATIVE control — its overlap is `src/active/lane.rs`, a real file.
-  #      #501 is deliberately DISTINCT from the #500 fixture: reusing #500's
-  #      issue would take the own-claim `continue` branch and pass vacuously.
+  # 3d2. REGISTRY-ONLY POSITIVE CONTROL (#375) -> must NOT refuse, exits 0 ELIGIBLE.
+  #      RE-VEHICLED (owner ruling q51 -> option B): the in-flight fence that
+  #      carried this anti-vacuity proof was removed, so the proof moved onto the
+  #      SURVIVING consumer of the same predicate -- the dependent-soak gate (2).
+  #      The capability is unchanged and still lives in filter_substantive_overlap:
+  #      co-occurrence on a module-declaration registry (src/tests/mod.rs) is NOT
+  #      a substantive conflict, because every test-bearing change registers its
+  #      module there.
+  #      HERMETIC commits fixture: the target #501 (a mature, SOAKED test commit
+  #      whose ONLY footprint is the shared registry) and a FRESH foreign feat #711
+  #      whose only footprint is that same file. A raw intersection refuses here;
+  #      the filtered predicate does not.
+  #      ANTI-VACUITY: drop the filter call at gate (2) and this leg turns rc=1
+  #      HELD_DEPENDENT_SOAK. The NEGATIVE control is 3c above, whose overlap is a
+  #      REAL file (src/tools/shared.rs).
+  local mock_commits_reg="$selftest_tmp/mock_commits_registry.json"
+  cat << 'REGEOF' > "$mock_commits_reg"
+[
+ {"sha": "5151515cb0000000000000000000000000000000", "short_sha": "5151515",
+  "subject": "test(registry-only): mature fix whose ONLY footprint is a shared registry (#501)",
+  "trailer": "leshchenko1979/opencrabs#501", "commit_ts": 100000, "deployed_ts": 100000,
+  "files": ["src/tests/mod.rs"]},
+ {"sha": "7171717cb0000000000000000000000000000000", "short_sha": "7171717",
+  "subject": "feat(registry-only): fresh feature whose only footprint is a shared registry (#711)",
+  "trailer": "leshchenko1979/opencrabs#711", "commit_ts": 1789000000, "deployed_ts": 1789000000,
+  "files": ["src/tests/mod.rs"]}
+]
+REGEOF
   rc=0
-  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "501" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE"; then
-    ok "check registry-only in-flight overlap -> ELIGIBLE exit 0 (shared-registry exemption)"
+  out="$(OC_HARVEST_MOCK_COMMITS="$mock_commits_reg" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "501" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && ! oc_has "$out" "HELD_DEPENDENT_SOAK"; then
+    ok "registry-only overlap -> ELIGIBLE exit 0 (shared-registry exemption, re-vehicled onto gate 2)"
   else
-    echo "  bad  - check registry-only overlap expected rc=0 ELIGIBLE, got rc=$rc ($out)"
+    echo "  bad  - registry-only overlap expected rc=0 ELIGIBLE, got rc=$rc ($out)"
     return 1
   fi
 
   # 3d3. MULTI-LEG REFUSAL REPORT (#493) -> the FULL applying set is printed, and
   #      eligible_at is qualified as binding the SOAK leg only.
-  #      Fixture: target #702 is itself a fresh feat in soak (§1 fires and emits
-  #      eligible_at) AND its file src/multi/leg.rs is held by active claim #703,
-  #      a DIFFERENT issue (§3 fires and carries no clock at all).
-  #      Pre-#493 the engine exited at §1, so HELD_IN_FLIGHT_LANE never printed —
+  #      RE-VEHICLED (owner ruling q51 -> option B): the second leg used to be the
+  #      in-flight fence. It is now the surviving cycle_note, so the fixture gained
+  #      an OWN claim for the target (#702) plus a foreign claim (#703) holding the
+  #      same real file -- and the target is still a fresh feat in soak, so gate (1)
+  #      fires with eligible_at while the cycle leg carries no clock at all.
+  #      Pre-#493 the engine exited at the first leg, so the second never printed --
   #      which is exactly how a lane re-arms on the printed eligible_at and is
   #      refused again by the masked leg (the #344 <-> #318 shape).
-  #      MUTATION KILL: restore any `sys.exit(1)` in place of a `refuse()` call
-  #      at §1 and this case fails on the missing HELD_IN_FLIGHT_LANE + NOTE.
+  #      MUTATION KILL: restore any `sys.exit(1)` in place of a `refuse()` call at
+  #      gate (1) and this case fails on the missing cycle note + NOTE qualifier.
+  local mock_ledger_multileg="$selftest_tmp/mock_ledger_multileg.json"
+  cat << 'MLEOF' > "$mock_ledger_multileg"
+{"events":[
+ {"n":300,"kind":"claim","by":"editor 11111111-2222-3333-4444-555555555555",
+  "what":"CLAIM #702 own claim on the multi-leg fixture file","files":["src/multi/leg.rs"]},
+ {"n":301,"kind":"claim","by":"editor 22222222-3333-4444-5555-666666666666",
+  "what":"CLAIM #703 second active lane holding the same real file","files":["src/multi/leg.rs"]}
+]}
+MLEOF
   rc=0
-  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "702" 2>&1)" || rc=$?
+  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_multileg" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "702" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] \
      && oc_has "$out" "within 24h feature soak window" \
-     && oc_has "$out" "HELD_IN_FLIGHT_LANE" \
+     && oc_has "$out" "mutual in-flight cycle #702 <-> #703" \
      && oc_has "$out" "NOTE: 2 refusal legs apply" \
      && oc_has "$out" "binds the SOAK leg ONLY"; then
-    ok "multi-leg refusal: both legs reported, eligible_at qualified (#493)"
+    ok "multi-leg refusal: both legs reported, eligible_at qualified (#493, re-vehicled onto cycle_note)"
   else
-    echo "  bad  - multi-leg refusal expected rc=1 with soak + HELD_IN_FLIGHT_LANE + NOTE, got rc=$rc ($out)"
+    echo "  bad  - multi-leg refusal expected rc=1 with soak + cycle note + NOTE, got rc=$rc ($out)"
     return 1
   fi
 
@@ -3796,35 +3647,12 @@ C405EOF
     return 1
   fi
 
-  # 3d5. HOLDER LIVENESS NOTE (#534): the fence remains rc=1 for both a live
-  #     and dormant holder; a fixture DB controls updated_at and the dormant
-  #     arm must expose age plus DORMANT rather than silently clearing.
-  local mock_live_db="$selftest_tmp/mock_sessions_live.db"
-  local mock_dormant_db="$selftest_tmp/mock_sessions_dormant.db"
-  python3 -c 'import sqlite3,sys; db=sys.argv[1]; now=int(sys.argv[2]); con=sqlite3.connect(db); con.execute("create table sessions (id text, updated_at integer)"); con.execute("insert into sessions values (?,?)", (sys.argv[3], now-int(sys.argv[4]))); con.commit(); con.close()' "$mock_live_db" "$OC_HARVEST_NOW_TS" "11111111-2222-3333-4444-555555555555" 3600
-  python3 -c 'import sqlite3,sys; db=sys.argv[1]; now=int(sys.argv[2]); con=sqlite3.connect(db); con.execute("create table sessions (id text, updated_at integer)"); con.execute("insert into sessions values (?,?)", (sys.argv[3], now-int(sys.argv[4]))); con.commit(); con.close()' "$mock_dormant_db" "$OC_HARVEST_NOW_TS" "11111111-2222-3333-4444-555555555555" $((3*24*3600))
-  export OC_LEDGER_DB="$mock_live_db"
-  rc=0
-  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && grep -q 'holder_age=1.0h' <<< "$out" \
-     && ! oc_has "$out" 'DORMANT'; then
-    ok "live holder fence reports age without DORMANT"
-  else
-    echo "  bad  - live holder expected rc=1 with age and no DORMANT, got rc=$rc ($out)"
-    return 1
-  fi
-  export OC_LEDGER_DB="$mock_dormant_db"
-  rc=0
-  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'DORMANT' \
-     && oc_has "$out" 'review/release dormant holder claim'; then
-    ok "dormant holder fence remains refusal with advisory"
-  else
-    echo "  bad  - dormant holder expected rc=1 with DORMANT advisory, got rc=$rc ($out)"
-    return 1
-  fi
-
-  unset OC_LEDGER_DB
+  # 3d5. HOLDER LIVENESS NOTE (#534) -- REMOVED with the in-flight fence
+  #      (owner ruling q51 -> option B). holder liveness/dormancy was a property
+  #      OF the fence: it disclosed how long the fencing claim's holder had been
+  #      quiet, and there is no fence left to advise about. No surviving vehicle
+  #      exists, so the coverage went with the gate rather than being re-pointed
+  #      at a leg it does not describe.
   # 3d6. MUTUAL CYCLE NOTE + PRECEDENCE (#535): when the target's OWN claim
   #     overlaps a foreign claim on the same substantive file, the refusal set
   #     must name the cycle and state the deterministic precedence rule.
@@ -3848,165 +3676,39 @@ C405EOF
     return 1
   fi
 
-  # 3d7. LEG (v): RE-VALIDATE THE CLAIM'S OWN RECORDED BLOCKER (#536).
-  #      Legs (i)-(iv) bound WHEN a claim was filed and HOW cycles resolve, but
-  #      none reads the claim's OWN reason, so a claim whose blocker expired
-  #      still fences exactly as though live (#443: all four commits were
-  #      ancestors of origin/main and origin/main == deployed.sha BEFORE the
-  #      release ruling). CLOSED SET of blocker TYPES only, reported as a NOTE
-  #      beside the fence; an unresolvable input prints the SKIP DISCLOSURE
-  #      rather than a clean result.
-  #
-  #      Own ledger so the #533 full-fence-set leg keeps its exact claim count.
-  local mock_ledger_blocker="$selftest_tmp/mock_ledger_blocker.json"
-  local plan_dir="$selftest_tmp/plans"
-  mkdir -p "$plan_dir"
-  # A real git repo: the flight arm asks whether the named paths moved on
-  # origin/main, which no synthetic commit dict can answer.
-  local blocker_repo="$selftest_tmp/blocker_repo"
-  mkdir -p "$blocker_repo/src/active"
-  git -C "$blocker_repo" init -q
-  git -C "$blocker_repo" config user.name fixture
-  git -C "$blocker_repo" config user.email fixture@example.invalid
-  git -C "$blocker_repo" config commit.gpgsign false
-  printf 'pub fn lane_fn() -> u8 {\n    1\n}\n' > "$blocker_repo/src/active/lane.rs"
-  git -C "$blocker_repo" add -A
-  git -C "$blocker_repo" commit -q -m "base"
-  git -C "$blocker_repo" update-ref refs/remotes/origin/main "$(git -C "$blocker_repo" rev-parse HEAD)"
+  # 3d7. LEG (v): RE-VALIDATE THE CLAIM'S OWN RECORDED BLOCKER (#536) --
+  #      REMOVED with the in-flight fence (owner ruling q51 -> option B).
+  #      This capability is GATE-3-ONLY and DIES with it, stated plainly rather
+  #      than re-vehicled: the leg read the FENCING claim's own recorded reason
+  #      (design-gate / code-in-flight) and printed an advisory beside the fence.
+  #      With no fence there is no claim whose blocker needs re-validating, and no
+  #      other gate consumes a claim's stated blocker. All six arms (hold,
+  #      expired, code-in-flight moved, its control, unparseable skip, and
+  #      no-filing-time skip) went with it.
 
-  # --- design-gate arm: plan still approved_at=null -> blocker HOLDS ---
-  printf '{"status":"Editing","approved_at":null,"tasks":[]}\n' \
-    > "$plan_dir/.opencrabs_plan_aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee.json"
-  cat << 'BLKEOF' > "$mock_ledger_blocker"
-{"events":[
- {"n":200,"kind":"claim","by":"editor 77777777-8888-9999-aaaa-bbbbbbbbbbbb",
-  "what":"CLAIM #610 — DESIGN-GATED: parked on owner approval, design published in session plan aaaa1111",
-  "t":"2026-09-01T00:00:00Z","files":["src/active/lane.rs"]}
-]}
-BLKEOF
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_blocker" OC_PLAN_DIRS="$plan_dir" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'blocker holds'; then
-    ok "leg (v) design-gate: plan approved_at=null -> blocker holds NOTE (#536)"
-  else
-    echo "  bad  - leg (v) design-gate hold expected rc=1 + 'blocker holds', got rc=$rc ($out)"
-    return 1
-  fi
-
-  # --- design-gate arm: plan now APPROVED -> recorded blocker EXPIRED ---
-  printf '{"status":"Active","approved_at":"2026-09-23T00:00:00Z","tasks":[]}\n' \
-    > "$plan_dir/.opencrabs_plan_aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee.json"
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_blocker" OC_PLAN_DIRS="$plan_dir" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'recorded blocker has EXPIRED'; then
-    ok "leg (v) design-gate: plan approved -> blocker EXPIRED note, rc STILL 1 (#536)"
-  else
-    echo "  bad  - leg (v) expired design gate expected rc=1 + EXPIRED, got rc=$rc ($out)"
-    return 1
-  fi
-
-  # --- code-in-flight arm: named paths DID move on origin/main since the claim ---
-  local mock_ledger_flight="$selftest_tmp/mock_ledger_flight.json"
-  cat << 'FLTEOF' > "$mock_ledger_flight"
-{"events":[
- {"n":210,"kind":"claim","by":"editor 77777777-8888-9999-aaaa-bbbbbbbbbbbb",
-  "what":"CLAIM #611 — fix in flight: the fix lands next cycle",
-  "t":"2020-01-01T00:00:00Z","files":["src/active/lane.rs"]}
-]}
-FLTEOF
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_flight" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'blocker may have EXPIRED'; then
-    ok "leg (v) code-in-flight: paths moved on origin/main -> may-EXPIRED note (#536)"
-  else
-    echo "  bad  - leg (v) flight-touched expected rc=1 + may-EXPIRED, got rc=$rc ($out)"
-    return 1
-  fi
-
-  # --- code-in-flight CONTROL: paths did NOT move since the claim -> holds ---
-  local mock_ledger_flight2="$selftest_tmp/mock_ledger_flight2.json"
-  cat << 'FLT2EOF' > "$mock_ledger_flight2"
-{"events":[
- {"n":211,"kind":"claim","by":"editor 77777777-8888-9999-aaaa-bbbbbbbbbbbb",
-  "what":"CLAIM #611 — fix in flight: the fix lands next cycle",
-  "t":"2099-01-01T00:00:00Z","files":["src/active/lane.rs"]}
-]}
-FLT2EOF
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_flight2" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'blocker holds'; then
-    ok "leg (v) code-in-flight control: no movement -> blocker holds (#536)"
-  else
-    echo "  bad  - leg (v) flight-untouched expected rc=1 + holds, got rc=$rc ($out)"
-    return 1
-  fi
-
-  # --- SKIP DISCLOSURE: design-gated with no plan reference ---
-  local mock_ledger_skip="$selftest_tmp/mock_ledger_skip.json"
-  cat << 'SKPEOF' > "$mock_ledger_skip"
-{"events":[
- {"n":220,"kind":"claim","by":"editor 77777777-8888-9999-aaaa-bbbbbbbbbbbb",
-  "what":"CLAIM #612 — DESIGN-GATED per owner order; shape depends on his call",
-  "t":"2026-09-01T00:00:00Z","files":["src/active/lane.rs"]}
-]}
-SKPEOF
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_skip" OC_PLAN_DIRS="$plan_dir" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'blocker NOT re-validated (skip)'; then
-    ok "leg (v) unparseable blocker prints the SKIP DISCLOSURE, not a clean result (#536)"
-  else
-    echo "  bad  - leg (v) skip disclosure expected rc=1 + skip text, got rc=$rc ($out)"
-    return 1
-  fi
-
-  # --- SKIP DISCLOSURE: in-flight with NO filing time (unbounded window) ---
-  local mock_ledger_noflux="$selftest_tmp/mock_ledger_noflux.json"
-  cat << 'NOTEOF' > "$mock_ledger_noflux"
-{"events":[
- {"n":221,"kind":"claim","by":"editor 77777777-8888-9999-aaaa-bbbbbbbbbbbb",
-  "what":"CLAIM #613 — fix in flight, no timestamp recorded",
-  "files":["src/active/lane.rs"]}
-]}
-NOTEOF
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_noflux" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "500" 2>&1)" || rc=$?
-  if [ "$rc" -eq 1 ] && oc_has "$out" 'records no filing time'; then
-    ok "leg (v) in-flight without a filing time -> skip, never an unbounded window (#536)"
-  else
-    echo "  bad  - leg (v) no-filing-time expected rc=1 + skip text, got rc=$rc ($out)"
-    return 1
-  fi
-
-  # --- AC3: a blocker-bearing claim that is NOT fencing prints NO note at all ---
-  rc=0
-  out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_blocker" OC_PLAN_DIRS="$plan_dir" \
-        run_engine "check" "mock/repo" "$blocker_repo" "$mock_reg" "400" 2>&1)" || rc=$?
-  if ! oc_has "$out" 'NOTE(blocker)'; then
-    ok "leg (v) note appears ONLY beside its own fence (no fence -> no note) (#536)"
-  else
-    echo "  bad  - leg (v) blocker note printed without a fence ($out)"
-    return 1
-  fi
-
-  # 3e. PROSE-ONLY NEGATIVE CONTROL (#307) -> must NOT fence, exits 0 ELIGIBLE.
-  #     prose mention of #700 exists. The anchored resolver returns an EMPTY
-  #     footprint — a real answer, not a gap — so the fence cannot fire.
+  # 3e. PROSE-ONLY NEGATIVE CONTROL (#307) -> must NOT refuse, exits 0 ELIGIBLE.
+  #     RE-VEHICLED (owner ruling q51 -> option B): the in-flight fence was this
+  #     control's original vehicle; the SURVIVING consumer of the anchored claim
+  #     footprint is cycle_note, so the control moved there. The #307 property is
+  #     unchanged -- a commit that merely MENTIONS an issue in PROSE must not
+  #     contribute its files to that issue's claim footprint.
+  #     Shape: the target #701 has its OWN claim with an EXPLICIT footprint
+  #     (src/prose/target.rs); the foreign claim #700 carries NO files field, so its
+  #     footprint resolves from history against $prose_repo -- a REAL git repo whose
+  #     only commit's subject mentions #700 in prose and carries NO trailer.
+  #     Anchored: the foreign footprint is [] (a real answer, not a gap), so there is
+  #     no mutual overlap and no cycle note -> ELIGIBLE rc=0.
   #     MUTATION GUARD: regress the footprint to the old unanchored
-  #     `git log -n 10 --grep=#N` and this case turns HELD_IN_FLIGHT_LANE and
-  #     fails the selftest. That is what makes it a control, not a smoke.
-  #     ARGV ORDER IS LOAD-BEARING: run_engine is `python3 - "$@"`, so argv[2]
-  #     is the UPSTREAM repo and argv[3] is the repo whose history the claim
-  #     footprint resolves against. This leg originally passed $prose_repo into
-  #     argv[2] and $selftest_tmp into argv[3] — a non-git directory — so the
-  #     resolver answered [] for BOTH the anchored and the unanchored matcher
-  #     and the case passed vacuously. The mutation guard caught it: census
-  #     stayed green under a reverted matcher while dispatch went red.
+  #     `git log -n 10 --grep=#N` and the foreign footprint becomes
+  #     [src/prose/target.rs], a cycle note appears, and this case turns rc=1 -- that
+  #     is what makes it a control, not a smoke.
+  #     ARGV ORDER IS LOAD-BEARING: run_engine is `python3 - "$@"`, so argv[2] is the
+  #     UPSTREAM repo and argv[3] is the repo whose history the claim footprint
+  #     resolves against. This leg originally passed $prose_repo into argv[2] and
+  #     $selftest_tmp into argv[3] -- a non-git directory -- so the resolver answered
+  #     [] for BOTH the anchored and the unanchored matcher and the case passed
+  #     vacuously. The mutation guard caught it: census stayed green under a reverted
+  #     matcher while dispatch went red.
   local prose_repo="$selftest_tmp/prose_repo"
   local mock_ledger_prose="$selftest_tmp/mock_ledger_prose.json"
   local mock_commits_prose="$selftest_tmp/mock_commits_prose.json"
@@ -4018,15 +3720,16 @@ NOTEOF
   git -C "$prose_repo" add -A 2>/dev/null
   git -C "$prose_repo" commit -q -m "fix(unrelated): reword the note (#700)" 2>/dev/null
   cat << 'PROSEEOF' > "$mock_ledger_prose"
-{"events":[{"n":1,"kind":"claim","by":"editor 99999999-8888-7777-6666-555555555555","what":"CLAIM #700 active lane work"}]}
+{"events":[{"n":1,"kind":"claim","by":"editor 99999999-8888-7777-6666-555555555555","what":"CLAIM #700 active lane work"},{"n":2,"kind":"claim","by":"editor 88888888-7777-6666-5555-444444444444","what":"CLAIM #701 candidate own claim","files":["src/prose/target.rs"]}]}
 PROSEEOF
   cat << 'PROSEEOF' > "$mock_commits_prose"
 [{"sha":"aaaaaaa700000000000000000000000000000000","short_sha":"aaaaaaa","subject":"fix(prose-control): candidate touching the prose file (#701)","trailer":"leshchenko1979/opencrabs#701","commit_ts":100000,"files":["src/prose/target.rs"]}]
 PROSEEOF
   rc=0
   out="$(OC_HARVEST_MOCK_LEDGER="$mock_ledger_prose" OC_HARVEST_MOCK_COMMITS="$mock_commits_prose" run_engine "check" "mock/repo" "$prose_repo" "$mock_reg" "701" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE"; then
-    ok "prose-only mention does NOT fence a no-files claim (#307 negative control)"
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && ! oc_has "$out" "mutual in-flight cycle"; then
+    ok "prose-only mention does NOT enter a claim footprint (#307 negative control, re-vehicled onto cycle_note)"
   else
     echo "  bad  - prose-only mention must NOT fence, got rc=$rc ($out)"
     return 1
@@ -5385,52 +5088,13 @@ C602MEOF
     echo "  bad  - #625 disclosure leg expected '#602' + 'not smoked' and NOT 'not swapped'; got rc=$rc ($out)"
   fi
 
-  # ---- #653: THE PHANTOM-HOLDER FENCE (#404 predicate) --------------------
-  # A claim whose holder has NO sessions row can never finish or release it, so
-  # fencing on it is a permanent hold no legitimate action clears -- and #404
-  # forbids a phantom from entering a freeze list at all. Measured live on
-  # #396: claim #583 held by b53581f4 (0 sessions rows; control 42a44908 = 1),
-  # holder_age=unknown, no advisory, no clearance clock.
-  #
-  # Fixture: target #500's fences are #600 (holder 11111111, REAL) and #704
-  # (holder 33333333). Two session DBs decide which is which, so the pair below
-  # is decided by the phantom predicate ALONE and not by the fixture.
-  local mock_653_one="$setdir/mock_653_one.db" mock_653_both="$setdir/mock_653_both.db"
-  _mksess() { # $1 = db path, $2.. = uuids to enrol
-    _db="$1"; shift
-    python3 -c 'import sqlite3,sys; db=sys.argv[1]; now=int(sys.argv[2]); con=sqlite3.connect(db); con.execute("create table sessions (id text, updated_at integer)"); [con.execute("insert into sessions values (?,?)", (u, now-3600)) for u in sys.argv[3:]]; con.commit(); con.close()' "$_db" "$OC_HARVEST_NOW_TS" "$@"
-  }
-  _mksess "$mock_653_one"  "11111111-2222-3333-4444-555555555555"
-  _mksess "$mock_653_both" "11111111-2222-3333-4444-555555555555" "33333333-4444-5555-6666-777777777777"
-
-  # (a) THE PHANTOM FENCE IS SKIPPED, AND SAYS WHY. Only 11111111 is known, so
-  #     #704's holder is a phantom: its fence must not apply, and the reader
-  #     must be told why rather than meeting a bare silence.
-  rc=0
-  out="$(OC_LEDGER_DB="$mock_653_one" \
-    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
-  _fc="$(printf '%s\n' "$out" | grep -c '^REFUSED.*HELD_IN_FLIGHT_LANE' || true)"
-  if [ "$rc" -eq 1 ] && [ "$_fc" -eq 1 ] && oc_has "$out" "claim #600" \
-     && oc_has "$out" "#404 phantom" && oc_has "$out" "oc-ledger unclaim"; then
-    ok "#653: a phantom holder's fence is SKIPPED with the #404 note and the remedy; the real holder still fences"
-  else
-    echo "  bad  - #653 expected rc=1, exactly 1 fence (#600), the '#404 phantom' note and the remedy; got rc=$rc count=$_fc ($out)"
-    return 1
-  fi
-
-  # (b) CONTROL, and the leg that gives (a) meaning: with BOTH holders known,
-  #     nothing is skipped and both fences apply. If (b) also passed, nothing
-  #     above was decided by the phantom predicate.
-  rc=0
-  out="$(OC_LEDGER_DB="$mock_653_both" \
-    run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "500" 2>&1)" || rc=$?
-  _fc="$(printf '%s\n' "$out" | grep -c '^REFUSED.*HELD_IN_FLIGHT_LANE' || true)"
-  if [ "$rc" -eq 1 ] && [ "$_fc" -eq 2 ] && ! oc_has "$out" "#404 phantom"; then
-    ok "#653 control: with both holders known, both fences apply and no phantom note appears"
-  else
-    echo "  bad  - #653 control expected rc=1, 2 fences, no phantom note; got rc=$rc count=$_fc ($out)"
-    return 1
-  fi
+  # ---- #653: THE PHANTOM-HOLDER FENCE (#404 predicate) -- REMOVED with the
+  #      in-flight fence (owner ruling q51 -> option B). The phantom predicate
+  #      existed so a claim held by a session the DB has never seen was SKIPPED
+  #      rather than fencing a harvest forever; with no fence there is nothing to
+  #      skip. Both arms (the phantom-skip leg and its both-holders-known control)
+  #      were properties OF the fence and went with it. The #404 predicate itself
+  #      is untouched -- it lives in the fence's consumers, not in this tool.
 
   # ---- #654: A HARVESTED MEMBER SATISFIES THE SMOKE LEG -------------------
   # A harvested member's fork smoke row was never owed -- the harvest IS the
