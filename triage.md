@@ -41,13 +41,13 @@ per that section. Owner veto overrides retroactively, as with rulings.
 
 ### PHOP & Pre-Dispatch Vetting (v0.4.136, 2026-09-10; Native GitHub Protection 2026-09-16)
   When orchestrating harvest work, Triage MUST mechanically vet candidate packages before dispatching harvest work orders to editor lanes:
-  1. Run `tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` to verify upstream absence (tree-diff non-empty, patch-id unmerged, not already merged upstream, not superseded). **A `#N` named in a commit subject or a PR title is a REFERENCE, not identity** (v0.4.218, filing `530c29ec` P1): the naming commit's changed files must intersect the issue's own surface, or the verdict is poisoned — a `(#N)` corrupted in a squash subject maps a DIFFERENT subsystem's work onto this issue, and the refusal is then PERMANENT because the squash sits in upstream history forever. Canon: `fleet-directives.md §Dispatch Eligibility D1` (IDENTITY leg); live case `#199`.
+  1. Run `tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` to verify upstream absence (tree-diff non-empty, patch-id unmerged, not already merged upstream, not superseded). **A `#N` named in a commit subject or a PR title is a REFERENCE, not identity** (v0.4.218, filing `530c29ec` P1): the naming commit's changed files must intersect the issue's own surface, or the verdict is poisoned — a `(#N)` corrupted in a squash subject maps a DIFFERENT subsystem's work onto this issue, and the refusal is then PERMANENT because the squash sits in upstream history forever. Canon: `§Dispatch Eligibility D1` (this file) (IDENTITY leg); live case `#199`.
   2. **Native Sub-Issues & Blockers Check (owner order 2026-09-16; strengthened v0.4.198):** `vet` (item 1) already evaluates BOTH legs and returns the verdict code — read that code; do NOT re-derive either by hand (a hand re-check of a tool verdict is the agent-memory-as-gate-input defect, lens J / F24).
      - Sub-issues / child cleanups → `HELD_PARENT_UNHARVESTED`: parent unmerged, or a touched path introduced by an unharvested fork issue. Issue #188 unharvested-parent refusal.
      - Blockers declared via `gh issue edit <issue> --add-blocked-by <blocker-issue>` → `HELD_BLOCKED_BY_DEPENDENCY` until blockers land upstream.
      - Upstream baseline (path already clean, or differently structured on `adolfousier/main`) is `vet`'s own tree-diff leg — item 1, not a separate manual check.
   3. Verify target editor lane availability using `tools/harvest/oc-harvest-dispatch dispatch <issue> <commits> [--to <uuid>]`. If target lane is busy with an active claim, the tool refuses dispatch (rc 4); Triage must select an idle editor or commission a dedicated harvest worker.
-  4. **Landed-term gate (v0.4.204, HQ ruling 2026-09-18):** before wiring, confirm the issue is NOT already landed — a `done`/`close` row addressing it, or a commit referencing it on fork `main`. This patrol runs from a cron (`oc-harvest-dispatch-4h`) that wired #302 while #302 carried Triage's own `done` row (n=8267) and zero claims: `done` + zero claims satisfied the old two-term predicate. A landed-but-unharvested issue is HARVEST-queue work, never a fresh editor dispatch. Canon: `fleet-directives.md §Dispatch Eligibility — the 4-bucket predicate`.
+  4. **Landed-term gate (v0.4.204, HQ ruling 2026-09-18):** before wiring, confirm the issue is NOT already landed — a `done`/`close` row addressing it, or a commit referencing it on fork `main`. This patrol runs from a cron (`oc-harvest-dispatch-4h`) that wired #302 while #302 carried Triage's own `done` row (n=8267) and zero claims: `done` + zero claims satisfied the old two-term predicate. A landed-but-unharvested issue is HARVEST-queue work, never a fresh editor dispatch. Canon: `§Dispatch Eligibility — the 4-bucket predicate` (this file).
   5. Never dispatch unvetted candidates or busy editors. (Worktree creation belongs to the Editor lane per `upstream-merge-runbook.md §PHOP`).
 
 ### Factory-scoped patrol — SCOPE IS A FILE-SURFACE TEST, NEVER A TITLE-PREFIX TEST (v0.4.236, HQ ruling 2026-09-22; raised self-caught by the Triage lane)
@@ -197,7 +197,7 @@ below needs a regular cadence to be worth anything.
      every landed-but-unharvested issue reads as dispatchable backlog.
      **Landed-and-unharvested ⇒ route to the HARVEST QUEUE, never to an editor
      lane** — such an issue waits on a PR, not on code. Canon (the one home):
-     `fleet-directives.md §Dispatch Eligibility — the 4-bucket predicate`.
+     `§Dispatch Eligibility — the 4-bucket predicate` (this file).
 4. For each unclaimed issue: route to the owning editor, or if
    none is obvious, surface the unclaimed set to HQ for
    dispatch — do NOT let it sit silent (the v0.4.91 gap: "claimed when
@@ -207,7 +207,7 @@ below needs a regular cadence to be worth anything.
      must conclude with: `Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.`
      Triage verifies delivery by polling `workers-ledger.json` (`oc-ledger events --kind claim`),
      NEVER by expecting, requesting, or processing `session_notify` conversational acks.
-   - **Smoke-ceiling label on wire (HQ ruling 2026-09-18, v0.4.202)**: before wiring an issue, read the live carrier set (`tools/ship/oc-carrier-features`). When the deliverable's feature-gated modules are OUTSIDE that set, the wire MUST carry `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, and the issue MUST be linked `--add-blocked-by` the carrier-set-widening issue. Such issues ARE dispatchable (`DISPATCHABLE = unclaimed AND vetted`): the CI gate compiles `--all-features`, so the code is verifiable — only the HARVEST is blocked. Never park or block an out-of-feature-set issue for that reason alone. Canon: `fleet-directives.md §Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled`.
+   - **Smoke-ceiling label on wire (HQ ruling 2026-09-18, v0.4.202)**: before wiring an issue, read the live carrier set (`tools/ship/oc-carrier-features`). When the deliverable's feature-gated modules are OUTSIDE that set, the wire MUST carry `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, and the issue MUST be linked `--add-blocked-by` the carrier-set-widening issue. Such issues ARE dispatchable (`DISPATCHABLE = unclaimed AND vetted`): the CI gate compiles `--all-features`, so the code is verifiable — only the HARVEST is blocked. Never park or block an out-of-feature-set issue for that reason alone. Canon: `§Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled` (this file).
 5. Already-claimed issues:
    - Normal progression: no action; the owning editor's chain owns them.
    - **Continuous Relationship Linking Mandate (owner order 2026-09-16; creation gate + backstop added 2026-09-25)**: During triage sweeps, if Triage discovers open issues that depend on in-flight features or unharvested subsystems, Triage MUST establish native links in the same turn via `gh issue edit <issue> --parent <parent-issue>` and/or `gh issue edit <issue> --add-blocked-by <blocker-issue>`.
@@ -465,3 +465,79 @@ Trigger: a NEW area is discussed and a research/code task needs doing, and NO ex
 ## Parked issues — owner standdown (2026-08-28 16:17Z)
 
 Fork issues [leshchenko1979/opencrabs#20](https://github.com/leshchenko1979/opencrabs/issues/20) (plan auto-approve under `approval_policy=auto-always` — 638µs `created_at`→`approved_at`, design-track promise broken, restart resumes unapproved plans as Active) and [leshchenko1979/opencrabs#16](https://github.com/leshchenko1979/opencrabs/issues/16) (plan-card footer lost in 429 flood) are **PARKED**: owner stood the editor lane down ("It's not your concern anymore — stand down", relayed via ops 329bf3a3). No implementation approval will arrive via ops. Gate stays: no code, no branch, no claim-comment on either issue unless Alexey himself explicitly re-opens and approves the solution+diagram. Do NOT re-ignite these on seeing them open in the fork issue list — filed state IS the deliverable; fixing upstream-reported defects is adolfo's lane.
+
+## Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled (v0.4.202, HQ ruling 2026-09-18) [LANE]
+
+**Origin:** Triage asked whether an issue whose deliverable lies outside the carrier feature set is dispatchable at all under the 4-Leg Smoke Rubric — raised after #319 was wired 3× across two lanes with zero claims at the time of the read (ledger n=8161, n=8234, n=8261). The churn was real. The answer is YES: the defect was an **unlabeled smoke ceiling**, not an undispatchable issue.
+
+### F1 — Dispatchability never depends on the carrier feature set
+
+The existing classification bucket governs — `DISPATCHABLE = unclaimed AND vetted AND NOT landed`, stated once and canonically in §Dispatch Eligibility below (the 4-bucket law). The carrier set gates the **binary**, never the **codebase**: a feature-gated module is still compiled and unit-tested by the CI gate, whose flags are `--all-features` (both the clippy and the test step of `pr-checks.yml`). Work on such an issue is therefore verifiable work and MUST NOT be parked, blocked, or skipped for being outside the built set.
+
+### F2 — The ceiling is `structural N/A`, and the verdict MUST read `UNPROVEN (structural N/A)`
+
+Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absent from the shipped set. `structural N/A` is a legal leg-4 substitute under the 4-Leg Smoke Rubric — but per the corrected-code presence rule, presence is not behavioral proof: the verdict reads **`UNPROVEN (structural N/A)`** and is **NEVER GREEN**. The ceiling is determined mechanically, not by judgment: read the live set with `tools/ship/oc-carrier-features` and compare it against the deliverable's feature-gated modules.
+
+### F3 — Harvest stays blocked; the lane parks and releases
+
+A smoke PASS is required to file upstream (PR shipment law). `UNPROVEN (structural N/A)` is not a PASS for a live-testable UX feature, so the issue **stays OPEN** under the harvest-gated closure law, and its upstream filing is blocked on the carrier set. **The set stays as-is — owner ruling 2026-09-18 ("Leave the carrier set as-is")**, which answers the widening question this section originally left open: the ceiling is **permanent and intentional**, not a pending decision. A lane therefore NEVER chases a widening request or re-raises the question — the blocker is a STANDING CONSTRAINT. The lane stamps the legs it can prove, names the blocker, and **RELEASES** (`editor.md` §Owner-Dependent Smoke Legs L1, applied to a non-owner blocker). It never idles on the blocker.
+
+### F4 — Dispatch carries the ceiling label and the native blocker link
+
+The churn cure — both operational (Triage-owned; no new tooling, no new class):
+
+1. When `oc-carrier-features` shows the deliverable's modules outside the set, the dispatch note carries `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, so wire 1 behaves like wire N.
+2. The issue is linked natively — `gh issue edit <issue> --add-blocked-by 338` (leshchenko1979/opencrabs#338, the carrier-set **decision record** and the blocker anchor) — per the Continuous Issue Relationship Linking order. A wire carries the RELATION, so the anchor's own state never unblocks it: #338 is a RECORD whose decision is MADE (owner ruling 2026-09-18), not a live question. Its closure is Triage's call under `triage.md §Duty T5` (Autonomous closure, (c) owner-confirmed-withdrawn); no lane re-raises the question while the close is pending.
+
+**Worked example (2026-09-18):** #319 (post-delivery re-entry for failed image delivery on Slack / Discord / WhatsApp) — carrier set `telegram,code-graph,browser`; the three channels are feature-gated modules in `Cargo.toml [features]`, compiled only under `--all-features`. The CI gate covers them; the shipped binary does not. Verdict ceiling `UNPROVEN (structural N/A)`; harvest blocked on the carrier set — **permanently**, per the owner's 2026-09-18 ruling that the set stays as-is (leshchenko1979/opencrabs#338, the decision record); lane released. The 4th wire landed a claim (n=8274) — the issue was dispatchable on wire 1.
+
+
+## Dispatch Eligibility — the 4-bucket predicate, with the LANDED term (v0.4.204, HQ ruling 2026-09-18) [LANE]
+
+**Canonical statement — THIS section is the one home; every other reference (`triage.md` T4/T5) points here.**
+
+`DISPATCHABLE = unclaimed AND vetted AND NOT landed`
+
+| Bucket | Predicate | Action |
+|---|---|---|
+| **CLAIMED** | an open claim-ref exists | no action — the owning lane's chain holds it |
+| **PARKED** | owner standdown | never re-ignite |
+| **UNVETTABLE** | no acceptance criteria | park, naming the reason |
+| **DISPATCHABLE** | unclaimed AND vetted AND **NOT landed** | wire it |
+
+### D1 — "landed" is `LANDED_KINDS`, NEVER `CLOSING_KINDS`
+
+`landed` := a ledger row of kind `done` or `close` addressing the issue, **OR** a fork-space commit on `main` (fork-space = carries a `Session-Id` trailer) naming the issue by EITHER an `Issue-Ref: #N` trailer OR a trailing `(#N)` in the subject — the git arm has TWO ref forms, both fork-scoped by the `Session-Id` discriminator, and NEITHER is commit-message prose. Either arm marks it landed. Implementation: `tools/issue/oc-issue-dispatch` — `ledger_landed_issues()` (imports `oc_claims.LANDED_KINDS`) + `fetch_landed_issues()` (git arm). Tool side: leshchenko1979/opencrabs#337.
+
+**IDENTITY — a number is a REFERENCE, not evidence; the naming commit's changed files must intersect the issue's own surface (v0.4.218, filed by Triage lane `530c29ec`).** A commit can name `#N` in its subject while implementing a different subsystem entirely, and every landed/merged inference downstream then reads N as done. `landed` therefore ALSO requires identity. A commit naming `#N` whose changed files do not touch N's subsystem is NOT evidence that N landed. The same leg applies on the HARVEST arm (`tools/harvest/oc-harvest-census check` / `oc-harvest-dispatch vet`), where the issue→PR map is built from the title's trailing `(#N)` and the head branch name — so a corrupted `(#N)` poisons the map, and the refusal is PERMANENT because the squash sits in upstream history forever. A REOPENED issue overrides the merged inference (the #414 override, which today reaches `oc-issue-dispatch` only).
+
+**Live instance, receipted (2026-09-19 15:05–15:20Z, by the filing lane).** `oc-harvest-census check 199` → rc=1 `REFUSED: Target 199 is already MERGED upstream in PR #1557`; `gh pr view 1557 --json state,mergedAt` → `state=CLOSED, mergedAt=null`. The content IS upstream — `132da1fcc fix(loop-guard): exempt paginated arguments … (#199)` — while `#199` itself is a DIFFERENT subsystem (OPEN / REOPENED, `fix(a2a): the gateway listener is load-coupled…`), and the landed commit `b10ca242f` touches `src/brain/agent/service/helpers.rs`, `src/config/profile.rs`, `src/tests/loop_guard_test.rs`, `src/tests/profile_pid_lock_test.rs` — **0 files under `src/a2a/`**. Editor lane `c6b1a539` claimed #199 at 15:18:28Z (n=9501) on `fix/199-the-gateway-listener-is-load-couple`, so the Phase-7 harvest gate will refuse legitimate freshly-built work unless this leg lands.
+
+**LEG-SCOPE — both landed arms are ISSUE-scoped by implementation, so ONE leg's `done` marks the WHOLE issue landed (v0.4.247, filed by Triage lane `530c29ec`, 2026-09-24).** Both arms ask only *"did anything land for #N"* — neither asks *"did EVERY declared leg land"*. On an issue whose **scope split names more than one owner/surface**, a `done` row stamped for ONE leg closes the claim (`oc_claims.open_claims(#N)` returns **empty** — `done` is a `LANDED_KIND`, so `claim_is_closed` fires) and simultaneously satisfies the ledger arm *and* the git arm, so the issue reads LANDED and every remaining leg becomes **undispatchable AND invisible**: the normal path refuses it (`RC_TARGETED_LANDED = 8`; `--allow-landed` is the escape hatch on `tools/issue/oc-issue-dispatch`), and **no sweep can see the gap, because every sweep consumes the same predicate.** Note the arms are not fixable one at a time: a leg-aware ledger arm alone changes nothing, because the git arm still vetoes on the same issue number.
+
+Discipline this clause adds:
+
+- A `done` row on a **multi-leg** issue MUST name the LEG it covers — the surface (or the files) actually landed, not just the issue number.
+- Dispatch on a multi-leg issue whose `done` covers only part of it is a **deliberate `--allow-landed`**, never a silent refusal.
+- Where an issue body names a leg at a surface, that leg is an **OBLIGATION to that surface's owner** — claimed and closed by that owner, not discharged by another leg's landing.
+- A census reading `residue 0` is a statement **about the predicate**, never a statement that no in-scope work is open.
+
+**Live instance, measured 2026-09-24 (Triage lane, re-verified first-hand by HQ).** `leshchenko1979/opencrabs#393` (owner order 2026-09-19) carries a three-surface scope split in its own body: Editor `src/**`, **Toolsmith `tools/**`**, HQ skill-markdown. The Editor leg landed (`07b6372c4`); the HQ leg landed; and `done` row **n=10159** ("smoke PASS verified for issue #393") closed the issue for dispatch — verified: `open_claims(393)` → **0 rows**, ledger rows targeting 393 → exactly `[(10159,'done')]`. The identity read is ALSO masked: the skill-repo index carries #393 via `5b9609b3`, a **LAW** commit whose changed files are `SKILL.md`/`fleet-directives.md`/`hq.md`/`toolsmith.md` — **not one `tools/` file** — which is the identity leg above applied per-SURFACE but never per-LEG. The Toolsmith leg is unshipped and **actively pinned**: `--interrupt` (the pre-#393 boolean) is still passed by `tools/lib/oc-notify.sh` (the rc-3 retry) and `tools/notify/oc-notify-fanout`, and `tools/ship/oc-deploy`'s selftest **FAILS** if the second verb call lacks `--interrupt` — asserting the old shape — while the issue's own target state prescribes `--interrupt` → `--mode interrupt`, which is live and valid (`--mode` help: *"turn-end (default) | interrupt | quiet"*). **No ledger row ever claimed a `tools/` leg for #393.** Either the migration is owed or its dropping was a decision; neither is recorded, and that is the defect.
+
+**The transferable half: the predicate cannot audit itself.** The class was found by re-deriving the cycle's own numbers against **independently asserted** expectations (24 OK / 1 MISMATCH), not by any sweep arm — a sweep that re-derives its own predicate returns the predicate's answer.
+
+`tools/lib/oc_claims.py` is the ONE canonical predicate — no lane re-inlines it. It carries BOTH sets, and their distinction is load-bearing:
+
+- `LANDED_KINDS = ("close", "done")` — evidence the WORK landed.
+- `CLOSING_KINDS = ("close", "confirm", "reject", "done", "unclaim")` — the kinds that can close a CLAIM. A strict superset; **NOT interchangeable**.
+
+**Using `CLOSING_KINDS` as the landing test STARVES real work.** The module's own docstring records the measurement: over the live ledger on 2026-09-18, `CLOSING_KINDS` reaches 228 issues, 125 of them ONLY via the three non-landing kinds — and 48 were reachable by `unclaim` ALONE (a released claim whose work was still unbuilt), suppressed purely because a claim had been RELEASED. A `confirm` row flips a bookkeeping flag and ships nothing; an `unclaim` row returns the issue to the pool, unbuilt; a `reject` row means no work was done at all. **None of the three is evidence the work shipped**, and a released-but-unbuilt issue is legitimately re-dispatchable.
+
+### D2 — Landed-but-unharvested issues are HARVEST QUEUE, not editor dispatch
+
+The closure law (`triage.md §Duty T5` — Autonomous closure) deliberately keeps DONE work **OPEN** until its own upstream PR files. Without the landed term every such issue reads `unclaimed AND vetted` → DISPATCHABLE, so the sweep re-wires exactly the issues the closure law forbids closing. **With the term present the two sets are disjoint by construction:** an OPEN issue whose work already landed in fork `main` waits on a PR, not on code — it routes to the harvest queue and NEVER to an editor lane.
+
+### D3 — Live instance, receipted (2026-09-18)
+
+One T5 sweep (ledger n=8331–8341) wired 8 issues; **5 of the 8 were OPEN AND carried a ledger `done` row** — #330 (n=8317), #324 (n=8192), #302 (n=8267), #299 (n=8325), #297 (n=8266). GitHub state OPEN for all five, verified the same turn. #302's `done` row is Triage's own and says verbatim: *"Issue STAYS OPEN under the harvest-gated closure law until its own upstream PR files"* — and the sweep wired #302 anyway. A second surface, the `oc-harvest-dispatch-4h` cron (session c32f43ee), wired the same issue from the same root cause: `done` + zero claims satisfies the old predicate. Editor 127429e6 claimed #297 (n=8345) then stood it down (n=8353, "dispatch was stale, no work owed") — one wasted claim, real churn.
+

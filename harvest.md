@@ -319,7 +319,7 @@ Contract:
    - **4-Leg Smoke Pass**: Verify full 4-leg smoke pass (Lineage, Identity, CI Gate, Behavioral probe) is recorded with live receipts in `smoke-verdicts.log`. NEVER file an unsmoked PR.
    - **Cross-Boundary Unit Test Standards (v0.4.198)**: Verify that all PR unit tests test real cross-boundary interactions (e.g. real file writer -> reader in tempdir) rather than tautological helper comparisons against internal delegate functions.
    - **Packaging-sha stamps (v0.4.152)**: the row's `sha=` MUST be the packaging tip being filed (the branch head), never an ancestor. A row citing an ancestor does not cover the candidate — append a fresh row after the full gate; never edit the superseded one.
-   - **Owner-dependent leg → PARK, don't chase (v0.4.152, owner order 2026-09-12)**: if the remaining behavioral evidence needs the OWNER (visual pass, tap, eye-confirm), it is NOT a blocking gate. Stamp the provable legs, append `PARKED-OWNER-EYE` (owner action + packaging sha), RELEASE the lane, and let the candidate roll to the next owner-present window. Never idle on an owner leg — the owner being away is exactly when this binds. Full law: `fleet-directives.md §Owner-Dependent Smoke Legs — Park, Don't Chase`.
+   - **Owner-dependent leg → PARK, don't chase (v0.4.152, owner order 2026-09-12)**: if the remaining behavioral evidence needs the OWNER (visual pass, tap, eye-confirm), it is NOT a blocking gate. Stamp the provable legs, append `PARKED-OWNER-EYE` (owner action + packaging sha), RELEASE the lane, and let the candidate roll to the next owner-present window. Never idle on an owner leg — the owner being away is exactly when this binds. Full law: `editor.md §Owner-Dependent Smoke Legs — Park, Don't Chase`.
    - **Mandatory Full PR Gate**: Push branch to origin (`leshchenko1979/opencrabs`) and trigger full PR checks (NO `--fast` mode):
      ```bash
      # Single-command blocking full PR gate:
@@ -429,3 +429,30 @@ Inspecting a cross-fork PR (`gh pr view N -R upstream`): fetch the head branch
 from the FORK remote (`git fetch origin <head>`), never from upstream — a
 fork-namespaced head does not exist there (2026-09-05 #1392 404 incident).
 Same root fact as ledger n=1537's `gh pr create` namespaced-head lesson.
+
+## Full-Gate Pre-PR Testing Law (v0.4.149, owner order 2026-09-12) [LANE]
+
+- **Full CI Suite Mandatory for Upstream PRs**: The `--fast` flag (`fast=true`, lint/clippy only) is strictly permitted for internal Daytime Split-Gate merging (`oc-ship-chain`), but is **STRICTLY PROHIBITED** for final pre-PR verification.
+- **Upstream Triad Verification**: Before opening any upstream PR (`harvest.md` Phase 7 / 7c), the HARVEST lane MUST run the full test suite (`cargo test --all-features` + fmt + clippy) via `oc-prchecks` full gate:
+  ```bash
+  # Single-invocation blocking full gate:
+  tools/harvest/oc-prchecks wait leshchenko1979/fix/<slug>
+
+  # Standard full gate dispatch:
+  tools/harvest/oc-prchecks leshchenko1979/fix/<slug>
+  ```
+- **PR Citation**: The resulting GREEN run URL from the full CI run MUST be cited in the upstream PR body alongside the behavioral smoke test evidence.
+
+
+## Upstream PR filing — base CI gate pre-claim (Duty-4 proposal, theme-1 lane, owner-approved 2026-09-06) [LANE]
+
+Before filing an upstream PR, read base-main CI gate state with the owning
+tool rather than polling by hand (lens J / F28): `tools/harvest/oc-pr-fault-scope
+<pr#> --run <id>` returns **IN-SCOPE** (the PR owns the failure) or
+**BASE-FAULT** (zero intersection — do NOT chase), and `tools/harvest/oc-harvest-sweep`
+runs the mechanical pre-gate legs. Pre-claim any OWNERLESS red files by
+carrying a sweep commit in the PR itself (Session-Id-only trailer, no
+Issue-Ref). Do NOT rely on sequencing comments or separate base-repair PRs
+landing first — the 2026-09-05 #1394/#1393/#1395 out-of-order merge (fork #103
+incident) proved sequencing comments don't protect merge order.
+

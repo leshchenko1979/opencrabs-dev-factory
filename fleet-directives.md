@@ -1,35 +1,35 @@
 # Fleet directives — opencrabs-dev cross-role law
 
-**Owns:** the binding owner directives that apply to EVERY opencrabs-dev lane — the `[LANE]` law every worker reads in full at spawn and at compaction reload, plus a residual of cross-cutting rulings that belong to no single role. 
+**Owns:** the binding owner directives that apply to EVERY opencrabs-dev lane — the `[LANE]` law every worker reads in full at spawn and at compaction reload, plus a residual of cross-cutting rulings that belong to no single role.
 
-**Shape after the 2026-09-18 split.** Role- and topic-scoped law no longer lives here: 25 sections were relocated byte-exact into the file that owns them, and this file keeps a pointer only — one concept, one home. Read scoped law THERE:
+**Shape after the 2026-10-02 binding-scope split.** Role-scoped law does not live here: sections whose law binds ONE role were relocated byte-exact into the file that owns that role, and this file keeps a pointer only — one concept, one home. **The split test is BINDING SCOPE, never a citation tag and never a section's name.** The 2026-09-18 split by `[LANE]` citation was REVERTED for exactly that reason (`CHANGELOG.md:73`: *"citation is not scope"*; `[LANE]` is the must-read-at-reload marker, not a role marker). Law that LOOKS role-specific but binds EVERY lane stays here — **Attribution & Goal Hygiene** and **Decision Rollcall** are the measured instances. Read scoped law THERE:
 
 | Kind of law | Canonical file |
 |---|---|
 | sync model & rebase, seam resolution, harvest cadence / HARVEST LAW / NO-HOLD, PHOP | `upstream-merge-runbook.md` |
-| editor phases, smoke procedure, carrier concurrency & coalescence, features-compat gate, no auto-rollback | `editor.md` |
-| upstream PR lifecycle, deep-core heads-up gate, dependent PRs law, cross-fork PR inspection, upstream issue filings | `harvest.md` |
-| intake & assignment, dispatch hygiene, parked issues, creating new editors, night-shift cadence (Phase 3, Idle-Lane Issue Triage) | `triage.md` |
+| full-gate pre-PR testing, upstream PR filing pre-claim, upstream PR lifecycle, deep-core heads-up gate, dependent PRs law, cross-fork PR inspection | `harvest.md` |
+| editor phases, smoke procedure, carrier concurrency & coalescence, features-compat gate, no auto-rollback, docs-only LEG1 gate skip, owner-dependent smoke legs, post-rewrite swap recovery, autonomous editor goal | `editor.md` |
+| intake & assignment, dispatch hygiene, dispatch eligibility (the 4-bucket predicate), out-of-feature-set issues, parked issues, creating new editors, night-shift cadence (Phase 3, Idle-Lane Issue Triage) | `triage.md` |
 | tool-problem reports | `toolsmith.md` |
 | HQ duties, cadence boundary, rule-text provenance | `hq.md` |
 | Duty-6 lens briefs (A–J families + brain-scrub) | `review-lenses.md` |
 | post-swap notify / fan-out vocabulary | `s2-swap-journal-spec.md` |
 
+**THIS FILE IS EXEMPT FROM THE 500-LINE LAW-FILE BUDGET** (owner ruling 2026-10-02, q44 "combine: move + exempt"): it is the always-loaded `[LANE]` register, and its size is the cost of the read-in-full guarantee rather than a symptom of bloat. The exemption is recorded beside the budget law itself in §Upstream Coding & Testing Standards. **The exemption does NOT relax the split test** — law that binds one role still belongs in that role's file, and the register carries only what survives that test.
+
 **Thematic index** (lens B-17/G-F9 v0.4.90 — file is flat; jump via section name). **[LANE] tag (v0.4.95):** sections every worker MUST read in full at spawn/compaction reload (editor.md/triage.md/toolsmith.md/hq.md RELOAD LAW v0.4.95). EXCEPTION (v0.4.96, lens B-F1): HQ re-reads THIS ENTIRE FILE IN FULL — it owns and rules on the directives; the other three roles may use this thematic-index minimum for non-[LANE] sections.
 
-**Owner holds & gates:** **Owner Push Freeze — RETIRED** (see its section; now SOAKING + global DEGRADED freeze) · **Discussion links + fix-approval gate** · **Stage-entry consent** · **Guard-Flag Escalation Law** · **Full-Gate Pre-PR Testing Law** · **Docs-Only LEG1 Gate Skip** · **Owner-Dependent Smoke Legs**
+**Owner holds & gates:** **Owner Push Freeze — RETIRED** (see its section; now SOAKING + global DEGRADED freeze) · **Discussion links + fix-approval gate** · **Stage-entry consent** · **Guard-Flag Escalation Law** · **Claim Release & Superseded Plans** · **Open Questions register**
 
-**Roles & authority:** **Autonomous Priority Authority Law** · **Autonomous Editor Goal & Continuous Phase Execution Law** · **Claim Release & Superseded Plans** · **Early Claim** · **Designated Domain Affinity & Topic Context Focus Law** · **Strict Atomicity & Zero Bundling** · **PR naming convention**
+**Roles & authority:** **Autonomous Priority Authority Law** · **Designated Domain Affinity & Topic Context Focus Law** · **Early Claim** · **Strict Atomicity & Zero Bundling** · **PR naming convention** · **External lanes**
 
 **Channels & messaging:** **Telegram surface — file delivery & own-feature probes** · **telegram_send addressing rule** · **Cross-lane message delivery discipline** · **Direct dispatch** · **Receiver-side dedupe of reload demands** · **Attribution guard** · **Unified Event Capture**
 
-**Ships & carriers:** **Features-compat gate** · **Carrier Concurrency & Coalescence Law** · **Post-Rewrite Swap Recovery** · **Upstream PR filing — base CI gate pre-claim** · **Upstream Coding & Testing Standards** · **LLM Ergonomics & Efficiency Law**
+**Ships & carriers:** **Upstream Coding & Testing Standards** · **LLM Ergonomics & Efficiency Law** · **Tool logging rule** · **CI-wait discipline & actor attribution** · **Swap-head signature for rebase/synthesis/merge-derived binaries** · **Issue provenance — blame, relations, rationale**
 
-**Smoke & dispatch:** **Out-of-Feature-Set Issues** · **Dispatch Eligibility** · **Attribution & Goal Hygiene** · **Verification during a truncated-output window is not verification** · **External lanes**
+**Smoke & dispatch:** **Attribution & Goal Hygiene** · **Decision Rollcall** · **Inherited-claim three-pillar verification** · **Verification during a truncated-output window is not verification** · **Topic domain alignment & rename authority** · **HQ does not execute lane work — refuse and reroute** · **Throwaway probe homes**
 
-**Pulled back to fleet-directives (tier C, 2026-09-19):** **Tool logging rule** · **CI-wait discipline & actor attribution** · **Swap-head signature for rebase/synthesis/merge-derived binaries** · **Decision Rollcall** · **Inherited-claim three-pillar verification** · **Topic domain alignment & rename authority** · **HQ does not execute lane work — refuse and reroute**
-
-**Reload & orientation:** **Post-compaction skill reload & context manifest curation** · **Every turn ends with a "what now/next?" answer** · **Explain open questions & re-anchor context** · **Daemon no-reap**
+**Reload & orientation:** **Post-compaction skill reload & context manifest curation** · **Every turn ends with a "what now/next?" answer** · **Explain open questions & re-anchor context** · **Cron prompts are POINTERS** · **Daemon no-reap**
 
 ## Owner Push Freeze — RETIRED (owner order 2026-09-24 21:04Z)
 
@@ -52,7 +52,7 @@ The per-group register is **gone** — its `json` block, the T1–T18 / Tier-3 t
 
 A **cron prompt carries the INVOCATION and the mechanical envelope, never the law.** The law lives in the skill corpus, and the prompt names where to read it. Owner's question, verbatim: *"why not make the laws the SSOT and cron prompt just the pointer?"* — and the measurement that answered it is below, because the drift it prevents is not hypothetical.
 
-**The measured instance (2026-09-26).** `oc-triage-factory-patrol`'s prompt had grown to **5,289 characters** — the second-largest enabled prompt on the box — and **every rule in it already lived in law**: the scope test and the tier order in `triage.md` §Duty T4, the cohort predicate at `triage.md:313`, the unattended-plan prohibition at `fleet-directives.md` §Autonomous Editor Goal & Continuous Phase Execution Law (bullet "An UNATTENDED session MUST NOT open a plan"), the MODE register, the work list. **Zero unique content.** It reached that size by accretion: each new ruling was pasted in (three times on 2026-09-26 alone) because the prompt is what the cron session reads at fire time, and nothing ever removed the copy it superseded.
+**The measured instance (2026-09-26).** `oc-triage-factory-patrol`'s prompt had grown to **5,289 characters** — the second-largest enabled prompt on the box — and **every rule in it already lived in law**: the scope test and the tier order in `triage.md` §Duty T4, the cohort predicate at `triage.md:313`, the unattended-plan prohibition at `editor.md` §Autonomous Editor Goal & Continuous Phase Execution Law (bullet "An UNATTENDED session MUST NOT open a plan"), the MODE register, the work list. **Zero unique content.** It reached that size by accretion: each new ruling was pasted in (three times on 2026-09-26 alone) because the prompt is what the cron session reads at fire time, and nothing ever removed the copy it superseded.
 
 **Two copies always diverge, and the prompt is the copy nobody re-reads.** Measured on that same prompt, hours after the owner replaced the binary IN/OUT rule with the three-tier order: it still carried the **RETIRED Owner Push Freeze** as a live gate, and its closing line still read *"Do NOT widen to the full fork backlog"* — the exact rule the owner had just reversed. Neither was noticed by any reader, because a cron prompt is read by a session that never compares it to the law.
 
@@ -173,6 +173,8 @@ Every tool, schema, hint, error message, and prompt designed for agents must pri
 **LOC metric on every law change (owner order 2026-09-19):** the lines-of-code check is a MANDATORY part of every law change — one of the main metrics. Every law/process edit carries an explicit before/after LOC delta table for each file touched, and law files stay under the 500-line budget (compaction degradation). **THE SAME 500-LINE BUDGET BINDS THE BRAIN FILES (owner order 2026-09-28, verbatim: "same 500-rule should apply to the brain files")** — measured against the rule's own rationale, which is load cost: it applies to the ONE brain file a session actually LOADS IN FULL: **`AGENTS.md`** (`prompt_builder.rs:21 ALWAYS_LOADED_FILES = [("AGENTS.md", …)]`). The `CONTEXTUAL_BRAIN_FILES` — `CODE.md`, `TOOLS.md`, `SECURITY.md`, `BOOT.md`, `HEARTBEAT.md`, `MEMORY.md` — are NOT loaded: the harness emits a ONE-LINE index entry per file and the body is pulled only on demand (`load_brain_file`), so their size costs nothing per session. **THE OWNER RULED THIS EXPLICITLY (2026-09-28):** "it's ok for tools.md and memory.md to be big - they are not loaded fully by the harness". So the budget binds `AGENTS.md` and any file a session is REQUIRED to read on every turn — and it does NOT bind `TOOLS.md`, `MEMORY.md` or the other contextual files, whose size is a readability matter, not a compaction one. **`MEMORY.md` is exempt for TWO independent reasons, and both are structural:** (1) it is never auto-injected — reached only through `memory_search` — so its size costs no session context (owner ruling above); and (2) it is the DESTINATION this rule pushes dated history INTO, so a cap on it would abolish the archive the rule depends on. It is bounded by relevance and pruning, not by line count. **The exemption is MEASURED, not asserted:** `prompt_builder.rs:26-33` puts it in `CONTEXTUAL_BRAIN_FILES`, whose own comment records the reason (#995): inlining it "put the entire file in the system prompt of every full-mode session, roughly 25k tokens on a mature workspace, whether or not a single line of it was relevant". 
 
 
+**THE ALWAYS-LOADED CROSS-ROLE REGISTER IS EXEMPT FROM THE 500-LINE BUDGET (owner ruling 2026-10-02, q44 "combine: move + exempt").** `fleet-directives.md` is the `[LANE]` register every worker reads in full at spawn and at compaction reload, and it holds exactly the law that binds MORE THAN ONE role — the residue left after every role-scoped section was moved to the file that owns it. Its size is therefore the price of the read-in-full guarantee, not a symptom of bloat: it cannot shrink by relocation without either dropping law that binds every lane or splitting the one artifact the reload law tells workers to read whole. **The relocation half of the ruling is the enforceable half** — law that binds ONE role lives in that role's file — and the exemption covers only what survives that test.
+
 Mandatory standards for any code slated for upstream harvest (`adolfousier/opencrabs`) or developed in the fork:
 
 1. **Test Isolation (NO inline tests in `src/`):** ALL tests must live under `src/tests/*_test.rs` registered in `src/tests/mod.rs`. Absolutely **NO inline `#[cfg(test)] mod tests { ... }`** blocks at the bottom of source files in `src/`. Inline tests hide behind source files in IDE outlines and grow unbounded. If an existing inline test block is found while working on a file, move it to `src/tests/` as part of the change.
@@ -204,83 +206,6 @@ All observed runtime events, anomalies, proposals, and feature ideas MUST follow
 - **No Human Priority Gates**: Lanes MUST NOT ask the human operator (Alexey) for priority determinations, sequence approvals, or "what should I work on next?" scheduling decisions.
 - **Autonomous Execution**: If multiple valid tasks, issues, or patrol duties are open and eligible, the lane selects and executes the highest-value eligible item autonomously, applies codified sorting criteria (e.g. FIFO, severity, dependency order), and drives to completion.
 
-## Autonomous Editor Goal & Continuous Phase Execution Law (v0.4.149, owner order 2026-09-12) [LANE]
-
-- **Autonomous Goal Mandate**: Every editor claiming or waking on an issue MUST issue `/goal follow the skill until the smoke test phase` (or set its session goal) to ensure unbroken continuous execution across all lifecycle phases.
-- **Design-gate precondition (owner order 2026-09-12)**: The goal is issued **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). Until that confirmation lands, the editor stays in the design/approval phase and MUST NOT open the autonomous run: issuing the goal early would carry the editor straight past the gate that exists to require owner approval BEFORE code. Sequence is fixed — design → owner confirms → `/goal` → continuous execution to the smoke test phase.
-- **Design-gated WRITE SCOPE (v0.4.243, cycle `20260922-c22`; converged from lanes
-  `9fa7c71a` and `40427d4f`).** A lane parked on the owner design gate had a codified
-  NUDGE scope and, until this clause, NO write scope — the only constraint a parked lane
-  could see was a harness-injected block, and `grep -rln "plan mode|plan-mode"` over the
-  whole skill returned **ZERO files** (measured 2026-09-22), so "no project file edits"
-  could not be resolved against a lane's fleet-process write obligations. The scope is a
-  SURFACE distinction, not "files vs no files" — a design-gated lane **MAY** write
-  fleet-process surfaces (the ledger, `reviews/**` including its own proposal file, the
-  state dir, journals, and run artifacts) and **MAY NOT** write project/source files or
-  open the autonomous checklist. Two lanes resolved that ambiguity the same way by reading
-  intent rather than law; this clause makes that reading the rule.
-- **An UNATTENDED session MUST NOT open a plan (v0.4.246, HQ ruling 2026-09-24; origin #510, raised by Triage n=10690).** A session with **no channel binding** — a cron worker or an A2A-origin session — has **no approval surface at all**: `plan init` returns its own *"ask the user to approve"* guidance, the model complies and ends its turn, and the plan sits `Editing` with `approved_at: null` forever, because no card exists to carry the tap. Measured on the `ops` profile 2026-09-24: **6** plans in that state, **every one with 0 `plan_cards` rows and 0 `session_bindings`** — four cron workers (`oc-harvest-344-resume` `0af22fbc`, `oc-harvest-421-resume` `b246ddbd`, `triage-hourly-issue-assignment` `41ca47a9`, `outreach-mining-tranche` `e8389c6b`), one **A2A** session (`9d163421`), and one orphan plan file with no session row. So the class is **not cron-only**, and it is **self-repeating**: a cron reuses its worker session, so every subsequent fire re-reads the stranded plan and re-reports a blocker no surface can clear — **three consecutive patrol cycles** closed with *"the plan card in this topic needs an Approve / /execute first"* while `plan_cards` held **zero** rows for that session AND that topic. Consequences: a cron/A2A prompt that could reach `plan init` must forbid it **explicitly**, and **the guidance telling an unattended session to use `checklist` instead is NOT a mitigation** — `init mode=checklist` ALSO returns to `Editing` pending approval, so the sanctioned choice strands the session too. Tool-side fix is **#510** (plan-tool lane, design-gated); this clause is the law-side stop. **A blocker claim is a status claim:** asserting a card exists, or naming the surface it lives on, requires the same-turn read — see the ops `AGENTS.md` §Execution Discipline bullet.
-- **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6 behavioral smoke testing.
-- **Completion Definition**: A task is complete ONLY when the live behavioral smoke test on the swapped binary has executed and its 4-leg receipt is recorded in `smoke-verdicts.log`.
-
-## Full-Gate Pre-PR Testing Law (v0.4.149, owner order 2026-09-12) [LANE]
-
-- **Full CI Suite Mandatory for Upstream PRs**: The `--fast` flag (`fast=true`, lint/clippy only) is strictly permitted for internal Daytime Split-Gate merging (`oc-ship-chain`), but is **STRICTLY PROHIBITED** for final pre-PR verification.
-- **Upstream Triad Verification**: Before opening any upstream PR (`harvest.md` Phase 7 / 7c), the HARVEST lane MUST run the full test suite (`cargo test --all-features` + fmt + clippy) via `oc-prchecks` full gate:
-  ```bash
-  # Single-invocation blocking full gate:
-  tools/harvest/oc-prchecks wait leshchenko1979/fix/<slug>
-
-  # Standard full gate dispatch:
-  tools/harvest/oc-prchecks leshchenko1979/fix/<slug>
-  ```
-- **PR Citation**: The resulting GREEN run URL from the full CI run MUST be cited in the upstream PR body alongside the behavioral smoke test evidence.
-
-## Docs-Only LEG1 Gate Skip (v0.4.161, owner ruling 2026-09-12 11:04Z) [LANE]
-
-**Owner ruling (verbatim, 2026-09-12 11:04Z):** *"We don't need the pure docs commits to pass through ci on our side."* Origin: lane `6630dc9a`'s docs commit `eee36027` (ONTOLOGY.md + CONTRIBUTING.md, zero code) burned LEG1 run `34688939568` in full before the ruling landed.
-
-- **The law.** A commit whose changed paths are ALL **pure docs** SKIPS the LEG1 CI gate on the fork ship chain. A skip is neither PASS nor RED — it is a **SKIP**, and it MUST be recorded as one — the SKIP is recorded in the ship chain journal, never left implicit.
-- **"Pure docs" is DEFINED HERE, in the law — never left to a tool's discretion.** A commit is pure docs iff **every** changed path (a) ends in `.md`, **and** (b) is **NOT compiled into the binary** via `include_str!` / `include_bytes!`. Clause (b) is load-bearing: a `.md` compiled into the binary changes COMPILED OUTPUT, so a commit touching it is a code change and MUST run the gate. When a chain ships a RANGE rather than a single commit, every commit in the range must be pure docs for the skip to apply.
-
-- **The exclusion set is DERIVED BY THE TOOL at gate time — never by hand, never carried in a lane's context.** The 21 paths listed above are **illustrative, not normative**: that list rots the moment a template is added or removed, and a lane reproducing it by hand is the defect this clause exists to prevent (owner ruling 2026-09-12: *"that should be purely mechanical"*). The gate computes the set from the tree itself, at the moment it runs, by resolving the compiled-in `include_str!` targets against `src/**/*.rs`. **Mechanical evaluation (Finding J-2, v0.4.170):** Lanes must verify qualification directly using `tools/ship/oc-ship-chain --eval-docs-skip <sha>` instead of manual path inspection or hand-derived checks.
-- **Recording is MANDATORY — an absent gate is NEVER a passed gate.** A skipped LEG1 MUST be recorded in the ship journal **and** in a ledger row naming the sha (kind `shipchain`, the leg stated as SKIPPED). The v0.4.109 CI-run identity + verdict laws apply unchanged: GREEN may be stated only for a gate that actually ran and returned `completed success`; a skipped leg is cited as SKIPPED, never as GREEN, and is never counted as a passed leg in a smoke receipt.
-- **Upstream precedent — and why this law does NOT copy its shape.** Upstream `.github/workflows/ci.yml:23-27` already paths-ignores `**.md` / `docs/**` / `LICENSE*` / `.gitignore` on push ("Docs-only commits are skipped via paths-ignore so they don't burn the matrix"). That shape is **extension-based**, so it would happily skip a commit editing a compiled-in template. This law states the compiled-in exclusion EXPLICITLY rather than inheriting that hole.
-- **Enforcement split.** The law text is HQ's (this section). The mechanical LEG1 behavior in `tools/ship/oc-ship-chain` is Toolsmith's (defect #20). That change LANDED in `d6cb9b9a` — **the same tag as this law (v0.4.161)**, 24 min after this text — so the earlier "until it lands a docs-only commit still burns LEG1" is SUPERSEDED (v0.4.163): a pure-docs commit now SKIPS LEG1, the exclusion set is DERIVED at gate time (`shipchain_docs_only()` in `tools/ship/oc-ship-chain` — cite by function name, never by line: tool line numbers drift on every edit), the skip is recorded in the journal (`GATE-SKIPPED-DOCS`) plus a `shipchain` ledger row, it applies to a FRESH dispatch only (`--gated-run`/`--gated-sha` still gate), and the force flag `OC_SHIPCHAIN_NO_DOCS_SKIP=1` exists. Never claim a skip the tool has not recorded.
-
-## Owner-Dependent Smoke Legs — Park, Don't Chase (v0.4.152, owner order 2026-09-12) [LANE]
-
-### L1 — An owner-dependent leg is NEVER a blocking gate (park, don't chase)
-
-A smoke leg that only the OWNER can satisfy (a visual pass, a tap, an eye-confirm on a Telegram card) MUST NOT block a lane. The owning lane:
-
-1. stamps the legs it CAN prove — lineage, identity, CI gate, and any agent-runnable behavioral probe (a live call, a forced trigger, an observed output through the new code);
-2. appends a **`PARKED-OWNER-EYE`** row to `smoke-verdicts.log` naming the exact owner action required AND the packaging sha;
-3. **RELEASES the lane** and moves to its next task.
-
-`PARKED-OWNER-EYE` is a lane-release, NOT a hold: the lane goes idle and claimable, the candidate is deferred. This does not contradict the NO-HOLD law (`upstream-merge-runbook.md §Upstream-merge cadence`) — NO-HOLD forbids a *waiting state*; parking is the mechanism that keeps a lane OUT of one. A lane idling on an owner leg is in violation; a lane that parks and moves on is compliant.
-
-### L2 — Shift exit condition: receipts or an explicit park
-
-A shift (night or day) is COMPLETE only when every workstream sits in exactly one of two terminal states:
-
-- **RECEIPTED** — the work landed and its receipts are stamped (PR filed, swap verified, ledger row, smoke row); or
-- **PARKED** — an explicit `PARKED-OWNER-EYE` row (or an equivalently named park, with its reason) exists, naming the next-cycle action and the owner.
-
-A workstream in state "waiting for X" is NOT terminal and blocks any completion claim. Candidates not closed inside the window **roll to the next cycle** — never chased across it. Report format: `receipted=N · parked=M · waiting=0`; any non-zero `waiting` means the shift is not done.
-
-### L3 — An owner verdict must be explicit AND post-hoc
-
-An owner verdict on a behavioral leg counts ONLY when it is (a) an explicit confirmation and (b) given AFTER the behaviour has finished. A passing remark made mid-flight is NOT a verdict — the behaviour may still be in progress, or about to fail in a way not yet visible.
-
-Worked example (row 87 → row 90, 2026-09-12): the owner's "Smoke passed" landed **16 s AFTER** their own discard and **3 m 17 s BEFORE** the review subagent finished — the defect (headerless card after discard) did not yet exist on screen. The PASS was stamped, then revoked. **Rule:** if the owner's remark is not unambiguously a verdict, record `OWNER-REMARK (not a verdict)` and leave the leg OPEN/PARKED — never convert a passing remark into a PASS row.
-
-### L4 — Smoke stamps cite the PACKAGING sha
-
-Every `smoke-verdicts.log` verdict row's `sha=` MUST be the sha actually under test — for a harvest candidate that is the **packaging tip** (the branch head being filed), never an ancestor it was built from. A row citing an ancestor does not cover the packaging sha and cannot back a PR filing. For `CORRECTION` or `RETRACTION` rows (proposal n=4175), `sha=` names the sha of the row under correction/retraction (or the refreshed packaging sha if a fresh smoke was performed), and the retracted row identity is documented explicitly in `evidence=`.
-
-When the packaging sha moves, the row is SUPERSEDED: append a new row, never edit the old one.
-
 ## Throwaway probe homes — reap at rig teardown (HQ ruling 2026-09-20) [LANE]
 
 A behavioral probe that creates a throwaway profile home (`profiles/<name>`) **reaps it when the rig is done** — daemon stopped, rig dir removed, home removed — in the same shift that writes its verdict row. A home kept as a **reusable rig** is DECLARED in that row (name + why), so a later sweep reads it as intentional rather than as residue. The reap covers the home's **CRON ROWS** as well as its sessions and goals: a home left with an ENABLED job is not inert, because the default daemon adopts every registered non-active profile and runs a cron-only scheduler for it (`daemon.adopt_profiles` defaults true) — the job fires the moment anything adopts the home, with no daemon of its own and no rig running. **The REGISTRY is the switch, not the disk:** a reap is NOT complete when the directory moves — a profile still listed in `profiles.toml` stays ADOPTED, so the default daemon keeps the home's scheduler lock and its DB fds open however far away the data now sits. Unregister it (`opencrabs profile delete <name> --force`) as part of the reap, and do it BEFORE the move, because the CLI bails when the profile dir is already absent (#452) and a moved home is then un-unregisterable without the empty-placeholder workaround. Only a daemon restart releases the held inodes. Probe rigs are ad-hoc shell/python: neither `oc-smoke` nor `oc-smoke-evidence` creates a profile home, so no tool enforces this for you.
@@ -290,80 +215,6 @@ A behavioral probe that creates a throwaway profile home (`profiles/<name>`) **r
 **Verified on the rig itself, 2026-09-20T07:12Z (editor lane `d18ce16a`, reproduced first-hand by HQ):** the disk move of `smoke300`/`smoke300neg` did NOT end their adoption. Default-profile daemon pid 169358 (started 02:56:26Z) held BOTH scheduler lock inodes and six fds on the quarantined DBs (`/proc/169358/fd` 12/15 + 17/20/21 + 25/27/28), because both profiles were still registered. Unregistering them (registry 6 → 4 entries: `ops`, `family`, `oc348probe`, `oc134probe`) and moving the lock files ended the reachability; the held inodes remain until that daemon restarts, which is owner-gated (restart scope = `opencrabs-ops` only), so the quarantined DBs are NOT frozen meanwhile (mtimes unchanged at 07:05Z and 07:12Z). A reaper who moves a home and stops there leaves the daemon holding it, and #452 means the CLI cannot undo it. **The correction came from the reaping lane, not from this one:** HQ's own dispatch note to it asserted the locks were unattached — false, and falsified by that lane's live `/proc` read.
 
 **Dispatched, not absorbed (HQ does not execute lane work):** the reap-or-declare call goes to the rig's OWNER lane in the same turn it is found; a mechanical backstop for orphan probe homes belongs in `oc-health` (no existing class reaches `profiles/*` — class 2 is worktrees, class 4 is the dev state dir) and is the Toolsmith's design call.
-
-## Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled (v0.4.202, HQ ruling 2026-09-18) [LANE]
-
-**Origin:** Triage asked whether an issue whose deliverable lies outside the carrier feature set is dispatchable at all under the 4-Leg Smoke Rubric — raised after #319 was wired 3× across two lanes with zero claims at the time of the read (ledger n=8161, n=8234, n=8261). The churn was real. The answer is YES: the defect was an **unlabeled smoke ceiling**, not an undispatchable issue.
-
-### F1 — Dispatchability never depends on the carrier feature set
-
-The existing classification bucket governs — `DISPATCHABLE = unclaimed AND vetted AND NOT landed`, stated once and canonically in §Dispatch Eligibility below (the 4-bucket law). The carrier set gates the **binary**, never the **codebase**: a feature-gated module is still compiled and unit-tested by the CI gate, whose flags are `--all-features` (both the clippy and the test step of `pr-checks.yml`). Work on such an issue is therefore verifiable work and MUST NOT be parked, blocked, or skipped for being outside the built set.
-
-### F2 — The ceiling is `structural N/A`, and the verdict MUST read `UNPROVEN (structural N/A)`
-
-Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absent from the shipped set. `structural N/A` is a legal leg-4 substitute under the 4-Leg Smoke Rubric — but per the corrected-code presence rule, presence is not behavioral proof: the verdict reads **`UNPROVEN (structural N/A)`** and is **NEVER GREEN**. The ceiling is determined mechanically, not by judgment: read the live set with `tools/ship/oc-carrier-features` and compare it against the deliverable's feature-gated modules.
-
-### F3 — Harvest stays blocked; the lane parks and releases
-
-A smoke PASS is required to file upstream (PR shipment law). `UNPROVEN (structural N/A)` is not a PASS for a live-testable UX feature, so the issue **stays OPEN** under the harvest-gated closure law, and its upstream filing is blocked on the carrier set. **The set stays as-is — owner ruling 2026-09-18 ("Leave the carrier set as-is")**, which answers the widening question this section originally left open: the ceiling is **permanent and intentional**, not a pending decision. A lane therefore NEVER chases a widening request or re-raises the question — the blocker is a STANDING CONSTRAINT. The lane stamps the legs it can prove, names the blocker, and **RELEASES** (§Owner-Dependent Smoke Legs L1, applied to a non-owner blocker). It never idles on the blocker.
-
-### F4 — Dispatch carries the ceiling label and the native blocker link
-
-The churn cure — both operational (Triage-owned; no new tooling, no new class):
-
-1. When `oc-carrier-features` shows the deliverable's modules outside the set, the dispatch note carries `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, so wire 1 behaves like wire N.
-2. The issue is linked natively — `gh issue edit <issue> --add-blocked-by 338` (leshchenko1979/opencrabs#338, the carrier-set **decision record** and the blocker anchor) — per the Continuous Issue Relationship Linking order. A wire carries the RELATION, so the anchor's own state never unblocks it: #338 is a RECORD whose decision is MADE (owner ruling 2026-09-18), not a live question. Its closure is Triage's call under `triage.md §Duty T5` (Autonomous closure, (c) owner-confirmed-withdrawn); no lane re-raises the question while the close is pending.
-
-**Worked example (2026-09-18):** #319 (post-delivery re-entry for failed image delivery on Slack / Discord / WhatsApp) — carrier set `telegram,code-graph,browser`; the three channels are feature-gated modules in `Cargo.toml [features]`, compiled only under `--all-features`. The CI gate covers them; the shipped binary does not. Verdict ceiling `UNPROVEN (structural N/A)`; harvest blocked on the carrier set — **permanently**, per the owner's 2026-09-18 ruling that the set stays as-is (leshchenko1979/opencrabs#338, the decision record); lane released. The 4th wire landed a claim (n=8274) — the issue was dispatchable on wire 1.
-
-## Dispatch Eligibility — the 4-bucket predicate, with the LANDED term (v0.4.204, HQ ruling 2026-09-18) [LANE]
-
-**Canonical statement — THIS section is the one home; every other reference (`triage.md` T4/T5) points here.**
-
-`DISPATCHABLE = unclaimed AND vetted AND NOT landed`
-
-| Bucket | Predicate | Action |
-|---|---|---|
-| **CLAIMED** | an open claim-ref exists | no action — the owning lane's chain holds it |
-| **PARKED** | owner standdown | never re-ignite |
-| **UNVETTABLE** | no acceptance criteria | park, naming the reason |
-| **DISPATCHABLE** | unclaimed AND vetted AND **NOT landed** | wire it |
-
-### D1 — "landed" is `LANDED_KINDS`, NEVER `CLOSING_KINDS`
-
-`landed` := a ledger row of kind `done` or `close` addressing the issue, **OR** a fork-space commit on `main` (fork-space = carries a `Session-Id` trailer) naming the issue by EITHER an `Issue-Ref: #N` trailer OR a trailing `(#N)` in the subject — the git arm has TWO ref forms, both fork-scoped by the `Session-Id` discriminator, and NEITHER is commit-message prose. Either arm marks it landed. Implementation: `tools/issue/oc-issue-dispatch` — `ledger_landed_issues()` (imports `oc_claims.LANDED_KINDS`) + `fetch_landed_issues()` (git arm). Tool side: leshchenko1979/opencrabs#337.
-
-**IDENTITY — a number is a REFERENCE, not evidence; the naming commit's changed files must intersect the issue's own surface (v0.4.218, filed by Triage lane `530c29ec`).** A commit can name `#N` in its subject while implementing a different subsystem entirely, and every landed/merged inference downstream then reads N as done. `landed` therefore ALSO requires identity. A commit naming `#N` whose changed files do not touch N's subsystem is NOT evidence that N landed. The same leg applies on the HARVEST arm (`tools/harvest/oc-harvest-census check` / `oc-harvest-dispatch vet`), where the issue→PR map is built from the title's trailing `(#N)` and the head branch name — so a corrupted `(#N)` poisons the map, and the refusal is PERMANENT because the squash sits in upstream history forever. A REOPENED issue overrides the merged inference (the #414 override, which today reaches `oc-issue-dispatch` only).
-
-**Live instance, receipted (2026-09-19 15:05–15:20Z, by the filing lane).** `oc-harvest-census check 199` → rc=1 `REFUSED: Target 199 is already MERGED upstream in PR #1557`; `gh pr view 1557 --json state,mergedAt` → `state=CLOSED, mergedAt=null`. The content IS upstream — `132da1fcc fix(loop-guard): exempt paginated arguments … (#199)` — while `#199` itself is a DIFFERENT subsystem (OPEN / REOPENED, `fix(a2a): the gateway listener is load-coupled…`), and the landed commit `b10ca242f` touches `src/brain/agent/service/helpers.rs`, `src/config/profile.rs`, `src/tests/loop_guard_test.rs`, `src/tests/profile_pid_lock_test.rs` — **0 files under `src/a2a/`**. Editor lane `c6b1a539` claimed #199 at 15:18:28Z (n=9501) on `fix/199-the-gateway-listener-is-load-couple`, so the Phase-7 harvest gate will refuse legitimate freshly-built work unless this leg lands.
-
-**LEG-SCOPE — both landed arms are ISSUE-scoped by implementation, so ONE leg's `done` marks the WHOLE issue landed (v0.4.247, filed by Triage lane `530c29ec`, 2026-09-24).** Both arms ask only *"did anything land for #N"* — neither asks *"did EVERY declared leg land"*. On an issue whose **scope split names more than one owner/surface**, a `done` row stamped for ONE leg closes the claim (`oc_claims.open_claims(#N)` returns **empty** — `done` is a `LANDED_KIND`, so `claim_is_closed` fires) and simultaneously satisfies the ledger arm *and* the git arm, so the issue reads LANDED and every remaining leg becomes **undispatchable AND invisible**: the normal path refuses it (`RC_TARGETED_LANDED = 8`; `--allow-landed` is the escape hatch on `tools/issue/oc-issue-dispatch`), and **no sweep can see the gap, because every sweep consumes the same predicate.** Note the arms are not fixable one at a time: a leg-aware ledger arm alone changes nothing, because the git arm still vetoes on the same issue number.
-
-Discipline this clause adds:
-
-- A `done` row on a **multi-leg** issue MUST name the LEG it covers — the surface (or the files) actually landed, not just the issue number.
-- Dispatch on a multi-leg issue whose `done` covers only part of it is a **deliberate `--allow-landed`**, never a silent refusal.
-- Where an issue body names a leg at a surface, that leg is an **OBLIGATION to that surface's owner** — claimed and closed by that owner, not discharged by another leg's landing.
-- A census reading `residue 0` is a statement **about the predicate**, never a statement that no in-scope work is open.
-
-**Live instance, measured 2026-09-24 (Triage lane, re-verified first-hand by HQ).** `leshchenko1979/opencrabs#393` (owner order 2026-09-19) carries a three-surface scope split in its own body: Editor `src/**`, **Toolsmith `tools/**`**, HQ skill-markdown. The Editor leg landed (`07b6372c4`); the HQ leg landed; and `done` row **n=10159** ("smoke PASS verified for issue #393") closed the issue for dispatch — verified: `open_claims(393)` → **0 rows**, ledger rows targeting 393 → exactly `[(10159,'done')]`. The identity read is ALSO masked: the skill-repo index carries #393 via `5b9609b3`, a **LAW** commit whose changed files are `SKILL.md`/`fleet-directives.md`/`hq.md`/`toolsmith.md` — **not one `tools/` file** — which is the identity leg above applied per-SURFACE but never per-LEG. The Toolsmith leg is unshipped and **actively pinned**: `--interrupt` (the pre-#393 boolean) is still passed by `tools/lib/oc-notify.sh` (the rc-3 retry) and `tools/notify/oc-notify-fanout`, and `tools/ship/oc-deploy`'s selftest **FAILS** if the second verb call lacks `--interrupt` — asserting the old shape — while the issue's own target state prescribes `--interrupt` → `--mode interrupt`, which is live and valid (`--mode` help: *"turn-end (default) | interrupt | quiet"*). **No ledger row ever claimed a `tools/` leg for #393.** Either the migration is owed or its dropping was a decision; neither is recorded, and that is the defect.
-
-**The transferable half: the predicate cannot audit itself.** The class was found by re-deriving the cycle's own numbers against **independently asserted** expectations (24 OK / 1 MISMATCH), not by any sweep arm — a sweep that re-derives its own predicate returns the predicate's answer.
-
-`tools/lib/oc_claims.py` is the ONE canonical predicate — no lane re-inlines it. It carries BOTH sets, and their distinction is load-bearing:
-
-- `LANDED_KINDS = ("close", "done")` — evidence the WORK landed.
-- `CLOSING_KINDS = ("close", "confirm", "reject", "done", "unclaim")` — the kinds that can close a CLAIM. A strict superset; **NOT interchangeable**.
-
-**Using `CLOSING_KINDS` as the landing test STARVES real work.** The module's own docstring records the measurement: over the live ledger on 2026-09-18, `CLOSING_KINDS` reaches 228 issues, 125 of them ONLY via the three non-landing kinds — and 48 were reachable by `unclaim` ALONE (a released claim whose work was still unbuilt), suppressed purely because a claim had been RELEASED. A `confirm` row flips a bookkeeping flag and ships nothing; an `unclaim` row returns the issue to the pool, unbuilt; a `reject` row means no work was done at all. **None of the three is evidence the work shipped**, and a released-but-unbuilt issue is legitimately re-dispatchable.
-
-### D2 — Landed-but-unharvested issues are HARVEST QUEUE, not editor dispatch
-
-The closure law (`triage.md §Duty T5` — Autonomous closure) deliberately keeps DONE work **OPEN** until its own upstream PR files. Without the landed term every such issue reads `unclaimed AND vetted` → DISPATCHABLE, so the sweep re-wires exactly the issues the closure law forbids closing. **With the term present the two sets are disjoint by construction:** an OPEN issue whose work already landed in fork `main` waits on a PR, not on code — it routes to the harvest queue and NEVER to an editor lane.
-
-### D3 — Live instance, receipted (2026-09-18)
-
-One T5 sweep (ledger n=8331–8341) wired 8 issues; **5 of the 8 were OPEN AND carried a ledger `done` row** — #330 (n=8317), #324 (n=8192), #302 (n=8267), #299 (n=8325), #297 (n=8266). GitHub state OPEN for all five, verified the same turn. #302's `done` row is Triage's own and says verbatim: *"Issue STAYS OPEN under the harvest-gated closure law until its own upstream PR files"* — and the sweep wired #302 anyway. A second surface, the `oc-harvest-dispatch-4h` cron (session c32f43ee), wired the same issue from the same root cause: `done` + zero claims satisfies the old predicate. Editor 127429e6 claimed #297 (n=8345) then stood it down (n=8353, "dispatch was stale, no work owed") — one wasted claim, real churn.
 
 ## Claim Release & Superseded Plans — the mechanisms exist; use them (v0.4.202, HQ ruling 2026-09-18) [LANE]
 
@@ -474,37 +325,6 @@ An autonomous `/goal` issued for a shift MUST carry a turn budget that covers th
 
 Worked example: goal `eefd9a20` ("don't stop until the entire night shift is done") was set with 20 turns and died `state=failed` at 03:18Z; the shift ran a further ~4.5 h with no goal active while reports still described the clock as running.
 
-## Post-Rewrite Swap Recovery (v0.4.151, Toolsmith brief 2026-09-12) [LANE]
-
-**After a fork-main rebase, RE-RUN the same `oc-ship-chain` leg — never hand-edit `deployed.sha` to re-point around a refusal.**
-
-A rebase orphans the deployed sha (it stops being an ancestor of `main`), and the pre-v0.4.151 guard refused **every** such swap with `non-monotonic-swap`. The guard is now rebase-aware: when the incoming lineage carries the deployed change under a new sha (patch-id match) it journals `rewrite-equivalent-swap` with the twin sha and admits the swap. A guard refusal surfaces as **`rc 6`** from `oc-ship-chain`; the recovery is a re-run, not a marker edit.
-
-`oc-deploy lineage-check --prev <deployed> --sha <incoming>` returns the verdict (`ok` / `rewritten` / `absent`) read-only, without touching gate state. Re-pointing `deployed.sha` by hand leaves a false audit trail for a sha that was never built as a run and is **prohibited** (HQ ruling 2026-09-12, lane `2fbfb2f8` incident). A genuinely-absent change refuses until the audited `--allow-rewritten-lineage` override is passed with a mandatory justification.
-
-## Carrier Concurrency & Coalescence Law (v0.4.148, Toolsmith brief 2026-09-12) [LANE]
-
-- **Workflow Concurrency Semantics:** The GitHub Actions carrier workflow `ci/quick-build-linux` uses `concurrency: group: quick-build-linux` with default queuing semantics (1 active run, 1 pending run; additional dispatches cancel and replace the pending run).
-- **Non-blocking Push:** Editors pushing to `origin/main` do not serialize on a pre-dispatch carrier lock; they push their fast-forwarded commits immediately.
-- **Ancestry Matching & Coalescence:** `oc-deploy` and `oc-ship-chain` accept descendant builds via ancestry matching (`git merge-base --is-ancestor "$SHA" "$CAND_SHA"`). If Editor B pushes while Editor A's carrier build is running, and Editor C pushes right after, GitHub Actions coalesces B and C into a single build. When that build succeeds, both Editor B and Editor C recognize their commits as deployed without running redundant builds.
-- **Host Swap Mutex & Monotonicity:** Host binary swaps remain strictly serialized and monotonic via `host-swap.lock` (`flock -x $STATE_DIR/host-swap.lock`) and lineage verification (`git merge-base --is-ancestor "$PREV_SHA" "$SHA"`), preventing stale binary overwrites.
-- **Merge Serialization:** `oc-ship-chain` serializes Leg 3 (fast-forward merge) via `ship.lock`.
-
-```mermaid
-flowchart TD
-    E1["Editor 1 (Push A)"] -->|Dispatches| R1["Carrier Build 1 (Active on A)"]
-    E2["Editor 2 (Push B)"] -->|Queues| R2["Carrier Build 2 (Pending on B)"]
-    E3["Editor 3 (Push C)"] -->|Replaces Pending| R3["Carrier Build 3 (Pending on C)"]
-    R1 -->|Build 1 Finishes| S1["Swap A to Host"]
-    R3 -->|Build 3 Finishes on C| S2["Swap C to Host (Coalesced B+C)"]
-    S2 -.->|Ancestry Match| ACK2["Editor 2 Acknowledged (B in C)"]
-    S2 -.->|Direct Match| ACK3["Editor 3 Acknowledged (C)"]
-```
-
-## Features-compat gate — no silent feature-loss swaps (HQ ruling 2026-09-04, MANDATORY) [LANE]
-
-`oc-deploy swap-execute` **refuses** any artifact whose feature set drops a feature present in `deployed.meta.json` (exit 4, journal `features-drop-gate`, markers untouched) unless the operator passes `--allow-features-drop` explicitly. Feature *additions* pass freely; *drops* are the failure class. Enforced in-code (selftest 17p/17q). Rationale: the 06:36:06Z rogue swap (run `33844429519`, `features="telegram"` over a live `telegram,code-graph` binary) killed structural memory for 12h — and the 18:57Z f3c03269 swap was the same class (no-tests artifact, auto-consumed). The gate would have refused both.
-
 ## Cross-lane message delivery discipline (owner order 2026-09-04 22:31Z) [LANE]
 
 Lane-to-lane and lane-to-HQ `session_notify` traffic MUST default to deferred delivery; immediate delivery is the exception, not the default. Evidence: 2026-09-04 logs show 1267 `now`-mode deliveries vs 7 deferred — most were status receipts that interrupted working lanes mid-task.
@@ -568,7 +388,7 @@ Work notifications go **sender → resource-owner directly**. No intermediary la
 **The rule — the claim is a LOCK, and it is taken EARLIER than the dispatch:**
 
 1. **Claim at recognition, not at dispatch.** The moment a lane reads an issue and judges it inside its designated domain (see §Designated Domain Affinity above), it claims it — `oc-ledger claim <issue>` — BEFORE it starts work, and independently of whether a dispatch wire has arrived. The dispatch is a notification; the claim is the lock.
-2. **First claim wins, and it is exclusive.** A lane that finds an OPEN claim-ref for an issue does not start it, does not dispatch it, and does not "help" — the owning lane holds it. The claim row is the fleet's mutual-exclusion primitive; nothing else is. This is the recognition-side twin of the dispatch-side rule already in force (verify-unclaimed before dispatch, §Dispatch Eligibility).
+2. **First claim wins, and it is exclusive.** A lane that finds an OPEN claim-ref for an issue does not start it, does not dispatch it, and does not "help" — the owning lane holds it. The claim row is the fleet's mutual-exclusion primitive; nothing else is. This is the recognition-side twin of the dispatch-side rule already in force (verify-unclaimed before dispatch, `triage.md` §Dispatch Eligibility).
 3. **Why earlier closes the double-dispatch window:** double dispatch happens because routing decides BEFORE any lane holds the issue — two dispatchers reading the same free backlog can each pick a lane, and both start. Moving the claim to the recognition instant puts the lock on the issue before a second dispatcher can read it as free, which is also what makes `DISPATCHABLE = unclaimed AND vetted AND NOT landed` honest rather than aspirational.
 4. **An early claim carries an early release duty.** A lane that claims and then cannot proceed releases with `oc-ledger stamp unclaim "<what>"` — `unclaim` is a ledger KIND, not a verb (the enum is closed), and a `note` row closes nothing and leaves the issue reading CLAIMED. An early claim left stale is a hold on the work, not a safety net.
 
@@ -591,18 +411,6 @@ When engaging the owner — especially when time has elapsed since the dialogue 
 
 ## Open Questions register — the sanctioned "blocked on you" channel [LANE]
 **MOVED 2026-09-27.** The contract now lives at `docs/instruments/open-questions.md` **in the meta-factory repo (`/root/agent-factories/`) — NOT resolvable from this skill tree**, which is why the in-corpus authorities stay `tools/docs/RC-CONTRACT.md` and this file; authored by the Open Questions instrument lane (owner order 2026-09-27). It reaches the skill-reload path through the **profile home's** `skills/meta-factory/open-questions.md` (`~/.opencrabs/profiles/ops/skills/meta-factory/open-questions.md`), a symlink to that file's template half — one inode, two paths, so the halves cannot drift. The heading and its position are kept so the `[LANE]` tag keeps resolving. The moved text was compared byte-identical to this section before the move; two deliberate corrections (the page-URL mechanism, read from the tool; one de-positioned line citation) are disclosed in the new file. Do not restate the contract here — a second copy is the drift this carve removed.
-
-## Upstream PR filing — base CI gate pre-claim (Duty-4 proposal, theme-1 lane, owner-approved 2026-09-06) [LANE]
-
-Before filing an upstream PR, read base-main CI gate state with the owning
-tool rather than polling by hand (lens J / F28): `tools/harvest/oc-pr-fault-scope
-<pr#> --run <id>` returns **IN-SCOPE** (the PR owns the failure) or
-**BASE-FAULT** (zero intersection — do NOT chase), and `tools/harvest/oc-harvest-sweep`
-runs the mechanical pre-gate legs. Pre-claim any OWNERLESS red files by
-carrying a sweep commit in the PR itself (Session-Id-only trailer, no
-Issue-Ref). Do NOT rely on sequencing comments or separate base-repair PRs
-landing first — the 2026-09-05 #1394/#1393/#1395 out-of-order merge (fork #103
-incident) proved sequencing comments don't protect merge order.
 
 ## Verification during a truncated-output window is not verification (Duty-4 proposal, owner-approved 2026-09-06; sharpens AGENTS.md truncated-output law)
 
