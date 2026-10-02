@@ -31,6 +31,18 @@
 #       --unit is required; --pr/--issue narrow the match. --dry-run lists only.
 #   sync [--repo <path>] [--state-file <path>]
 #       Fetches live upstream PRs, resolves against git DAG, updates harvest-registry.json.
+#   walk [--repo <path>] [--upstream <owner/repo>] [--state-file <path>] [--json] [--no-write]
+#       #761 step 3 (upstream-merge-runbook.md, sync step 12): re-verifies every
+#       OPEN `not-upstreamable` row's three premises -- (a) SURFACE
+#       (declaration-level, #633/#758 -- never a by-name match), (b) BRANCH SET,
+#       (c) REASON -- and prints a REPORT naming each row whose premise CHANGED,
+#       by its `unit` (the register's upsert key; rows carry no separate id). A
+#       row carrying no `branches` cannot have premise (b) verified at all, so
+#       it is reported UNCOVERED -- a declaration-completeness gap, disclosed
+#       once per run -- never as a premise that moved. Dry-run by default: the
+#       only write is `verified_at` on rows whose premises all held; --no-write
+#       suppresses it. REMOVAL IS FORBIDDEN -- a reported row is a FINDING,
+#       never a deletion. Exits 1 on a moved premise, 0 otherwise.
 #   --help | -h
 #       Prints usage and exits 0 (RC-CONTRACT rule).
 #   --selftest
@@ -81,6 +93,18 @@ Usage:
       not-upstreamable row and are carried forward on a re-record.
   $PROG purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
   $PROG sync [--repo <path>] [--state-file <path>]
+  $PROG walk [--repo <path>] [--upstream <owner/repo>] [--state-file <path>] [--json] [--no-write]
+      #761 step 3 (upstream-merge-runbook.md, sync step 12): re-verifies every
+      OPEN 'not-upstreamable' row's three premises at sync time --
+      (a) SURFACE (declaration-level, #633/#758 -- never a by-name match),
+      (b) BRANCH SET, (c) REASON -- and prints a REPORT naming each row whose
+      premise CHANGED, by its 'unit' (the register's upsert key; rows carry no
+      separate id). A row carrying no 'branches' cannot have premise (b)
+      verified at all, so it is reported UNCOVERED -- a declaration-completeness
+      gap, disclosed once per run -- never as a premise that moved. Dry-run by
+      default: the only write is 'verified_at' on rows whose premises all held;
+      --no-write suppresses it. REMOVAL IS FORBIDDEN -- a reported row is a
+      FINDING, never a deletion. Exits 1 when a premise moved, 0 otherwise.
   $PROG clusters [--repo <path>] [--open-fix] [--json] [--clock]
       Derives the ISSUE CLUSTERS the soak gate keys on: fork-only commits
       grouped by their canonical issue ref, filtered on the ISSUE TITLE for
@@ -1410,7 +1434,9 @@ mock_issue_state = os.environ.get('OC_HARVEST_MOCK_ISSUE_STATE')
 try:
     prs = get_prs(upstream_repo, mock_prs)
 except Exception as e:
-    if os.path.exists(registry_file) and action == 'check':
+    # #761 step 3: `walk` reads the registry and the git DAG, never the upstream
+    # PR list, so an unreachable upstream must not kill it with rc=3.
+    if os.path.exists(registry_file) and action in ('check', 'walk'):
         with open(registry_file) as f:
             cached = json.load(f)
         prs = cached.get('prs', [])
@@ -2400,6 +2426,297 @@ elif action == 'clusters':
                       % ', '.join('#%d' % n for n in r['linked']))
     sys.exit(0)
 
+elif action == 'walk':
+    # #761 step 3 (law: upstream-merge-runbook.md, sync step 12) -- the
+    # fork-only SYNC RE-VERIFICATION LEG.
+    #
+    # A force-push rewrites `origin/main`, so the one fact a fork-only
+    # declaration asserts -- upstream lacks the surface this repairs -- is
+    # exactly the fact a sync can change. A declaration never re-read is a
+    # note, not a control.
+    #
+    # Per OPEN `not-upstreamable` row, three premises:
+    #   (a) SURFACE    -- does upstream still lack the surface the row names?
+    #                     DECLARATION-LEVEL (#633/#758): the declarations the
+    #                     row's own unit ADDED are derived from the `+` side of
+    #                     its commits and tested against upstream; a name
+    #                     carried upstream under an EQUAL normalised declaration
+    #                     header is the signal. NEVER a by-name symbol match --
+    #                     a name present upstream under a DIVERGED signature is
+    #                     the fork's own substance and is reported as such.
+    #                     TEST-path declarations are excluded from the signal:
+    #                     a test the unit added is not the PRODUCT surface the
+    #                     row names (the sibling `fork_only_surface_references`
+    #                     drops them for the same reason). The count excluded is
+    #                     disclosed, never silent.
+    #   (b) BRANCH SET -- does the row's `branches` set still resolve on the fork?
+    #                     A row carrying NO `branches` cannot have this premise
+    #                     verified at all -- reported UNCOVERED (a
+    #                     declaration-completeness gap, disclosed once per run),
+    #                     NEVER as a premise that moved. Measured 2026-10-02:
+    #                     all 9 live rows carry none, so a naive walk would
+    #                     report 9/9 moved on its first run -- noise
+    #                     indistinguishable from a real finding.
+    #   (c) REASON     -- do the fork commits the recorded `reason`/`revert`
+    #                     cite still resolve? A FULL 40-hex sha that no longer
+    #                     resolves is unambiguous and CHANGED. A SHORTER token
+    #                     that does not resolve is ambiguous -- a short
+    #                     abbreviation, or the 8-hex display form of a LANE
+    #                     SESSION ID (the live 725 rows cite `lane 42a44908`
+    #                     and two peers) -- so it is reported UNVERIFIED, never
+    #                     as a moved premise.
+    #
+    # REMOVAL IS FORBIDDEN (harvest.md Phase 7c): this arm REPORTS a stale row,
+    # it never deletes one. SILENCE IS NOT RETENTION: a premise that no longer
+    # holds is a FINDING printed by the row's `unit` (the register's upsert key;
+    # rows carry no separate id), never a quiet skip -- and a premise the
+    # register does not let us check is printed as UNVERIFIED, because an
+    # unverifiable check that reports clean is the #485 defect in a new costume.
+    #
+    # Dry-run by default: the ONLY write is `verified_at` on rows whose premises
+    # ALL held AND were all checkable -- an UNCOVERED row is never stamped, that
+    # would assert a check that never happened. `--no-write` suppresses even
+    # that. Exit 1 when a premise moved, 0 otherwise -- an UNVERIFIED or
+    # UNCOVERED premise is reported, never silent, but neither is a change:
+    # there is nothing to dispose of until the register carries it.
+    as_json = '--json' in sys.argv
+    no_write = '--no-write' in sys.argv
+    walk_base = 'adolfousier/main'
+    now_ts = int(os.environ.get('OC_HARVEST_NOW_TS') or time.time())
+    walk_stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now_ts))
+
+    if not registry_file or not os.path.exists(registry_file):
+        sys.stderr.write('oc-harvest-census walk: registry not found (%s)\n' % registry_file)
+        sys.exit(3)
+    with open(registry_file) as f:
+        wdata = json.load(f)
+    wrecords = wdata.get('manual_records', []) or []
+    open_rows = [r for r in wrecords
+                 if isinstance(r, dict)
+                 and oc_claims.manual_record_status(r) == oc_claims.MANUAL_STATUS_NOT_UPSTREAMABLE]
+
+    wcommits = get_ahead_commits(repo_path, mock_commits)
+    wby_issue = build_commits_by_issue(wcommits)
+    # #761 step 3: a unit's declarations are read from ITS OWN commits, resolved
+    # by the #307-anchored `Issue-Ref` index over ALL refs -- NOT from the
+    # `adolfousier/main..origin/main` delta. The delta is the right set for the
+    # harvest gates, but the walk re-reads declarations of rows whose work may
+    # already have been synced, so an ahead-only source would silently drop the
+    # very units it is meant to re-verify (measured 2026-10-02: 7 of 9 live rows
+    # derived no declaration from the ahead set).
+    try:
+        widx = oc_claims.issue_ref_index(repo_path, '--all')
+    except Exception:
+        widx = None
+
+    def _walk_row_issues(r):
+        # The row's own issue set. A NUMERIC `unit` is a fallback, used only
+        # when the row carries no issue at all -- the live duplicate 725 row
+        # has `issue: null` while its unit names the issue.
+        s = set()
+        for _v in ([r.get('issue')] + list(r.get('issues') or [])):
+            try:
+                if _v is not None and str(_v).strip():
+                    s.add(int(_v))
+            except (TypeError, ValueError):
+                pass
+        if not s and str(r.get('unit') or '').strip().isdigit():
+            s.add(int(str(r['unit']).strip()))
+        return s
+
+    def _walk_sha_tokens(text):
+        return sorted(set(re.findall(r'(?<![0-9a-fA-F])[0-9a-f]{7,40}(?![0-9a-fA-F])', text or '')))
+
+    changed, unverified, uncov, verified = [], [], [], []
+    for r in open_rows:
+        issues = _walk_row_issues(r)
+        prem = {}
+
+        # ---- (a) SURFACE ----------------------------------------------------
+        unit_commits = []
+        for _iss in sorted(issues):
+            try:
+                _shas = oc_claims.resolve_issue_commits(repo_path, _iss, index=widx)
+            except Exception:
+                _shas = []
+            for _sha in _shas:
+                unit_commits.append({'sha': _sha})
+        if not unit_commits:
+            # No anchored commit at all: fall back to the ahead delta so a
+            # trailer-less unit still has a chance to derive (and if it cannot,
+            # the UNVERIFIED arm below says so by name).
+            for _iss in sorted(issues):
+                unit_commits.extend(wby_issue.get(_iss, []))
+        added = derive_added_declarations(unit_commits, repo_path)
+        if not added:
+            prem['a'] = ('UNVERIFIED',
+                         'no added declaration derivable from the unit (%d anchored commit(s) for issue(s) %s)'
+                         % (len(unit_commits), sorted(issues) or 'none'))
+        else:
+            # Test-path declarations are not the PRODUCT surface the row names
+            # (the sibling `fork_only_surface_references` drops them too). A
+            # unit whose only added declarations are tests has no product
+            # surface derivable -> UNVERIFIED, not a silent pass.
+            _prod = [(f, s) for (f, s) in added if not _is_test_path(f)]
+            _test_only = len(added) - len(_prod)
+            if not _prod:
+                prem['a'] = ('UNVERIFIED',
+                             'only %d test-path declaration(s) added -- no product surface derivable' % _test_only)
+            else:
+                present, _absent = subject_present_upstream(_prod, repo_path, walk_base)
+                arrived, diverged, weak = [], [], []
+                _bodies = {}
+                for f_path, sym in present:
+                    for _tag, _spec in (('up', '%s:%s' % (walk_base, f_path)),
+                                        ('fork', 'origin/main:%s' % f_path)):
+                        _k = (_tag, f_path)
+                        if _k not in _bodies:
+                            _rr = subprocess.run(['git', '-C', repo_path, 'show', _spec],
+                                                 capture_output=True, text=True)
+                            _bodies[_k] = _rr.stdout if _rr.returncode == 0 else ''
+                    _uh = _decl_header_for_symbol(_bodies[('up', f_path)], sym)
+                    _fh = _decl_header_for_symbol(_bodies[('fork', f_path)], sym)
+                    _lbl = '%s::%s' % (f_path, sym)
+                    if _fh and _uh:
+                        (arrived if _fh == _uh else diverged).append(_lbl)
+                    else:
+                        weak.append(_lbl)
+                _detail = 'upstream carries %d of %d product declaration(s): %s' % (
+                    len(arrived), len(_prod), ', '.join(arrived) if arrived else '(none)')
+                if _test_only:
+                    _detail += ' | %d test-path declaration(s) excluded from the SURFACE signal' % _test_only
+                if diverged:
+                    _detail += ' | %d present by name under a DIVERGED declaration (fork-only substance survives): %s' % (
+                        len(diverged), ', '.join(diverged))
+                if weak:
+                    _detail += ' | %d present by name with no readable declaration header on one side -- disclosed, not judged: %s' % (
+                        len(weak), ', '.join(weak))
+                prem['a'] = ('CHANGED' if arrived else 'HOLDS', _detail)
+
+        # ---- (b) BRANCH SET -------------------------------------------------
+        # A row carrying no `branches` has nothing recorded that a rewrite
+        # could have dropped, so the premise is UNCOVERED -- a
+        # declaration-completeness gap, NOT a moved premise (measured
+        # 2026-10-02: all 9 live rows carry none).
+        branches = [str(b).strip() for b in (r.get('branches') or []) if str(b).strip()]
+        if not branches:
+            prem['b'] = ('UNCOVERED',
+                         'row carries no `branches` set -- premise (b) cannot be verified at all '
+                         '(declaration-completeness gap, not a change)')
+        else:
+            _gone = [b for b in branches
+                     if not any(ref_exists(_cand, repo_path) for _cand in
+                                ('refs/heads/%s' % b, 'refs/remotes/origin/%s' % b,
+                                 'origin/%s' % b, b))]
+            prem['b'] = ('CHANGED' if _gone else 'HOLDS',
+                         ('branch(es) no longer on the fork: %s' % ', '.join(_gone)) if _gone
+                         else ('all %d recorded branch(es) resolve' % len(branches)))
+
+        # ---- (c) REASON -----------------------------------------------------
+        _cites = sorted(set(_walk_sha_tokens(r.get('reason')) + _walk_sha_tokens(r.get('revert'))))
+        if not _cites:
+            prem['c'] = ('UNCOVERED',
+                         'the recorded reason/revert cites no commit sha (prose judgment stays a lane decision, not mechanized here)')
+        else:
+            _dead, _ambig = [], []
+            for s in _cites:
+                if subprocess.run(['git', '-C', repo_path, 'cat-file', '-e', s + '^{commit}'],
+                                  capture_output=True).returncode == 0:
+                    continue
+                # A FULL 40-hex sha that no longer resolves is unambiguous: the
+                # commit the reason cites is gone from the fork. A SHORTER token
+                # is ambiguous -- a short abbreviation that may have been
+                # rewritten away, or the 8-hex display form of a LANE SESSION ID
+                # (the live 725 rows cite `lane 42a44908` and two peers, none of
+                # which is a commit). The ambiguous class is UNVERIFIED, so a
+                # lane id is never reported as a moved premise.
+                (_dead if len(s) == 40 else _ambig).append(s)
+            _parts = []
+            if _dead:
+                _parts.append('cited commit sha(s) no longer resolve in the fork: %s' % ', '.join(_dead))
+            if _ambig:
+                _parts.append('%d short token(s) do not resolve as commits -- ambiguous (a short abbreviation, or a lane session id), not judged: %s'
+                              % (len(_ambig), ', '.join(_ambig)))
+            if not _parts:
+                _parts.append('all %d cited commit sha(s) resolve' % len(_cites))
+            prem['c'] = ('CHANGED' if _dead else ('UNVERIFIED' if _ambig else 'HOLDS'),
+                         ' | '.join(_parts))
+
+        entry = {'unit': str(r.get('unit')), 'issue': r.get('issue'), 'pr': r.get('pr'),
+                 'reason': str(r.get('reason') or ''),
+                 'premises': {k: {'verdict': v[0], 'detail': v[1]} for k, v in sorted(prem.items())}}
+        moved = [k for k, v in sorted(prem.items()) if v[0] == 'CHANGED']
+        unsolved = [k for k, v in sorted(prem.items()) if v[0] == 'UNVERIFIED']
+        missing = [k for k, v in sorted(prem.items()) if v[0] == 'UNCOVERED']
+        if moved:
+            entry['moved'] = moved
+            changed.append(entry)
+        elif unsolved or missing:
+            # An UNCOVERED premise is a declaration-completeness gap, NOT a
+            # change -- but the row is also NOT attested: verified_at asserts a
+            # check that never happened, so it is withheld. Disclosed here.
+            if unsolved:
+                entry['unverified'] = unsolved
+            if missing:
+                entry['uncovered'] = missing
+            uncov.append(entry)
+        else:
+            verified.append(entry)
+            r['verified_at'] = walk_stamp
+
+    if not no_write and verified:
+        with open(registry_file, 'w') as f:
+            json.dump(wdata, f, indent=2)
+
+    wsummary = {'open_rows': len(open_rows), 'changed': len(changed),
+                'unverified_or_uncovered': len(uncov), 'verified': len(verified),
+                'stamp': walk_stamp, 'wrote': bool(not no_write and verified)}
+
+    if as_json:
+        print(json.dumps({'registry': registry_file, 'base': walk_base,
+                          'changed': changed, 'unverified_or_uncovered': uncov,
+                          'verified': verified, 'summary': wsummary}, indent=2))
+    else:
+        print('=== #761 step-3 walk: fork-only sync re-verification (%s) ==='
+              % ('dry run; verified_at stamped' if not no_write else 'READ-ONLY (--no-write)'))
+        print('registry: %s' % registry_file)
+        print('base: %s   OPEN `not-upstreamable` rows: %d' % (walk_base, len(open_rows)))
+        print('')
+        print('CHANGED -- premise moved (%d)' % len(changed))
+        for e in changed:
+            print('  - unit=%s issue=%s pr=%s  premise(s) moved: %s'
+                  % (e['unit'], e['issue'], e['pr'], ', '.join(e['moved'])))
+            for _k in sorted(e['premises']):
+                if e['premises'][_k]['verdict'] == 'CHANGED':
+                    print('      (%s) %s' % (_k, e['premises'][_k]['detail']))
+            if e['reason']:
+                print('      reason on file: %s' % e['reason'][:200])
+            print('      -> disposition (re-declare / re-scope / close) is a LANE decision; this leg never deletes.')
+        print('')
+        print('UNVERIFIED / UNCOVERED -- not derivable, NOT attested (%d)' % len(uncov))
+        for e in uncov:
+            print('  - unit=%s issue=%s  unverified: %s'
+                  % (e['unit'], e['issue'],
+                     ', '.join(e.get('unverified') or e.get('uncovered') or [])))
+            for _k in sorted(e['premises']):
+                _v = e['premises'][_k]['verdict']
+                if _v in ('UNVERIFIED', 'UNCOVERED'):
+                    print('      (%s) %s' % (_k, e['premises'][_k]['detail']))
+        print('')
+        print('VERIFIED -- all premises held (%d)%s'
+              % (len(verified), '' if no_write else ' -- verified_at=%s' % walk_stamp))
+        for e in verified:
+            print('  - unit=%s issue=%s' % (e['unit'], e['issue']))
+            for _k in sorted(e['premises']):
+                print('      (%s) %s' % (_k, e['premises'][_k]['detail']))
+        print('')
+        print('summary: %d OPEN row(s) -- %d CHANGED, %d UNVERIFIED/UNCOVERED, %d VERIFIED%s'
+              % (len(open_rows), len(changed), len(uncov), len(verified),
+                 '' if no_write else ' (stamped %s)' % walk_stamp))
+        print('         no row deleted: REMOVAL IS FORBIDDEN (harvest.md Phase 7c) -- a reported row is a FINDING, not a deletion.')
+
+    sys.exit(1 if changed else 0)
+
 elif action in ('scan', 'sync'):
     as_json = '--json' in sys.argv
     commits = get_ahead_commits(repo_path, mock_commits)
@@ -2643,6 +2960,26 @@ cmd_sync() {
     esac
   done
   run_engine "sync" "$UPSTREAM_REPO" "$REPO" "$REGISTRY_FILE" ""
+}
+
+cmd_walk() {
+  # #761 step 3: the fork-only sync re-verification leg. DRY-RUN BY DEFAULT --
+  # the engine's only write is `verified_at` on rows whose premises all held;
+  # --no-write suppresses even that. There is deliberately NO apply flag that
+  # could delete a row: REMOVAL IS FORBIDDEN (harvest.md Phase 7c).
+  local json_flag="" no_write_flag=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
+      --upstream) [ $# -ge 2 ] || { echo "oc-harvest-census: --upstream needs a value" >&2; usage; }; UPSTREAM_REPO="$2"; shift 2 ;;
+      --state-file) [ $# -ge 2 ] || { echo "oc-harvest-census: --state-file needs a value" >&2; usage; }; REGISTRY_FILE="$2"; shift 2 ;;
+      --json) json_flag="--json"; shift ;;
+      --no-write) no_write_flag="--no-write"; shift ;;
+      -h|--help) usage 0 ;;
+      *) usage ;;
+    esac
+  done
+  run_engine "walk" "$UPSTREAM_REPO" "$REPO" "$REGISTRY_FILE" "" "$DECLARED_SUBJECT" "" $json_flag $no_write_flag
 }
 
 cmd_purge() {
@@ -2965,6 +3302,77 @@ build_gate4_fixture() {
   git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#901"
 
   git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+}
+
+# --- #761 step 3 walk fixture -------------------------------------------------
+# The walk's premise (a) reads DECLARATIONS off real diffs, so a mock-only
+# fixture would test nothing -- this builds a real repo whose upstream ref and
+# fork range exercise all three premises end to end.
+#
+# Shape (three rows, one per premise class):
+#   A  base                      src/base.rs -> upstream copy
+#   B1 fork #981                 src/ok.rs     :: ok_fn     (upstream LACKS it)
+#   B2 fork #982                 src/stale.rs  :: stale_fn  (upstream WILL carry it)
+#   B3 fork #983                 src/nb.rs     :: nb_fn     (upstream LACKS it)
+#   branch feat/walk-ok          -> premise (b) checkable for the `walk-ok` row
+#   B4 fork #984                 src/gone.rs   :: gone_fn   (upstream LACKS it)
+#   (no branch feat/never-existed) -> the `walk-branchgone` row's premise (b)
+#                                MOVES: a recorded branch the fork no longer has
+#   A2 upstream (post-sync)      src/stale.rs carrying stale_fn with the SAME
+#                                normalised header -> the SYNC event that makes
+#                                the `walk-stale` row's premise (a) MOVE.
+# `$1` = repo dir. Echoes nothing; leaves refs/remotes/{adolfousier,origin}/main
+# and branch feat/walk-ok in place, and prints the four fork shas on stdout as
+# `B1 B2 B3 B4` for the caller to build a registry whose reason cites them.
+build_walk_fixture() {
+  _wd="$1"
+  mkdir -p "$_wd/src"
+  git -C "$_wd" init -q
+  git -C "$_wd" config user.name fixture
+  git -C "$_wd" config user.email fixture@example.invalid
+  git -C "$_wd" config commit.gpgsign false
+
+  printf 'pub fn base_fn() -> u8 {\n    1\n}\n' > "$_wd/src/base.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "base"
+  _wA="$(git -C "$_wd" rev-parse HEAD)"
+  git -C "$_wd" update-ref refs/remotes/adolfousier/main "$_wA"
+
+  printf 'pub fn ok_fn() -> u8 {\n    2\n}\n' > "$_wd/src/ok.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "walk ok" --trailer "Issue-Ref: leshchenko1979/opencrabs#981"
+  _wB1="$(git -C "$_wd" rev-parse HEAD)"
+
+  printf 'pub fn stale_fn() -> u8 {\n    3\n}\n' > "$_wd/src/stale.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "walk stale" --trailer "Issue-Ref: leshchenko1979/opencrabs#982"
+  _wB2="$(git -C "$_wd" rev-parse HEAD)"
+
+  printf 'pub fn nb_fn() -> u8 {\n    4\n}\n' > "$_wd/src/nb.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "walk nobranch" --trailer "Issue-Ref: leshchenko1979/opencrabs#983"
+  _wB3="$(git -C "$_wd" rev-parse HEAD)"
+
+  printf 'pub fn gone_fn() -> u8 {\n    5\n}\n' > "$_wd/src/gone.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "walk branchgone" --trailer "Issue-Ref: leshchenko1979/opencrabs#984"
+  _wB4="$(git -C "$_wd" rev-parse HEAD)"
+
+  git -C "$_wd" update-ref refs/remotes/origin/main "$_wB4"
+  git -C "$_wd" branch feat/walk-ok "$_wB1"
+
+  # A2: the sync event -- upstream NOW carries stale_fn under the SAME
+  # normalised declaration header, so the walk's declaration-level test reads it
+  # as ARRIVED (a by-name match alone could not tell this from a divergence).
+  git -C "$_wd" checkout -q -b upstream-sim "$_wA"
+  printf 'pub fn stale_fn() -> u8 {\n    3\n}\n' > "$_wd/src/stale.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "upstream gains stale_fn"
+  _wA2="$(git -C "$_wd" rev-parse HEAD)"
+  git -C "$_wd" checkout -q -
+  git -C "$_wd" update-ref refs/remotes/adolfousier/main "$_wA2"
+
+  printf '%s %s %s %s\n' "$_wB1" "$_wB2" "$_wB3" "$_wB4"
 }
 
 cmd_selftest() {
@@ -5203,6 +5611,128 @@ C601REOF
     echo "  bad  - #625 the widened twin overrode the delta anchor; got rc=$rc ($out)"
   fi
 
+  # ================= #761 step 3: the `walk` verb =========================
+  # Acceptance (the law's own DONE): the dry run names every row whose premise
+  # changed, BY ITS UNIT; no row was deleted; rows re-verified unchanged carry a
+  # fresh `verified_at`. Plus the two corrections HQ dispatched mid-build:
+  # branches-absent is UNCOVERED (never a moved premise), and the report keys on
+  # `unit` (rows carry no `id`).
+  local wrepo="$selftest_tmp/walk_repo"
+  local wreg="$selftest_tmp/walk_reg.json"
+  local wreg_ro="$selftest_tmp/walk_reg_ro.json"
+  local wB1 wB2 wB3 wB4
+  read -r wB1 wB2 wB3 wB4 <<EOF
+$(build_walk_fixture "$wrepo")
+EOF
+  cat << WREGEOF > "$wreg"
+{"manual_records": [
+  {"unit": "walk-ok", "pr": 0, "issue": 981, "issues": [981], "status": "not-upstreamable",
+   "branches": ["feat/walk-ok"],
+   "reason": "fork-only: upstream lacks ok_fn (fix $wB1)"},
+  {"unit": "walk-stale", "pr": 0, "issue": 982, "issues": [982], "status": "not-upstreamable",
+   "reason": "fork-only: upstream lacks stale_fn (no sha cited here)"},
+  {"unit": "walk-nobranch", "pr": 0, "issue": 983, "issues": [983], "status": "not-upstreamable",
+   "reason": "fork-only: upstream lacks nb_fn (fix $wB3)"},
+  {"unit": "walk-branchgone", "pr": 0, "issue": 984, "issues": [984], "status": "not-upstreamable",
+   "branches": ["feat/never-existed"],
+   "reason": "fork-only: upstream lacks gone_fn (fix $wB4)"}
+]}
+WREGEOF
+  cp "$wreg" "$wreg_ro"
+
+  local w_out="" w_rc=0
+  w_out="$(OC_HARVEST_MOCK_PRS="$mock_prs" \
+    run_engine "walk" "mock/repo" "$wrepo" "$wreg" "" "" "" 2>&1)" || w_rc=$?
+
+  # Section slices, so an assertion cannot be satisfied by the wrong section.
+  local w_changed w_uncov w_verified
+  w_changed="$(printf '%s\n' "$w_out" | awk '/^CHANGED --/{f=1;next} /^UNVERIFIED \/ UNCOVERED/{f=0} f')"
+  w_uncov="$(printf '%s\n' "$w_out" | awk '/^UNVERIFIED \/ UNCOVERED/{f=1;next} /^VERIFIED --/{f=0} f')"
+  w_verified="$(printf '%s\n' "$w_out" | awk '/^VERIFIED --/{f=1;next} /^summary:/{f=0} f')"
+
+  # (1) ACCEPTANCE: the deliberately-stale row is reported BY ITS UNIT, with the
+  #     premise that moved (a: the declaration arrived upstream).
+  if [ "$w_rc" -eq 1 ] && oc_has "$w_changed" "unit=walk-stale" \
+     && oc_has "$w_changed" "premise(s) moved: a" \
+     && oc_has "$w_changed" "src/stale.rs::stale_fn"; then
+    ok "#761-3 walk: a stale row is named BY ITS UNIT with the premise that moved (a: the added declaration arrived upstream)"
+  else
+    echo "  bad  - #761-3 walk stale-row-by-unit; got rc=$w_rc ($w_out)"
+    return 1
+  fi
+
+  # (2) The unchanged row is NOT reported as changed, and lands in VERIFIED.
+  if ! oc_has "$w_changed" "unit=walk-ok" && oc_has "$w_verified" "unit=walk-ok"; then
+    ok "#761-3 walk: an unchanged row is not a moved premise -- it is VERIFIED"
+  else
+    echo "  bad  - #761-3 walk unchanged-row leaked into CHANGED; got ($w_out)"
+    return 1
+  fi
+
+  # (3) HQ correction 2: a row carrying NO `branches` is UNCOVERED -- a
+  #     declaration-completeness gap, NEVER a moved premise -- and is NOT stamped.
+  if oc_has "$w_uncov" "unit=walk-nobranch" && oc_has "$w_uncov" "cannot be verified at all" \
+     && ! oc_has "$w_changed" "unit=walk-nobranch"; then
+    ok "#761-3 walk: a row with no \`branches\` is UNCOVERED, not a moved premise (HQ correction 2)"
+  else
+    echo "  bad  - #761-3 walk branches-absent must be UNCOVERED; got ($w_out)"
+    return 1
+  fi
+
+  # (3b) The OTHER premise-(b) arm: a row whose recorded branch is GONE from the
+  #      fork is a MOVED premise (b) -- the `_gone`-non-empty path, distinct from
+  #      the branches-absent UNCOVERED arm above. Without this leg that whole
+  #      branch of the code is untested.
+  if oc_has "$w_changed" "unit=walk-branchgone" && oc_has "$w_changed" "premise(s) moved: b" \
+     && oc_has "$w_changed" "branch(es) no longer on the fork: feat/never-existed"; then
+    ok "#761-3 walk: a recorded branch gone from the fork moves premise (b) (the other (b) arm)"
+  else
+    echo "  bad  - #761-3 walk branch-gone must move premise (b); got ($w_out)"
+    return 1
+  fi
+
+  # (4) NO ROW WAS DELETED, and `verified_at` lands ONLY on the fully-verified
+  #     row -- stamping an UNCOVERED row would assert a check that never ran.
+  local w_n w_okst w_stalest w_nbst
+  w_n="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["manual_records"]))' "$wreg" 2>/dev/null || echo 0)"
+  w_okst="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-ok"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
+  w_stalest="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-stale"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
+  w_nbst="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-nobranch"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
+  if [ "$w_n" -eq 4 ] && [ -n "$w_okst" ] && [ -z "$w_stalest" ] && [ -z "$w_nbst" ]; then
+    ok "#761-3 walk: no row deleted (4/4 present); verified_at stamped ONLY on the unchanged, fully-checkable row"
+  else
+    echo "  bad  - #761-3 walk retention/stamp; n=$w_n okst='$w_okst' stale='$w_stalest' nb='$w_nbst'"
+    return 1
+  fi
+
+  # (5) --no-write leaves the registry BYTE-IDENTICAL (dry-run by default, and
+  #     the read-only flag suppresses even the verified_at write).
+  local w_ro_before w_ro_after
+  w_ro_before="$(md5sum "$wreg_ro" | cut -d' ' -f1)"
+  OC_HARVEST_MOCK_PRS="$mock_prs" \
+    run_engine "walk" "mock/repo" "$wrepo" "$wreg_ro" "" "" "" --no-write >/dev/null 2>&1
+  w_ro_after="$(md5sum "$wreg_ro" | cut -d' ' -f1)"
+  if [ "$w_ro_before" = "$w_ro_after" ] \
+     && ! oc_has "$(cat "$wreg_ro")" "verified_at"; then
+    ok "#761-3 walk: --no-write leaves the registry byte-identical (dry-run by default)"
+  else
+    echo "  bad  - #761-3 walk --no-write mutated the registry ($w_ro_before -> $w_ro_after)"
+    return 1
+  fi
+
+  # (6) A registry with no OPEN not-upstreamable rows is clean: rc 0, 0 CHANGED.
+  local wreg_empty="$selftest_tmp/walk_reg_empty.json"
+  printf '{"manual_records": [{"unit": "filed-only", "pr": 12, "status": "filed", "reason": "x"}]}\n' > "$wreg_empty"
+  local w_e_rc=0
+  w_out="$(OC_HARVEST_MOCK_PRS="$mock_prs" \
+    run_engine "walk" "mock/repo" "$wrepo" "$wreg_empty" "" "" "" 2>&1)" || w_e_rc=$?
+  if [ "$w_e_rc" -eq 0 ] && oc_has "$w_out" "0 CHANGED" && oc_has "$w_out" "OPEN \`not-upstreamable\` rows: 0"; then
+    ok "#761-3 walk: no OPEN not-upstreamable rows -> rc 0, nothing to report"
+  else
+    echo "  bad  - #761-3 walk empty-registry; got rc=$w_e_rc ($w_out)"
+    return 1
+  fi
+
   echo "selftest: ${ok_n}/${ok_n} OK"
   return 0
 }
@@ -5229,6 +5759,7 @@ case "${1:-}" in
   record) shift; cmd_record "$@" ;;
   purge) shift; cmd_purge "$@" ;;
   sync) shift; cmd_sync "$@" ;;
+  walk) shift; cmd_walk "$@" ;;
   clusters) shift; cmd_clusters "$@" ;;
   --selftest) cmd_selftest ;;
   -h|--help) usage 0 ;;
