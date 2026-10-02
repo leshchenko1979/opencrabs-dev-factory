@@ -789,6 +789,83 @@ def subject_present_upstream(pairs, repo_path, base_ref='adolfousier/main'):
             absent.append((f_path, sym))
     return present, absent
 
+def _decl_header_for_symbol(body, sym):
+    # #758: the DECLARATION HEADER of `sym` inside `body`, normalised so two
+    # spellings of the SAME declaration compare equal. The header runs from the
+    # declaration's own line(s) to the first `{` or `;`; comments are stripped
+    # and whitespace collapsed (including the spaces around punctuation), which
+    # makes the comparison LINE-COUNT AGNOSTIC on purpose -- the fork spreads
+    # `pace_rich`'s signature over five lines where upstream keeps one, and a
+    # formatter's line breaks are not a divergence.
+    if not body or not sym:
+        return None
+    name_re = re.compile(r'(?<![A-Za-z0-9_])' + re.escape(sym) + r'(?![A-Za-z0-9_])')
+    kw_re = re.compile(r'\b(?:fn|static|const|struct|enum|trait|impl|type|mod|union)\b')
+    lines = body.split('\n')
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('//') or stripped.startswith('*') or stripped.startswith('/*'):
+            continue
+        if not name_re.search(line) or not kw_re.search(line):
+            continue
+        acc = []
+        for j in range(i, min(i + 16, len(lines))):
+            part = lines[j]
+            if '//' in part:
+                part = part[:part.index('//')]
+            acc.append(part)
+            joined_probe = ' '.join(acc)
+            if '{' in joined_probe or ';' in joined_probe:
+                break
+        joined = ' '.join(acc)
+        joined = re.sub(r'/\*.*?\*/', ' ', joined)
+        for stop in ('{', ';'):
+            if stop in joined:
+                joined = joined[:joined.index(stop)]
+        joined = re.sub(r'\s+', ' ', joined).strip()
+        joined = re.sub(r'\s*([(),:])\s*', r'\1', joined)
+        # A trailing comma before the close paren is a rustfmt artifact of a
+        # MULTI-LINE signature, not a divergence: the fork spreads a long
+        # signature over lines and rustfmt adds one, while upstream's one-line
+        # form has none. Without this, every reformatted-but-unchanged
+        # signature would raise a spurious NOTE.
+        joined = re.sub(r',\)', ')', joined)
+        return joined
+    return None
+
+def symbol_header_diverged(f_path, sym, repo_path, base_ref, cache):
+    # #758: NAME presence is not DEFINITION presence. `subject_present_upstream`
+    # asks only whether `sym`'s NAME occurs in upstream's copy of the same file,
+    # so a symbol whose fork definition has ALREADY DIVERGED reads PRESENT, its
+    # hunk is never flagged, and the port cannot resolve. #757 is the live
+    # instance: upstream declares `pace_rich(chat, thread_id)` while the fork
+    # declares `pace_rich(chat, thread_id, class) -> RichAdmission`, so
+    # `git apply --check` of the unit patch onto the upstream tip failed on BOTH
+    # files while `check 757` still printed ELIGIBLE.
+    #
+    # Compares the normalised DECLARATION HEADER of `sym` between upstream and
+    # the FORK TIP (`origin/main`, the definition the unit actually carries).
+    # Returns (fork_header, upstream_header) on a POSITIVE, readable mismatch;
+    # None when they agree, when the symbol is not declared on either side, or
+    # when either body cannot be read -- fail-closed on missing evidence, the
+    # same shape as `ref_exists` / `commits_present`. A BODY-ONLY upstream
+    # change (identical signature) is NOT caught: this converts a silent false
+    # green into a disclosed NOTE, it does not become a compiler.
+    def _body(rev):
+        key = (rev, f_path)
+        if key not in cache:
+            cache[key] = _show_at_rev(None, f_path, repo_path, rev=rev)
+        return cache[key]
+    upstream_body = _body(base_ref)
+    fork_body = _body('origin/main')
+    if not upstream_body or not fork_body:
+        return None
+    upstream_hdr = _decl_header_for_symbol(upstream_body, sym)
+    fork_hdr = _decl_header_for_symbol(fork_body, sym)
+    if upstream_hdr is None or fork_hdr is None or upstream_hdr == fork_hdr:
+        return None
+    return fork_hdr, upstream_hdr
+
 def issue_subject_upstream(iss, repo_path, base_ref='adolfousier/main'):
     # Class-2 SUB-RULE (#365): the provenance lookup answers "which fork issue
     # introduced this path?" — never "is that issue's work upstream yet?".
@@ -1791,6 +1868,23 @@ if action == 'check':
         for f_path, sym in sorted(set(absent_pairs)):
             print('ADVISORY: hunk inside fork-only symbol — dropped at packaging (%s :: %s)' % (f_path, sym))
 
+        # #758: NAME presence is not DEFINITION presence. The advisory above
+        # fires only for symbols ABSENT upstream by name, so a hunk inside a
+        # symbol upstream DOES carry -- under a diverged definition -- is never
+        # flagged at all, and the unit reads ELIGIBLE while the port cannot
+        # resolve (#757: `pace_rich` upstream `(chat, thread_id)`, fork
+        # `(chat, thread_id, class) -> RichAdmission`; `git apply --check`
+        # against the upstream tip failed on BOTH files). Disclose the
+        # divergence as a NOTE: a signature change is NOT necessarily a port
+        # blocker -- a fix can legitimately apply to a diverged-but-compatible
+        # symbol -- so this must never refuse.
+        diverged_cache = {}
+        for f_path, sym in sorted(set(present_pairs)):
+            diverged = symbol_header_diverged(f_path, sym, repo_path, base_ref, diverged_cache)
+            if diverged:
+                fork_hdr, upstream_hdr = diverged
+                print('NOTE(HUNK_SYMBOL_DIVERGED): %s :: %s resolves in %s by NAME but its definition has DIVERGED -- fork %r vs upstream %r; the hunk may not apply, verify before packaging' % (f_path, sym, base_ref, fork_hdr[:140], upstream_hdr[:140]))
+
         file_actions = get_affected_file_actions_for_commits(matching_commits, repo_path)
         for f_path, actions in file_actions.items():
             if any(a in ('D', 'M') for a in actions):
@@ -2664,6 +2758,34 @@ build_gate4_fixture() {
     printf 'pub fn orphan_test_fn() -> u8 {\n    8\n}\n' > "$_fx_dir/src/orphan_test.rs"
     git -C "$_fx_dir" add -A
     git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#905"
+    git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+    return 0
+  fi
+
+  if [ "$_fx_mode" = "symbol_diverged" ] || [ "$_fx_mode" = "symbol_same_sig" ]; then
+    # #758 shape: the hunk's enclosing symbol EXISTS upstream by NAME, so the
+    # fork-only advisory never fires for it -- but its fork definition may have
+    # DIVERGED (signature or return type), and then the port cannot resolve:
+    # `git apply --check` fails on the hunk while `check` still reads ELIGIBLE.
+    # `symbol_diverged` rewrites the SIGNATURE; `symbol_same_sig` is the
+    # NEGATIVE CONTROL -- identical signature, body-only difference -- and must
+    # NOT raise the NOTE. Without that control the new signal could fire on
+    # every upstream-present symbol and still pass every leg.
+    if [ "$_fx_mode" = "symbol_diverged" ]; then
+      _fx_sig='pub fn base_fn(extra: u8) -> u8'
+    else
+      _fx_sig='pub fn base_fn() -> u8'
+    fi
+    printf '%s {\n    9\n}\n' "$_fx_sig" > "$_fx_dir/src/base.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "fork change to base_fn" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+
+    # Target #906: a line INSIDE base_fn. The symbol is upstream-present by NAME
+    # in BOTH modes, so gate 4 passes and the unit reads ELIGIBLE either way --
+    # which is precisely the false green #758 reports for the diverged shape.
+    printf '%s {\n    2\n}\n' "$_fx_sig" > "$_fx_dir/src/base.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#906"
     git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
     return 0
   fi
@@ -4070,7 +4192,57 @@ sys.exit(0 if row and row[0].get("status") == "not-upstreamable" else 1)
     return 1
   fi
 
-  # 35. #415 Design B defect 1 (CENSUS twin of dispatch leg 4f): the #292 smoke
+  # --- #758 shape (cases 35-36) ----------------------------------------------
+  # NAME presence is not DEFINITION presence. `subject_present_upstream` asks
+  # only whether the symbol's NAME occurs in upstream's copy of the same file,
+  # so a symbol upstream carries under a DIVERGED definition read PRESENT: its
+  # hunk was never flagged, and `check 757` printed ELIGIBLE while
+  # `git apply --check` of the unit patch onto the upstream tip failed on BOTH
+  # files (#757: `pace_rich` upstream `(chat, thread_id)`, fork
+  # `(chat, thread_id, class) -> RichAdmission`).
+  #
+  # ENV LEAKAGE GUARD: same reason as cases 25-34 -- the suite EXPORTS
+  # OC_HARVEST_MOCK_COMMITS/_SQUASHED and an exported mock commit list wins over
+  # the fixture repo, leaving matching_commits EMPTY and skipping gate 4, which
+  # would make these legs pass VACUOUSLY.
+
+  # 35. DIVERGED header: the enclosing symbol resolves upstream by NAME but the
+  #     fork signature differs. The NOTE must fire and NAME the symbol, and the
+  #     unit must stay ELIGIBLE -- the signal DISCLOSES, it never refuses.
+  fx_div="$selftest_tmp/fx_symbol_diverged"
+  build_gate4_fixture "$fx_div" symbol_diverged
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_div" "$selftest_tmp/mock_reg_fx.json" "906" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && oc_has "$out" "NOTE(HUNK_SYMBOL_DIVERGED)" \
+     && oc_has "$out" "src/base.rs :: base_fn"; then
+    ok "#758 diverged header: ELIGIBLE + NOTE(HUNK_SYMBOL_DIVERGED) naming src/base.rs :: base_fn"
+  else
+    echo "  bad  - diverged-header fixture expected rc=0 ELIGIBLE + NOTE(HUNK_SYMBOL_DIVERGED) naming base_fn, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 36. NEGATIVE CONTROL for 35: the SAME shape with an IDENTICAL signature --
+  #     only the body constant differs. The NOTE must be ABSENT, or the signal
+  #     is not a divergence test at all and case 35 would pass on a check that
+  #     fires for every upstream-present symbol.
+  fx_same="$selftest_tmp/fx_symbol_same_sig"
+  build_gate4_fixture "$fx_same" symbol_same_sig
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_same" "$selftest_tmp/mock_reg_fx.json" "906" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && ! oc_has "$out" "NOTE(HUNK_SYMBOL_DIVERGED)"; then
+    ok "#758 negative control: identical signature -> ELIGIBLE with NO HUNK_SYMBOL_DIVERGED NOTE"
+  else
+    echo "  bad  - same-signature fixture expected rc=0 ELIGIBLE and NO diverged NOTE, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 37. #415 Design B defect 1 (CENSUS twin of dispatch leg 4f): the #292 smoke
   #     fallback is a WEAKER anchor than a resolved swap and may fire ONLY when
   #     the swap path yielded nothing. It can only ever move the anchor EARLIER,
   #     so letting it override a correct swap value can only ever SHORTEN a
@@ -4163,7 +4335,7 @@ sys.exit(0 if row and row[0].get("status") == "not-upstreamable" else 1)
     return 1
   fi
 
-  # 36. #415 Design B defect 2 (step 6): on a TAB row the structured issue=
+  # 38. #415 Design B defect 2 (step 6): on a TAB row the structured issue=
   #     field is AUTHORITATIVE; the prose regex is a LEGACY FALLBACK only,
   #     because it cannot tell a verdict's own issue from one its evidence
   #     merely CROSS-REFERENCES -- measured over the live 1358-row log, 92 of

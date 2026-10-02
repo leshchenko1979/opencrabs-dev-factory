@@ -24,6 +24,12 @@
 # the registry-only leg to be the FIRST failure, proving that leg is
 # load-bearing rather than decoration.
 #
+# #758 — the hunk-advisory's declaration-header divergence check. Two mutations
+# (same §4 machinery): one forces the check to never fire, the other to always
+# fire. Each must redden its OWN leg first -- the positive leg or its negative
+# control respectively -- proving the pair is discriminating rather than a
+# signal that fires (or stays silent) for every upstream-present symbol.
+#
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion
 # guard, process budget cap.
 set -u
@@ -173,13 +179,15 @@ else
   bad "baseline census rc=$rc_base (expected 0)"
 fi
 
-for label in case_a_dropped refuse_all_absent parent_number_dropped empty_derivation_unnamed registry_filter_dropped; do
+for label in case_a_dropped refuse_all_absent parent_number_dropped empty_derivation_unnamed registry_filter_dropped symbol_always_none symbol_always_fire; do
   case "$label" in
     case_a_dropped)           want_ok="#253 shape:"            want_bad="subject-absent fixture" ;;
     refuse_all_absent)        want_ok="#341 shape:"            want_bad="orphan-subject fixture" ;;
     parent_number_dropped)    want_ok="parent-harvested shape:" want_bad="harvested-parent fixture" ;;
     empty_derivation_unnamed) want_ok="inconclusive shape:"    want_bad="inconclusive fixture" ;;
     registry_filter_dropped)  want_ok="check registry-only in-flight overlap -> ELIGIBLE exit 0 (shared-registry exemption)" want_bad="registry-only overlap" ;;
+    symbol_always_none)       want_ok="#758 diverged header:"   want_bad="diverged-header fixture" ;;
+    symbol_always_fire)       want_ok="#758 negative control:"  want_bad="same-signature fixture" ;;
   esac
 
   # The aimed leg must be GREEN on the pristine tree, or there is nothing to
@@ -242,6 +250,22 @@ MUTATIONS = {
         "                overlap_sample = ', '.join(sorted(list(substantive_overlap))[:3])\n"
         "                c_uuid = claim.get('uuid', '')[:8]",
     ),
+    # #758: force the declaration-header divergence check to NEVER fire -- the
+    # diverged-header leg must go red first, because a check that can never
+    # report a divergence is the false green #758 is about.
+    "symbol_always_none": (
+        "    return fork_hdr, upstream_hdr\n",
+        "    return None\n",
+    ),
+    # #758: force it to ALWAYS fire -- the negative control must go red first,
+    # or the signal fires for every upstream-present symbol (identical
+    # signature included) and its positive leg proves nothing.
+    "symbol_always_fire": (
+        "    if upstream_hdr is None or fork_hdr is None or upstream_hdr == fork_hdr:\n"
+        "        return None\n",
+        "    if upstream_hdr is None or fork_hdr is None:\n"
+        "        return None\n",
+    ),
 }
 if label not in MUTATIONS:
     sys.stderr.write("unknown mutation %r\n" % label)
@@ -280,7 +304,7 @@ done
 
 echo
 if [ "$fails" -eq 0 ]; then
-  echo "MUTATION GUARD PASSED — every #307, #365 and #375 control fails under its mutant"
+  echo "MUTATION GUARD PASSED — every #307, #365, #375 and #758 control fails under its mutant"
   exit 0
 fi
 echo "MUTATION GUARD FAILED (failures=$fails)"
