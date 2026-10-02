@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Open Questions - dynamic-tool entry.
+#
+# Append this to the tools.toml of the profile whose agent should be able to
+# park decisions in the register, then reload the tool registry.
+#
+# ONE EDIT IS REQUIRED: replace both placeholder paths with wherever you put
+# this repository. OC_QUESTIONS_SKILL_ROOT is where the bridge searches for the
+# CLI; the python3 path is the bridge itself. Full install notes:
+# tools/docs/OPEN-QUESTIONS-INSTALL.md
+# ---------------------------------------------------------------------------
+[[tools]]
+name = "oc_questions"
+description = "The Open Questions register. action=ask registers the ordered set of questions this lane is blocked on and returns the open-question TOTAL plus the page URL — the asking session is read from OPENCRABS_SESSION_ID and there is NO card; action=list reads parked decisions, oldest first; action=answer records the owner's answer (choice index, or the literal clarify with text); action=amend edits a question after a Clarify request and reopens it; action=notify delivers the recorded answer to the session named in the register; action=publish/lint/gc are maintenance. Returns JSON. rc: 0 ok / 1 finding-or-not-found / 2 usage / 3 state-refused / 4 store-or-IO."
+executor = "shell"
+command = "OC_QUESTIONS_SKILL_ROOT=/path/to/opencrabs-skill python3 /path/to/opencrabs-skill/tools/state/oc_questions_tool.py --params-file \"$OPENCRABS_PARAMS\" 2>&1"
+timeout_secs = 30
+params = [
+    { name = "factory", type = "string", description = "ask only, REQUIRED: the factory key. It IS the standing set id (e.g. opencrabs-dev) and is REUSED on every ask — a new set is never minted per call. ask without it exits rc 2.", required = false },
+{ name = "action", type = "string", description = "ask (register a set) | list (read parked decisions) | answer (record one answer) | amend (edit a question after Clarify, reopening it) | withdraw (retract a moot question) | notify (deliver the recorded answer to the asking session) | publish (build the page) | lint | gc.", required = true },
+    { name = "session", type = "string", description = "ask only, OPTIONAL OVERRIDE: the FULL calling-session id. Normally read from OPENCRABS_SESSION_ID, so leave unset. Never a cron or renderer session id.", required = false },
+    { name = "lane", type = "string", description = "list/notify only: the lane's TOPIC NAME (e.g. \"Plan tool\"). Never a session id — a uuid here is refused. ask does NOT take a lane: it is resolved from the calling session's own binding.", required = false },
+    { name = "questions", type = "array", description = "ask only, REQUIRED: the ordered question objects, each {title, description (Markdown; tables and Mermaid are rendered), options?: [string], recommended?: int index into options, clarify?: bool}. Order is preserved and is part of the record.", required = false, default = [] },
+    { name = "ttl_days", type = "integer", description = "ask only: days before the question set expires. Default 7, allowed 1-365.", required = false, default = 7 },
+    { name = "subject", type = "string", description = "ask only: a short subject used to dedupe against derived plan-card rows.", required = false },
+    { name = "close_when", type = "string", description = "ask only: a shell command whose rc=0 closes the question mechanically (e.g. a gh issue state read), recorded as resolved_mechanically. Unreadable output SKIPs — it never closes on a failed read.", required = false },
+    { name = "set_id", type = "string", description = "answer/amend/notify/publish: the 6-char set id. Omit for publish to act on every open set.", required = false },
+    { name = "qid", type = "string", description = "answer/amend/notify: the question id inside the set (q1, q2, ...).", required = false },
+    { name = "choice", type = "string", description = "answer only, REQUIRED: the zero-based option index as a string, or the literal 'clarify' to ask for clarification instead of answering.", required = false },
+    { name = "text", type = "string", description = "answer only: free-text answer, or the clarification question when choice=clarify.", required = false },
+    { name = "via", type = "string", description = "answer only: where the answer came from — page | cli.", required = false, default = "cli" },
+    { name = "mode", type = "string", description = "notify only: turn-end (default) | interrupt | quiet.", required = false, default = "turn-end" },
+    { name = "title", type = "string", description = "amend only: the replacement question title.", required = false },
+    { name = "description", type = "string", description = "amend only: the replacement Markdown description (tables and Mermaid are rendered).", required = false },
+    { name = "options", type = "array", description = "amend only: replacement options. Replaces the list entirely; use clear_options to remove them.", required = false, default = [] },
+    { name = "recommended", type = "integer", description = "amend only: index into options to mark as recommended.", required = false },
+    { name = "clear_options", type = "boolean", description = "amend only: remove all options, leaving a free-text-only question.", required = false, default = false },
+    { name = "no_clarify", type = "boolean", description = "ask only: omit the Clarify control from each question.", required = false, default = false },
+    { name = "no_publish", type = "boolean", description = "ask/answer/withdraw: register the change without republishing the page.", required = false, default = false },
+    { name = "all", type = "boolean", description = "list only: include answered and expired sets, not just open ones.", required = false, default = false },
+    { name = "prune", type = "boolean", description = "publish only: remove expired token directories while publishing.", required = false, default = false },
+    { name = "rotate", type = "boolean", description = "publish only: mint a NEW token instead of reusing the live one. Changes the URL, so only on request.", required = false, default = false },
+    { name = "dry_run", type = "boolean", description = "notify/gc: report what would happen without doing it.", required = false, default = false },
+    { name = "action_url", type = "string", description = "publish only: the answer-endpoint URL baked into the published page. Defaults to the configured questions host.", required = false },
+]
