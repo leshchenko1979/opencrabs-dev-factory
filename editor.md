@@ -254,6 +254,7 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
   ```bash
   tools/git/oc-wt remove <task>
   ```
+- **Teardown exemption — a fork-only unit KEEPS its worktree (q48 → A / q49 → C; owner-approved design [#761](https://github.com/leshchenko1979/opencrabs/issues/761) step 4).** A unit carrying an **OPEN `not-upstreamable` row** in `harvest-registry.json` (`manual_records`) is **EXEMPT** from the post-ship worktree removal. Its worktree is the **local anchor** for a declaration whose entire premise is *upstream lacks the surface this repairs* — and the sync's force-push rewrites `origin/main`, the one event that can invalidate that premise — so removing the worktree erases the local state the re-verification leg (`upstream-merge-runbook.md` §Process step 12) re-reads. **RELEASE CONDITION (either):** the row is **CLOSED**, or it is re-verified as **now-TRAVELLING** (upstream has taken the surface, so the work is no longer fork-only). Until then the worktree stays mounted and `oc-wt remove` is NOT owed. **Scope: the WORKTREE only** — every other Phase-5 obligation (ship, swap, smoke) is unchanged.
 - **Checkable Completion Formula**: DONE = Worktree exclusivity maintained, edits isolated to `~/opencrabs-wt/<task>`.
 
 ## Phase 3 — Explore before writing (Imperative `memory_search` & DRY Gate)
@@ -636,7 +637,7 @@ tools/git/oc-wt remove <task>
 ```
 
 **Per-commit laws live in their phases:** branch-attached HEAD + signing → §Phase 4; worktree-writer exclusivity → §Phase 2. They bind EVERY commit in ANY phase — read them there.
-- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + tools/ship/oc-ship-chain exits 0 (SWAPPED) + worktree removed.
+- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + tools/ship/oc-ship-chain exits 0 (SWAPPED) + worktree removed — **UNLESS the unit carries an open `not-upstreamable` row, in which case the worktree is RETAINED (§Phase 2 teardown exemption) and the row's release condition is the remaining gate.**
 
 
 ## Phase 7 + 7b — NOT the editor's → `harvest.md` (HARVEST lane)
