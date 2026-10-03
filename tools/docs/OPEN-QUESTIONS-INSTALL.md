@@ -21,9 +21,9 @@ installer.
 
 | file | path in this repo | blob sha |
 |---|---|---|
-| CLI | `tools/state/oc-questions` | `6a117817c3d10f16e60351e08fce21a9f0ac012c` |
+| CLI | `tools/state/oc-questions` | `8f02be27c40506260fba42a4df7e66350d4d19e8` |
 | renderer | `tools/state/oc-questions-render.mjs` | `3d71b3812242d78a02c2875f728f1c0c13b8dfc6` |
-| bridge (agent calls only) | `tools/state/oc_questions_tool.py` | `5b15a6ad554954b181b8e0dae38777828dc4cf30` |
+| bridge (agent calls only) | `tools/state/oc_questions_tool.py` | `29285f0e6f492dcd9e98cbfba88b36e38100ce11` |
 
 This repository is a working fleet repository, so it carries more than the tool. Clone shallowly,
 or fetch just the files you need:
@@ -112,7 +112,7 @@ of the instance this tool was extracted from, so **you must change them**:
 | variable | default | set it to |
 |---|---|---|
 | `OC_QUESTIONS_BASE_URL` | `https://questions.l1979.ru` | **your own origin** — otherwise the page URLs it hands out point at someone else's host |
-| `OC_QUESTIONS_TRACKER` | `leshchenko1979/opencrabs` | your own issue tracker, `owner/repo` — used by the mechanical-closure check |
+| `OC_QUESTIONS_TRACKER` | `leshchenko1979/opencrabs-dev-factory` | your own issue tracker, `owner/repo` — used by the mechanical-closure check |
 | `OC_QUESTIONS_DIR` | `<profile home>/questions` | only if you want the store elsewhere |
 | `OC_QUESTIONS_RENDER_DIR` | `<store>/build` | only if you want the build elsewhere |
 | `OC_QUESTIONS_DB` | `<profile home>/opencrabs.db` | usually leave alone — it already points at your own instance |
