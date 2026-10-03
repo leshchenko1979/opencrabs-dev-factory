@@ -87,7 +87,7 @@ BOOLEAN = {
     "amend": [("clear_options", "--clear-options")],
     "answer": [("no_publish", "--no-publish")],
     "notify": [("dry_run", "--dry-run")],
-    "publish": [("prune", "--prune"), ("rotate", "--rotate")],
+    "publish": [("prune", "--prune")],
     "gc": [("dry_run", "--dry-run")],
     "withdraw": [("no_publish", "--no-publish")],
 }

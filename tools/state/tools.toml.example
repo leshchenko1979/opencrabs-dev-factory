@@ -39,7 +39,6 @@ params = [
     { name = "no_publish", type = "boolean", description = "ask/answer/withdraw: register the change without republishing the page.", required = false, default = false },
     { name = "all", type = "boolean", description = "list only: include answered and expired sets, not just open ones.", required = false, default = false },
     { name = "prune", type = "boolean", description = "publish only: remove expired token directories while publishing.", required = false, default = false },
-    { name = "rotate", type = "boolean", description = "publish only: mint a NEW token instead of reusing the live one. Changes the URL, so only on request.", required = false, default = false },
     { name = "dry_run", type = "boolean", description = "notify/gc: report what would happen without doing it.", required = false, default = false },
     { name = "action_url", type = "string", description = "publish only: the answer-endpoint URL baked into the published page. Defaults to the configured questions host.", required = false },
 ]
