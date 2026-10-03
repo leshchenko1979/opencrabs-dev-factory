@@ -21,9 +21,15 @@
 #       - Exits 0 (ELIGIBLE) if unit is confirmed UNHARVESTED.
 #       - Exits 2 on usage / bad arguments.
 #       - Exits 3 on API/git failure.
-#   record --unit <slug> --pr <number> [--issue <N>] [--repo <path>] [--state-file <path>]
-#       Records a newly filed PR in the harvest registry. Idempotent: re-recording
-#       the same (unit, pr, issue) triple updates the entry instead of duplicating it.
+#   record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
+#          [--status filed|not-upstreamable] [--reason <text>]
+#          [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
+#          [--state-file <path>]
+#       Records/updates a manual_records row (upsert keyed on UNIT, #761).
+#       --pr is required only for the default 'filed' status; a
+#       'not-upstreamable' row names none. --branches, --revert and
+#       --verified-at are OPTIONAL annotations on a not-upstreamable row
+#       and are carried forward on a re-record.
 #   purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
 #                                    REFUSED (rc 2) unless --dry-run: REMOVAL
 #                                    IS FORBIDDEN (harvest.md, #707)
@@ -5920,6 +5926,33 @@ WREGEOF
     ok "#761-3 walk: no OPEN not-upstreamable rows -> rc 0, nothing to report"
   else
     echo "  bad  - #761-3 walk empty-registry; got rc=$w_e_rc ($w_out)"
+    return 1
+  fi
+
+  # 39. #730 doc-drift guard: EVERY flag the `record` parser accepts must be
+  #     named in the header comment -- the `head -30` surface a lane reads
+  #     before running the command. #730 was this exact drift: the parser gained
+  #     --status/--reason/--issues (and later --branches/--revert/--verified-at)
+  #     while the header still showed only --unit/--pr/--issue AND still demanded
+  #     --pr. The guard is DISCRIMINATING, not a restatement: it derives the flag
+  #     set from the PARSER itself, so a new arm added without its header line
+  #     reddens here (measured: pre-#730 the same check reports exactly
+  #     --branches/--issues/--reason/--revert/--status/--verified-at missing).
+  #     --repo is accepted as a pass-through that record never reads, so it is
+  #     exempt by design. The `-n "$_doc_flags"` arm is the instrument-sanity
+  #     check: an EMPTY extraction (parser shape changed) must FAIL, never pass
+  #     vacuously.
+  local _doc_flags _doc_missing="" _doc_f _doc_hdr
+  _doc_hdr="$(sed -n '1,60p' "$0")"
+  _doc_flags="$(awk '/^cmd_record\(\) \{/{f=1} f&&/^  done$/{exit} f' "$0" \
+      | grep -oE '^      --[a-z-]+\)' | tr -d ' )' | sort -u | grep -v '^--repo$')"
+  for _doc_f in $_doc_flags; do
+    case "$_doc_hdr" in *"$_doc_f"*) ;; *) _doc_missing="$_doc_missing $_doc_f" ;; esac
+  done
+  if [ -n "$_doc_flags" ] && [ -z "$_doc_missing" ]; then
+    ok "#730 doc-drift guard: every accepted record flag is named in the header comment"
+  else
+    echo "  bad  - header comment omits accepted record flag(s):${_doc_missing:- <EMPTY flag set: extraction broke>}"
     return 1
   fi
 
