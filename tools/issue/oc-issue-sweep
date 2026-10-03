@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-issue-sweep — uniqueness-gate sweep in one call: search the fork
-# (open + closed) and the upstream (closed) for candidate issues matching a
-# query, harvest each candidate's close-reason line from its comments
+# oc-issue-sweep — uniqueness-gate sweep in one call: search ALL THREE trackers
+# (open + closed each) for candidate issues matching a query, harvest each
+# candidate's close-reason line from its comments
 # (paginated), fall back to the issue's state_reason (closed candidates only,
 # via the REST issue endpoint — `gh search issues` has NO state-reason JSON
 # field; v0.4.116 fixed a 100% failure rate caused by requesting it), print a
@@ -10,9 +10,17 @@
 # (skill rule — report-only).
 #
 # Usage:
-#   oc-issue-sweep '<query>' [--fork leshchenko1979/opencrabs]
+#   oc-issue-sweep '<query>' [--factory leshchenko1979/opencrabs-dev-factory]
+#                            [--fork leshchenko1979/opencrabs]
 #                            [--upstream adolfousier/opencrabs] [--limit N(=20)]
 #   oc-issue-sweep --selftest
+#
+# Two-stream routing (SKILL.md v0.4.284, owner order 2026-10-03): the mandatory
+# duplicate sweep covers BOTH live trackers — FACTORY
+# (leshchenko1979/opencrabs-dev-factory) and UPSTREAM (adolfousier/opencrabs) —
+# plus the historical fork, which is READ-ONLY for new issues but still holds
+# the older issue corpus a duplicate may live in. A sweep that misses one
+# tracker cannot discharge the law's duplicate-sweep duty.
 #
 # Exit codes: 0 no candidates · 1 candidates listed · 2 usage · 3 API failure
 # Env: OC_SWEEP_GH (gh override — offline selftest shim), OC_TOOLS_LOG
@@ -31,14 +39,16 @@ trap 'oc_log_finish $?' EXIT
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
   local rc="${1:-2}" fd=2
   [ "$rc" = 0 ] && fd=1
-  echo "usage: $0 '<query>' [--fork R] [--upstream R] [--limit N] | --selftest" >&$fd
+  echo "usage: $0 '<query>' [--factory R] [--fork R] [--upstream R] [--limit N] | --selftest" >&$fd
   exit "$rc"
 }
 die() { echo "oc-issue-sweep: $2" >&2; exit "$1"; }
 
-FORK="leshchenko1979/opencrabs"; UPSTREAM="adolfousier/opencrabs"; LIMIT=20; QUERY=""; SELFTEST=0
+FACTORY="leshchenko1979/opencrabs-dev-factory"; FORK="leshchenko1979/opencrabs"
+UPSTREAM="adolfousier/opencrabs"; LIMIT=20; QUERY=""; SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --factory) FACTORY="${2:-}"; shift ;;
     --fork) FORK="${2:-}"; shift ;;
     --upstream) UPSTREAM="${2:-}"; shift ;;
     --limit) LIMIT="${2:-}"; shift ;;
@@ -79,13 +89,17 @@ case "$*" in
     out='{}'
     case "$*" in
       *issues/102*) out='{"number":102,"state_reason":"duplicate"}' ;;
+      *issues/202*) out='{"number":202,"state_reason":"completed"}' ;;
       *issues/7*)   out='{"number":7,"state_reason":"completed"}' ;;
     esac
     if [ -n "$jqf" ]; then printf '%s' "$out" | jq -r "$jqf"; else printf '%s\n' "$out"; fi ;;
   *)
     case "$repo:$state" in
+      "leshchenko1979/opencrabs-dev-factory:open")   echo '[{"number":201,"title":"factory open dup","state":"OPEN","state_reason":null}]' ;;
+      "leshchenko1979/opencrabs-dev-factory:closed") echo '[{"number":202,"title":"factory closed dup","state":"CLOSED","state_reason":"completed"}]' ;;
       "leshchenko1979/opencrabs:open")   echo '[{"number":101,"title":"gate probe","state":"OPEN","state_reason":null}]' ;;
       "leshchenko1979/opencrabs:closed") echo '[{"number":102,"title":"dup candidate","state":"CLOSED","state_reason":"duplicate"}]' ;;
+      "adolfousier/opencrabs:open")      echo '[{"number":8,"title":"upstream open","state":"OPEN","state_reason":null}]' ;;
       "adolfousier/opencrabs:closed")    echo '[{"number":7,"title":"upstream closed","state":"CLOSED","state_reason":"completed"}]' ;;
       *) echo '[]' ;;
     esac ;;
@@ -96,7 +110,13 @@ SHIM
   grep -q "leshchenko1979/opencrabs	101	open	gate probe	-" <<< "$OUT" || { echo "selftest: row 101 wrong: $OUT" >&2; exit 1; }
   grep -q "close-reason: duplicate of #101" <<< "$OUT" || grep -q "duplicate" <<< "$OUT" || { echo "selftest: close-reason not harvested: $OUT" >&2; exit 1; }
   grep -q "adolfousier/opencrabs	7	closed	upstream closed	completed" <<< "$OUT" || { echo "selftest: upstream fallback row wrong: $OUT" >&2; exit 1; }
-  [ "$(printf '%s\n' "$OUT" | grep -c .)" -eq 3 ] || { echo "selftest: row count $([ $(printf '%s\n' "$OUT" | grep -c .) ] && echo n) != 3: $OUT" >&2; exit 1; }
+  # Two-stream routing (SKILL.md v0.4.284): the FACTORY tracker must be swept too.
+  # Discriminating by SLUG: the factory slug has the fork slug as a prefix, so the
+  # `$`-anchored negative leg proves the factory rows are genuinely the factory's.
+  grep -q "leshchenko1979/opencrabs-dev-factory	201	open	factory open dup	-" <<< "$OUT" || { echo "selftest: factory OPEN row missing: $OUT" >&2; exit 1; }
+  grep -q "leshchenko1979/opencrabs-dev-factory	202	closed	factory closed dup	completed" <<< "$OUT" || { echo "selftest: factory CLOSED row missing: $OUT" >&2; exit 1; }
+  grep -q "adolfousier/opencrabs	8	open	upstream open	-" <<< "$OUT" || { echo "selftest: upstream OPEN row missing: $OUT" >&2; exit 1; }
+  [ "$(printf '%s\n' "$OUT" | grep -c .)" -eq 6 ] || { echo "selftest: row count $([ $(printf '%s\n' "$OUT" | grep -c .) ] && echo n) != 6: $OUT" >&2; exit 1; }
   OC_SWEEP_GH="$d/gh" "$0" "zzz-nothing" >/dev/null 2>&1; [ $? -eq 0 ] || { echo "selftest: no-candidates rc != 0" >&2; exit 1; }
   # v0.4.116: exit 3 must stay truthful — a hard gh failure (not a bad JSON
   # field) is what earns it; guard the exact defect that made 12/12 runs rc 3
@@ -116,14 +136,15 @@ fi
 [ -n "$QUERY" ] || usage
 GH="${OC_SWEEP_GH:-gh}"
 
-# 1. three searches: fork open+closed, upstream closed
+# 1. SIX searches: every tracker, open AND closed (SKILL.md v0.4.284 — the
+# duplicate sweep covers both live streams plus the historical fork corpus)
 TMP="$(mktemp)" || exit 3
 # M2-25 (2026-09-12, toolsmith self-found, Duty TM1): the run writes THREE
 # siblings of $TMP (.raw / .sorted / .final) but the trap removed only $TMP, so
 # every invocation leaked 3 files into /tmp (measured 1070 files, 0.1 MB,
 # oldest 2026-09-10). The trap must name every path the tool creates.
 trap '_rc=$?; rm -f "$TMP" "$TMP.raw" "$TMP.sorted" "$TMP.final"; oc_log_finish "$_rc"' EXIT
-for spec in "$FORK:open" "$FORK:closed" "$UPSTREAM:closed"; do
+for spec in "$FACTORY:open" "$FACTORY:closed" "$FORK:open" "$FORK:closed" "$UPSTREAM:open" "$UPSTREAM:closed"; do
   R="${spec%:*}"; S="${spec##*:}"
   # v0.4.116: only fields `gh search issues` actually supports (it has no
   # state_reason/stateReason and no html_url — those belong to `gh issue list`).

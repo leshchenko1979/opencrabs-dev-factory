@@ -13,10 +13,19 @@
 # (gh 2.100.0, `gh issue create --help:41`), so no follow-up edit is needed.
 #
 # Usage: oc-issue-create [--parent <N>] [--no-parent <reason>] [--propose-parent]
-#                        [--repo <slug>] [--repo-path <dir>] [--dry-run] [--selftest]
+#                        [--tracker factory|binary] [--repo <slug>]
+#                        [--repo-path <dir>] [--dry-run] [--selftest]
 #                        [--] <gh issue create flags...>
 # Exit:  0 created / 2 usage / 3 REFUSED by the gate (nothing filed)
 #        4 gh failed / 5 no repo at --repo-path
+#
+# TRACKER (two-stream routing, SKILL.md v0.4.284, owner order 2026-10-03):
+# --tracker factory (DEFAULT) targets leshchenko1979/opencrabs-dev-factory;
+# --tracker binary targets adolfousier/opencrabs. The historical fork
+# leshchenko1979/opencrabs is READ-ONLY for new issues. --repo is a raw override
+# that wins over --tracker. The resolved target is PRINTED on every run, so the
+# default is DECLARED, never silent -- a silent default is what let this tool
+# keep filing on a read-only tracker after the law moved.
 #
 # GATE: a title matching ^(fix|bug)[(:] with NO --parent is REFUSED. The refusal
 # prints the rule + law citation, mechanically-derived candidate parents, and
@@ -37,6 +46,10 @@ if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-create" "$@"
 trap 'oc_log_finish $?' EXIT
 
 SELF="$0"
+# Three trackers, two live streams (SKILL.md v0.4.284, owner order 2026-10-03).
+# FACTORY is the default target for NEW issues; the historical fork is
+# READ-ONLY for issues (it stays the CI host and the PR target).
+FACTORY_REPO="${OC_ISSUE_CREATE_FACTORY:-leshchenko1979/opencrabs-dev-factory}"
 FORK_REPO="leshchenko1979/opencrabs"
 REPO_PATH="${OC_ISSUE_CREATE_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_ISSUE_CREATE_GH:-gh}"
@@ -49,7 +62,8 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDE
   cat >&$fd <<'USAGE'
 usage: oc-issue-create [--parent <N>] [--root <upstream:obj>] [--no-parent <reason>]
                        [--propose-parent]
-                       [--repo <slug>] [--repo-path <dir>] [--dry-run] [--selftest]
+                       [--tracker factory|binary] [--repo <slug>]
+                       [--repo-path <dir>] [--dry-run] [--selftest]
                        [--] <gh issue create flags...>
 
 Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
@@ -65,7 +79,13 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
                       declared one. Last resort -- prefer --root when the
                       surface is upstream-inherited.
   --propose-parent    compute and print candidate parents only; file nothing
-  --repo <slug>       override the target repo (default leshchenko1979/opencrabs)
+  --tracker <which>   target tracker: `factory` (default — the dev-factory repo,
+                      leshchenko1979/opencrabs-dev-factory) or `binary` (upstream
+                      adolfousier/opencrabs). The historical fork
+                      leshchenko1979/opencrabs is READ-ONLY for new issues.
+                      Aliases: --factory / --binary.
+  --repo <slug>       raw override of the target repo; WINS over --tracker
+                      (default: whichever repo --tracker resolves to)
   --repo-path <dir>   override the git checkout used for blame (default ~/opencrabs)
   --dry-run           print the gh command without running it
   --selftest          run the built-in checks
@@ -89,11 +109,15 @@ USAGE
 
 # ---- arg parsing: ours vs gh's ----------------------------------------------
 PARENT=""; NO_PARENT=""; NO_PARENT_SET=0; ROOT=""; ROOT_SET=0; PROPOSE=0; DRY=0; SELFTEST=0
-REPO_SLUG="$FORK_REPO"; PASSTHRU=()
+TRACKER="factory"; REPO_OVERRIDE=""; PASSTHRU=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --selftest) SELFTEST=1; shift ;;
     -h|--help) usage 0 ;;   # fleet contract (RC-CONTRACT): --help exits 0 on STDOUT
+    --tracker) [ $# -ge 2 ] || { echo "oc-issue-create: --tracker needs a value" >&2; usage; }; TRACKER="$2"; shift 2 ;;
+    --tracker=*) TRACKER="${1#--tracker=}"; shift ;;
+    --factory) TRACKER="factory"; shift ;;
+    --binary) TRACKER="binary"; shift ;;
     --parent) [ $# -ge 2 ] || { echo "oc-issue-create: --parent needs a value" >&2; usage; }; PARENT="$2"; shift 2 ;;
     --parent=*) PARENT="${1#--parent=}"; shift ;;
     --no-parent) [ $# -ge 2 ] || { echo "oc-issue-create: --no-parent needs a reason" >&2; usage; }; NO_PARENT="$2"; NO_PARENT_SET=1; shift 2 ;;
@@ -101,8 +125,8 @@ while [ $# -gt 0 ]; do
     --root) [ $# -ge 2 ] || { echo "oc-issue-create: --root needs a value" >&2; usage; }; ROOT="$2"; ROOT_SET=1; shift 2 ;;
     --root=*) ROOT="${1#--root=}"; ROOT_SET=1; shift ;;
     --propose-parent) PROPOSE=1; shift ;;
-    --repo) [ $# -ge 2 ] || usage; REPO_SLUG="$2"; shift 2 ;;
-    --repo=*) REPO_SLUG="${1#--repo=}"; shift ;;
+    --repo) [ $# -ge 2 ] || usage; REPO_OVERRIDE="$2"; shift 2 ;;
+    --repo=*) REPO_OVERRIDE="${1#--repo=}"; shift ;;
     --repo-path) [ $# -ge 2 ] || usage; REPO_PATH="$2"; shift 2 ;;
     --repo-path=*) REPO_PATH="${1#--repo-path=}"; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -110,6 +134,20 @@ while [ $# -gt 0 ]; do
     *) PASSTHRU+=("$1"); shift ;;
   esac
 done
+
+# ---- tracker -> target repo (two-stream routing, SKILL.md v0.4.284) ---------
+# A FACTORY issue (this tools/** tree, CI, release automation, process) belongs
+# on the dev-factory tracker; a BINARY issue (runtime behaviour, channels,
+# providers, TUI, memory, the src/brain/tools registry) belongs upstream. The
+# historical fork is READ-ONLY for new issues. --repo is a raw override and WINS:
+# a caller legitimately naming a third repo is not a mistake.
+case "$TRACKER" in
+  factory|dev-factory|devfactory) TRACKER="factory"; REPO_SLUG="$FACTORY_REPO" ;;
+  binary|upstream)                TRACKER="binary";  REPO_SLUG="$UPSTREAM_SLUG" ;;
+  fork)                           TRACKER="fork";    REPO_SLUG="$FORK_REPO" ;;
+  *) echo "oc-issue-create: --tracker must be 'factory' or 'binary' (got '$TRACKER')" >&2; usage ;;
+esac
+if [ -n "$REPO_OVERRIDE" ]; then REPO_SLUG="$REPO_OVERRIDE"; TRACKER="override"; fi
 
 # ---- extract --title from the passthrough (both forms) -----------------------
 TITLE=""
@@ -216,7 +254,7 @@ selftest() {
 #!/bin/sh
 case "$1 $2" in
   "issue list")   cat "$OC_STUB_ISSUES" ;;
-  "issue create") echo "https://github.com/leshchenko1979/opencrabs/issues/4242" ;;
+  "issue create") echo "https://github.com/leshchenko1979/opencrabs-dev-factory/issues/4242" ;;
   "issue comment") exit 0 ;;
   # --root resolution (#646): DISCRIMINATE, so an unresolvable root is testable.
   # A stub that answered 0 for everything would make the refusal leg vacuous.
@@ -296,6 +334,27 @@ JSN
   chk "--parent + --root together pass"      0 $?
   has "…and the parent still reaches gh"   "$T/o10" 'parent.*10'
   has "…and the root is still recorded"    "$T/o10" 'root: 1662'
+
+  # --- two-stream tracker routing (SKILL.md v0.4.284) -------------------------
+  # The default MUST be the factory tracker: the historical fork is READ-ONLY for
+  # new issues, and a SILENT fork default is exactly the defect this fixes. The
+  # `hasnt` leg is DISCRIMINATING -- the factory slug has the fork slug as a
+  # prefix, so only the `$` anchor separates "defaulted to the factory" from
+  # "defaulted to the fork".
+  bash "$SELF" --title "feat(tools): routed" --body x --dry-run >"$T/o11" 2>&1
+  chk "default-tracker create passes" 0 $?
+  has "…and defaults to the FACTORY tracker" "$T/o11" 'tracker=factory target=leshchenko1979/opencrabs-dev-factory'
+  hasnt "…and NOT to the read-only fork"     "$T/o11" 'target=leshchenko1979/opencrabs$'
+  bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --dry-run >"$T/o12" 2>&1
+  chk "--tracker binary passes" 0 $?
+  has "…and targets upstream"                "$T/o12" 'tracker=binary target=adolfousier/opencrabs'
+  bash "$SELF" --title "feat(tools): routed" --body x --binary --dry-run >"$T/o13" 2>&1
+  has "…the --binary alias agrees"           "$T/o13" 'tracker=binary target=adolfousier/opencrabs'
+  bash "$SELF" --title "feat(tools): routed" --body x --tracker nonsense --dry-run >"$T/o14" 2>&1
+  chk "an unknown --tracker is a usage error" 2 $?
+  bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --repo acme/widgets --dry-run >"$T/o15" 2>&1
+  chk "--repo + --tracker still pass" 0 $?
+  has "…and --repo WINS over --tracker"      "$T/o15" 'target=acme/widgets'
 
   # --- trap controls: each check can only pass if the trap is AVOIDED ---------
   # (a) `git blame -s` ABBREVIATES, so a 40-hex match finds nothing. The control
@@ -471,6 +530,9 @@ ROOTFAIL
 fi
 
 # ---- create ------------------------------------------------------------------
+# Declare the resolved target on every run: a SILENT tracker default is what let
+# this tool keep filing on a read-only tracker after the law moved.
+echo "oc-issue-create: tracker=$TRACKER target=$REPO_SLUG"
 CMD=("$GH_BIN" "issue" "create" "-R" "$REPO_SLUG")
 [ -n "$PARENT" ] && CMD+=("--parent" "$PARENT")
 for a in "${PASSTHRU[@]:-}"; do [ -n "$a" ] && CMD+=("$a"); done

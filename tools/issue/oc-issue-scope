@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-issue-scope — body-surface scope classifier for fork issues
+# oc-issue-scope — body-surface scope classifier for factory-tracker issues
 # =============================================================================
 # Triage build order 2026-09-26. The factory-scoped patrol classifies ~180 open
 # issues every cycle by reading each body for the file surface its fix lands on.
@@ -27,6 +27,13 @@
 #        2 usage / 3 gh or git failed
 # Emits: bucket (IN|OUT|UNPINNED -- the surface FACT) AND priority (1|2|3 -- the
 #        ORDERING: 1 fix the factory, 2 fix the binary, 3 new features).
+#
+# TRACKER (two-stream routing, SKILL.md v0.4.284, owner order 2026-10-03): the
+# DEFAULT repo is the FACTORY tracker leshchenko1979/opencrabs-dev-factory, whose
+# open-issue population is the factory's own work units -- exactly what the
+# factory-scoped patrol classifies. A BINARY issue (upstream adolfousier/opencrabs)
+# is classified by passing --repo adolfousier/opencrabs. The historical fork
+# leshchenko1979/opencrabs is READ-ONLY for new issues.
 #
 # THREE RULES, each measured before it was encoded:
 #
@@ -102,13 +109,13 @@ if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/o
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-scope" "$@"; else oc_log_finish() { :; }; oc_log_extra() { :; }; fi
 
-FORK_REPO="leshchenko1979/opencrabs"
+FACTORY_REPO="leshchenko1979/opencrabs-dev-factory"
 SRC_REPO_PATH="${OC_SRC_REPO:-/root/opencrabs}"
 SKILL_REPO_PATH="$(cd "$OC_TOOLS_DIR/.." && pwd)"
 
 usage() { sed -n '/^# Usage:/,/^# Exit:/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-N=""; MODE="one"; JSON=0; REPO="$FORK_REPO"; RPATH=""
+N=""; MODE="one"; JSON=0; REPO="$FACTORY_REPO"; RPATH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --open) MODE="open"; shift ;;

@@ -115,6 +115,22 @@ if not os.path.exists(DEFAULT_LEDGER):
     DEFAULT_LEDGER = os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")
 DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
 
+# ---- two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03) ----
+# BINARY issues live upstream (adolfousier/opencrabs); FACTORY issues (this
+# tools/** tree, CI, release automation, process) live on the dev-factory
+# tracker. The historical fork is READ-ONLY for NEW issues but still holds an
+# open corpus, so it stays selectable.
+TRACKER_SLUGS = {
+    "factory": "leshchenko1979/opencrabs-dev-factory",
+    "binary":  "adolfousier/opencrabs",
+    "fork":    "leshchenko1979/opencrabs",
+}
+DEFAULT_TRACKER = os.environ.get("OC_ISSUE_DISPATCH_TRACKER", "factory")
+#: The tracker THIS RUN dispatches from. Set from --tracker in main(); every
+#: issue read (list, view, envelope URL, landed-ref scope) keys on it, so the
+#: number namespace being dispatched and the namespace being matched agree.
+TRACKER_SLUG = TRACKER_SLUGS.get(DEFAULT_TRACKER, TRACKER_SLUGS["factory"])
+
 # The claim predicate is NOT local to this tool (#329). `tools/lib/oc_claims.py`
 # is its single implementation, shared with oc-ledger, oc-roster and
 # oc-harvest-dispatch — the module exists precisely because four inlined copies
@@ -613,7 +629,7 @@ def fetch_open_issues(repo_path, mock_issues=None):
         _warn_if_window_full(mocked)
         return mocked
 
-    cmd = ["gh", "issue", "list", "--repo", "leshchenko1979/opencrabs", "--state", "open",
+    cmd = ["gh", "issue", "list", "--repo", TRACKER_SLUG, "--state", "open",
            "--limit", str(OPEN_ISSUES_LIMIT), "--json", ISSUE_JSON_FIELDS]
     rc, stdout, stderr = run_cmd(cmd, cwd=repo_path)
     if rc != 0:
@@ -648,7 +664,7 @@ def fetch_issue(repo_path, number, mock_issues=None):
     if mocked is not None:
         return next((i for i in mocked if i.get("number") == number), None)
 
-    cmd = ["gh", "issue", "view", str(number), "--repo", "leshchenko1979/opencrabs",
+    cmd = ["gh", "issue", "view", str(number), "--repo", TRACKER_SLUG,
            "--json", ISSUE_JSON_FIELDS]
     rc, stdout, stderr = run_cmd(cmd, cwd=repo_path)
     if rc != 0:
@@ -808,7 +824,8 @@ def _parse_ledger_ts(value):
     return ts if ts.tzinfo else ts.replace(tzinfo=datetime.timezone.utc)
 
 def fetch_landed_issues(repo_path, mock_landed=None):
-    """Issue numbers whose fix is already on origin/main (fork space only)."""
+    """Issue numbers whose fix is already on origin/main, in the ACTIVE tracker's
+    number space (SKILL.md v0.4.284 — the scope follows --tracker)."""
     if mock_landed is not None:
         return {int(n) for n in mock_landed}
 
@@ -835,9 +852,12 @@ def fetch_landed_issues(repo_path, mock_landed=None):
             value = value.strip()
             if not value:
                 continue
-            # `adolfousier/opencrabs#1419` is an EXPLICIT upstream citation: only
-            # bare refs and leshchenko1979/opencrabs-qualified ones are ours.
-            if "/" in value and not value.startswith("leshchenko1979/opencrabs#"):
+            # A ref qualified with a DIFFERENT tracker names a different number
+            # namespace: `adolfousier/opencrabs#1419` is an EXPLICIT upstream
+            # citation and must never mark a factory issue landed (the #337
+            # defect, generalised to three trackers). Only bare refs and refs
+            # qualified with the ACTIVE tracker are ours.
+            if "/" in value and not value.startswith(TRACKER_SLUG + "#"):
                 continue
             for num in _ISSUE_REF_VALUE_RE.findall(value):
                 landed.add(int(num))
@@ -1274,7 +1294,7 @@ def format_wire_envelope(issue):
 
     envelope = f"""[ISSUE DISPATCH: #{num}]
 Target Issue: #{num} ({title})
-Issue URL: https://github.com/leshchenko1979/opencrabs/issues/{num}
+Issue URL: https://github.com/{TRACKER_SLUG}/issues/{num}
 Branch Target: {branch_target}
 Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed. If occupied, gate-blocked, or domain-mismatched, reply with [REFUSE: <reason>]."""
     return envelope, branch_target
@@ -1833,7 +1853,7 @@ def cmd_targeted(args):
         print(note, file=sys.stderr)
     if not target_issue:
         print(f"ERROR: issue #{issue_num} could not be resolved on "
-              f"leshchenko1979/opencrabs — it was not in the fetched open-issue list "
+              f"{TRACKER_SLUG} — it was not in the fetched open-issue list "
               f"and `gh issue view` did not resolve it either. Refusing to dispatch: "
               f"a fabricated title/body would make the claim gate and affinity "
               f"scoring run blind. Check the number, and that the issue is OPEN and "
@@ -1930,7 +1950,7 @@ def run_selftest():
     # (len(issues) >= OPEN_ISSUES_LIMIT) is the thing under test.
     # #390: TOOL_DIR and ROSTER_TIMEOUT_SECS are swapped the same way -- the
     # production call site reads both as globals, so the test drives the real one.
-    global OPEN_ISSUES_LIMIT, TOOL_DIR, ROSTER_TIMEOUT_SECS
+    global OPEN_ISSUES_LIMIT, TOOL_DIR, ROSTER_TIMEOUT_SECS, TRACKER_SLUG
     print("Running oc-issue-dispatch --selftest battery...")
     tests_passed = 0
     tests_failed = 0
@@ -1963,11 +1983,27 @@ def run_selftest():
     assert_eq("Branch target derivation", branch, "fix/181-draft-streaming-config-flag-is-dead")
     assert_true("Wire envelope header present", "[ISSUE DISPATCH: #181]" in envelope)
     assert_true("Target issue line present", "Target Issue: #181 (fix(telegram): draft_streaming config flag is dead)" in envelope)
-    assert_true("Issue URL line present", "Issue URL: https://github.com/leshchenko1979/opencrabs/issues/181" in envelope)
+    assert_true("Issue URL line present",
+                f"Issue URL: https://github.com/{TRACKER_SLUG}/issues/181" in envelope)
     assert_true("Branch Target line present", "Branch Target: fix/181-draft-streaming-config-flag-is-dead" in envelope)
     assert_true("Zero-Ack contract clause present", "Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed." in envelope)
     assert_true("Refusal affordance clause present", "reply with [REFUSE: <reason>]." in envelope)
     assert_true("Gate-blocked refusal affordance present", "gate-blocked" in envelope)
+
+    # Two-stream routing (SKILL.md v0.4.284): the envelope URL must follow the
+    # SELECTED tracker, or a lane reads a link to a repo the issue is not in.
+    # Both directions are probed: a one-sided leg passes on a hardcoded slug.
+    _saved_slug = TRACKER_SLUG
+    try:
+        for _t, _slug in (("factory", TRACKER_SLUGS["factory"]),
+                          ("binary", TRACKER_SLUGS["binary"]),
+                          ("fork", TRACKER_SLUGS["fork"])):
+            TRACKER_SLUG = _slug
+            _env_t, _ = format_wire_envelope(issue_sample)
+            assert_true(f"#v0.4.284: the envelope URL follows --tracker {_t}",
+                        f"Issue URL: https://github.com/{_slug}/issues/181" in _env_t)
+    finally:
+        TRACKER_SLUG = _saved_slug
 
     # Test 2: Extraction of claimed issues from ledger events.
     # #329: the predicate is now the canonical one (tools/lib/oc_claims.py), so
@@ -2691,15 +2727,40 @@ def run_selftest():
         # (5) FORK commit with no issue reference at all.
         _mk("chore: no ref",
             ["Session-Id: 44444444-4444-4444-4444-444444444444"])
+        # (6) FACTORY commit citing the dev-factory namespace EXPLICITLY (#v0.4.284).
+        _mk("fix(tools): factory ref",
+            ["Session-Id: 55555555-5555-5555-5555-555555555555",
+             "Issue-Ref: leshchenko1979/opencrabs-dev-factory#344"])
 
         _g("update-ref", "refs/remotes/origin/main", "HEAD")
-        _armA = fetch_landed_issues(_armA_repo)
-        assert_true("#337 arm A POSITIVE CONTROL: a fork commit lands (#29)", 29 in _armA)
-        assert_true("#337 arm A: an upstream citation is NOT fork space (#268)",
-                    268 not in _armA)
-        assert_true("#337 arm A: an explicit upstream ref is not ours (#1419)",
-                    1419 not in _armA)
-        assert_true("#337 arm A: a qualified fork ref lands (#343)", 343 in _armA)
+        # The landed scope follows --tracker (SKILL.md v0.4.284): a ref qualified
+        # with a DIFFERENT tracker names a different number namespace and must not
+        # mark THIS tracker's issue landed. Both directions are probed, because a
+        # one-sided leg also passes on a predicate that ignores the slug entirely.
+        _saved_armA_slug = TRACKER_SLUG
+        try:
+            TRACKER_SLUG = TRACKER_SLUGS["fork"]
+            _armA = fetch_landed_issues(_armA_repo)
+            assert_true("#337 arm A POSITIVE CONTROL: a fork commit lands (#29)", 29 in _armA)
+            assert_true("#337 arm A: an upstream citation is NOT fork space (#268)",
+                        268 not in _armA)
+            assert_true("#337 arm A: an explicit upstream ref is not ours (#1419)",
+                        1419 not in _armA)
+            assert_true("#337 arm A: a qualified fork ref lands (#343)", 343 in _armA)
+            assert_true("#v0.4.284: a FACTORY-qualified ref is NOT fork space (#344)",
+                        344 not in _armA)
+
+            TRACKER_SLUG = TRACKER_SLUGS["factory"]
+            _armF = fetch_landed_issues(_armA_repo)
+            assert_true("#v0.4.284: a FACTORY-qualified ref lands under --tracker factory (#344)",
+                        344 in _armF)
+            assert_true("#v0.4.284: a FORK-qualified ref is NOT factory space (#343)",
+                        343 not in _armF)
+            assert_true("#v0.4.284: an upstream ref is not factory space (#1419)",
+                        1419 not in _armF)
+            assert_true("#v0.4.284: the bare-ref subject arm still lands (#29)", 29 in _armF)
+        finally:
+            TRACKER_SLUG = _saved_armA_slug
     finally:
         shutil.rmtree(_armA_repo, ignore_errors=True)
 
@@ -3127,13 +3188,20 @@ def main():
             pass
     parser = argparse.ArgumentParser(
         prog="oc-issue-dispatch",
-        description="Mechanized fork issue vetting, lane selection, and dispatch tool.",
+        description="Mechanized issue vetting, lane selection, and dispatch tool.",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--auto", action="store_true", help="Auto-scan open issues and dispatch to idle lanes")
     parser.add_argument("issue", nargs="?", type=int, help="Target issue number to dispatch")
     parser.add_argument("--to", help="Target session UUID for targeted dispatch")
-    parser.add_argument("--repo", default=DEFAULT_REPO, help="Path to opencrabs repo checkout")
+    parser.add_argument("--tracker", choices=["factory", "binary", "fork"], default=DEFAULT_TRACKER,
+                        help="Issue tracker to dispatch from (default: factory — the dev-factory repo "
+                             "leshchenko1979/opencrabs-dev-factory; 'binary' = upstream adolfousier/opencrabs; "
+                             "'fork' = the historical leshchenko1979/opencrabs, read-only for NEW issues). "
+                             "Two-stream routing, SKILL.md v0.4.284")
+    # NOT a slug: this --repo is the PATH to the opencrabs checkout (used as cwd
+    # for git). The tracker SLUG is --tracker. Do not conflate the two.
+    parser.add_argument("--repo", default=DEFAULT_REPO, help="Path to opencrabs repo checkout (a PATH, not a slug)")
     parser.add_argument("--ledger", default=None, help="Path to workers-ledger.json")
     parser.add_argument("--dry-run", action="store_true", help="Preview dispatch actions without notifying or stamping ledger")
     parser.add_argument("--force", action="store_true", help="Force targeted dispatch even if issue has claim-gate markers")
@@ -3150,6 +3218,12 @@ def main():
     parser.add_argument("--selftest", action="store_true", help="Run hermetic offline test suite")
 
     args = parser.parse_args()
+
+    # Resolve the tracker BEFORE any issue read: fetch_open_issues, fetch_issue,
+    # fetch_landed_issues and format_wire_envelope all key on this global, so the
+    # namespace being dispatched and the namespace being matched agree.
+    global TRACKER_SLUG
+    TRACKER_SLUG = TRACKER_SLUGS[args.tracker]
 
     if args.selftest:
         sys.exit(run_selftest())
