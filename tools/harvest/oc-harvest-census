@@ -912,6 +912,24 @@ def symbol_header_diverged(f_path, sym, repo_path, base_ref, cache):
         return None
     return fork_hdr, upstream_hdr
 
+def _divergence_pair(fork_hdr, upstream_hdr, ctx=28, tail=96):
+    # #765: rendering each header as a FIXED-LENGTH PREFIX makes a divergence
+    # whose first differing byte lies past that offset print as two IDENTICAL
+    # strings -- the NOTE then reads as a tool artifact rather than a signal, and
+    # the disclosure is lost exactly where signatures are longest (many-parameter
+    # builders). Measured on `src/db/repository/tool_execution.rs :: record`:
+    # fork 193 chars vs upstream 171, first difference at char 157 -- past a
+    # 140-char prefix, so both sides printed identically.
+    #
+    # Show the DIFFERING REGION instead: a short shared context, then each side
+    # from the first differing byte. DISPLAY ONLY -- the comparison in
+    # `symbol_header_diverged` reads the full headers and is unchanged.
+    i, n = 0, min(len(fork_hdr), len(upstream_hdr))
+    while i < n and fork_hdr[i] == upstream_hdr[i]:
+        i += 1
+    head = ('...' if i > ctx else '') + fork_hdr[max(0, i - ctx):i]
+    return i, head, fork_hdr[i:i + tail], upstream_hdr[i:i + tail]
+
 # #761 step 2b: tokens that can NEVER constitute a fork-only DEPENDENCY -- Rust
 # keywords, primitive/derivable type names, and the ubiquitous prelude/std
 # surface. Skipped before the declaration lookup so a hunk's incidental
@@ -2026,7 +2044,8 @@ if action == 'check':
             diverged = symbol_header_diverged(f_path, sym, repo_path, base_ref, diverged_cache)
             if diverged:
                 fork_hdr, upstream_hdr = diverged
-                print('NOTE(HUNK_SYMBOL_DIVERGED): %s :: %s resolves in %s by NAME but its definition has DIVERGED -- fork %r vs upstream %r; the hunk may not apply, verify before packaging' % (f_path, sym, base_ref, fork_hdr[:140], upstream_hdr[:140]))
+                _at, _head, _ft, _ut = _divergence_pair(fork_hdr, upstream_hdr)
+                print('NOTE(HUNK_SYMBOL_DIVERGED): %s :: %s resolves in %s by NAME but its definition has DIVERGED -- shared prefix %r (%d chars); fork continues %r vs upstream %r; the hunk may not apply, verify before packaging' % (f_path, sym, base_ref, _head, _at, _ft, _ut))
 
         # #761 step 2b (#758): the DECLARATION-LEVEL dependency test.
         #
@@ -3291,6 +3310,28 @@ build_gate4_fixture() {
     # in BOTH modes, so gate 4 passes and the unit reads ELIGIBLE either way --
     # which is precisely the false green #758 reports for the diverged shape.
     printf '%s {\n    2\n}\n' "$_fx_sig" > "$_fx_dir/src/base.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#906"
+    git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+    return 0
+  fi
+
+  if [ "$_fx_mode" = "symbol_diverged_long" ]; then
+    # #765: the SAME shape as `symbol_diverged`, but the two headers agree for
+    # MORE than the 140 chars the NOTE used to print, so the divergence sits
+    # entirely INSIDE the truncated region -- both sides rendered identically and
+    # the NOTE read as a tool artifact. The leg asserts the differing TAIL is
+    # named; it reddens on the pre-#765 code, which is what makes it a control.
+    _fx_up='pub fn base_fn(aaaaaaaaaaaa: u8, bbbbbbbbbbbb: u8, cccccccccccc: u8, dddddddddddd: u8, eeeeeeeeeeee: u8, ffffffffffff: u8, gggggggggggg: u8, hhhhhhhhhhhh: u8, iiiiiiiiiiii: u8) -> u8'
+    _fx_fork='pub fn base_fn(aaaaaaaaaaaa: u8, bbbbbbbbbbbb: u8, cccccccccccc: u8, dddddddddddd: u8, eeeeeeeeeeee: u8, ffffffffffff: u8, gggggggggggg: u8, hhhhhhhhhhhh: u8, iiiiiiiiiiii: u8, jjjjjjjjjjjj: u32) -> u8'
+    printf '%s {\n    9\n}\n' "$_fx_up" > "$_fx_dir/src/base.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "upstream long signature" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+    # Re-point upstream AT the long header: the divergence must lie past the old
+    # 140-char prefix or this leg tests nothing.
+    git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+
+    printf '%s {\n    2\n}\n' "$_fx_fork" > "$_fx_dir/src/base.rs"
     git -C "$_fx_dir" add -A
     git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#906"
     git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
@@ -4947,6 +4988,27 @@ sys.exit(0 if (len(rows) == 1 and str(rows[0].get("pr")) == "555002") else 1)
     ok "#758 diverged header: ELIGIBLE + NOTE(HUNK_SYMBOL_DIVERGED) naming src/base.rs :: base_fn"
   else
     echo "  bad  - diverged-header fixture expected rc=0 ELIGIBLE + NOTE(HUNK_SYMBOL_DIVERGED) naming base_fn, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 35b. #765: the divergence must stay READABLE when it lies past the old
+  #      140-char prefix. Pre-#765 both sides printed IDENTICALLY (fixed-length
+  #      prefixes), so the NOTE read as a tool artifact; this leg requires the
+  #      differing TAIL -- `jjjjjjjjjjjj`, which upstream does not carry -- to be
+  #      named. It is a CONTROL, not a restatement: it reddens on the old code.
+  fx_divlong="$selftest_tmp/fx_symbol_diverged_long"
+  build_gate4_fixture "$fx_divlong" symbol_diverged_long
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_divlong" "$selftest_tmp/mock_reg_fx.json" "906" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "NOTE(HUNK_SYMBOL_DIVERGED)" \
+     && oc_has "$out" "src/base.rs :: base_fn" \
+     && oc_has "$out" "jjjjjjjjjjjj" \
+     && oc_has "$out" "fork continues"; then
+    ok "#765 long diverged header: the NOTE names the DIFFERING tail, never two identical prefixes"
+  else
+    echo "  bad  - long-diverged fixture expected the NOTE to name the differing tail (jjjjjjjjjjjj), got rc=$rc ($out)"
     return 1
   fi
 
