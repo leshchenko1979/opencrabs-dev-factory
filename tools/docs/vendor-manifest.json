@@ -6,7 +6,7 @@
       "local": "tools/state/oc-questions",
       "upstream_path": "TEMPLATE/tools/questions",
       "ref": "1a64b9ad92114b4d4826604e4349f263d3b2aa02",
-      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-02 at origin/main 1a64b9a; the content last changed upstream at 1a64b9a (`answer` grew an opt-in `--notify` delivery fold, S2 of the register-mirror retirement) and this copy carries it byte-for-byte after the four declared deltas.",
+      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-02 at origin/main 1a64b9a; the content last changed upstream at 1a64b9a (`answer` grew an opt-in `--notify` delivery fold, S2 of the register-mirror retirement) and this copy carries it byte-for-byte after the seven declared deltas.",
       "delta": [
         {
           "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
