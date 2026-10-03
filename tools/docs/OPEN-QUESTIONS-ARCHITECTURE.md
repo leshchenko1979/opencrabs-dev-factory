@@ -35,12 +35,16 @@ and the page is public.
 |---|---|---|
 | what runs there | the agent daemon (the lanes), the register CLI, the store | the web server, the answer backend |
 | reaches the internet | outbound only | inbound (public) |
-| holds | the register, including the destination session ids | a key that can reach the agent host |
+| holds | the register, including the destination session ids | the mirrored pages, and a key that can reach the agent host |
 | example | `agents` (private) | `vpn` → `questions.l1979.ru` |
 
 Neither host is privileged over the other in the tool's design — you can run both roles on one
 machine (simplest), or split them (what the reference does). The split is only forced by whether
 the agent host can be made publicly reachable.
+
+**The register lives on the agent host only.** It carries the destination session ids, and the
+public host needs none of that: the confirmation's lane name and question title ride in the
+token's own page meta (§4), so nothing on the public host has to know which session asked.
 
 ---
 
@@ -63,7 +67,6 @@ flowchart TD
     CADDY["Caddy<br/>TLS + basic_auth"]
     PAGES["/srv/questions<br/>mirrored pages"]
     BACKEND["questions-backend.service<br/>/opt/questions/backend.py :8099"]
-    REG["/var/lib/questions/open.json<br/>mirrored register (not served)"]
   end
   BROWSER[["Owner's browser"]]
 
@@ -76,17 +79,19 @@ flowchart TD
   PUSHPATH --> PUSHSVC
   PUSHSVC --> PUSHSH
   PUSHSH -- "rsync over ssh (outbound)" --> PAGES
-  PUSHSH -- "rsync over ssh (outbound)" --> REG
   BROWSER -- "GET /token/" --> CADDY
   CADDY --> PAGES
   BROWSER -- "POST /answer" --> CADDY
   CADDY -- "reverse_proxy" --> BACKEND
   BACKEND -- "read" --> PAGES
-  BACKEND -- "read" --> REG
   BACKEND -- "ssh back into agent host" --> CLI
   CLI -- "notify -> HTTP" --> A2A
   A2A -- "wake" --> LANE
 ```
+
+Only the **pages** cross to the public host. The answer backend reads the page it serves — the
+token's own `meta.json`, which carries the `echo` (§4) — and reaches back into the agent host for
+everything else.
 
 ---
 
@@ -105,20 +110,30 @@ sequenceDiagram
   B->>C: POST /answer (token,set,qid,choice,text)
   C->>K: reverse_proxy (after basic_auth)
   K->>K: validate token + expiry against /srv/questions
-  Note over K: destination session is read from the REGISTER,<br/>never from the request
-  K->>S: ssh agents oc-questions answer <set> <qid> <choice> --via page
-  S->>Q: runs the CLI on the agent host
+  Note over K: lane + question title come from the token's own page meta (echo)<br/>no session id ever reaches this host
+  K->>S: ssh agents oc-questions answer <set> <qid> <choice> --via page --json --notify
+  S->>Q: runs the CLI on the agent host -- ONE round trip
   Q->>Q: record the answer in open.json
-  K->>S: ssh agents oc-questions notify --set <set> --qid <qid>
-  S->>Q: runs the CLI again
-  Q->>G: HTTP POST (turn-end delivery)
+  Q->>G: HTTP POST (turn-end delivery, folded in by --notify)
   G->>L: wakes the session that asked
-  K-->>B: "Recorded and delivered to the asking lane."
+  K-->>B: "Delivered to the lane that asked."
 ```
 
-If the last hop fails, the answer is **still recorded** — the reader sees
-*"Recorded, but the return path did not confirm delivery."* The register is the durable copy; the
-wake is best-effort and retried by a separate sweep.
+**One ssh call, not two.** The CLI's `answer` verb records the answer *and* delivers it to the
+asking lane when given `--notify`; the backend passes that flag, so a submission costs one round
+trip. (Running `answer` and `notify` as separate verbs would work, but it would double the ssh
+hops per answer — the fold exists precisely to avoid that.)
+
+**The echo is the page's own copy.** Each published page carries a `meta.json` whose `echo` block
+maps every set on the page to its lane name and the titles of its questions — written by the tool
+at publish time, from the register it already has. That is what the backend reads to render the
+confirmation. It is *display only*: the CLI remains the authority for whether the set and question
+actually exist, and it re-derives the destination session from the register itself.
+
+If the delivery hop fails, the answer is **still recorded** — the reader sees
+*"Recorded. The return path did not confirm delivery — the lane will still see it in the register."*
+The register is the durable copy; the wake is best-effort, and the tool records the outcome per
+question for a separate sweep to retry.
 
 ---
 
@@ -129,8 +144,8 @@ Everything the tool does *not* give you, in the order you need it.
 | # | Need | Where | Notes |
 |---|---|---|---|
 | 1 | A web server with TLS for a hostname | public host | Caddy in the reference; any server that can serve files and proxy one path |
-| 2 | The mirrored page tree at a served root | public host | pushed from the agent host (§6) |
-| 3 | The mirrored register, **outside** the web root | public host | it carries session ids; keep it unserved |
+| 2 | The mirrored page tree at a served root | public host | pushed from the agent host (§6); it includes each page's `meta.json` |
+| 3 | The page meta carrying the answer echo | public host | `echo.<set>.lane` and `echo.<set>.questions.<qid>`, written by the tool at publish time — the backend reads the confirmation from here, so the register never needs to be mirrored |
 | 4 | The answer backend process | public host | `/opt/questions/backend.py`, bound to loopback, proxied at `/answer` |
 | 5 | **A path from the public host back into the agent host** | public → agent | an SSH key authorised on the agent host, and the agent host reachable from the public host |
 | 6 | The register CLI at a resolvable path | agent host | the backend resolves it at call time; a pinned path breaks silently when the tree moves |
@@ -150,8 +165,10 @@ outbound from the agent host, so the public host needs no inbound port *for this
 
 - A file watcher fires when the store changes (a systemd **user** path unit in the reference,
   watching `open.json` and `pages/latest.json`).
-- The watcher runs a mirror script: one canonical render, then `rsync` of the page tree and the
-  register to the public host.
+- The watcher runs a mirror script: one canonical render, then `rsync` of the **page tree** to the
+  public host. The register is **not** mirrored — the confirmation reads the lane and question
+  title from the token's own page meta, so a copy on the public host would be a second copy that
+  could only go stale.
 - The script compares source and served digests after copying and retries on divergence, so a
   dropped trigger cannot leave the served page one revision stale.
 
@@ -161,11 +178,11 @@ outbound from the agent host, so the public host needs no inbound port *for this
 
 Recorded because they cost time and will cost yours.
 
-1. **The "no key back" claim is wrong.** The push script's own header says the public host holds
-   no key that can reach the private one. That is true of the *mirror* leg and false of the
-   *answer* leg: the backend requires exactly such a key and uses it on every answer. Do not
-   design the split on the assumption that the public host is harmless if compromised — it holds
-   a root path into the agent host.
+1. **The "no key back" claim was wrong.** The push script's own header *used to* say the public
+   host holds no key that can reach the private one. That is true of the *mirror* leg and false of
+   the *answer* leg: the backend requires exactly such a key and uses it on every answer. The
+   header and the unit's `Description` now say so. Do not design the split on the assumption that
+   the public host is harmless if compromised — it holds a root path into the agent host.
 
 2. **A pinned CLI path is a silent landmine.** An earlier backend revision hardcoded the CLI at
    `tools/oc-questions`. When the CLI moved to `tools/state/oc-questions`, every answer started
@@ -176,6 +193,12 @@ Recorded because they cost time and will cost yours.
 3. **The mirror of the backend was stale.** The deployed `/opt/questions/backend.py` and the
    in-repo copy had drifted to different revisions. If you keep a copy in your repo, sync it from
    the deployed one, not the other way round.
+
+4. **A copy of the register on the public host is a copy that can only rot.** An earlier revision
+   shipped one there so the backend could look up the lane and title locally. Once the page meta
+   carried the echo, that copy had no reader — and a copy with no reader is a copy nobody compares,
+   so it silently drifts from the register it copies. The shipped shape drops it: the public host
+   holds the pages, the backend, and the key back, and nothing else.
 
 ---
 

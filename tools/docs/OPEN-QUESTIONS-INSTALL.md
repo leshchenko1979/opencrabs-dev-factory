@@ -145,6 +145,14 @@ For reference, the author's arrangement is three pieces: a systemd `.path` unit 
 store, a oneshot `.service` that rsyncs the pages to a small host, and a web server serving them.
 **Without any of that, everything still works** — you just open the page from disk.
 
+Two things about that arrangement are worth copying if you want answers to come back to the
+asking session. First, the mirror carries the **page tree only**: the confirmation's lane name and
+question title are read from the token's own page meta (the `echo` block the tool writes at
+publish time), so the public host needs no copy of the register — a copy it never had cannot go
+stale. Second, the small backend that accepts the answer runs the register CLI back on the agent
+host over ssh with the CLI's `--notify` flag, so **one submission costs one ssh round trip**, not
+two. `tools/docs/OPEN-QUESTIONS-ARCHITECTURE.md` covers that return path in full.
+
 ---
 
 ## 8. Bounds — read before you redistribute
