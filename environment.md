@@ -125,6 +125,15 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   NEVER an 8-char short form: actions/checkout treats it as a glob and fetches a
   branch literally named `<sha>*`). PASS THE FULL SHA ALWAYS —
   see next rule for why it is now the only auditable record of what was built.
+- **Carrier ORDER gate 3 (CONTAINMENT) builds only shas already on `main`** —
+  `ci-lane-impl.yml` @ `ci/quick-build-linux` runs `git merge-base --is-ancestor
+  <source_ref> refs/remotes/origin/main` and FAILS the run otherwise (`:160-164`). So the
+  carrier CAN gate `main` content (a full sha is a valid `source_ref`), but it can never
+  build a feature-branch sha before that sha lands on `main`. Gates in dispatch order:
+  SHAPE (40-hex, `:145-148`) · EXISTENCE (`rev-parse --verify`, `:157-158`) · CONTAINMENT
+  (`:160-164`) · SIGNATURE (`^Session-Id:` trailer, `:166-169`). All three carrier jobs run
+  `runs-on: ubuntu-latest` (`:142` `:175` `:245`) — the carrier is green-capable on hosted
+  runners, unlike `main`'s `ci.yml` (see below).
 - The workflow lives ONLY on the carrier branch `ci/quick-build-linux` (moved off
   fork `main` 2026-08-26, Alexey's call — mirrors upstream dropping it from their
   main). Dispatch pattern adds `--ref ci/quick-build-linux`. CONSEQUENCE: the run
@@ -136,12 +145,21 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   Measured: `origin/main` carries exactly `auto-assign.yml` `ci.yml` `prerelease.yml`
   `release.yml`; the fork's OWN CI — `pr-checks.yml` (the PR-lane gate), `ci-lane-impl.yml`
   and `quick-build-linux.yml` (the carrier build) — exists ONLY on `ci/quick-build-linux`.
-  `main`'s `ci.yml` is **byte-identical to upstream's** (`git diff adolfousier/main origin/main
-  -- .github/workflows/ci.yml` is empty) and its jobs resolve `self-hosted` on a push (the
-  ternary yields `ubuntu-latest` only for a fork PR); the fork has **0 registered self-hosted
-  runners**, so every main-push run queues indefinitely and is cancelled by the next push —
-  measured 2026-10-01T01:17Z: **0 success / 58 cancelled** since 2026-09-14, the newest still
-  `pending` on the `a85740948` push. **CONSEQUENCE — fork `main` has NO post-merge CI net**, by
+  `main`'s `ci.yml` carries **no fork edits of its own** — its blob `66213a97` is upstream's
+  at upstream `878c4af5c` (an ancestor of `adolfousier/main`); upstream has since advanced
+  **3 ci.yml commits** (`e99d915ce` `334a4d3e1` `aa271a0e3`), so any "byte-identical" reading
+  holds only **as of upstream `878c4af5c`** — compare blobs, never assume. Its jobs resolve
+  `self-hosted` on a push (the ternary yields `ubuntu-latest` only for a fork PR) and the fork
+  has **0 registered self-hosted runners**, so every main-push run queues indefinitely and is
+  cancelled by the next push. Measured 2026-10-03T22:23:11Z over the FULL run population
+  (`total_count` 496, all 5 pages — count first, never read a page): **6 success · 466
+  cancelled · 23 failure · 1 startup_failure**, 0 in flight. The 6 successes are **May 2026
+  same-repo PRs** (`head_repository = leshchenko1979/opencrabs` → the `self-hosted` arm) from
+  when runners existed; **zero `push` runs have EVER succeeded**. So the fork is
+  **de-provisioned, NOT impossible** — a registered self-hosted runner would make it
+  green-capable (not worth doing: the carrier is green-capable today). The earlier
+  `0 success / 58 cancelled` was a **truncated page read, not a population**.
+  **CONSEQUENCE — fork `main` has NO post-merge CI net**, by
   design (the CI files moved off `main` 2026-08-26, Alexey's call, mirroring upstream dropping
   them from theirs): the PRE-merge PR-lane gate (`oc-ship-chain` LEG1) is the ONLY gate, and
   the only thing between a red commit and the carrier build. **Never read `main`'s workflow
