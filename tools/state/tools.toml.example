@@ -13,7 +13,7 @@
 name = "oc_questions"
 description = "The Open Questions register. action=ask registers the ordered set of questions this lane is blocked on and returns the open-question TOTAL plus the page URL — the asking session is read from OPENCRABS_SESSION_ID and there is NO card; action=list reads parked decisions, oldest first; action=answer records the owner's answer (choice index, or the literal clarify with text); action=amend edits a question after a Clarify request and reopens it; action=notify delivers the recorded answer to the session named in the register; action=publish/lint/gc are maintenance. Returns JSON. rc: 0 ok / 1 finding-or-not-found / 2 usage / 3 state-refused / 4 store-or-IO."
 executor = "shell"
-command = "OC_QUESTIONS_SKILL_ROOT=/path/to/opencrabs-skill python3 /path/to/opencrabs-skill/tools/state/oc_questions_tool.py --params-file \"$OPENCRABS_PARAMS\" 2>&1"
+command = "OC_QUESTIONS_SKILL_ROOT=/path/to/opencrabs-dev-factory python3 /path/to/opencrabs-dev-factory/tools/state/oc_questions_tool.py --params-file \"$OPENCRABS_PARAMS\" 2>&1"
 timeout_secs = 30
 params = [
     { name = "factory", type = "string", description = "ask only, REQUIRED: the factory key. It IS the standing set id (e.g. opencrabs-dev) and is REUSED on every ask — a new set is never minted per call. ask without it exits rc 2.", required = false },
