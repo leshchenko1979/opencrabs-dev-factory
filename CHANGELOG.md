@@ -2,7 +2,7 @@
 
 ## v0.4.284 — the two-stream issue routing: binary upstream, factory to the dev-factory repo (owner order 2026-10-03)
 
-Bundles **`c377eeb0`** + **`d1404d7a`** (the #730 header-parser guard, Toolsmith) with the routing overhaul below.
+Bundles the routing overhaul below with the window's other lanes' work: **`c377eeb0`** + **`d1404d7a`** (#730 header-parser guard, Toolsmith); **`3fe3618f`** + **`839868e5`** (#764 — the declaration-dependency predicate reads CODE, not PROSE); **`12d316e3`** + **`ee792ad3`** (#765 — `NOTE(HUNK_SYMBOL_DIVERGED)` names the DIFFERING region); **`4c5bf657`** + **`062861b7`** (#761 step 3 — the `walk` verb); **`994951f7`** (law — #761 step 3/4 precision: rows key on `unit`, branches-absent is UNCOVERED, CLOSED is mechanical); **`0bbc4da5`** (re-vendor `oc-questions`); **`e6c3bb25`** (docs — the open-questions architecture doc describes the shipped shape); **`0942d203`** (docs — the v0.4.283 C8 naming fix, which post-dates the `v0.4.283` tag and therefore rides this window rather than its own).
 
 **Owner order 2026-10-03 21:17Z** (channel `OC Dev`), relayed by lane `55943b3e`, verbatim: *"The existing issue portfolio stays at leshchenko1979/opencrabs. For new issues, we need to split them into two streams: opencrabs binary and opencrabs dev factory. The new binary issues go to adolfousier/opencrabs and follow the process we just agreed. The new factory issues will need to go to leshchenko1979/opencrabs-skills. But first rename it to opencrabs-dev-factory. Speak to opencrabs dev factory hq so that they can make the needed changes to their laws."*
 
