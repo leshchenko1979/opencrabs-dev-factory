@@ -938,6 +938,95 @@ _NON_DECL_TOKENS = frozenset((
 
 _IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
+# #764: the declaration-dependency test must read CODE, not prose. Its added
+# lines carry `//!` / `///` doc comments and string literals, and every
+# identifier-shaped token in them scored as a REFERENCE -- so `check 763` was
+# REFUSED because three symbols occur inside a `//!` module-doc block
+# (`heal_project_repo_remote`, `heal_session_seen_skills_loaded_mtime`,
+# `reconcile_before_migrations`), none of which the unit calls.
+#
+# Deliberately a SCANNER, not a parser, and deliberately FAIL-OPEN: text it
+# cannot classify is KEPT. A kept token must still pass the declaration
+# predicate to matter, so keeping too much costs a false positive that
+# predicate then rejects, while STRIPPING too much costs a MISSED dependency --
+# a false green on portability, the one direction this test exists to prevent.
+# Strings are consumed BEFORE comment detection: a `//` inside a string literal
+# (`"https://..."`) would otherwise truncate the line and drop whatever real
+# code followed it.
+_RAW_STR_RE = re.compile(r'(?<![A-Za-z0-9_])(?:b?r)(#*)"')
+
+def _end_of_quoted(text, i):
+    # text[i] == '"' -> index PAST the closing quote (len when unterminated).
+    j, n = i + 1, len(text)
+    while j < n:
+        if text[j] == '\\':
+            j += 2
+            continue
+        if text[j] == '"':
+            return j + 1
+        j += 1
+    return n
+
+def _end_of_char(text, i):
+    # text[i] == "'" -> index PAST a CHAR LITERAL, or None when this is a
+    # LIFETIME (`'a`) or anything else we must KEEP. The distinction matters:
+    # eating a lifetime's identifier would drop a real reference.
+    n = len(text)
+    j = i + 1
+    if j >= n:
+        return None
+    if text[j] == '\\':
+        k = j + 2
+        while k < n:
+            if text[k] == "'":
+                return k + 1
+            k += 1
+        return None
+    if j + 1 < n and text[j + 1] == "'":
+        return j + 2
+    return None
+
+def _strip_rust_noncode(text):
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '/' and text.startswith('//', i):
+            j = text.find('\n', i)
+            if j < 0:
+                break
+            i = j
+            continue
+        if c == '/' and text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            if j < 0:
+                break
+            i = j + 2
+            out.append(' ')
+            continue
+        m = _RAW_STR_RE.match(text, i)
+        if m:
+            close = '"' + m.group(1)
+            j = text.find(close, m.end())
+            if j < 0:
+                break
+            i = j + len(close)
+            out.append(' ')
+            continue
+        if c == '"':
+            i = _end_of_quoted(text, i)
+            out.append(' ')
+            continue
+        if c == "'":
+            k = _end_of_char(text, i)
+            if k is not None:
+                i = k
+                out.append(' ')
+                continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
 def _decl_names_in(body):
     # The names a body DECLARES, by the same grammar `derive_added_declarations`
     # reads off the `+` side, so both halves of the #633/#761 comparison speak
@@ -1033,10 +1122,18 @@ def fork_only_surface_references(commits_list, repo_path, base_ref='adolfousier/
         declared_here = set()
         referenced = set()
         for ln in lines:
+            # #764: read CODE, never prose -- a `//!` doc mention or a string
+            # literal is not a reference, so the reference scan runs on the
+            # stripped line. The DECLARATION match stays on the RAW line
+            # deliberately: `_ADDED_DECL_RE` is `^\s*`-anchored so a comment can
+            # never match it anyway, while stripping would LOSE a real
+            # declaration whose syntax carries a literal -- `extern "C" fn foo`
+            # becomes `extern  fn foo` and matches nothing, which would re-list
+            # `foo` as a reference to itself.
             m = _ADDED_DECL_RE.match(ln) or _ADDED_IMPL_RE.match(ln)
             if m:
                 declared_here.add(m.group(1))
-            referenced |= set(_IDENT_RE.findall(ln))
+            referenced |= set(_IDENT_RE.findall(_strip_rust_noncode(ln)))
         # A declaration the UNIT itself introduces is not a dependency on
         # fork-only substance -- the port brings it along.
         referenced -= declared_here
@@ -3241,7 +3338,8 @@ build_gate4_fixture() {
     return 0
   fi
 
-  if [ "$_fx_mode" = "fork_only_dep" ] || [ "$_fx_mode" = "fork_only_dep_ok" ]; then
+  if [ "$_fx_mode" = "fork_only_dep" ] || [ "$_fx_mode" = "fork_only_dep_ok" ] \
+     || [ "$_fx_mode" = "fork_only_dep_doc" ]; then
     # #758 / #761 step 2b shape: the hunk's enclosing symbol IS upstream by NAME
     # (so neither the fork-only advisory nor UPSTREAM_VOID fires) and its
     # signature is IDENTICAL -- yet the hunk's body references a declaration
@@ -3251,6 +3349,13 @@ build_gate4_fixture() {
     # upstream -- so a predicate that simply refused every unit could not pass
     # both legs. Signature is deliberately NOT diverged in either mode: the
     # refusal must key on the DEPENDENCY, not on the divergence NOTE.
+    #
+    # #764 adds `fork_only_dep_doc`: the SAME fork-only dependency, named ONLY in
+    # PROSE -- a `//!` module doc, a `///` doc line and a string literal. It must
+    # stay ELIGIBLE, and that is what makes the pair discriminating: a predicate
+    # that reads PROSE passes `fork_only_dep` and fails this leg, while a
+    # predicate that simply stopped refusing passes this leg and fails
+    # `fork_only_dep`. Neither leg alone can tell those two apart.
     printf 'pub fn base_fn() -> u8 {\n    1\n}\n' > "$_fx_dir/src/dep.rs"
     if [ "$_fx_mode" = "fork_only_dep_ok" ]; then
       printf 'pub fn base_fn() -> u8 {\n    1\n}\n\npub fn shared_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
@@ -3259,7 +3364,7 @@ build_gate4_fixture() {
     git -C "$_fx_dir" commit -q -m "dep base"
     git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
 
-    if [ "$_fx_mode" = "fork_only_dep" ]; then
+    if [ "$_fx_mode" = "fork_only_dep" ] || [ "$_fx_mode" = "fork_only_dep_doc" ]; then
       # Parent #900 adds the fork-only declaration the target will depend on.
       printf 'pub fn base_fn() -> u8 {\n    1\n}\n\npub fn fork_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
       git -C "$_fx_dir" add -A
@@ -3271,6 +3376,11 @@ build_gate4_fixture() {
     # (fork-only, resp. upstream) helper.
     if [ "$_fx_mode" = "fork_only_dep" ]; then
       printf 'pub fn base_fn() -> u8 {\n    fork_helper()\n}\n\npub fn fork_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
+    elif [ "$_fx_mode" = "fork_only_dep_doc" ]; then
+      # #764: `fork_helper` appears ONLY in prose -- inner `//!` doc, an outer
+      # `///` doc, and a string literal. None of these is a code reference, so
+      # this port DOES resolve and must stay ELIGIBLE.
+      printf '//! [`fork_helper`] is the fork-only dependency this port must resolve.\n/// See `fork_helper()` -- and "fork_helper" appears in this literal.\npub fn base_fn() -> u8 {\n    7\n}\n\npub fn fork_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
     else
       printf 'pub fn base_fn() -> u8 {\n    shared_helper()\n}\n\npub fn shared_helper() -> u8 {\n    2\n}\n' > "$_fx_dir/src/dep.rs"
     fi
@@ -4638,6 +4748,24 @@ sys.exit(0 if (len(rows) == 1 and str(rows[0].get("pr")) == "555002") else 1)
     ok "#758 positive control: hunk body depends on an upstream declaration -> ELIGIBLE"
   else
     echo "  bad  - upstream-dep fixture expected rc=0 ELIGIBLE and NO FORK_ONLY_SURFACE, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 26f. #764: the SAME fork-only dependency as 26d, but named ONLY in PROSE --
+  #      a `//!` module doc, a `///` doc line and a string literal -- must stay
+  #      ELIGIBLE: a doc mention is not a reference. Paired with 26d this is the
+  #      discriminating pair -- a predicate that reads prose fails HERE, one that
+  #      stopped refusing fails 26d; neither leg alone can tell those apart.
+  fx_dep_doc="$selftest_tmp/fx_dep_doc"
+  build_gate4_fixture "$fx_dep_doc" fork_only_dep_doc
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_dep_doc" "$selftest_tmp/mock_reg_fx.json" "901" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && ! oc_has "$out" "FORK_ONLY_SURFACE"; then
+    ok "#764: fork-only declaration named ONLY in doc comments/strings -> ELIGIBLE (prose is not a reference)"
+  else
+    echo "  bad  - doc-only-dep fixture expected rc=0 ELIGIBLE and NO FORK_ONLY_SURFACE, got rc=$rc ($out)"
     return 1
   fi
 
