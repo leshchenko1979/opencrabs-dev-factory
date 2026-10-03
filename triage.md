@@ -179,7 +179,7 @@ below needs a regular cadence to be worth anything.
      referencing the issue **BY IDENTITY, never by bare reference** (v0.4.226,
      HQ ruling 2026-09-20), **read on the surface the fix lands on** — fork
      `main` for `src/**`, the SKILL repo (`skills/opencrabs-dev`, remote
-     `leshchenko1979/opencrabs-skill`) for `tools/**` (v0.4.229, filing
+     `leshchenko1979/opencrabs-dev-factory`) for `tools/**` (v0.4.229, filing
      `530c29ec` GAP 1). Fork `main` carries **NO `tools/` directory at all**, so
      a tools-surface leg read against it returns FALSE NOT-LANDED for work that
      already shipped, and the issue reads as dispatchable backlog — the INVERSE
@@ -272,7 +272,7 @@ no upstream counterpart. The criterion is the **carrying repo**, never the path
 string: the fork repo `leshchenko1979/opencrabs` HAS an upstream
 (`adolfousier/opencrabs`), so `src/**` AND `.github/**` stay harvestable
 (upstream carries `.github/workflows/{auto-assign,ci,prerelease,release}.yml`),
-while the skill repo `leshchenko1979/opencrabs-skill` has NONE, so everything it
+while the skill repo `leshchenko1979/opencrabs-dev-factory` has NONE, so everything it
 carries — `tools/**` and every skill markdown file — is **harvest-exempt**. An
 open fork issue MAY be closed autonomously when BOTH hold: (1) `landed` on its OWN
 surface (the SKILL repo for `tools/**`, per the LANDED TERM surface-scoping),

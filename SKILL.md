@@ -20,8 +20,9 @@ author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
   references:
-    - https://github.com/adolfousier/opencrabs (upstream — PRs only; new issues NEVER filed here)
-    - https://github.com/leshchenko1979/opencrabs (fork — push target + ISSUES HOME)
+    - https://github.com/adolfousier/opencrabs (upstream — BINARY issues + PRs; the binary tracker since 2026-10-03)
+    - https://github.com/leshchenko1979/opencrabs-dev-factory (dev-factory issues — tooling, CI, release automation, process)
+    - https://github.com/leshchenko1979/opencrabs (fork — push target + historical issue portfolio, READ-ONLY)
   provenance:
     - "Release history and the current version live in CHANGELOG.md (git-tracked, newest-first). The v0.4.43 B6 rationale is in war-stories.md."
 ---
@@ -380,8 +381,10 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 ## Hard rules (all roles)
 
 - Reports to Alexey: every issue/PR reference
-  carries the LINK behind the number (issues: `https://github.com/leshchenko1979/opencrabs/issues/N`
-  — the fork is the issues home; PRs: `https://github.com/adolfousier/opencrabs/pull/N`) — a bare `#N` is never enough.
+  carries the LINK behind the number (binary issues: `https://github.com/adolfousier/opencrabs/issues/N`;
+  factory issues: `https://github.com/leshchenko1979/opencrabs-dev-factory/issues/N`;
+  historical fork issues: `https://github.com/leshchenko1979/opencrabs/issues/N`;
+  PRs: `https://github.com/adolfousier/opencrabs/pull/N`) — a bare `#N` is never enough.
 - Refer to workers by TOPIC/CHAT NAME only (owner 2026-08-31) — NEVER by session uuid, on EVERY
   surface (owner reports, inter-lane advisories, session_notify text, verdict tables, ledger
   commentary). Uuids are for ROUTING fields only (`target_session`, `OC_ACTOR`, `Session-Id`
@@ -409,10 +412,10 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 
 | Rule | Applies to | Gate |
 |---|---|---|
-| NEW issues NEVER upstream — every new issue (upstream-code bugs and fork-only infra alike) is filed on the FORK | `leshchenko1979/opencrabs` | owner 2026-08-27 14:08Z |
-| Upstream receives PRs ONLY — body = detailed description ending `Original issue: <full fork URL>`; NEVER `Closes #N` (wrong issue space) | `adolfousier/opencrabs` PR bodies | owner 2026-08-27 |
-| Fork issue closed by US right after the PR is filed | fork issue tracker | — |
-| Fork issues NEVER claimed on GitHub: no tackling comments, assignment, labels/reactions by any lane — claiming = `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48); uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING, not the design/implementation record | ledger | owner 2026-08-27 17:07Z |
+| **TWO-STREAM ISSUE ROUTING (owner order 2026-10-03 21:17Z — REVERSES the 2026-08-27 row below):** a **BINARY** issue (runtime behaviour, channels, providers, TUI, memory, tools) is filed on UPSTREAM `adolfousier/opencrabs` — the binary tracker; a **FACTORY** issue (tooling, CI, release automation, process) is filed on `leshchenko1979/opencrabs-dev-factory`. The historical portfolio `leshchenko1979/opencrabs` is **READ-ONLY** — no new issues. Mandatory duplicate sweep (open+closed, issues+PRs) BEFORE filing; core-surface changes carry `fix core` / `feat core` in the title | `adolfousier/opencrabs` (binary) · `leshchenko1979/opencrabs-dev-factory` (factory) | owner 2026-10-03 21:17Z |
+| PR body = detailed what/why. `Closes #N` is **VALID same-repo** (a binary issue on upstream, closed by its upstream PR) and **FORBIDDEN across trackers** (a factory/dev-factory issue has no upstream number space) — there the body ends `Original issue: <full URL>`, EXACTLY one | `adolfousier/opencrabs` PR bodies | owner 2026-10-03 (generalized upstream, PR adolfousier#1907) |
+| A binary issue upstream closes via `Closes #N` on its own PR; historical fork issues stay READ-ONLY, never re-filed | trackers | owner 2026-10-03 |
+| Claiming = **assignment on the tracker** (the PUBLIC claim signal, owner order 2026-10-03) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48). NO tackling/status comments or labels; uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING chatter, not the design/implementation record | tracker assignment + ledger | owner 2026-10-03 (supersedes the 2026-08-27 no-assignment rule) |
 | PR SHIPMENT — **PR SHIPMENT LAW (single home): feature COMPLETE + smoke PASS (v0.4.104 4-Leg Smoke Rubric) → the EDITOR posts smoke evidence to its forum topic and its obligation ENDS there; the HARVEST lane ports, gates and files the upstream PR. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
 | APPROVAL = Alexey's reply or a positive Telegram reaction to the explicit request in the forum topic; silence is NOT consent; spontaneous / ad-hoc PRs remain forbidden | owner word | v0.4.1 |
 
@@ -462,13 +465,15 @@ links; development-time upstream contact is PR-comments only (supersedes the
   the SMOKE pass remains a required condition in BOTH modes, and owner approval
   is required under **DEGRADED MODE** and waived under **HIGH-TRUST MODE**
   (§Hard rules — CONSENT REGISTER / MODE REGISTER).
-- Issue-first, no exceptions (2026-08-25): a DISCOVERED problem gets its issue
-  FILED before any fix work starts — on the FORK `leshchenko1979/opencrabs`
-  (ALL new issues — upstream-code bugs and fork-only infra alike; upstream
-  receives PRs only). Discoverer
-  files it (symptom + evidence); fixer claims via an `oc-ledger claim` row +
-  an `Issue-Ref` trailer on the commit — NO CLAIMING `gh` comment, assignment
-  or label on the fork issue (2026-08-27); CARVE-OUT: the item-7 approved-design
+- Issue-first, no exceptions (2026-08-25; routing revised 2026-10-03): a DISCOVERED problem
+  gets its issue FILED before any fix work starts — on the BINARY tracker
+  `adolfousier/opencrabs` for a binary defect, on `leshchenko1979/opencrabs-dev-factory`
+  for a factory defect (tooling, CI, release automation, process). A mandatory duplicate
+  sweep (open AND closed, issues AND PRs) precedes filing. Discoverer
+  files it (symptom + evidence); fixer claims via the tracker ASSIGNMENT (the public claim
+  signal since 2026-10-03) plus an `oc-ledger claim` row +
+  an `Issue-Ref` trailer on the commit — NO CLAIMING `gh` comment or label;
+  CARVE-OUT: the item-7 approved-design
   comment and `oc-issue-log`'s per-commit note (owner 2026-08-28) are sanctioned. Covers
   task starts (`editor.md` Phase 1) AND mid-loop finds: red-build bugs, failed
   smoke tests, defects in another editor's feature.

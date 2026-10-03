@@ -30,7 +30,7 @@ or fetch just the files you need:
 
 ```bash
 DEST=~/.opencrabs/profiles/<your-profile>/skills/opencrabs-dev/tools/state
-BASE=https://raw.githubusercontent.com/leshchenko1979/opencrabs-skill/main
+BASE=https://raw.githubusercontent.com/leshchenko1979/opencrabs-dev-factory/main
 
 mkdir -p "$DEST"
 curl -fsSL -o "$DEST/oc-questions"            "$BASE/tools/state/oc-questions"

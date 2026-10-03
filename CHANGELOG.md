@@ -1,5 +1,31 @@
 # Changelog — opencrabs-dev
 
+## v0.4.284 — the two-stream issue routing: binary upstream, factory to the dev-factory repo (owner order 2026-10-03)
+
+Bundles **`c377eeb0`** + **`d1404d7a`** (the #730 header-parser guard, Toolsmith) with the routing overhaul below.
+
+**Owner order 2026-10-03 21:17Z** (channel `OC Dev`), relayed by lane `55943b3e`, verbatim: *"The existing issue portfolio stays at leshchenko1979/opencrabs. For new issues, we need to split them into two streams: opencrabs binary and opencrabs dev factory. The new binary issues go to adolfousier/opencrabs and follow the process we just agreed. The new factory issues will need to go to leshchenko1979/opencrabs-skills. But first rename it to opencrabs-dev-factory. Speak to opencrabs dev factory hq so that they can make the needed changes to their laws."*
+
+**What REVERSES.** Two live rows die here. The 2026-08-27 row *"NEW issues NEVER upstream — every new issue (upstream-code bugs and fork-only infra alike) is filed on the FORK"* (`SKILL.md` §Hard rules ISSUE ROUTING) and its downstream echo, the 2026-09-01 correction *"Issue reports NEVER go upstream — the fork is the issues home, permanently"* (`harvest.md` §Upstream issue filings). Both are **superseded**: a **BINARY** issue (runtime behaviour, channels, providers, TUI, memory, tools) is filed on UPSTREAM `adolfousier/opencrabs` — the binary tracker from today; a **FACTORY** issue (tooling, CI, release automation, process) is filed on `leshchenko1979/opencrabs-dev-factory`. The historical portfolio at `leshchenko1979/opencrabs` is **READ-ONLY** — no new issues, and it is never re-filed.
+
+**The generalized lifecycle (owner item 6) rides upstream as PR [adolfousier#1907](https://github.com/adolfousier/opencrabs/pull/1907).** Mandatory duplicate sweep (open **and** closed, issues **and** PRs) before filing; `fix core` / `feat core` title prefixes mark core-surface changes; **assignment is the public claim signal** (owner item 5b, PR [adolfousier#1906](https://github.com/adolfousier/opencrabs/pull/1906) makes the maintainer's own issues self-assign); and `Closes #N` is now **VALID same-repo** — the reason it was forbidden (issue and PR in different number spaces) no longer holds for a binary issue closed by its own upstream PR. It stays **forbidden across trackers**: a factory issue on the dev-factory repo has no upstream number space, so those PR bodies still end `Original issue: <full URL>`.
+
+**Repo rename.** `leshchenko1979/opencrabs-skill` → **`leshchenko1979/opencrabs-dev-factory`** (PUBLIC; the old name redirects). The owner wrote "opencrabs-skills" (plural); no such repo exists — the singular repo holds the whole skill corpus and is the one renamed. The local clone's `origin` was already repointed by the relaying lane; **the historical `mirror2` alias is retired** (verified: `git remote -v` lists ONLY `origin`), so the H-3 push-remote row and `RC-CONTRACT.md:89` now agree on `origin` as the sole name — the drift the order asked to reconcile.
+
+**The Toolsmith half is NOT in this commit.** Nine live `tools/**` files hardcode the fork default (`oc-questions:50` `FORK_REPO`, `oc_ledger:4189`, `oc_issue_create:40`, `oc_issue_dispatch:616`, `oc-issue-scope:105`, `oc_issue_sweep:39`, `oc-watcher-audit` ×5, `oc_claims.py:266` `FORK_REPO_SLUG`). Which tracker each tool should default to is a `tools/**` design decision — Toolsmith's carve-out — and is dispatched to that lane, not decided here.
+
+| file | change | LOC |
+|---|---|---:|
+| `SKILL.md` | issue-routing table (4 rows), reference list, reports-link rule, issue-first bullet | 499 → 504 lines (**+5**), 47,380 → 48,757 bytes (**+1,377**) |
+| `harvest.md` | §Upstream issue filings — offload order superseded | 458 → 458 lines, 46,376 → 46,742 bytes (**+366**) |
+| `editor.md` | Scope — issue provenance split | 762 → 763 lines (**+1**), 81,785 → 81,902 bytes (**+117**) |
+| `toolsmith.md` | 2 sites — daemon defects → binary tracker | 165 → 165 lines, 16,559 → 16,698 bytes (**+139**) |
+| `upstream-merge-runbook.md` | H-3 push remote (`mirror2` → `origin`) | 514 → 514 lines, 96,279 → 96,491 bytes (**+212**) |
+| `triage.md` | 2 sites — skill-repo name | 543 → 543 lines, 70,515 → 70,527 bytes (**+12**) |
+| `README.md` | mirror target name | 83 → 83 lines, 6,301 → 6,350 bytes (**+49**) |
+| `tools/docs/RC-CONTRACT.md` | repo name + remote reconcile | 122 → 122 lines, 171,754 → 171,879 bytes (**+125**) |
+| `tools/docs/OPEN-QUESTIONS-INSTALL.md` | raw-URL base | 183 → 183 lines, 8,555 → 8,561 bytes (**+6**) |
+
 ## v0.4.283 — q51 → B: the census fence falls, and the fork-only boundary closes its second half
 
 Bundles **`e8049354`** + **`8be92beb`** (q51), **`58be1d05`** (#761 step 3), **`875cd7ef`** (#761 step 4), with **`84ddf658`** (battery receipt sweep). The range also carries the questions-lane pair **`2b60d931`** + **`2e4195b4`**, the re-vendor **`d377e7ad`**, and **`2a4081d7`** — the v0.4.282 C8 naming fix, which post-dates the `v0.4.282` tag and therefore rides this window rather than its own.

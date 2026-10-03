@@ -86,7 +86,7 @@ The carrier branch `ci/quick-build-linux` carries **three** workflow files where
 
 ## Remote topology — `origin` is the single canonical remote (updated 2026-09-15)
 
-`origin` is the sole push and fetch remote for the skill repo (`git@github.com:leshchenko1979/opencrabs-skill.git`, SSH transport).
+`origin` is the sole push and fetch remote for the skill repo (`git@github.com:leshchenko1979/opencrabs-dev-factory.git`, SSH transport; renamed from `opencrabs-skill` 2026-10-03 — the historical `mirror2` alias is retired, so `origin` is the only name).
 The redundant `mirror2` alias (which pointed to the exact same repository) has been retired.
 
 ## Unified tools log (moved from SKILL.md v0.4.131)

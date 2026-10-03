@@ -79,5 +79,5 @@ Highlights:
 
 ## Repo status
 
-Mirrored to `leshchenko1979/opencrabs-skill` (pushed on owner word; state repo `leshchenko1979/opencrabs-dev-state`).
+Mirrored to `leshchenko1979/opencrabs-dev-factory` (renamed from `opencrabs-skill` 2026-10-03; pushed on owner word; state repo `leshchenko1979/opencrabs-dev-state`).
 Current version: **`SKILL.md` frontmatter `version:`** — single source of truth, never stale (lens A M2, v0.4.79). Tag history: `git tag --list 'v0.4.*'`.
