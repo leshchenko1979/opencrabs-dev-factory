@@ -54,11 +54,12 @@ be read as an issue number (#272), and `claims 76` must not match a claim on
 WHAT A CLAIM CLAIMS (#329). Reference extraction answers TWO different
 questions, and one token list must not serve both:
 
-  * "does this row REFERENCE `#N`?" — every FORK-space reference counts. A
+  * "does this row REFERENCE `#N`?" — every HOME-space reference counts. A
     closing row's prose mention of `#N` is part of signal 1 (same author,
     references `#N`), so :func:`issue_ref_tokens` deliberately keeps them all —
-    all of them that name a fork issue. A reference qualified by another
-    repository is upstream space and is skipped in BOTH predicates (#379).
+    all of them that name one of our issues. A reference qualified by a
+    repository we do NOT own is foreign and is skipped in BOTH predicates (#379,
+    widened to :data:`HOME_REPO_SLUGS` by v0.4.284).
   * "does this row CLAIM `#N`?" — only the row's ADDRESS counts. A `what` is a
     SENTENCE: the issues it cites while explaining itself are context, not
     claims. Live instance — row `n=8226` claims #327 and its note ends `...
@@ -91,7 +92,7 @@ subjects and trailers in the other), so a commit whose PROSE merely mentioned
 with different predicates; this module owns both, so a fifth and sixth copy
 cannot appear. Footprint is anchored to the `Issue-Ref` TRAILER — the
 machine-written link `oc-commit` derives from the actor's ledger claim — and
-scoped to fork space: see :func:`resolve_issue_commits`.
+scoped to HOME space: see :func:`resolve_issue_commits`.
 
 READ-ONLY. This module never writes the ledger; the sweep's write path lives in
 `oc-ledger` and goes through the sanctioned `stamp` verb.
@@ -261,8 +262,26 @@ LANDED_KINDS = ("close", "done")
 _REF_RE = re.compile(r"(?:#[0-9]+|issue[ \t=#]*[0-9]+)", re.IGNORECASE)
 _DIGITS_RE = re.compile(r"[0-9]+")
 
-#: The fork's own slug. A reference qualified by any OTHER slug is upstream
-#: space and must never fence a fork issue.
+#: The repos that OWN this box's issue space — every tracker the fleet files on
+#: (two-stream routing, SKILL.md v0.4.284, owner order 2026-10-03). A reference
+#: qualified by a slug INSIDE this set is OUR space and anchors normally; a slug
+#: OUTSIDE it is foreign (third-party/upstream-other space) and must never fence
+#: an issue here (#379).
+#:
+#: Before v0.4.284 this was a SINGLE fork slug, so a reference qualified
+#: `adolfousier/opencrabs#N` read as foreign and was skipped. That was correct
+#: while the fork was the only tracker — and is WRONG now, because
+#: `adolfousier/opencrabs` IS the binary tracker, and a lane working a binary
+#: issue writes exactly that trailer. The set, not the slug, is the discriminator.
+HOME_REPO_SLUGS = (
+    "adolfousier/opencrabs",                 # BINARY tracker (upstream)
+    "leshchenko1979/opencrabs-dev-factory",  # FACTORY tracker
+    "leshchenko1979/opencrabs",              # FORK (historical; PRs still land here)
+)
+
+#: The historical single slug. Still the meaning of an UNQUALIFIED `#N`: a bare
+#: number is fork space, because that is the space the ledger's own rows were
+#: written in before the split.
 FORK_REPO_SLUG = "leshchenko1979/opencrabs"
 
 #: `<owner>/<repo>` sitting IMMEDIATELY before a reference — the prose path's
@@ -270,28 +289,36 @@ FORK_REPO_SLUG = "leshchenko1979/opencrabs"
 _SLUG_BEFORE_RE = re.compile(r"([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)$")
 
 def _is_foreign_ref(text, pos):
-    """True when the reference at ``pos`` is qualified by a non-fork slug (#379).
+    """True when the reference at ``pos`` is qualified by a slug we do NOT own.
 
     `#379`: `_REF_RE`'s `#[0-9]+` alternative also matched the `#N` INSIDE
     `owner/repo#N`, and nothing on the prose path was repo-aware — so a row
-    naming an UPSTREAM issue (`adolfousier/opencrabs#1419`) registered a claim
+    naming a THIRD-PARTY issue (`someorg/theirproject#1419`) registered a claim
     on fork issue 1419, which does not exist. It reported as an open claim for
     12.5 days (live carrier: ledger n=1678), listed under the lane's claims by
     `oc-roster classify`, and could never be closed by fork-side work. The
     trailer path already refused a foreign repository
     (:func:`parse_issue_ref_value`); this is the same refusal for prose.
 
+    v0.4.284 widened the ownership test from ONE slug to :data:`HOME_REPO_SLUGS`,
+    because the fleet now files on three trackers and a binary-issue trailer
+    (`adolfousier/opencrabs#1901`) must ANCHOR rather than be skipped. The n=1678
+    carrier is the live example of the change: it was a dead letter under the
+    one-slug rule and is a legitimate claim on the binary tracker now. A slug
+    OUTSIDE the set — `acme/widgets#7` — is still refused, and that is the #379
+    protection the refusal exists for.
+
     The IMMEDIATE form only — `slug#N`, no space between. Measured over the live
-    ledger's 18 181 prose fields, that form carries exactly two slugs
+    ledger's 18 181 prose fields, that form carried exactly two slugs
     (`adolfousier/opencrabs` 80x, `leshchenko1979/opencrabs` 65x) and the
     whitespace-separated form (`slug issue N`) never carries a foreign one, so
     the immediate form IS the whole live population. Tolerating whitespace would
     also read a filesystem path (`tools/lib/oc_claims.py issue 379`) as a slug
-    and silently drop a real fork reference — a false negative in exchange for
+    and silently drop a real reference — a false negative in exchange for
     nothing.
     """
     match = _SLUG_BEFORE_RE.search(text[:pos])
-    return bool(match) and match.group(1) != FORK_REPO_SLUG
+    return bool(match) and match.group(1) not in HOME_REPO_SLUGS
 
 # A claim's ADDRESS: consecutive references joined ONLY by list punctuation or
 # whitespace. Anything else (prose, a separator, a bracket) ends the address and
@@ -316,15 +343,16 @@ UNATTRIBUTED_PREFIXES = ("(unattributed", "unrostered-actor")
 
 
 def issue_ref_tokens(text):
-    """Every FORK-space issue reference in ``text``, INTEGERS, first-seen order.
+    """Every HOME-space issue reference in ``text``, INTEGERS, first-seen order.
 
     Integers, not strings: the four drifted copies disagreed on this and one of
     them therefore compared a str token against int tokens forever-falsely.
 
-    Fork space ONLY (#379): a reference qualified by another repository
-    (`adolfousier/opencrabs#1419`) is upstream space and is skipped, exactly as
-    :func:`parse_issue_ref_value` skips it on the trailer path. An upstream
-    reference cannot fence a fork issue in either place.
+    HOME space ONLY (#379, widened to :data:`HOME_REPO_SLUGS` by v0.4.284): a
+    reference qualified by a repository we do NOT own (`acme/widgets#7`) is
+    foreign and is skipped, exactly as :func:`parse_issue_ref_value` skips it on
+    the trailer path. A reference on any of OUR three trackers — binary, factory,
+    fork — anchors normally.
     """
     if not text:
         return []
@@ -356,16 +384,16 @@ def primary_issue_tokens(text):
     whitespace, so ``CLAIM #193, #205 — harvest packaging`` claims BOTH while
     ``CLAIM #327 — ... one proven live break (#323)`` claims only #327.
 
-    Empty means "no FORK target" — which is NOT the same as "no reference
+    Empty means "no HOME target" — which is NOT the same as "no reference
     anywhere", and the difference is deliberate (#379). A text whose LEADING
-    reference is qualified by another repository returns ``[]``: the row leads
-    with upstream work, and there is no fork issue for it to claim. That is the
-    existing dead-letter contract for a claim with no fork target, and it is the
-    conservative direction — the alternative would hunt for a later reference
-    and read a body citation as the address, which is the #329 phantom rebuilt
-    from the other end. Before #379 the leading-reference rule could not be
-    reached here at all: the upstream slug was stripped and its number returned
-    as a fork issue.
+    reference is qualified by a repository we do NOT own returns ``[]``: the row
+    leads with third-party work, and there is no issue of ours for it to claim.
+    That is the existing dead-letter contract for a claim with no target, and it
+    is the conservative direction — the alternative would hunt for a later
+    reference and read a body citation as the address, which is the #329 phantom
+    rebuilt from the other end. Before #379 the leading-reference rule could not
+    be reached here at all: the foreign slug was stripped and its number returned
+    as one of our issues.
     """
     if not text:
         return []
@@ -543,10 +571,12 @@ def open_claims(events, target_issue=None):
 # CLAIM FOOTPRINT (#307) — which FILES an issue's work touches
 # ---------------------------------------------------------------------------
 
-#: The fork that OWNS the issue space. An `Issue-Ref` naming another repository
-#: is an UPSTREAM reference and must never fence a fork issue: measured live
-#: 2026-09-18, six commits carry `Issue-Ref: adolfousier/opencrabs#1419`.
-# FORK_REPO_SLUG now lives above, with _REF_RE — the prose path shares it (#379).
+#: The set of repos that OWN the issue space. An `Issue-Ref` naming a repository
+#: OUTSIDE the set is foreign and must never fence an issue here. Measured live
+#: 2026-09-18, six commits carried `Issue-Ref: adolfousier/opencrabs#1419` and
+#: were skipped as upstream; since v0.4.284 that slug IS the binary tracker, so
+#: those six now anchor (correctly) on binary issue 1419.
+# HOME_REPO_SLUGS now lives above, with _REF_RE — the prose path shares it (#379).
 
 # `#N` or `<owner>/<repo>#N` — the two forms oc-commit writes.
 _SLUG_REF_RE = re.compile(r"^([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)?#(\d+)$")
@@ -576,13 +606,22 @@ def _git(repo_path, *args):
         return None
     return proc.stdout
 
-def parse_issue_ref_value(value, fork_slug=FORK_REPO_SLUG):
+def parse_issue_ref_value(value, home_slugs=HOME_REPO_SLUGS):
     """Issue numbers a single `Issue-Ref` trailer value anchors to.
 
-    Fork space ONLY. A value naming another repository is skipped, so an
-    upstream reference cannot fence a fork issue. One value may carry several
-    references separated by commas (`#89,#92,#93`) — every one is returned.
+    HOME space ONLY (v0.4.284): a value naming a repository OUTSIDE
+    :data:`HOME_REPO_SLUGS` is foreign and is skipped, so a third-party
+    reference cannot fence one of our issues. A value naming any of our three
+    trackers (binary `adolfousier/opencrabs`, factory
+    `leshchenko1979/opencrabs-dev-factory`, fork `leshchenko1979/opencrabs`)
+    anchors normally. One value may carry several references separated by commas
+    (`#89,#92,#93`) — every one is returned.
+
+    ``home_slugs`` is the ownership set; a bare string is accepted for
+    back-compat and treated as a one-element set.
     """
+    if isinstance(home_slugs, str):
+        home_slugs = (home_slugs,)
     out = []
     for part in str(value or "").split(","):
         part = part.strip()
@@ -591,7 +630,7 @@ def parse_issue_ref_value(value, fork_slug=FORK_REPO_SLUG):
         match = _SLUG_REF_RE.match(part)
         if match:
             slug, num = match.group(1), int(match.group(2))
-            if slug and slug != fork_slug:
+            if slug and slug not in home_slugs:
                 continue
             out.append(num)
             continue
@@ -623,9 +662,9 @@ def commit_issue_refs(trailer_value, subject=""):
     with the canonical parse. The counts drift as commits land; the PREDICATE is
     the reproducible part — old = `re.search(r'#?(\\d+)', trailer).group(1)`,
     new = `commit_issue_refs(trailer, subject)[0]`, compared over every commit
-    carrying an Issue-Ref. Also refuses a reference naming another repository
-    (`adolfousier/opencrabs#901` yields no fork issue), which the old form read
-    as fork issue 901.
+    carrying an Issue-Ref. Also refuses a reference naming a repository we do
+    NOT own (`acme/widgets#901` yields no issue of ours), which the old form read
+    as issue 901.
     """
     refs = parse_issue_ref_value(trailer_value)
     if refs:
@@ -634,7 +673,7 @@ def commit_issue_refs(trailer_value, subject=""):
     return [int(match.group(1))] if match else []
 
 def issue_ref_index(repo_path, ref="--all"):
-    """``{sha: [issue, ...]}`` for commits carrying a fork-space `Issue-Ref`.
+    """``{sha: [issue, ...]}`` for commits carrying a HOME-space `Issue-Ref`.
 
     ONE `git log` pass, so a caller resolving many issues pays for it once and
     passes the result on as ``index``. ``ref`` defaults to ``--all`` on
@@ -667,7 +706,7 @@ def issue_ref_index(repo_path, ref="--all"):
     return index
 
 def resolve_issue_commits(repo_path, iss, ref="--all", index=None):
-    """Full SHAs of commits that ANCHOR to fork issue ``iss``.
+    """Full SHAs of commits that ANCHOR to issue ``iss``.
 
     Anchored means the commit's `Issue-Ref` trailer names ``iss`` — the
     machine-written link `oc-commit` derives from the actor's ledger claim.
@@ -722,7 +761,7 @@ def order_commits_parents_first(repo_path, shas):
 
 
 def resolve_issue_files(repo_path, iss, ref="--all", index=None):
-    """Files touched by the commits anchoring to fork issue ``iss``.
+    """Files touched by the commits anchoring to issue ``iss``.
 
     The footprint half of the in-flight fence. An empty list is a legitimate
     answer (nothing anchored) and callers must read it as "no evidence of

@@ -849,22 +849,33 @@ chk("primary slash-joined list",
     oc.primary_issue_tokens("CLAIM #1414/#1418 — pair"), [1414, 1418])
 chk("primary live n=8034 parenthetical excluded",
     oc.primary_issue_tokens("CLAIM #302 — backfill (supersedes #290, #297)"), [302])
-# #379: this leg used to expect [1419] while its own name said "excluded" --
-# the expectation pinned the phantom the issue is about. A leading reference
-# qualified by a FOREIGN slug is upstream space: no fork target, so the dead
-# letter ([]), never a claim on a fork issue that does not exist.
-chk("primary live n=1678 upstream slug is not a fork target",
+# #379 + v0.4.284: the ownership test is a SET of our three trackers
+# (HOME_REPO_SLUGS), not one slug. This pair used to expect [] for a
+# slug-qualified reference -- the expectation pinned the OLD law, under which
+# `adolfousier/opencrabs` was foreign. Under v0.4.284 it IS the binary tracker,
+# so that reference ANCHORS; the refusal now applies only to a slug we do NOT own.
+chk("primary live n=1678 binary-tracker slug is now a target",
     oc.primary_issue_tokens(
         "md-plane wave lane claims n=1675 PATH-2 execution: upstream issue "
-        "adolfousier/opencrabs#1419 filed FIRST"), [])
-chk("ref foreign slug skipped by every-ref tokens",
-    oc.issue_ref_tokens("upstream adolfousier/opencrabs#1419 filed"), [])
+        "adolfousier/opencrabs#1419 filed FIRST"), [1419])
+chk("ref binary-tracker slug yields its number",
+    oc.issue_ref_tokens("upstream adolfousier/opencrabs#1419 filed"), [1419])
+chk("ref factory-tracker slug yields its number",
+    oc.issue_ref_tokens("factory leshchenko1979/opencrabs-dev-factory#344"), [344])
+# THE REFUSAL, with a DISCRIMINATING control: a slug OUTSIDE HOME_REPO_SLUGS
+# (`acme/widgets`) is still foreign, so a third-party or typo'd slug cannot
+# fence an issue of ours. Without these two legs a predicate that accepted EVERY
+# slug would pass the three legs above vacuously.
+chk("ref NON-tracker slug still skipped",
+    oc.issue_ref_tokens("upstream acme/widgets#1419 filed"), [])
+chk("primary NON-tracker slug is not the address",
+    oc.primary_issue_tokens("CLAIM acme/widgets#1419 only"), [])
 chk("ref fork slug still yields its number",
     oc.issue_ref_tokens("fork leshchenko1979/opencrabs#52"), [52])
-chk("primary foreign slug in the body is not the address",
-    oc.primary_issue_tokens("CLAIM #400 - upstream adolfousier/opencrabs#1419"), [400])
 chk("primary fork-qualified ref keeps its number",
     oc.primary_issue_tokens("Issue-Ref leshchenko1979/opencrabs#1419"), [1419])
+chk("primary bare ref in the body does not move the address",
+    oc.primary_issue_tokens("CLAIM #400 - upstream adolfousier/opencrabs#1419"), [400])
 # the false-negative guard: a filesystem path before a SPACED `issue N` must
 # not read as a slug and silently drop a real fork reference. This is why the
 # predicate matches the immediate form only.
@@ -1006,10 +1017,17 @@ _g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(w): plain subject",
 with open(_fx + "/anchored.txt", "w") as f: f.write("a\n")
 _g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(y): real work",
                          "--trailer", "Issue-Ref: #702")
-# cross-space trap: a trailer naming ANOTHER repo must not fence a fork issue
-with open(_fx + "/upstream.txt", "w") as f: f.write("u\n")
-_g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(z): upstream work",
-                         "--trailer", "Issue-Ref: adolfousier/opencrabs#703")
+# cross-space trap: a trailer naming a repo we do NOT track must not fence a
+# home issue. v0.4.284: the ownership test is HOME_REPO_SLUGS (three trackers),
+# so this fixture must name a genuinely THIRD-PARTY slug -- `adolfousier/opencrabs`
+# used to stand here and is now one of ours, which is the positive control below.
+with open(_fx + "/thirdparty.txt", "w") as f: f.write("u\n")
+_g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(z): third-party work",
+                         "--trailer", "Issue-Ref: acme/widgets#703")
+# ...and the positive control: a BINARY-tracker trailer IS ours and must anchor.
+with open(_fx + "/binary.txt", "w") as f: f.write("b\n")
+_g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(b): binary-tracker work",
+                         "--trailer", "Issue-Ref: adolfousier/opencrabs#705")
 _idx = oc.issue_ref_index(_fx)
 chk("#307 subject-prose mention resolves to NO commits", oc.resolve_issue_commits(_fx, 701), [])
 chk("#307 subject-prose mention resolves to NO files", oc.resolve_issue_files(_fx, 701), [])
@@ -1017,8 +1035,12 @@ chk("#307 body-prose mention resolves to NO commits", oc.resolve_issue_commits(_
 chk("#307 body-prose mention resolves to NO files", oc.resolve_issue_files(_fx, 704), [])
 chk("#307 trailer-anchored issue resolves its own file",
     oc.resolve_issue_files(_fx, 702), ["anchored.txt"])
-chk("#307 foreign-slug trailer does not fence a fork issue",
+chk("#307 non-tracker-slug trailer does not fence a home issue",
     oc.resolve_issue_files(_fx, 703), [])
+# v0.4.284 control: without this leg, a predicate that skipped EVERY slug-qualified
+# ref would pass the assertion above vacuously.
+chk("v0.4.284 binary-tracker trailer anchors its own file",
+    oc.resolve_issue_files(_fx, 705), ["binary.txt"])
 _order_repo = "/root/opencrabs"
 _order_chain = ["5140b36a0", "f1c120f43", "e07eab828"]
 chk("parents-first order: #478 chain", oc.order_commits_parents_first(_order_repo, _order_chain), ["e07eab828", "f1c120f43", "5140b36a0"])
