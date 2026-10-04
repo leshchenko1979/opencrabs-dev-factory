@@ -136,6 +136,8 @@ Owner, verbatim: *"if we are about to file an upstream issue about a defect in a
 
 **Relation to the report-only clause — this GENERALIZES it.** `harvest.md §Upstream issue filings — report-only` carried the fix-belongs-to-its-author half for the case *"the owner tells us to FILE upstream."* The trigger here is not the owner's filing order but the **AUTHORSHIP** of the defective feature/fix, and it binds **every lane**, not only the filing lane. `harvest.md` keeps the operational half and points here.
 
+**Operative home — the DISPATCH law.** This section is the canonical **owner-order record**; the rule's operative force lives where dispatch is decided: **`triage.md §D4 — AUTHORSHIP`** (owner order 2026-10-04). A dispatcher reads the gate there; a reader wanting the order's provenance reads it here.
+
 ## Stage-entry consent (owner 2026-08-28 16:57Z)
 
 When the owner says to go to a stage ("let's go to S3", "go to Sx"), that word IS the approval for ALL actions defined in that stage's definition (stage table: `~/oc-work/target-process-*.md`). No per-action re-asking for anything inside the stage definition. Gates the stage definition itself spells out (e.g. the sha-bound artifact verify that authorizes each swap) REMAIN — they are part of the stage definition, not exceptions to it.

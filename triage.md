@@ -49,6 +49,7 @@ per that section. Owner veto overrides retroactively, as with rulings.
   3. Verify target editor lane availability using `tools/harvest/oc-harvest-dispatch dispatch <issue> <commits> [--to <uuid>]`. If target lane is busy with an active claim, the tool refuses dispatch (rc 4); Triage must select an idle editor or commission a dedicated harvest worker.
   4. **Landed-term gate (v0.4.204, HQ ruling 2026-09-18):** before wiring, confirm the issue is NOT already landed — a `done`/`close` row addressing it, or a commit referencing it on fork `main`. This patrol runs from a cron (`oc-harvest-dispatch-4h`) that wired #302 while #302 carried Triage's own `done` row (n=8267) and zero claims: `done` + zero claims satisfied the old two-term predicate. A landed-but-unharvested issue is HARVEST-queue work, never a fresh editor dispatch. Canon: `§Dispatch Eligibility — the 4-bucket predicate` (this file).
   5. Never dispatch unvetted candidates or busy editors. (Worktree creation belongs to the Editor lane per `upstream-merge-runbook.md §PHOP`).
+  6. **Authorship gate (§D4, owner order 2026-10-04):** before wiring, confirm the defect is **OURS to fix**. A defect in a feature or fix we did not author is **reported, never dispatched for implementation** on our fork — the fix belongs to its author. `oc-issue-dispatch` does NOT implement this leg, so it is applied by hand. → `§D4 — AUTHORSHIP`.
 
 ### Factory-scoped patrol — SCOPE IS A FILE-SURFACE TEST, NEVER A TITLE-PREFIX TEST (v0.4.236, HQ ruling 2026-09-22; raised self-caught by the Triage lane)
 
@@ -551,4 +552,18 @@ The closure law (`triage.md §Duty T5` — Autonomous closure) deliberately keep
 ### D3 — Live instance, receipted (2026-09-18)
 
 One T5 sweep (ledger n=8331–8341) wired 8 issues; **5 of the 8 were OPEN AND carried a ledger `done` row** — #330 (n=8317), #324 (n=8192), #302 (n=8267), #299 (n=8325), #297 (n=8266). GitHub state OPEN for all five, verified the same turn. #302's `done` row is Triage's own and says verbatim: *"Issue STAYS OPEN under the harvest-gated closure law until its own upstream PR files"* — and the sweep wired #302 anyway. A second surface, the `oc-harvest-dispatch-4h` cron (session c32f43ee), wired the same issue from the same root cause: `done` + zero claims satisfies the old predicate. Editor 127429e6 claimed #297 (n=8345) then stood it down (n=8353, "dispatch was stale, no work owed") — one wasted claim, real churn.
+
+### D4 — AUTHORSHIP — a defect in another's feature/fix is never dispatched for implementation (owner order 2026-10-04) [LANE]
+
+**Canonical owner-order record:** `fleet-directives.md §Contributor ownership — defects in others' features/fixes`. This subsection is the **operative dispatch law** — the gate the Triage lane applies when it decides what is wired for implementation.
+
+Owner, verbatim: *"if we are about to file an upstream issue about a defect in a feature that was not implemented by us or in a fix that was not ours, we expect the owner of that fix/feature to fix it instead of fixing it ourselves unless I want to have an urgent fix on our fork only. This is to respect contributor ownership and to preserve their motivation and to foster their learning."*
+
+**The gate.** An issue whose defect lies in a feature or fix **we did not author** — an upstream contributor's, another lane's, any author that is not us — is **NOT dispatchable for implementation** on our fork. It is **reported** (BINARY → `adolfousier/opencrabs`, FACTORY → `leshchenko1979/opencrabs-dev-factory`, per two-stream routing) and the fix belongs to **the owner of that feature/fix**. The report is the whole deliverable: **no fork fix branch, no fix PR, no editor work order** against a surface we did not author.
+
+**Authorship is read from the artifact, never assumed from the tracker.** The defective surface's own history decides — who wrote the code (upstream vs fork), and who filed the issue. Where the surface is OURS, the normal dispatch path applies unchanged; this gate never blocks our own work.
+
+**The one exception, and it is the OWNER's alone.** *"unless I want to have an urgent fix on our fork only"* — an urgent fork-only fix is ordered by the owner, per case. A lane never assumes it because the defect blocks us, degrades us, or looks trivial. Absent his word, the report stands alone and the fix waits on its author.
+
+**Not mechanized (measured 2026-10-04): `oc-issue-dispatch` does NOT implement this gate.** The tool's predicate stays `unclaimed AND vetted AND NOT landed` (D1/D2 above); AUTHORSHIP is a **dispatcher-side gate applied BEFORE wiring**, so a dispatch that skips it is a **lane defect, not a tool defect**. Whether it becomes a tool leg is a `tools/**` decision (Toolsmith carve-out), not a law edit.
 
