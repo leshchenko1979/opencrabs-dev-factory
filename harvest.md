@@ -32,18 +32,34 @@ this PR is the ONE sanctioned exception (completed features only).
 #     reaction is the approval FORM; a ledger row is its DURABLE RECORD, and only
 #     the row is what another lane can find. Before filing under DEGRADED:
 #       READ FIRST (note the --n, see below):
-#         tools/state/oc-ledger events --n 3000 --kind note | grep -o 'FILING APPROVED: group [^—]*'
+#         tools/state/oc-ledger events --n 3000 --kind note --full | grep -o 'FILING APPROVED[^—]*'
 #       An approval covering YOUR group => file, do NOT re-ask.
 #       None => request it in your topic, and THE MOMENT IT IS GIVEN, stamp it:
 #         tools/state/oc-ledger stamp note "FILING APPROVED: group #N + #M — owner <ts> (\"verbatim\")"
 #     The unit is the PR GROUP, not the issue — one approval covers every member and
-#     a member never needs its own tap. Prefix is canonical: `FILING APPROVED: group `.
+#     a member never needs its own tap. Prefix is canonical FOR STAMPING: `FILING APPROVED: group ` — but the READ must NOT depend on it (see the PREFIX clause below).
 #
 #     --n IS LOAD-BEARING ON THIS READ TOO, for the tail-window reason stated in
 #     SKILL.md §Hard rules — MODE REGISTER: a bare `events --kind note` returns ZERO
 #     FILING APPROVED rows even when they exist, and an empty read is INDISTINGUISHABLE
 #     from "no approval exists" — which makes a lane re-ask the owner, the exact defect
 #     this clause exists to remove.
+#
+#     THE PREFIX IS NOT LOAD-BEARING — match the PHRASE, never `: group ` (measured
+#     2026-10-04, this lane): the canonical pattern `'FILING APPROVED: group [^—]*'`
+#     returned **7** rows while the ledger held **9** genuine stamps — it MISSED
+#     `FILING APPROVED: unit #680 + #681 + #682` (n=13836) and `#645 UPSTREAM FILING
+#     APPROVED BY OWNER` (n=12642). A narrow prefix reproduces the SAME defect class as a
+#     missing `--n`: a false "no approval exists" that makes a lane re-ask the owner for a
+#     grant he already gave. The widened match is a strict SUPERSET of the canonical one,
+#     so it can only ADD candidates — a prose row that merely mentions the phrase is
+#     filtered by the `covering YOUR group` test above, never silently trusted.
+#
+#     AND `--full` IS LOAD-BEARING ON THIS READ: `events` caps every row's `what` at 160
+#     chars and discloses the cap on stderr (`N row(s) had 'what' truncated`), so a
+#     non-full read can hide a stamp whose phrase sits past the cap. On the same read,
+#     2070 rows were truncated; the #763 hold row (n=14175, `no FILING APPROVED row for
+#     #763`) was one of them.
 #
 #     THE ASK CARRIES A SUMMARY, NOT A NUMBER LIST (owner order 2026-09-30T11:38Z, topic
 #     "Upstream: Harvest"): per unit in the group, ONE SENTENCE OF DEFECT and ONE SENTENCE
