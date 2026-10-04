@@ -13,8 +13,14 @@ targets and WHY, so a later reader does not have to re-derive it.
 | **FORK** (historical) | `leshchenko1979/opencrabs` | **READ-ONLY for new issues**; PRs still land here |
 
 `Closes #N` is now **VALID same-repo**, **FORBIDDEN across trackers**.
-Claiming = assignment on the tracker. A mandatory duplicate sweep
-(open+closed, issues+PRs) runs BEFORE filing.
+Claiming = assignment on the tracker, **BEST-EFFORT: attempted, never assumed**.
+Our account is **pull-only on the BINARY tracker** (`adolfousier/opencrabs`:
+`push`/`triage`/`maintain`/`admin` all false — the assignment write is
+structurally impossible there) and **admin on the FACTORY tracker**. Where the
+platform denies the assignment, **record the denial** and let the ledger `claim`
+row + `Issue-Ref` trailer **BE** the claim — a **silent skip is a violation**,
+because it is indistinguishable from a permission limit. A mandatory duplicate
+sweep (open+closed, issues+PRs) runs BEFORE filing.
 
 In the BINARY row, **`tools` means `src/brain/tools/**`** — the runtime tool
 registry compiled into the binary — **not** the CLI `tools/**` directory this
@@ -93,4 +99,9 @@ break the tool. It is untouched.
 - per-tool `--selftest` for every edited tool, and the #379 refusal leg's
   control re-armed with a discriminating non-tracker slug;
 - `bash tools/tests/run.sh` (battery) — must exit 0 with FAIL 0;
-- `tools/docs/RC-CONTRACT.md` gains a routing stanza on each edited row.
+- `tools/docs/RC-CONTRACT.md` gains a routing stanza on each edited row;
+- the tracker permissions that make the assignment leg best-effort are read
+  live, never assumed — `gh api repos/<slug> --jq .permissions`: BINARY
+  `{pull:true, push:false, triage:false, maintain:false, admin:false}`,
+  FACTORY `{admin:true, maintain:true, push:true, triage:true}` (verified
+  2026-10-04; mirrors HQ's `SKILL.md:418` commit `7bab7b61`).
