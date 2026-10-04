@@ -685,6 +685,11 @@ selftest() {
   # (#623) hermetic: the fan-out's bounded re-send must never SLEEP inside a
   # selftest. The legs below set their own budget explicitly to exercise it.
   export OC_DEPLOY_NOTIFY_RETRY_BUDGET=0
+  # #766: the fork-release publish tail is OFF for every selftest fixture —
+  # publish-leg cases below opt back in with OC_DEPLOY_NOPUBLISH=0. This is
+  # a SAFETY floor, not convenience: a fixture that forgot OC_DEPLOY_GH would
+  # otherwise reach REAL GitHub (the same class the notify stub closes).
+  export OC_DEPLOY_NOPUBLISH=1
   # v0.4.153: hermetic cgroup. The battery itself runs INSIDE opencrabs-ops.service,
   # so auto-detection would make every nested swap-execute re-exec via systemd-run.
   # Forced OFF here; section 22 sets it per-invocation to exercise the detach path.
@@ -735,6 +740,24 @@ if [ -n "${OC_TEST_SHIPWAIT_HEAD:-}" ]; then
   exit 0
 fi
 case "$*" in
+  # #766 publish-leg controls: release view/create/upload + the tag-move PATCH.
+  #   OC_TEST_REL_EXISTS : space-list of tags that already exist (view -> rc 0)
+  #   OC_TEST_REL_FAIL   : non-empty => create/upload/PATCH fail (tolerance case)
+  #   OC_TEST_REL_CAPTURE: dir to copy the passed asset files into (content proof)
+  "release view"*)
+    _tag=""; for _w in $*; do case "$_w" in fork-*) _tag="$_w"; break;; esac; done
+    case " ${OC_TEST_REL_EXISTS:-} " in *" $_tag "*) exit 0;; esac
+    exit 1 ;;
+  "release create"*|"release upload"*)
+    [ -n "${OC_TEST_REL_FAIL:-}" ] && exit 1
+    if [ -n "${OC_TEST_REL_CAPTURE:-}" ]; then
+      for _a in "$@"; do case "$_a" in *.tar.gz|*SHA256SUMS|*build-flags.txt) cp -f "$_a" "$OC_TEST_REL_CAPTURE/" 2>/dev/null || true;; esac; done
+    fi
+    exit 0 ;;
+  "release edit"*) exit 0 ;;
+  "api -X PATCH"*refs/tags*)
+    [ -n "${OC_TEST_REL_FAIL:-}" ] && exit 1
+    exit 0 ;;
   *runs?status=failure*) echo '{"workflow_runs":[{"id":888,"status":"completed","conclusion":"failure"}]}' ;;
   *actions/runs/777/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, telegram)","conclusion":"success"}]}' ;;
   *actions/runs/777*) echo '{"status":"completed","conclusion":"success"}' ;;
@@ -1634,6 +1657,87 @@ NSTUB3
     "$SELF_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
     --run 883 --features telegram,code-graph,voice --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featadd-passes-rc" $rc 0
+  # 17r-17u. #766 fork-release publish tail (design fork#766, owner-approved
+  #      2026-10-04T21:14:29Z). The swap path publishes the ALREADY-VERIFIED
+  #      binary as fork release assets and is NON-FATAL by contract.
+  #        17r create path (both tags new)
+  #        17s idempotent republish (immutable SKIPPED, rolling clobbered)
+  #        17t publish FAILURE tolerated — ship still GREEN, rc 0
+  #        17u negative control — guard ON => zero gh release calls
+  local SD7="$T/state7" RELCAP="$T/relcap"
+  mkdir -p "$SD7/tools/ship" "$SD7/backups" "$RELCAP/in" "$RELCAP/x" "$T/crepo"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD7/tools/ship/oc-artifact-verify"; chmod +x "$SD7/tools/ship/oc-artifact-verify"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD7/tools/ship/oc-seal-state";     chmod +x "$SD7/tools/ship/oc-seal-state"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD7/workers-ledger.json"
+  echo prev > "$SD7/deployed.sha"
+  printf '{"sha":"prevprevprevprevprevprevprevprevprevprevprevprevprevprev","run_id":42,"artifact_sha256":"aa","features":"telegram","swapped_at":"2026-09-04T06:36:06Z","auth":"auto-swap","prev_sha":"old"}' > "$SD7/deployed.meta.json"
+  printf '{"cycle":352,"deployed_sha":"prevprevprevprevprevprevprevprevprevprevprevprevprevprev"}' > "$SD7/baseline.json"
+  printf 'version = "0.5.4"\n' > "$T/crepo/Cargo.toml"   # release name source
+  printf 'v1-artifact' > "$T/art/opencrabs"; chmod +x "$T/art/opencrabs"
+  printf 'v0-current'  > "$T/bin/oc-fake7";  chmod +x "$T/bin/oc-fake7"
+  _oc766_pub() { # $1=sha $2=run $3=rel-exists $4=rel-fail $5=nopublish
+    OC_DEPLOY_STATE_DIR="$SD7" OC_SWAP_TARGET="$T/bin/oc-fake7" \
+    OC_SWAP_BACKUP_DIR="$SD7/backups" OC_SWAP_RESTART_CMD=true \
+    OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
+    OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
+    OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
+    OC_DEPLOY_SEAL="$SD7/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD7/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_NOPUBLISH="${5:-0}" \
+    OC_TEST_REL_EXISTS="${3:-}" OC_TEST_REL_FAIL="${4:-}" OC_TEST_REL_CAPTURE="$RELCAP/in" \
+    "$SELF_BIN" swap-execute --sha "$1" --run "$2" --features telegram --artifact-dir "$T/art" 2>&1
+  }
+  # 17r. create path: neither tag exists -> BOTH releases created; name carries
+  #      <upstream-version>+fork.<cycle> (0.5.4 from Cargo.toml, 352 from baseline).
+  : > "$GH_LOG"; : > "$NOTIFY_LOG"; rm -f "$RELCAP/in"/*
+  out="$(_oc766_pub e111111111111111111111111111111111111111 901 "" "")"; rc=$?
+  check_rc "publish-create-rc" $rc 0
+  check_has "publish-create-complete" "$out" "SWAP COMPLETE"
+  grep -q "release create fork-e111111" "$GH_LOG" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: publish did not create the immutable tag"; }
+  grep -q "release create fork-latest" "$GH_LOG" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: publish did not create the rolling tag"; }
+  grep -q "0.5.4+fork.352" "$GH_LOG" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: release name is not <version>+fork.<cycle>"; }
+  grep -q "publish=rc=0" "$SD7/workers-ledger.json" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: swap-result stamp does not carry publish=rc=0"; }
+  # 17r-bis. the published tarball IS the verified binary (D1: build nothing).
+  if tar -xzf "$RELCAP/in/opencrabs-fork-linux-amd64.tar.gz" -C "$RELCAP/x" 2>/dev/null; then
+    [ "$(sha256sum "$RELCAP/x/opencrabs" | cut -d' ' -f1)" = "$(sha256sum "$T/art/opencrabs" | cut -d' ' -f1)" ] \
+      && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: published tarball != verified binary"; }
+  else fail=$((fail+1)); echo "SELFTEST FAIL: published asset is not a readable tar.gz"; fi
+  grep -q "$(sha256sum "$RELCAP/in/opencrabs-fork-linux-amd64.tar.gz" | cut -d' ' -f1)" "$RELCAP/in/SHA256SUMS" 2>/dev/null \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: SHA256SUMS does not cover the tarball"; }
+  [ -s "$RELCAP/in/build-flags.txt" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: build-flags.txt asset missing/empty"; }
+  # 17s. idempotent republish: both tags exist -> immutable SKIPPED, rolling clobbered.
+  : > "$GH_LOG"
+  out="$(_oc766_pub e222222222222222222222222222222222222222 902 "fork-latest fork-e222222" "")"; rc=$?
+  check_rc "publish-idem-rc" $rc 0
+  grep -q "release create fork-e222222" "$GH_LOG" \
+    && { fail=$((fail+1)); echo "SELFTEST FAIL: immutable tag re-created on republish"; } || pass=$((pass+1))
+  grep -q "release upload fork-latest" "$GH_LOG" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: rolling tag not re-uploaded"; }
+  # 17t. FAILURE TOLERATED (operative rule): gh release fails -> ship STILL rc 0,
+  #      the failure is RECORDED, and the swap is NOT rolled back.
+  : > "$GH_LOG"
+  out="$(_oc766_pub e333333333333333333333333333333333333333 903 "" 1)"; rc=$?
+  check_rc "publish-fail-tolerated-rc" $rc 0
+  check_has "publish-fail-complete" "$out" "SWAP COMPLETE"
+  grep -q "publish=rc=1" "$SD7/workers-ledger.json" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: tolerated publish failure not recorded"; }
+  [ "$(cat "$SD7/deployed.sha")" = "e333333333333333333333333333333333333333" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: publish failure rolled back the swap"; }
+  # 17u. NEGATIVE CONTROL: guard ON -> ZERO gh release calls (proves 17r's hits
+  #      are the publish leg's, not ambient). publish=skipped in the stamp.
+  : > "$GH_LOG"
+  out="$(_oc766_pub e444444444444444444444444444444444444444 904 "" "" 1)"; rc=$?
+  check_rc "publish-guard-rc" $rc 0
+  check_has "publish-guard-complete" "$out" "SWAP COMPLETE"
+  if grep -qE 'release (create|upload)' "$GH_LOG"; then
+    fail=$((fail+1)); echo "SELFTEST FAIL: NOPUBLISH=1 still called gh release"
+  else pass=$((pass+1)); fi
+  grep -q "publish=skipped" "$SD7/workers-ledger.json" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: guard run did not record publish=skipped"; }
   # 17n. sidecar sync (#47): GREEN swap restarts STALE non-ops units, leaves
   #      in-sync units untouched; sandbox systemctl shims + OC_SWAP_SIDECARS=2.
   local SD4="$T/state4" SCJ
@@ -2477,6 +2581,100 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
 # ------------------------------------------------------------- swap-execute --
 # Phase B body (spec: s2-swap-journal-spec.md). Runs under a systemd transient
 # in prod; env overrides sandbox every side effect for selftest.
+
+# =============================================================================
+# --- #766 FORK RELEASE PUBLISH — tail step of the swap path ------------------
+# Owner-approved design 2026-10-04T21:14:29Z (fork#766, comment 5985138814);
+# HQ work order 0117dd29. Publishes the SAME binary the swap path just
+# downloaded and checksum-verified — builds NOTHING. Reuses the daemon's
+# existing `gh` auth: no new secret and no Actions-secret dependency (an
+# Actions-secret dependency is exactly what leaves upstream's release.yml dead
+# on the fork).
+#
+# Contract (D1=P2 / D2=I2 / D3=A1 / D4=amd64-only):
+#   assets : opencrabs-fork-linux-amd64.tar.gz · SHA256SUMS · build-flags.txt
+#   tags   : rolling `fork-latest` (force-moved each publish)
+#            immutable `fork-<sha7>` (created once, never moved)
+#   name   : <upstream-version>+fork.<cycle>   (Cargo.toml · baseline.json)
+#   url    : https://github.com/leshchenko1979/opencrabs/releases/download/fork-latest/opencrabs-fork-linux-amd64.tar.gz
+# Idempotence: republishing the same sha clobbers fork-latest's assets and
+#   SKIPS the immutable tag when it already exists.
+#
+# FAILURE IS TOLERATED BY CONTRACT. The caller runs this in a SUBSHELL and
+# records a non-zero rc as a journal line only: a publish failure never rolls
+# back a swap, never blocks a ship, never changes the ship's rc. The subshell
+# also means an internal `die` or a `set -u` unbound reference exits only the
+# subshell. Suppress the whole leg with OC_DEPLOY_NOPUBLISH=1 (selftest sets it).
+#
+# NOTE: this function sets its own EXIT trap to reap its staging dir, so it MUST
+# be invoked in a subshell (its only caller is) — a bare call would replace the
+# caller's EXIT trap.
+publish_fork_release() { # $1=sha $2=run_id $3=features $4=binary-path $5=artifact-dir
+  local SHA="${1:-}" RUN_ID="${2:-}" FEATURES="${3:-}" BIN="${4:-}" ARTDIR="${5:-}"
+  [ -n "$SHA" ] && [ -n "$BIN" ] && [ -f "$BIN" ] || { echo "publish: missing sha or binary" >&2; return 1; }
+
+  local SHA7="${SHA:0:7}" ASSET="opencrabs-fork-linux-amd64.tar.gz"
+  local REPO="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+  local BASE_DIR BASELINE CYC VER NAME NOTES
+  BASE_DIR="$(dirname "$(readlink -f "$LEDGER" 2>/dev/null || echo "$LEDGER")")"
+  BASELINE="$BASE_DIR/baseline.json"
+
+  # release name: <upstream-version>+fork.<cycle>
+  VER="$(git -C "$REPO" show "$SHA:Cargo.toml" 2>/dev/null | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$VER" ] || VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/Cargo.toml" 2>/dev/null | head -1)"
+  [ -n "$VER" ] || VER="0.0.0"
+  CYC="$(jq -r '.cycle // 0' "$BASELINE" 2>/dev/null || true)"
+  [ -n "$CYC" ] || CYC=0
+  NAME="${VER}+fork.${CYC}"
+
+  # stage: the verified binary as `opencrabs`, plus its tarball, SHA256SUMS and
+  # the carrier's own build-flags.txt (falling back to a synthesized one).
+  local STAGE; STAGE="$(mktemp -d)" || return 1
+  # shellcheck disable=SC2064
+  trap "rm -rf '$STAGE'" EXIT
+  cp "$BIN" "$STAGE/opencrabs" || { echo "publish: stage copy failed" >&2; return 1; }
+  tar -czf "$STAGE/$ASSET" -C "$STAGE" opencrabs || { echo "publish: tar failed" >&2; return 1; }
+  ( cd "$STAGE" && sha256sum "$ASSET" > SHA256SUMS ) || { echo "publish: sha256sum failed" >&2; return 1; }
+  if [ -n "$ARTDIR" ] && [ -f "$ARTDIR/build-flags.txt" ]; then
+    cp "$ARTDIR/build-flags.txt" "$STAGE/build-flags.txt"
+  else
+    printf 'source_ref=%s\nfeatures=%s\nsha256=%s\n' "$SHA" "$FEATURES" "$(sha256sum "$BIN" | cut -d' ' -f1)" > "$STAGE/build-flags.txt"
+  fi
+
+  NOTES="$(printf 'Fork build of opencrabs.\n\n- upstream version: %s\n- fork cycle: %s\n- sha: %s\n- run: %s\n- features: %s\n\nRolling consumer URL (no token):\nhttps://github.com/%s/releases/download/fork-latest/%s\n' \
+    "$VER" "$CYC" "$SHA" "$RUN_ID" "$FEATURES" "$FORK" "$ASSET")"
+
+  # --- immutable tag fork-<sha7>: create once, never moved (idempotent) ------
+  if "$GH" release view "fork-$SHA7" --repo "$FORK" >/dev/null 2>&1; then
+    echo "publish: fork-$SHA7 already exists — immutable tag left untouched"
+  else
+    "$GH" release create "fork-$SHA7" --repo "$FORK" --target "$SHA" \
+      --title "$NAME" --notes "$NOTES" \
+      "$STAGE/$ASSET" "$STAGE/SHA256SUMS" "$STAGE/build-flags.txt" >/dev/null 2>&1 \
+      || { echo "publish: fork-$SHA7 create FAILED" >&2; return 1; }
+  fi
+
+  # --- rolling tag fork-latest: assets clobbered, tag force-moved ------------
+  if "$GH" release view "fork-latest" --repo "$FORK" >/dev/null 2>&1; then
+    "$GH" release upload "fork-latest" "$STAGE/$ASSET" "$STAGE/SHA256SUMS" "$STAGE/build-flags.txt" \
+      --repo "$FORK" --clobber >/dev/null 2>&1 \
+      || { echo "publish: fork-latest upload FAILED" >&2; return 1; }
+    # Force-move the tag so fork-latest traces to the deployed sha. Best-effort:
+    # the download URL resolves by tag NAME, so the release survives a ref move.
+    "$GH" api -X PATCH "repos/$FORK/git/refs/tags/fork-latest" -f sha="$SHA" -F force=true >/dev/null 2>&1 \
+      || echo "publish: fork-latest tag move skipped (assets still current)" >&2
+    "$GH" release edit "fork-latest" --repo "$FORK" --title "$NAME" --notes "$NOTES" >/dev/null 2>&1 || true
+  else
+    "$GH" release create "fork-latest" --repo "$FORK" --target "$SHA" \
+      --title "$NAME" --notes "$NOTES" \
+      "$STAGE/$ASSET" "$STAGE/SHA256SUMS" "$STAGE/build-flags.txt" >/dev/null 2>&1 \
+      || { echo "publish: fork-latest create FAILED" >&2; return 1; }
+  fi
+
+  echo "publish: fork release '$NAME' published (fork-latest + fork-$SHA7, sha=$SHA)"
+  return 0
+}
+
 swap_execute() {
   local SHA="$1" RUN_ID="$2" FEATURES="$3" DRILL="$4" ARTDIR="$5" ALLOW_DROP="${6:-0}"
   local SHORT="${SHA:0:8}"
@@ -2799,7 +2997,21 @@ swap_execute() {
       jline fanout "$FO_RC" "{\"run\":\"$RUN_ID\"}"   # lens F HIGH-2 (v0.4.79): fanout rc in the swap journal — stderr-only surfacing was a silent-loss path
       [ "$FO_RC" = 0 ] || { echo "oc-deploy: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-deploy fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
     fi
-    ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE" "swap-result"
+    # --- #766 fork release publish tail — LOGGED AND TOLERATED ----------------
+    # Publishes the just-verified binary as fork release assets (design:
+    # fork#766, owner-approved 2026-10-04T21:14:29Z). Runs AFTER the swap is
+    # verified and the fanout is journaled, BEFORE the swap-result stamp (F-M1:
+    # the stamp lands last, so its row can name this leg's outcome). Wrapped in
+    # a SUBSHELL: no failure here can reach the ship's rc. Suppress with
+    # OC_DEPLOY_NOPUBLISH=1 (the selftest exports it; publish legs override).
+    local PUB_RC=0 PUB_NOTE="skipped"
+    if [ "${OC_DEPLOY_NOPUBLISH:-0}" != "1" ]; then
+      ( publish_fork_release "$SHA" "$RUN_ID" "$FEATURES" "$BIN" "$WORKDIR" ) || PUB_RC=$?
+      PUB_NOTE="rc=$PUB_RC"
+      jline publish "$PUB_RC" "$(jq -cn --argjson r "$PUB_RC" '{rc:$r, issue:"#766", nonfatal:true, rolling_tag:"fork-latest"}')"
+      [ "$PUB_RC" = 0 ] || echo "oc-deploy: fork release publish rc=$PUB_RC — swap STANDS (#766 leg is non-fatal)" >&2
+    fi
+    ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE publish=$PUB_NOTE" "swap-result"
     shadow_log swap "$SHA" "$FEATURES" "deployed"
     echo "SWAP COMPLETE: sha=$SHA run=$RUN_ID verified disk==proc, markers written, fanout=$FO_NOTE, ledger stamped"
     exit 0
