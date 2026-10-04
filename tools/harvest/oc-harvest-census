@@ -704,7 +704,12 @@ def check_fork_path_provenance(path, repo_path):
 #     (present upstream) was attributed to `clean_tool_entry` (0 upstream).
 # Anything unresolved falls through to the declared-subject path (fail-closed).
 
-_HUNK_RE = re.compile(r'^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@(.*)$')
+# #10: the OLD-side start (`-N`) AND the NEW-side start (`+N`) are both captured.
+# The old side indexes the pre-image (the backward enclosing-symbol scan); the
+# new side indexes the POST-image, which is the only file a FORWARD resolution
+# can read -- the item a doc comment documents sits BELOW it, and in the
+# pre-image that line is the hunk's own rewritten comment.
+_HUNK_RE = re.compile(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$')
 _FN_DECL_RE = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)')
 _STATIC_DECL_RE = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?static\s+([A-Za-z_][A-Za-z0-9_]*)')
 # #7: CONTAINER declarations a hunk may sit inside. `impl` is deliberately NOT
@@ -741,6 +746,66 @@ def _nearest_enclosing_symbol(lines, start_idx):
             fallback_static = s.group(1)
     return fallback_static
 
+def _hunk_is_doc_only(body_lines):
+    # #10: True when EVERY changed line in the hunk (`+` or `-`) is a Rust DOC
+    # COMMENT -- `///`, `//!`, or a line inside a `/** ... */` / `/*! ... */`
+    # block. Context lines (` `) are ignored; a hunk with no changed line at all
+    # is NOT doc-only (it carries no evidence either way).
+    #
+    # DOC-COMMENT-ONLY on purpose, never `#[...]` attributes: an attribute line
+    # inside a fn body is already attributed CORRECTLY by git's hunk header to
+    # its enclosing item (measured on a `#[allow(unused)]` probe), so
+    # forward-resolving one would invent a new false class rather than fix one.
+    changed = False
+    in_block = False
+    for raw in body_lines:
+        if not raw or raw[0] not in '+-':
+            continue
+        changed = True
+        text = raw[1:].strip()
+        if in_block:
+            if '*/' in text:
+                in_block = False
+            continue
+        if text.startswith('///') or text.startswith('//!'):
+            continue
+        if text.startswith('/**') or text.startswith('/*!'):
+            if '*/' not in text:
+                in_block = True
+            continue
+        return False
+    return changed
+
+def _forward_decl_symbol(new_lines, start_idx):
+    # #10: the first DECLARATION at or below `start_idx`, skipping blank lines,
+    # doc comments and attributes. Used ONLY for a doc-comment-only hunk, whose
+    # real owner is the item the comment documents. Fail-closed: the first
+    # non-skippable line that is NOT a declaration returns None, so the caller
+    # falls back to the header/backward path rather than guessing.
+    i = max(start_idx, 0)
+    n = len(new_lines)
+    while i < n:
+        line = new_lines[i]
+        st = line.strip()
+        if not st or st.startswith('///') or st.startswith('//!') or st.startswith('#['):
+            i += 1
+            continue
+        if st.startswith('/**') or st.startswith('/*!'):
+            if '*/' in st:
+                i += 1
+                continue
+            i += 1
+            while i < n and '*/' not in new_lines[i]:
+                i += 1
+            i += 1
+            continue
+        for _rx in (_FN_DECL_RE, _CONTAINER_DECL_RE, _ADDED_IMPL_RE):
+            m = _rx.match(line)
+            if m:
+                return m.group(1)
+        return None
+    return None
+
 def derive_symbols(commits_list, repo_path):
     # Symbols touched by the fix, read from the fix's own diff.
     # Takes the same commits_list shape as get_affected_files_for_commits (the
@@ -748,7 +813,7 @@ def derive_symbols(commits_list, repo_path):
     # hold matching_commits already, and re-deriving a range would duplicate the
     # #323 target-resolution logic that built it.
     pairs = []
-    stats = {'hunks': 0, 'header': 0, 'backscan': 0, 'unresolved': 0}
+    stats = {'hunks': 0, 'header': 0, 'backscan': 0, 'docfwd': 0, 'unresolved': 0}
     for c in commits_list:
         sha = c.get('sha', '') if isinstance(c, dict) else str(c)
         if not sha or not os.path.isdir(repo_path):
@@ -759,21 +824,54 @@ def derive_symbols(commits_list, repo_path):
             continue
         cur_file = None
         old_lines = None
-        for line in res.stdout.split('\n'):
+        new_lines = None
+        dlines = res.stdout.split('\n')
+        di = 0
+        while di < len(dlines):
+            line = dlines[di]
             if line.startswith('+++ b/'):
                 cur_file = line[6:].strip()
                 old_lines = None
+                new_lines = None
+                di += 1
                 continue
             if not line.startswith('@@'):
+                di += 1
                 continue
             m = _HUNK_RE.match(line)
             if not m:
+                di += 1
                 continue
             stats['hunks'] += 1
+            # The hunk BODY -- everything up to the next hunk or file header.
+            # The pre-#10 loop read only the `@@` line, so it could not tell WHAT
+            # was changed, which is the whole question #10 turns on.
+            dj = di + 1
+            body = []
+            while dj < len(dlines) and not dlines[dj].startswith(('@@', '+++ b/', 'diff --git ')):
+                body.append(dlines[dj])
+                dj += 1
+            di = dj
+            # #10: a hunk that rewrites ONLY doc comments documents the item
+            # BELOW it, but git's hunk header names the PRECEDING item (its
+            # context runs backward). Resolve such a hunk FORWARD, in the
+            # POST-commit file, to the declaration the comment documents --
+            # otherwise a doc rewrite above an upstream-present fn is attributed
+            # to the fork-only fn above it and reads as a false "dropped at
+            # packaging" advisory (#674). Fail-closed: no following declaration
+            # found -> fall through to the header/backward path.
+            if cur_file and _hunk_is_doc_only(body):
+                if new_lines is None:
+                    new_lines = _show_at_rev(None, cur_file, repo_path, rev=sha).split('\n')
+                fsym = _forward_decl_symbol(new_lines, int(m.group(2)) - 1)
+                if fsym:
+                    stats['docfwd'] += 1
+                    pairs.append((cur_file, fsym))
+                    continue
             # #7: the header may name a container (struct/enum/trait/impl/mod),
             # not only a `fn`. Testing only for `fn` sent such a hunk to the
             # backward scan, which could land on an unrelated fork-only fn.
-            hdr = m.group(2).strip()
+            hdr = m.group(3).strip()
             fm = None
             for _rx in (_FN_DECL_RE, _CONTAINER_DECL_RE, _ADDED_IMPL_RE):
                 fm = _rx.search(hdr)
@@ -3384,6 +3482,43 @@ build_gate4_fixture() {
     return 0
   fi
 
+  if [ "$_fx_mode" = "doc_hunk" ]; then
+    # #10 shape: a DOC-COMMENT-ONLY hunk sits BETWEEN a fork-only `fn` above it
+    # and its real owner -- an upstream-present `fn` -- below. At -U0 git's hunk
+    # header names the PRECEDING fn (its context runs backward), so pre-#10 the
+    # rewritten `///` line was scored against the fork-only fn and read as a
+    # FALSE "dropped at packaging" advisory (#674). Post-#10 the doc-only hunk
+    # resolves FORWARD, in the post-commit file, to the fn it documents, which
+    # IS upstream -> ELIGIBLE.
+    #
+    # The target drives BOTH hunks in one unit, so the pair is its own control:
+    # hunk A is the doc-comment line (must resolve to base_fn, upstream-present),
+    # hunk B a CODE line inside the fork-only fn (must still resolve BACKWARD to
+    # fork_only_fn and stay flagged). A predicate that forward-resolved every
+    # hunk, or that stopped attributing, reddens this leg.
+    printf 'pub fn base_fn() -> u8 {\n    5\n}\n' > "$_fx_dir/src/flow.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "upstream base_fn" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+    # Upstream carries base_fn and NOT the fork-only helper added next.
+    git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+
+    # The fork adds a helper ABOVE base_fn -- the wrong back-scan target -- with
+    # the `///` doc line and an `#[...]` attribute (both skipped by the forward
+    # scan) between them.
+    printf 'pub fn fork_only_fn() -> u8 {\n    1\n}\n\n/// old doc for base_fn\n#[allow(dead_code)]\npub fn base_fn() -> u8 {\n    5\n}\n' > "$_fx_dir/src/flow.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "fork-only helper above base_fn" --trailer "Issue-Ref: leshchenko1979/opencrabs#903"
+
+    # Target #907: a doc-only change to the `///` line AND a code change inside
+    # the fork-only fn. The doc hunk's header names fork_only_fn; its TRUE owner
+    # is base_fn.
+    printf 'pub fn fork_only_fn() -> u8 {\n    2\n}\n\n/// new doc for base_fn\n#[allow(dead_code)]\npub fn base_fn() -> u8 {\n    5\n}\n' > "$_fx_dir/src/flow.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "target doc-only fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#907"
+    git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+    return 0
+  fi
+
   if [ "$_fx_mode" = "symbol_diverged" ] || [ "$_fx_mode" = "symbol_same_sig" ]; then
     # #758 shape: the hunk's enclosing symbol EXISTS upstream by NAME, so the
     # fork-only advisory never fires for it -- but its fork definition may have
@@ -5053,6 +5188,31 @@ sys.exit(0 if (len(rows) == 1 and str(rows[0].get("pr")) == "555002") else 1)
     ok "#7 shape: hunk inside an upstream-present struct resolves to the struct -> ELIGIBLE; fork-only fn still flagged"
   else
     echo "  bad  - container-hunk fixture expected rc=0 ELIGIBLE + advisory naming clean_tool_entry only + no UPSTREAM_VOID, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 32c. #10 SHAPE: a DOC-COMMENT-ONLY hunk between a fork-only `fn` above and
+  #      its real owner -- an upstream-present `fn` -- below must resolve
+  #      FORWARD to the fn it documents, not backward to the fork-only fn git's
+  #      header names (#674: a false "dropped at packaging" advisory). The leg
+  #      drives BOTH hunks in one unit so the pair is its own control: the doc
+  #      hunk must NOT be attributed to fork_only_fn (else the derivation would
+  #      carry no present symbol and refuse UPSTREAM_VOID), while the genuinely
+  #      fork-only CODE hunk must STILL be flagged. A predicate that
+  #      forward-resolved every hunk, or stopped attributing hunks, fails here.
+  fx_doc_hunk="$selftest_tmp/fx_doc_hunk"
+  build_gate4_fixture "$fx_doc_hunk" doc_hunk
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_doc_hunk" "$selftest_tmp/mock_reg_fx.json" "907" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && oc_has "$out" "src/flow.rs :: fork_only_fn" \
+     && ! oc_has "$out" "src/flow.rs :: base_fn" \
+     && ! oc_has "$out" "UPSTREAM_VOID"; then
+    ok "#10 shape: doc-only hunk resolves FORWARD to its upstream-present owner -> ELIGIBLE; fork-only code hunk still flagged"
+  else
+    echo "  bad  - doc-hunk fixture expected rc=0 ELIGIBLE + advisory naming fork_only_fn only + no UPSTREAM_VOID, got rc=$rc ($out)"
     return 1
   fi
 
