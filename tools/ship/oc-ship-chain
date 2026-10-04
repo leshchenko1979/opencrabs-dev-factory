@@ -13,7 +13,8 @@
 # never retries internally.
 #
 # Usage:
-#   oc-ship-chain --sha <sha> --branch <branch> [--issue <n>] [--repo <fork-slug>]
+#   oc-ship-chain --sha <sha> --branch <branch> [--issue <n>] [--issue-repo <slug>]
+#                 [--repo <fork-slug>]
 #                 [--gated-sha <sha>] [--gated-run <id>] [--wait <sec>]
 #                 [--gate-wait <sec>] [--full] [--dry-run] [--no-ledger] [--selftest] [--help]
 #   oc-ship-chain --eval-docs-skip [<sha>]
@@ -29,6 +30,20 @@
 #                    Can also be paired with --sha <sha>.
 #   --fast           Default gate mode (passes fast=true to oc-prchecks).
 #   --full|--no-fast Opt-in full test suite gate (~30 min).
+#
+# --issue-repo <slug>  The tracker that OWNS --issue, for LEG2's mandatory
+#                    per-commit comment. `--repo` above is the FORK CHECKOUT's
+#                    slug (used by oc-prchecks); this is the ISSUE's tracker.
+#                    Resolution order: --issue-repo, then OC_ISSUE_LOG_REPO,
+#                    then a probe of the three known trackers (fork
+#                    leshchenko1979/opencrabs, binary opencrabs/opencrabs,
+#                    factory leshchenko1979/opencrabs-dev-factory).
+#                    A number present on SEVERAL trackers is resolved to the
+#                    one that is OPEN; if that is still ambiguous the chain
+#                    defaults to the FORK and WARNS loudly -- refusing would
+#                    break every fork ship whose number collides with an
+#                    upstream issue, which is most numbers <= 766.
+#                    OC_SHIPCHAIN_NO_ISSUE_PROBE=1 skips the probe.
 #
 # --wait <sec>       LEG4 ship/swap budget (default 2700 = 45 min; the 10 most
 #                    recent successful carrier builds on this box ALL ran
@@ -125,6 +140,16 @@
 #   OC_DEPLOY_BIN    default tools/ship/oc-deploy
 #   OC_ISSUELOG_BIN  default tools/issue/oc-issue-log
 #   OC_FORK_REPO     default ~/opencrabs (the fork checkout)
+#   OC_ISSUE_LOG_REPO  the tracker LEG2's oc-issue-log posts the per-commit
+#                    comment to. This is oc-issue-log's OWN env hook (its
+#                    --repo is the same thing); the chain passes --repo
+#                    explicitly, so the hook is honoured from BOTH surfaces.
+#                    Needed only when the issue is not on the fork AND the
+#                    probe cannot decide -- prefer --issue-repo on the CLI.
+#   OC_SHIPCHAIN_NO_ISSUE_PROBE=1  skip the LEG2 tracker probe (hermetic
+#                    tests / offline); the chain then defaults to the fork.
+#   OC_SHIPCHAIN_PROBE_GH  the gh binary the tracker probe uses (default: gh);
+#                    a selftest hook, so the probe never reaches the network.
 #   OC_SHIPCHAIN_LEDGER  path for chain journal lines (default: oc-ledger)
 #   OC_TOOLS_NOLOG=1     suppress ledger stamps (battery/selftest)
 #
@@ -283,7 +308,7 @@ GH_BIN="${OC_GH:-gh}"
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF"; exit 0; }
 die() { printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
 
-SHA=""; BRANCH=""; ISSUE=""; REPO=""; DRY=0; NOLEDGER=0; GATED_SHA=""; GATED_RUN=""
+SHA=""; BRANCH=""; ISSUE=""; ISSUE_REPO_FLAG=""; REPO=""; DRY=0; NOLEDGER=0; GATED_SHA=""; GATED_RUN=""
 # #672: set when NO leg runs in this chain and the gate is carried forward from an
 # earlier run. The banner must not then claim a mode that never ran.
 GATE_CARRIED_FORWARD=""
@@ -437,6 +462,7 @@ while [ $# -gt 0 ]; do
     --sha)       SHA="${2:?}"; shift 2 ;;
     --branch)    BRANCH="${2:?}"; shift 2 ;;
     --issue)     ISSUE="${2:?}"; shift 2 ;;
+    --issue-repo) ISSUE_REPO_FLAG="${2:?}"; shift 2 ;;
     --repo)      REPO="${2:?}"; shift 2 ;;
     --wait)      WAIT="${2:?}"; shift 2 ;;
     --gate-wait) GATE_WAIT="${2:?}"; shift 2 ;;
@@ -1069,6 +1095,85 @@ fi
 printf 'oc-ship-chain: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
 journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
 
+# ---- LEG2 tracker resolution (#11, factory) -------------------------------
+# The 2026-10-03 routing split the trackers: BINARY issues live on
+# opencrabs/opencrabs, FACTORY issues on leshchenko1979/opencrabs-dev-factory,
+# and the historical fork leshchenko1979/opencrabs is READ-ONLY. This leg used
+# to pass oc-issue-log NO --repo at all, so oc-issue-log silently fell back to
+# ITS own default -- the fork. Two consequences, both measured on the real
+# chain CHAIN-725ad527-20261004T135217Z (issue #1916, sha 725ad527):
+#   * a binary-tracker issue does not exist on the fork, so the mandatory
+#     comment could not post and LEG2 died rc 3 after 146.9 s -- EVERY
+#     binary-tracker ship failed unless the lane exported the undocumented
+#     OC_ISSUE_LOG_REPO;
+#   * a number <= 766 exists on BOTH trackers (the fork's own issues reach
+#     ~766), so the note would have landed on the fork's same-numbered
+#     UNRELATED issue and exited 0 -- a silent mis-post.
+# Resolution order: --issue-repo, then OC_ISSUE_LOG_REPO, then a probe of the
+# three trackers. The probe is FAIL-OPEN to the fork (the pre-#11 behaviour):
+# refusing on ambiguity would break every fork ship whose number collides with
+# an upstream issue, which is most of them.
+FORK_ISSUE_SLUG="leshchenko1979/opencrabs"
+BINARY_ISSUE_SLUG="opencrabs/opencrabs"
+FACTORY_ISSUE_SLUG="leshchenko1979/opencrabs-dev-factory"
+ISSUE_REPO_RESOLVED=""
+ISSUE_REPO_SRC=""
+if [ -n "$ISSUE" ]; then
+  if [ -n "$ISSUE_REPO_FLAG" ]; then
+    ISSUE_REPO_RESOLVED="$ISSUE_REPO_FLAG"
+    ISSUE_REPO_SRC="--issue-repo (explicit)"
+  elif [ -n "${OC_ISSUE_LOG_REPO:-}" ]; then
+    ISSUE_REPO_RESOLVED="$OC_ISSUE_LOG_REPO"
+    ISSUE_REPO_SRC="OC_ISSUE_LOG_REPO (env)"
+  elif [ "${OC_SHIPCHAIN_NO_ISSUE_PROBE:-0}" = "1" ]; then
+    ISSUE_REPO_RESOLVED="$FORK_ISSUE_SLUG"
+    ISSUE_REPO_SRC="fork default (probe disabled)"
+  else
+    PROBE_GH="${OC_SHIPCHAIN_PROBE_GH:-$GH_BIN}"
+    _probe_slugs=(); _probe_states=()
+    for _slug in "$FORK_ISSUE_SLUG" "$BINARY_ISSUE_SLUG" "$FACTORY_ISSUE_SLUG"; do
+      _st="$("$PROBE_GH" issue view "$ISSUE" --repo "$_slug" --json state -q .state 2>/dev/null || true)"
+      case "$_st" in
+        OPEN|CLOSED) _probe_slugs+=("$_slug"); _probe_states+=("$_st") ;;
+      esac
+    done
+    _n=${#_probe_slugs[@]}
+    if [ "$_n" -eq 0 ]; then
+      # Either the number exists nowhere, or the probe could not reach gh at
+      # all. Both fall back to the fork: the status quo, on which oc-issue-log
+      # fails on its own terms if the issue really is missing.
+      ISSUE_REPO_RESOLVED="$FORK_ISSUE_SLUG"
+      ISSUE_REPO_SRC="fork default (probe matched no tracker)"
+    elif [ "$_n" -eq 1 ]; then
+      ISSUE_REPO_RESOLVED="${_probe_slugs[0]}"
+      ISSUE_REPO_SRC="probe (unique match)"
+    else
+      # Present on more than one tracker. A lane ships an issue it is still
+      # working, so a UNIQUELY OPEN copy is the tracker that owns the ship --
+      # a CLOSED same-numbered sibling elsewhere is the coincidence this
+      # resolution exists to disambiguate (e.g. harvesting an old upstream
+      # issue whose number also exists on the fork).
+      _open=""; _nopen=0; _list=""
+      for _i in "${!_probe_slugs[@]}"; do
+        _list="$_list ${_probe_slugs[$_i]}=${_probe_states[$_i]}"
+        if [ "${_probe_states[$_i]}" = "OPEN" ]; then
+          _open="${_probe_slugs[$_i]}"; _nopen=$((_nopen + 1))
+        fi
+      done
+      if [ "$_nopen" -eq 1 ]; then
+        ISSUE_REPO_RESOLVED="$_open"
+        ISSUE_REPO_SRC="probe (unique OPEN among $_n matches)"
+      else
+        ISSUE_REPO_RESOLVED="$FORK_ISSUE_SLUG"
+        ISSUE_REPO_SRC="fork default (AMBIGUOUS:$_list)"
+        printf 'oc-ship-chain: WARNING — issue #%s resolves on MORE THAN ONE tracker:%s\n' "$ISSUE" "$_list" >&2
+        printf 'oc-ship-chain: defaulting to the fork (%s). If the issue lives elsewhere, re-run with --issue-repo <slug>.\n' "$FORK_ISSUE_SLUG" >&2
+      fi
+    fi
+  fi
+  journal "LEG2 tracker resolved: $ISSUE_REPO_RESOLVED ($ISSUE_REPO_SRC)"
+fi
+
 # ---- leg 2: issue-log (mandatory when --issue is given) -------------------
 # Defect fix 2026-09-19 (lane d18ce16a report, fork #361). This leg invoked
 # oc-issue-log in the CHAIN's cwd, unlike LEG4 (:798) and LEG5 (:858/:863) which
@@ -1081,13 +1186,13 @@ journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
 # is FATAL: a chain that cannot post its comment does not silently continue.
 if [ -n "$ISSUE" ]; then
   set +e
-  IL_OUT="$(OC_TOOLS_NOLOG=1 "$ISSUELOG_BIN" "$ISSUE" "$SHA" --repo-path "$FORK_REPO" 2>&1)"
+  IL_OUT="$(OC_TOOLS_NOLOG=1 "$ISSUELOG_BIN" "$ISSUE" "$SHA" --repo "$ISSUE_REPO_RESOLVED" --repo-path "$FORK_REPO" 2>&1)"
   IL_RC=$?
   set -e
   if [ "$IL_RC" != "0" ]; then
     journal "LEG2 issue-log FAILED rc=$IL_RC (mandatory step, owner 2026-08-28 22:54Z)"
     printf '%s\n' "$IL_OUT"
-    die "LEG2 issue-log failed rc=$IL_RC — the mandatory per-commit implementation comment did not post. Post it, then re-run with --gated-run <id>: $ISSUELOG_BIN $ISSUE $SHA --repo-path $FORK_REPO" 3
+    die "LEG2 issue-log failed rc=$IL_RC — the mandatory per-commit implementation comment did not post to $ISSUE_REPO_RESOLVED ($ISSUE_REPO_SRC). Post it, then re-run with --gated-run <id>: $ISSUELOG_BIN $ISSUE $SHA --repo $ISSUE_REPO_RESOLVED --repo-path $FORK_REPO" 3
   fi
   # #395: tools.log is SUPPRESSED on this path (OC_TOOLS_NOLOG=1 above), so the
   # chain's own journal is the only durable record of what the guard did. It
@@ -1436,7 +1541,7 @@ EOF
   run_chain() {
     OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
     OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" \
-    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
     OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
     OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
       bash "$SELF" "$@"
@@ -1496,7 +1601,7 @@ EOF
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
     OC_ISSUELOG_BIN="$T/fake-issuelog-fail" OC_FORK_REPO="$T/clone" \
-    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
     OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
     OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
       bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
@@ -1518,7 +1623,7 @@ EOF
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
     OC_ISSUELOG_BIN="$T/fake-issuelog-skip" OC_FORK_REPO="$T/clone" \
-    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
     OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
     OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
       bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
@@ -1529,11 +1634,103 @@ EOF
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
     OC_ISSUELOG_BIN="$T/fake-issuelog-notoken" OC_FORK_REPO="$T/clone" \
-    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
     OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
     OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
       bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
   grep -q "LEG2 issue-log done (idem=unknown)" "$T/journal.log" && ok "leg2-idem-unknown" || bad "leg2-idem-unknown"
+
+  # 1e. #11 LEG2 TRACKER RESOLUTION. Before this fix the leg passed
+  #     oc-issue-log NO --repo at all, so the tool silently fell back to its
+  #     own default -- the fork. Two measured consequences: a binary-tracker
+  #     ship died rc 3 (CHAIN-725ad527, issue #1916, branch
+  #     feat/telegram-local-file-links), and a number <= 766 -- which exists
+  #     on BOTH trackers -- posted the note to the fork's same-numbered
+  #     UNRELATED issue and exited 0. The chain now resolves the tracker and
+  #     passes it EXPLICITLY. The stub LOGS ITS ARGV, so each assertion reads
+  #     what the chain actually handed the tool rather than what it printed.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" >> "$ILOG_ARGV"\nexit 0\n' > "$T/fake-issuelog-argv"
+  chmod +x "$T/fake-issuelog-argv"
+  # A fake gh answering `issue view <n> --repo <slug> --json state -q .state`
+  # from a flat "<slug> <n> <state>" table, so the probe never reaches the
+  # network (the real chain's probe is the only network touch in LEG2).
+  cat > "$T/fake-gh" <<'FGHEOF'
+#!/usr/bin/env bash
+slug=""; n=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) slug="$2"; shift 2 ;;
+    view) shift; n="${1:-}"; shift ;;
+    *) shift ;;
+  esac
+done
+line="$(awk -v s="$slug" -v n="$n" '$1==s && $2==n {print $3}' "${T_PROBE_TABLE:-/dev/null}" 2>/dev/null)"
+[ -n "$line" ] || exit 1
+printf '%s\n' "$line"
+FGHEOF
+  chmod +x "$T/fake-gh"
+  # Runs the chain with the probe ON and the argv-logging stub. The probe
+  # table is always $T/probe.tbl, which each case writes first.
+  run_chain_probe() {
+    rm -f "$T/journal.log"; : > "$T/ilog.argv"
+    git -C "$T/clone" reset -q --hard origin/main
+    RC=0
+    OUT="$(OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog-argv" OC_FORK_REPO="$T/clone" ILOG_ARGV="$T/ilog.argv" \
+      OC_SHIPCHAIN_PROBE_GH="$T/fake-gh" T_PROBE_TABLE="$T/probe.tbl" \
+      OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+      OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
+      OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
+        bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 "$@" 2>&1)" || RC=$?
+  }
+
+  # The stub writes ONE ARG PER LINE, so a tracker assertion must read the
+  # `--repo` line and the slug line as a PAIR -- grepping for the two joined by
+  # a space can never match a newline-separated argv.
+  argv_has() {
+    awk -v a="$1" -v b="$2" 'prev==a && $0==b {found=1} {prev=$0} END{exit !found}' "$T/ilog.argv"
+  }
+
+  # (a) binary-tracker-only number -> resolves to the binary tracker and is
+  #     passed EXPLICITLY. This is the #1916 regression: with no --repo the
+  #     stub would show the tool's own default and the chain would still die
+  #     on the real binary-tracker issue.
+  printf 'opencrabs/opencrabs 42 OPEN\n' > "$T/probe.tbl"
+  run_chain_probe
+  check_rc "leg2-probe-binary-rc" "$RC" 0
+  argv_has --repo opencrabs/opencrabs && ok "leg2-probe-binary-passes-slug" || bad "leg2-probe-binary-passes-slug: $(tr '\n' ' ' < "$T/ilog.argv")"
+  grep -q "LEG2 tracker resolved: opencrabs/opencrabs" "$T/journal.log" && ok "leg2-probe-binary-journaled" || bad "leg2-probe-binary-journaled"
+
+  # (b) the #11 SILENT-MIS-POST class, disambiguated by state: the same number
+  #     exists on the fork (CLOSED) and on the binary tracker (OPEN). A lane
+  #     ships an issue it is still working, so the uniquely-OPEN copy owns the
+  #     ship and the chain must pick the binary tracker, NOT the fork.
+  printf 'leshchenko1979/opencrabs 42 CLOSED\nopencrabs/opencrabs 42 OPEN\n' > "$T/probe.tbl"
+  run_chain_probe
+  check_rc "leg2-probe-collision-rc" "$RC" 0
+  argv_has --repo opencrabs/opencrabs && ok "leg2-probe-collision-picks-open" || bad "leg2-probe-collision-picks-open: $(tr '\n' ' ' < "$T/ilog.argv")"
+
+  # (c) BOTH copies open -- the probe CANNOT decide, and this is the one case
+  #     where a wrong guess posts a comment onto an unrelated issue. The chain
+  #     must FAIL OPEN to the fork (refusing would break every fork ship whose
+  #     number collides with an upstream issue) AND say so LOUDLY, so the
+  #     default is visible rather than silent.
+  printf 'leshchenko1979/opencrabs 42 OPEN\nopencrabs/opencrabs 42 OPEN\n' > "$T/probe.tbl"
+  run_chain_probe
+  check_rc "leg2-probe-ambiguous-rc" "$RC" 0
+  argv_has --repo leshchenko1979/opencrabs && ok "leg2-probe-ambiguous-fails-open-to-fork" || bad "leg2-probe-ambiguous-fails-open-to-fork: $(tr '\n' ' ' < "$T/ilog.argv")"
+  case "$OUT" in *"WARNING — issue #42 resolves on MORE THAN ONE tracker"*) ok "leg2-probe-ambiguous-warns" ;; *) bad "leg2-probe-ambiguous-warns: $OUT" ;; esac
+  grep -q "LEG2 tracker resolved: leshchenko1979/opencrabs (fork default (AMBIGUOUS:" "$T/journal.log" && ok "leg2-probe-ambiguous-journaled" || bad "leg2-probe-ambiguous-journaled"
+
+  # (d) --issue-repo is AUTHORITATIVE: it bypasses the probe entirely, so a
+  #     lane can name the tracker without depending on gh at all. The probe
+  #     table here deliberately holds a DIFFERENT answer, which the chain must
+  #     ignore -- a resolution that consulted gh anyway would pick it.
+  printf 'opencrabs/opencrabs 42 OPEN\n' > "$T/probe.tbl"
+  run_chain_probe --issue-repo leshchenko1979/opencrabs-dev-factory
+  check_rc "leg2-flag-authoritative-rc" "$RC" 0
+  argv_has --repo leshchenko1979/opencrabs-dev-factory && ok "leg2-flag-authoritative" || bad "leg2-flag-authoritative: $(tr '\n' ' ' < "$T/ilog.argv")"
+  grep -q "LEG2 tracker resolved: leshchenko1979/opencrabs-dev-factory (--issue-repo (explicit))" "$T/journal.log" && ok "leg2-flag-journaled" || bad "leg2-flag-journaled"
 
   # 2. gate RED → exit 4, merge must NOT happen
   rm -f "$T/journal.log"
