@@ -822,6 +822,16 @@ def derive_added_declarations(commits_list, repo_path):
     # Returns (file, name) pairs in first-seen order, de-duplicated; [] when the
     # parent introduced no declaration at all -- which the caller reads as
     # inconclusive and answers with the enclosing-symbol derivation.
+    #
+    # #6: `_ADDED_IMPL_RE` is deliberately NOT consulted HERE. An `impl` block
+    # declares no symbol of its own -- its MEMBERS are the surface, and
+    # `_ADDED_DECL_RE` reads each of them off the same `+` side. Reading the
+    # target instead let a fork-only `impl RateLimiterConfig` match upstream's
+    # `struct RateLimiterConfig` by NAME; `_decl_header_for_symbol` then returned
+    # the first declaration of that name (the struct) and the normalised headers
+    # compared equal, so premise (a) read the fork's work as already-arrived.
+    # `_decl_names_in` keeps the impl match on purpose: it answers a different
+    # question ("which names does this body treat as its own").
     pairs = []
     seen = set()
     for c in commits_list:
@@ -839,7 +849,18 @@ def derive_added_declarations(commits_list, repo_path):
                 continue
             if not cur_file or line.startswith('+++') or not line.startswith('+'):
                 continue
-            m = _ADDED_DECL_RE.match(line[1:]) or _ADDED_IMPL_RE.match(line[1:])
+            # #6: an `impl` line is deliberately NOT read as an added
+            # declaration. Its capture is a TYPE name, and a type of that name
+            # may already exist upstream under a DIFFERENT kind -- a unit adding
+            # `impl RateLimiterConfig` matched upstream's `struct
+            # RateLimiterConfig` by name, `_decl_header_for_symbol` returned the
+            # FIRST declaration of that name (the struct) and the normalised
+            # comparison read equal, so premise (a) called a fork-only impl
+            # CHANGED. An impl introduces no symbol of its own: its MEMBERS do,
+            # and `_ADDED_DECL_RE` reads each of them off the same `+` side, so
+            # the surface is not lost. Trait impls are worse still --
+            # `impl Display for Foo` captures the TRAIT, never the type.
+            m = _ADDED_DECL_RE.match(line[1:])
             if not m:
                 continue
             key = (cur_file, m.group(1))
@@ -1084,10 +1105,15 @@ def _strip_rust_noncode(text):
     return ''.join(out)
 
 def _decl_names_in(body):
-    # The names a body DECLARES, by the same grammar `derive_added_declarations`
-    # reads off the `+` side, so both halves of the #633/#761 comparison speak
-    # one language. Parameters and locals are deliberately NOT declarations: a
-    # renamed parameter is a divergence, not a fork-only surface.
+    # The names a body DECLARES. `_ADDED_DECL_RE` is shared with
+    # `derive_added_declarations`, so both halves of the #633/#761 comparison
+    # speak one language for real declarations. `_ADDED_IMPL_RE` is kept HERE
+    # and dropped THERE on purpose (#6): this function asks which names the body
+    # treats as its own -- for an impl the target IS such a name, and
+    # subtracting it is the conservative choice -- while the other asks which
+    # declarations the parent ADDED, where an impl target is a mis-capture.
+    # Parameters and locals are deliberately NOT declarations: a renamed
+    # parameter is a divergence, not a fork-only surface.
     names = set()
     for line in body.split('\n'):
         m = _ADDED_DECL_RE.match(line) or _ADDED_IMPL_RE.match(line)
@@ -3530,8 +3556,11 @@ build_gate4_fixture() {
 # fixture would test nothing -- this builds a real repo whose upstream ref and
 # fork range exercise all three premises end to end.
 #
-# Shape (three rows, one per premise class):
+# Shape (five rows, one per premise class):
 #   A  base                      src/base.rs -> upstream copy
+#                                src/rl.rs   -> `struct RateLimiterConfig`, so a
+#                                fork row can add an `impl` for a type upstream
+#                                ALREADY CARRIES (#6)
 #   B1 fork #981                 src/ok.rs     :: ok_fn     (upstream LACKS it)
 #   B2 fork #982                 src/stale.rs  :: stale_fn  (upstream WILL carry it)
 #   B3 fork #983                 src/nb.rs     :: nb_fn     (upstream LACKS it)
@@ -3539,12 +3568,22 @@ build_gate4_fixture() {
 #   B4 fork #984                 src/gone.rs   :: gone_fn   (upstream LACKS it)
 #   (no branch feat/never-existed) -> the `walk-branchgone` row's premise (b)
 #                                MOVES: a recorded branch the fork no longer has
+#   B5 fork #985                 src/rl.rs     :: `impl RateLimiterConfig` whose
+#                                target name EQUALS the upstream struct's (#6).
+#                                The impl declares no symbol of its own; its
+#                                member `spacing_floor` is the fork-only surface.
+#                                A derivation that reads the impl line as an added
+#                                declaration matches the struct BY NAME, compares
+#                                two equal normalised headers, and reads premise
+#                                (a) as a false CHANGED.
+#   branch feat/walk-impl        -> premise (b) checkable for the `walk-impl` row
 #   A2 upstream (post-sync)      src/stale.rs carrying stale_fn with the SAME
 #                                normalised header -> the SYNC event that makes
 #                                the `walk-stale` row's premise (a) MOVE.
 # `$1` = repo dir. Echoes nothing; leaves refs/remotes/{adolfousier,origin}/main
-# and branch feat/walk-ok in place, and prints the four fork shas on stdout as
-# `B1 B2 B3 B4` for the caller to build a registry whose reason cites them.
+# and branches feat/walk-ok / feat/walk-impl in place, and prints the five fork
+# shas on stdout as `B1 B2 B3 B4 B5` for the caller to build a registry whose
+# reason cites them.
 build_walk_fixture() {
   _wd="$1"
   mkdir -p "$_wd/src"
@@ -3554,6 +3593,9 @@ build_walk_fixture() {
   git -C "$_wd" config commit.gpgsign false
 
   printf 'pub fn base_fn() -> u8 {\n    1\n}\n' > "$_wd/src/base.rs"
+  # #6: a TYPE upstream already carries, so a later fork row can add an `impl`
+  # for a name that already exists upstream under a DIFFERENT declaration kind.
+  printf 'pub struct RateLimiterConfig {\n    pub cap: u8,\n}\n' > "$_wd/src/rl.rs"
   git -C "$_wd" add -A
   git -C "$_wd" commit -q -m "base"
   _wA="$(git -C "$_wd" rev-parse HEAD)"
@@ -3579,8 +3621,19 @@ build_walk_fixture() {
   git -C "$_wd" commit -q -m "walk branchgone" --trailer "Issue-Ref: leshchenko1979/opencrabs#984"
   _wB4="$(git -C "$_wd" rev-parse HEAD)"
 
-  git -C "$_wd" update-ref refs/remotes/origin/main "$_wB4"
+  # B5 (#6): the fork adds an `impl` for a type UPSTREAM ALREADY CARRIES as a
+  # struct. The impl's members are the fork-only surface; its TARGET NAME is not
+  # an added declaration at all. Reading the impl line as one scores
+  # `RateLimiterConfig` against the upstream struct, the normalised headers
+  # compare equal, and premise (a) reads a false CHANGED.
+  printf 'impl RateLimiterConfig {\n    pub fn spacing_floor() -> u8 {\n        9\n    }\n}\n' >> "$_wd/src/rl.rs"
+  git -C "$_wd" add -A
+  git -C "$_wd" commit -q -m "walk impl" --trailer "Issue-Ref: leshchenko1979/opencrabs#985"
+  _wB5="$(git -C "$_wd" rev-parse HEAD)"
+
+  git -C "$_wd" update-ref refs/remotes/origin/main "$_wB5"
   git -C "$_wd" branch feat/walk-ok "$_wB1"
+  git -C "$_wd" branch feat/walk-impl "$_wB5"
 
   # A2: the sync event -- upstream NOW carries stale_fn under the SAME
   # normalised declaration header, so the walk's declaration-level test reads it
@@ -3593,7 +3646,7 @@ build_walk_fixture() {
   git -C "$_wd" checkout -q -
   git -C "$_wd" update-ref refs/remotes/adolfousier/main "$_wA2"
 
-  printf '%s %s %s %s\n' "$_wB1" "$_wB2" "$_wB3" "$_wB4"
+  printf '%s %s %s %s %s\n' "$_wB1" "$_wB2" "$_wB3" "$_wB4" "$_wB5"
 }
 
 cmd_selftest() {
@@ -5903,8 +5956,8 @@ C601REOF
   local wrepo="$selftest_tmp/walk_repo"
   local wreg="$selftest_tmp/walk_reg.json"
   local wreg_ro="$selftest_tmp/walk_reg_ro.json"
-  local wB1 wB2 wB3 wB4
-  read -r wB1 wB2 wB3 wB4 <<EOF
+  local wB1 wB2 wB3 wB4 wB5
+  read -r wB1 wB2 wB3 wB4 wB5 <<EOF
 $(build_walk_fixture "$wrepo")
 EOF
   cat << WREGEOF > "$wreg"
@@ -5918,7 +5971,10 @@ EOF
    "reason": "fork-only: upstream lacks nb_fn (fix $wB3)"},
   {"unit": "walk-branchgone", "pr": 0, "issue": 984, "issues": [984], "status": "not-upstreamable",
    "branches": ["feat/never-existed"],
-   "reason": "fork-only: upstream lacks gone_fn (fix $wB4)"}
+   "reason": "fork-only: upstream lacks gone_fn (fix $wB4)"},
+  {"unit": "walk-impl", "pr": 0, "issue": 985, "issues": [985], "status": "not-upstreamable",
+   "branches": ["feat/walk-impl"],
+   "reason": "fork-only: upstream lacks spacing_floor (fix $wB5)"}
 ]}
 WREGEOF
   cp "$wreg" "$wreg_ro"
@@ -5952,6 +6008,21 @@ WREGEOF
     return 1
   fi
 
+  # (2b) #6: an added `impl X` whose target name already exists UPSTREAM under a
+  #      DIFFERENT declaration kind is NOT an arrived declaration. The impl
+  #      declares no symbol of its own -- its member `spacing_floor` is the
+  #      fork-only surface -- so premise (a) HOLDS and the row is VERIFIED. A
+  #      name-presence test alone scores the impl against the upstream STRUCT,
+  #      compares two equal normalised headers, and reads a false CHANGED.
+  #      The VERIFIED assertion is what stops this passing VACUOUSLY: a row that
+  #      disappeared from the report entirely satisfies "not in CHANGED" too.
+  if ! oc_has "$w_changed" "unit=walk-impl" && oc_has "$w_verified" "unit=walk-impl"; then
+    ok "#6 walk: an added \`impl X\` is not an arrived declaration when upstream carries \`struct X\` -- KIND is not conflated"
+  else
+    echo "  bad  - #6 walk impl-vs-struct read a false CHANGED; got rc=$w_rc ($w_out)"
+    return 1
+  fi
+
   # (3) HQ correction 2: a row carrying NO `branches` is UNCOVERED -- a
   #     declaration-completeness gap, NEVER a moved premise -- and is NOT stamped.
   if oc_has "$w_uncov" "unit=walk-nobranch" && oc_has "$w_uncov" "cannot be verified at all" \
@@ -5976,15 +6047,16 @@ WREGEOF
 
   # (4) NO ROW WAS DELETED, and `verified_at` lands ONLY on the fully-verified
   #     row -- stamping an UNCOVERED row would assert a check that never ran.
-  local w_n w_okst w_stalest w_nbst
+  local w_n w_okst w_implst w_stalest w_nbst
   w_n="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["manual_records"]))' "$wreg" 2>/dev/null || echo 0)"
   w_okst="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-ok"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
+  w_implst="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-impl"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
   w_stalest="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-stale"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
   w_nbst="$(python3 -c 'import json,sys;print([r for r in json.load(open(sys.argv[1]))["manual_records"] if r["unit"]=="walk-nobranch"][0].get("verified_at",""))' "$wreg" 2>/dev/null || echo x)"
-  if [ "$w_n" -eq 4 ] && [ -n "$w_okst" ] && [ -z "$w_stalest" ] && [ -z "$w_nbst" ]; then
-    ok "#761-3 walk: no row deleted (4/4 present); verified_at stamped ONLY on the unchanged, fully-checkable row"
+  if [ "$w_n" -eq 5 ] && [ -n "$w_okst" ] && [ -n "$w_implst" ] && [ -z "$w_stalest" ] && [ -z "$w_nbst" ]; then
+    ok "#761-3 walk: no row deleted (5/5 present); verified_at stamped ONLY on the unchanged, fully-checkable rows (#6 put walk-impl in that set)"
   else
-    echo "  bad  - #761-3 walk retention/stamp; n=$w_n okst='$w_okst' stale='$w_stalest' nb='$w_nbst'"
+    echo "  bad  - #761-3 walk retention/stamp; n=$w_n okst='$w_okst' impl='$w_implst' stale='$w_stalest' nb='$w_nbst'"
     return 1
   fi
 
