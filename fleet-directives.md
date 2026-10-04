@@ -121,6 +121,21 @@ the canonical home** — forwarded by lane `1122b15e` and codified HERE. The ops
 section governs and the brain copy yields. Brain-file text is always-loaded but is never the
 dev-process authority — the skill is.
 
+## Contributor ownership — defects in others' features/fixes (owner order 2026-10-04) [LANE]
+
+Owner, verbatim: *"if we are about to file an upstream issue about a defect in a feature that was not implemented by us or in a fix that was not ours, we expect the owner of that fix/feature to fix it instead of fixing it ourselves unless I want to have an urgent fix on our fork only. This is to respect contributor ownership and to preserve their motivation and to foster their learning."*
+
+**The rule.** A defect found in a feature or fix **authored by someone else** — an upstream contributor, another lane, any author that is not us — is **reported, never repaired by us**: the fix belongs to **the owner of that feature/fix**. We file the report (a BINARY defect upstream on `adolfousier/opencrabs`, a FACTORY defect on `leshchenko1979/opencrabs-dev-factory`, per the two-stream routing) and stop there — **no fork fix branch, no fix PR, no editor work order** against a surface we did not author. The report is the whole deliverable. **The owner's three reasons ARE the rationale and they bind the read:** respect contributor ownership · preserve their motivation · foster their learning.
+
+**The one exception, and it is the OWNER's alone.** *"unless I want to have an urgent fix on our fork only"* — an urgent fork-only fix is ordered by the owner, per case. A lane never assumes it because the defect blocks us, degrades us, or looks trivial; absent his word, the report stands alone and the fix waits on its author.
+
+**What it is NOT:**
+- **Not a bar on REPORTING.** Filing the issue IS the sanctioned act; follow-up reporting on the filed thread stays allowed (`adolfousier/opencrabs#1255` exception, owner 2026-08-28 13:59Z).
+- **Not a bar on fixing OUR OWN work.** A defect in a feature or fix we authored is ours to repair — this rule governs someone else's surface.
+- **Not fix-and-forget.** The report still carries its evidence, and any upstream PR lifecycle stays with the HARVEST lane under the MODE register.
+
+**Relation to the report-only clause — this GENERALIZES it.** `harvest.md §Upstream issue filings — report-only` carried the fix-belongs-to-its-author half for the case *"the owner tells us to FILE upstream."* The trigger here is not the owner's filing order but the **AUTHORSHIP** of the defective feature/fix, and it binds **every lane**, not only the filing lane. `harvest.md` keeps the operational half and points here.
+
 ## Stage-entry consent (owner 2026-08-28 16:57Z)
 
 When the owner says to go to a stage ("let's go to S3", "go to Sx"), that word IS the approval for ALL actions defined in that stage's definition (stage table: `~/oc-work/target-process-*.md`). No per-action re-asking for anything inside the stage definition. Gates the stage definition itself spells out (e.g. the sha-bound artifact verify that authorizes each swap) REMAIN — they are part of the stage definition, not exceptions to it.
