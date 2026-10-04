@@ -117,10 +117,30 @@ of the instance this tool was extracted from, so **you must change them**:
 | `OC_QUESTIONS_RENDER_DIR` | `<store>/build` | only if you want the build elsewhere |
 | `OC_QUESTIONS_DB` | `<profile home>/opencrabs.db` | usually leave alone — it already points at your own instance |
 | `OC_QUESTIONS_SKILL_ROOT` | a path on the author's box | **where you unpacked this repo** — the bridge searches it for the CLI |
+| `OC_FLEET_MANIFEST` | none — see the cross-factory note below | your `registry/fleet.json` — the cross-factory registration gate reads each factory's declared `chat_id` from it |
 
 `OC_QUESTIONS_DB` is worth knowing about: the tool resolves a lane's **display name** from the live
 session binding in your instance's database, never from a value the caller supplies. On your own
 profile that default is already correct.
+
+### The cross-factory registration gate (#309)
+
+`ask --factory <KEY>` refuses a session whose own chat binding belongs to a **different** factory.
+A lane display name is not unique across a fleet — four factories each run a "Triage" — so an
+unqualified name would file the question under one factory's lane and deliver the answer to
+another's chat.
+
+The gate compares the asking session's `chat_id` in your instance's database against the
+**declared** `chat_id` in a *fleet manifest*: a JSON `registry/fleet.json` listing each factory
+with its `chat_id`. The tool looks for it at `$OC_FLEET_MANIFEST` first, then beside itself and up
+to six parent directories (`<dir>/registry/fleet.json`), and finally at
+`<profile home>/fleet.json`. `--allow-foreign "<reason>"` registers a question across factories
+deliberately, stamping the reason on it.
+
+**With no manifest the gate is INERT and says so on stderr** — it does not refuse. A set name the
+manifest does not declare is likewise INERT, because a set is minted on demand (`ask --factory
+<new>` creates one), so an undeclared name is a NEW set, not another factory's. Running a single
+factory, you can ignore this; running several, point one of those paths at your manifest.
 
 ---
 
