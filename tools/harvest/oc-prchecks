@@ -247,7 +247,8 @@ case "\$*" in
     # Default = the POST-HQ shape (input declared). yml_no_nocancel = the
     # 2026-09-17 live shape (tip 43fddde3d): NO such input, bare
     # cancel-in-progress — the tool must omit the flag, not 422.
-    if [ "\$S" = "yml_no_nocancel" ]; then
+    case "\$S" in
+      yml_no_nocancel)
       cat <<'YEOF'
 name: PR-lane gates
 on:
@@ -259,7 +260,40 @@ concurrency:
   group: prchecks-live
   cancel-in-progress: true
 YEOF
-    else
+      ;;
+      cancelled_timeout|cancelled_short)
+      # issue #5: the run's OWN workflow file, fetched by the cancel-class
+      # discriminator. The shell is a thin caller carrying a local reusable
+      # `uses:` callee and the budget lives in the CALLEE - so the tool must
+      # follow the reference or it reads no timeout at all.
+      case "\$*" in
+        *ci-lane-impl.yml*)
+          cat <<'YEOF'
+name: CI lane impl
+on:
+  workflow_call:
+jobs:
+  pr-gates:
+    name: PR-lane gates
+    timeout-minutes: 45
+YEOF
+          ;;
+        *)
+          cat <<'YEOF'
+name: PR-lane gates
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+jobs:
+  gate:
+    uses: ./.github/workflows/ci-lane-impl.yml
+YEOF
+          ;;
+      esac
+      ;;
+      *)
       cat <<'YEOF'
 name: PR-lane gates
 on:
@@ -273,7 +307,17 @@ concurrency:
   group: prchecks-live
   cancel-in-progress: \${{ !inputs.no_cancel }}
 YEOF
-    fi ;;
+      ;;
+    esac ;;
+  *"api repos/"*"/actions/runs/"*)
+    # issue #5: the cancel-class discriminator reads the RUN's own workflow path
+    # and the sha it ran at, so the budget is taken from the file that produced
+    # the run rather than a hardcoded copy.
+    case "\$*" in
+      *"--jq .path"*)     printf '%s\n' '.github/workflows/pr-checks.yml' ;;
+      *"--jq .head_sha"*) printf '%s\n' 'ffffffffffffffffffffffffffffffffffffffff' ;;
+      *)                  printf '{}\n' ;;
+    esac ;;
   *"api repos/"*"git/ref/heads/"*)
     [ "\$S" = "carrier_unresolvable" ] && exit 1
     # emulate gh api --jq: the tool asks for '.object.sha', gh returns ONLY the sha
@@ -330,12 +374,23 @@ YEOF
           *900003*) printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
           *)        printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
         esac ;;
+      cancelled_timeout|cancelled_short)
+        # issue #5 fixtures. The cancelled job's own window IS the discriminator:
+        # 2720s against a 45m budget (TIMEOUT) vs 60s (NOT a timeout). Every
+        # other run id answers with a DIFFERENT sha pin, so the supersede probe
+        # finds no same-group peer and SUP stays empty — the class must come from
+        # the elapsed time, never from a stray candidate.
+        case "\$*" in
+          *900004*) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","startedAt":"2026-10-03T22:45:48Z","completedAt":"2026-10-03T23:31:08Z"}]}\n' ;;
+          *900005*) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","startedAt":"2026-10-03T22:45:48Z","completedAt":"2026-10-03T22:46:48Z"}]}\n' ;;
+          *)        printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
+        esac ;;
       *)           printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"success"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;   # #631: real job names carry the tested sha
     esac ;;
   *"run view"*)
     case "\$S" in
       inflight)       printf '{"status":"in_progress","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' && exit 0 ;;
-      cancelled)      printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      cancelled|cancelled_timeout|cancelled_short) printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       supersede_*)    printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       run_failed)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       nullconclusion) printf '{"status":"completed","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
@@ -454,12 +509,32 @@ do_selftest() {
     *900003*) t_bad "#703: named a run pinning a different sha (different concurrency group)" ;;
     *)        t_ok "#703: a run pinning another lane's sha is never named" ;;
   esac
-  # and where NO candidate shares the group, name nothing at all - an unnamed
-  # superseder is honest; a misnamed one sends the lane the wrong way.
+  # and where NO candidate shares the group, say so plainly (issue #5: `unknown`
+  # left the reader to prove a negative); an unnamed superseder is honest, a
+  # misnamed one sends the lane the wrong way.
   run_t supersede_nopin resume 900001
-  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"superseding run: unknown"*) true ;; *) false ;; esac; then
-    t_ok "#703: no same-group candidate -> superseder left unnamed, rc 6 preserved"
-  else t_bad "#703: unnamed-superseder fallback (rc=$T_RC out=$T_OUT)"; fi
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"superseding run: none found"*) true ;; *) false ;; esac; then
+    t_ok "#703/#5: no same-group candidate -> 'none found', rc 6 preserved"
+  else t_bad "#703/#5: no-superseder wording (rc=$T_RC out=$T_OUT)"; fi
+  # issue #5: a cancelled run is NOT automatically a supersede. The cancelled
+  # JOB's own elapsed window against the workflow's OWN timeout-minutes is the
+  # discriminator; the fixture runs 2720s against a 45m budget and no candidate
+  # shares the group, so ONLY the elapsed leg can produce this class.
+  run_t cancelled_timeout resume 900004
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"JOB TIMEOUT"*"superseding run: none found"*) true ;; *) false ;; esac; then
+    t_ok "#5: job-timeout cancel named as a TIMEOUT, not 'concurrency-cancelled'"
+  else t_bad "#5: job-timeout cancel mislabelled (rc=$T_RC out=$T_OUT)"; fi
+  case "$T_OUT" in
+    *"concurrency-cancelled"*) t_bad "#5: a TIMEOUT cancel still claims a concurrency supersede" ;;
+    *) t_ok "#5: the concurrency claim is absent for a TIMEOUT cancel" ;;
+  esac
+  # the elapsed window is the discriminator: the SAME workflow with a 60s job is
+  # NOT a timeout, so a class derived from the label alone would pass this leg
+  # only by accident.
+  run_t cancelled_short resume 900005
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"JOB TIMEOUT"*) false ;; *) true ;; esac; then
+    t_ok "#5: a 60s cancelled job is NOT called a timeout (elapsed discriminates)"
+  else t_bad "#5: elapsed not discriminating (rc=$T_RC out=$T_OUT)"; fi
   run_t run_failed "$SHA"
   if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"run-failure"*) true ;; *) false ;; esac; then
     t_ok "run conclusion failure -> 3 RED reason run-failure"
@@ -1513,6 +1588,45 @@ case "$CONCLUSION" in
     # forward GREEN on a stranger's tests is the false-GREEN hole this handler
     # exists to keep closed. Where the pin cannot be resolved we name NOTHING -
     # an unnamed superseder is honest, a misnamed one is a false lead.
+    # --- cancel-class discrimination (issue #5, 2026-10-04) ------------------
+    # A `cancelled` run conclusion has TWO causes and this handler used to assert
+    # only one. (a) a same-group superseder cancelled us (P4 below); (b) the job
+    # burned its OWN `timeout-minutes` and GitHub cancelled it at that wall.
+    # Reporting (b) as (a) is a claim of CAUSE, not a cosmetic label: it sent a
+    # lane hunting a concurrency collision that did not exist (editor report,
+    # run 37159527456 — cancelled job ran 2720s against ci-lane-impl.yml's
+    # `timeout-minutes: 45`, and NO same-group peer existed in the window).
+    CANCEL_CLASS="NOT-ESTABLISHED"; CANCEL_ELAPSED=""; CANCEL_BUDGET=""
+    _c_job="$(printf '%s' "$JOBS" | jq -r '[.jobs[] | select(.conclusion=="cancelled")][0] | if . == null then "" else "\(.startedAt // "")|\(.completedAt // "")" end' 2>/dev/null || true)"
+    case "$_c_job" in
+      ""|"|") : ;;
+      *)
+        _c_s="$(date -u -d "${_c_job%%|*}" +%s 2>/dev/null || true)"
+        _c_e="$(date -u -d "${_c_job#*|}" +%s 2>/dev/null || true)"
+        [ -n "$_c_s" ] && [ -n "$_c_e" ] && CANCEL_ELAPSED=$((_c_e - _c_s)) ;;
+    esac
+    # The budget is read from the RUN's OWN workflow file, never assumed: the
+    # timeout is per-job and per-workflow, so a hardcoded 45 would be a second
+    # copy of the yml. A local reusable callee (`uses: ./.github/workflows/X`)
+    # is followed because the gate body lives there (pr-checks.yml is a thin
+    # caller). ANY fetch failure leaves the budget UNKNOWN, and an unknown
+    # budget never yields a TIMEOUT claim — fail-safe, because a wrong TIMEOUT
+    # misleads exactly as the wrong "superseded" this fix removes.
+    _wf_path="$("$GH_BIN" api "repos/$REPO/actions/runs/$RUN_ID" --jq '.path' 2>/dev/null || true)"
+    _wf_sha="$("$GH_BIN" api "repos/$REPO/actions/runs/$RUN_ID" --jq '.head_sha' 2>/dev/null || true)"
+    if [ -n "$_wf_path" ] && [ -n "$_wf_sha" ]; then
+      _wf_raw="$("$GH_BIN" api "repos/$REPO/contents/$_wf_path?ref=$_wf_sha" -H "Accept: application/vnd.github.raw" 2>/dev/null || true)"
+      _wf_callee="$(printf '%s' "$_wf_raw" | sed -n 's|^[[:space:]]*uses:[[:space:]]*\./\(\.github/workflows/[^[:space:]]*\).*|\1|p' | head -1)"
+      if [ -n "$_wf_callee" ]; then
+        _wf_raw2="$("$GH_BIN" api "repos/$REPO/contents/$_wf_callee?ref=$_wf_sha" -H "Accept: application/vnd.github.raw" 2>/dev/null || true)"
+        [ -n "$_wf_raw2" ] && _wf_raw="$_wf_raw
+$_wf_raw2"
+      fi
+      CANCEL_BUDGET="$(printf '%s' "$_wf_raw" | sed -n 's/^[[:space:]]*timeout-minutes:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | sort -n | tail -1)"
+    fi
+    if [ -n "$CANCEL_ELAPSED" ] && [ -n "$CANCEL_BUDGET" ] && [ "$CANCEL_ELAPSED" -ge "$((CANCEL_BUDGET * 60))" ]; then
+      CANCEL_CLASS="TIMEOUT"
+    fi
     SUP=""
     if command -v oc_job_sha >/dev/null 2>&1; then
       _sup_mine="$(oc_job_sha "$("$GH_BIN" run view "$RUN_ID" --repo "$REPO" --json jobs --jq '[.jobs[].name]|join(" ")' 2>/dev/null || true)" || true)"
@@ -1526,9 +1640,17 @@ case "$CONCLUSION" in
         done
       fi
     fi
+    if [ "$CANCEL_CLASS" != "TIMEOUT" ] && [ -n "$SUP" ]; then CANCEL_CLASS="SUPERSEDED"; fi
     oc_log_extra "verdict" "CANCELLED"
-    oc_log_extra "verdict_reason" "superseded${SUP:+; superseding=$SUP}"
-    echo "VERDICT CANCELLED (run $RUN_ID was concurrency-cancelled — superseded, not failed)"
+    oc_log_extra "verdict_reason" "cancel-class=$CANCEL_CLASS${CANCEL_ELAPSED:+; elapsed=${CANCEL_ELAPSED}s}${CANCEL_BUDGET:+; budget=${CANCEL_BUDGET}m}${SUP:+; superseding=$SUP}"
+    case "$CANCEL_CLASS" in
+      TIMEOUT)
+        echo "VERDICT CANCELLED (run $RUN_ID hit its JOB TIMEOUT — cancelled job ran ${CANCEL_ELAPSED}s against a ${CANCEL_BUDGET}m budget; the gate did NOT complete, this is NOT a supersede)" ;;
+      SUPERSEDED)
+        echo "VERDICT CANCELLED (run $RUN_ID was concurrency-cancelled — superseded, not failed)" ;;
+      *)
+        echo "VERDICT CANCELLED (run $RUN_ID was cancelled${CANCEL_ELAPSED:+ after ${CANCEL_ELAPSED}s} — no same-group superseder found and no job timeout matched; cause NOT ESTABLISHED)" ;;
+    esac
     # #333: never interpolate a possibly-unset sha into the hint — on the resume
     # path SHA is unset by construction, and the bare `$SHA` aborted the handler
     # under `set -u` BEFORE `exit 6`, returning rc 1 where RC-CONTRACT documents
@@ -1541,7 +1663,14 @@ case "$CONCLUSION" in
     else
       REARM_HINT=""
     fi
-    echo "  superseding run: ${SUP:-unknown}${SUP:+ — https://github.com/$REPO/actions/runs/$SUP}${REARM_HINT}"
+    # issue #5: `unknown` left the reader to prove a negative. Where the probe
+    # found no same-group peer, say so — and print the cancelled job's elapsed
+    # time, which is the discriminator the class rests on.
+    if [ -n "$SUP" ]; then
+      echo "  superseding run: $SUP — https://github.com/$REPO/actions/runs/$SUP${REARM_HINT}"
+    else
+      echo "  superseding run: none found${CANCEL_ELAPSED:+ (cancelled job ran ${CANCEL_ELAPSED}s)}${REARM_HINT}"
+    fi
     echo "RUN $RUN_URL"
     exit 6
     ;;
