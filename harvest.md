@@ -143,7 +143,7 @@ git -C ~/opencrabs rev-parse adolfousier/main   # must equal the sha the port wa
 # 2-pre. ATOMICITY + BASE check BEFORE the PR opens — standing rule
 #     PR-BASE-PRE-OPEN in the Rules list below.
 
-# 2c. CI gate (upstream triad) (v0.4.22 — encodes adolfousier/opencrabs
+# 2c. CI gate (upstream triad) (v0.4.22 — encodes opencrabs/opencrabs
 #     CONTRIBUTING.md: "You MUST pass all three before submitting a PR").
 #     v0.4.28: the triad runs in CI via pr-checks.yml (cargo is FORBIDDEN on this box — box law);
 #     a green run URL IS the citation.
@@ -172,17 +172,17 @@ git -C ~/opencrabs-wt/up-<feature> push -u origin leshchenko1979/<feature>
 #    CROSS-REPO --HEAD LAW (Duty-4 P3, v0.4.80): --head is OWNER:BRANCH —
 #    `leshchenko1979:<branch>`, literal branch name kept whole. The bare
 #    `--head leshchenko1979/<branch>` form fails cross-repo with
-#    "No commits between" (2026-09-01, adolfousier/opencrabs#1277 filing).
+#    "No commits between" (2026-09-01, opencrabs/opencrabs#1277 filing).
 #    STAGED DRAFT PR MANDATE (owner order 2026-09-16):
 #    When an upstream PR depends on another in-flight upstream PR or is part of a
 #    multi-part staged wave, add `--draft` so upstream maintainers cannot merge out of order.
-gh pr create -R adolfousier/opencrabs --base main --head leshchenko1979:leshchenko1979/<feature> \
+gh pr create -R opencrabs/opencrabs --base main --head leshchenko1979:leshchenko1979/<feature> \
   --title "<fix:|feat:|chore:> <concise feature title>" \
   --body "<detailed what/why, implementation notes, green run link, smoke-test evidence. Original issue: https://github.com/leshchenko1979/opencrabs/issues/N (exactly one)>" \
   [--draft]
 
 # 5. close the tracked FORK issue with a pointer comment
-gh issue close <issue-n> -R leshchenko1979/opencrabs -c "Implemented in upstream PR adolfousier/opencrabs#<pr-number>"
+gh issue close <issue-n> -R leshchenko1979/opencrabs -c "Implemented in upstream PR opencrabs/opencrabs#<pr-number>"
 
 # 6. remove the worktree — done (dirty-tree gate + journal via oc-wt)
 tools/git/oc-wt remove up-<feature>
@@ -344,7 +344,7 @@ Contract:
      tools/harvest/oc-prchecks leshchenko1979/fix/<slug>
      ```
      `--fast` is strictly prohibited for pre-PR testing; upstream PRs require 100% full test suite verification.
-4. **Ship Execution**: When gate run exits GREEN (SUCCESS) AND 4-leg smoke pass is confirmed in `smoke-verdicts.log` (and ≥24h post-swap soak completed for `feat/*` or dependent fix bundles, counted strictly from the latest live deployment timestamp `deployed.ts` of ANY related node in the relationship graph — parent, sub-issues, and blockers, per 24h Feature Soak Harvest Law), the HARVEST lane verifies upstream baseline state (`git diff origin/main...adolfousier/main`) and files the upstream PR (`gh pr create --repo adolfousier/opencrabs --base main --head leshchenko1979:leshchenko1979/fix/<slug> [--draft]`) citing the gate run ID, quoting the 4-leg smoke receipt, and linking the fork issue. If the underlying issue was already clean or resolved in upstream `main`, frame the PR narrative accurately as a clean helper extraction / refactoring / hardening rather than asserting an upstream regression (Upstream Baseline & Narrative Verification Law v0.4.198). (Note: Use `--draft` if the PR depends on another in-flight upstream PR per Staged Upstream Draft PR Mandate). **A PR number is not FILED until a same-turn `gh pr create` (or `gh pr view <N>`) output names it** — if a guard flags the claim (`phantom_blocked`) or the output was not witnessed, the PR is UNFILED: re-verify and re-dispatch (v0.4.152 §Guard-Flag Escalation Law; worked example: an announced PR #1514 that never existed cost ~3 h).
+4. **Ship Execution**: When gate run exits GREEN (SUCCESS) AND 4-leg smoke pass is confirmed in `smoke-verdicts.log` (and ≥24h post-swap soak completed for `feat/*` or dependent fix bundles, counted strictly from the latest live deployment timestamp `deployed.ts` of ANY related node in the relationship graph — parent, sub-issues, and blockers, per 24h Feature Soak Harvest Law), the HARVEST lane verifies upstream baseline state (`git diff origin/main...adolfousier/main`) and files the upstream PR (`gh pr create --repo opencrabs/opencrabs --base main --head leshchenko1979:leshchenko1979/fix/<slug> [--draft]`) citing the gate run ID, quoting the 4-leg smoke receipt, and linking the fork issue. If the underlying issue was already clean or resolved in upstream `main`, frame the PR narrative accurately as a clean helper extraction / refactoring / hardening rather than asserting an upstream regression (Upstream Baseline & Narrative Verification Law v0.4.198). (Note: Use `--draft` if the PR depends on another in-flight upstream PR per Staged Upstream Draft PR Mandate). **A PR number is not FILED until a same-turn `gh pr create` (or `gh pr view <N>`) output names it** — if a guard flags the claim (`phantom_blocked`) or the output was not witnessed, the PR is UNFILED: re-verify and re-dispatch (v0.4.152 §Guard-Flag Escalation Law; worked example: an announced PR #1514 that never existed cost ~3 h).
 5. **Ack & Cleanup**: Remove harvest worktree, stamp completion in ledger, and notify Triage via `session_notify`.
    - **Checkable Completion Formula**: `DONE = 4-leg smoke pass in smoke-verdicts.log + full oc-prchecks green + upstream PR filed + harvest worktree cleaned up.`
 
@@ -435,9 +435,9 @@ When PR B depends on PR A (which is not yet merged upstream):
 
 ### Upstream issue filings — report-only (owner 2026-08-28 15:17Z)
 
-**Offload order — SUPERSEDED for BINARY issues (owner order 2026-10-03 21:17Z — the two-stream routing):** the 2026-09-01 correction (owner: *"Wait, i was talking about prs only. Revert issues"*) held that "offload to upstream" applies to **PRs only** and that **issue reports never go upstream**. That is now **reversed for BINARY issues**: a runtime-behaviour / channels / providers / TUI / memory / tools issue IS filed upstream on `adolfousier/opencrabs` — the binary tracker since 2026-10-03. A FACTORY issue (tooling, CI, release automation, process) goes to `leshchenko1979/opencrabs-dev-factory`. The historical portfolio at `leshchenko1979/opencrabs` is **read-only** — no new issues. The 2026-09-01 migration (adolfousier #1279–#1286 for fork 70/33/38/58/35/60/65 + TEXT_ACCUM) was misread and withdrawn the same day; that withdrawal governed the then-current PRs-only rule and does not constrain the new split. #66 remains not-upstream-eligible (upstream #1260 closed pointing back to the fork; needs owner-level follow-up with adolfo).
+**Offload order — SUPERSEDED for BINARY issues (owner order 2026-10-03 21:17Z — the two-stream routing):** the 2026-09-01 correction (owner: *"Wait, i was talking about prs only. Revert issues"*) held that "offload to upstream" applies to **PRs only** and that **issue reports never go upstream**. That is now **reversed for BINARY issues**: a runtime-behaviour / channels / providers / TUI / memory / tools issue IS filed upstream on `opencrabs/opencrabs` — the binary tracker since 2026-10-03. A FACTORY issue (tooling, CI, release automation, process) goes to `leshchenko1979/opencrabs-dev-factory`. The historical portfolio at `leshchenko1979/opencrabs` is **read-only** — no new issues. The 2026-09-01 migration (adolfousier #1279–#1286 for fork 70/33/38/58/35/60/65 + TEXT_ACCUM) was misread and withdrawn the same day; that withdrawal governed the then-current PRs-only rule and does not constrain the new split. #66 remains not-upstream-eligible (upstream #1260 closed pointing back to the fork; needs owner-level follow-up with adolfo).
 
-When we file an issue upstream (`adolfousier/opencrabs`), the editor does NOT fix it: the filed report is the deliverable, and fixing the reported defect is **its author's** lane. **This is now the GENERAL contributor-ownership rule, whose trigger is the AUTHORSHIP of the defective feature/fix rather than the owner's filing order — canonical text: `fleet-directives.md §Contributor ownership — defects in others' features/fixes` (owner order 2026-10-04); **operative dispatch gate: `triage.md §D4 — AUTHORSHIP`**.** No editor lane writes fix code or opens a fix PR for an issue it did not author unless the owner explicitly orders an **urgent fork-only fix** — follow-up REPORTING on the filed thread stays allowed (`adolfousier/opencrabs#1255` exception, owner 2026-08-28 13:59Z).
+When we file an issue upstream (`opencrabs/opencrabs`), the editor does NOT fix it: the filed report is the deliverable, and fixing the reported defect is **its author's** lane. **This is now the GENERAL contributor-ownership rule, whose trigger is the AUTHORSHIP of the defective feature/fix rather than the owner's filing order — canonical text: `fleet-directives.md §Contributor ownership — defects in others' features/fixes` (owner order 2026-10-04); **operative dispatch gate: `triage.md §D4 — AUTHORSHIP`**.** No editor lane writes fix code or opens a fix PR for an issue it did not author unless the owner explicitly orders an **urgent fork-only fix** — follow-up REPORTING on the filed thread stays allowed (`opencrabs/opencrabs#1255` exception, owner 2026-08-28 13:59Z).
 
 ### Cross-fork PR inspection — fetch head from the fork remote (Duty-4 proposal, owner-approved 2026-09-06)
 

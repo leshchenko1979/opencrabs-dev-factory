@@ -125,12 +125,12 @@ dev-process authority — the skill is.
 
 Owner, verbatim: *"if we are about to file an upstream issue about a defect in a feature that was not implemented by us or in a fix that was not ours, we expect the owner of that fix/feature to fix it instead of fixing it ourselves unless I want to have an urgent fix on our fork only. This is to respect contributor ownership and to preserve their motivation and to foster their learning."*
 
-**The rule.** A defect found in a feature or fix **authored by someone else** — an upstream contributor, another lane, any author that is not us — is **reported, never repaired by us**: the fix belongs to **the owner of that feature/fix**. We file the report (a BINARY defect upstream on `adolfousier/opencrabs`, a FACTORY defect on `leshchenko1979/opencrabs-dev-factory`, per the two-stream routing) and stop there — **no fork fix branch, no fix PR, no editor work order** against a surface we did not author. The report is the whole deliverable. **The owner's three reasons ARE the rationale and they bind the read:** respect contributor ownership · preserve their motivation · foster their learning.
+**The rule.** A defect found in a feature or fix **authored by someone else** — an upstream contributor, another lane, any author that is not us — is **reported, never repaired by us**: the fix belongs to **the owner of that feature/fix**. We file the report (a BINARY defect upstream on `opencrabs/opencrabs`, a FACTORY defect on `leshchenko1979/opencrabs-dev-factory`, per the two-stream routing) and stop there — **no fork fix branch, no fix PR, no editor work order** against a surface we did not author. The report is the whole deliverable. **The owner's three reasons ARE the rationale and they bind the read:** respect contributor ownership · preserve their motivation · foster their learning.
 
 **The one exception, and it is the OWNER's alone.** *"unless I want to have an urgent fix on our fork only"* — an urgent fork-only fix is ordered by the owner, per case. A lane never assumes it because the defect blocks us, degrades us, or looks trivial; absent his word, the report stands alone and the fix waits on its author.
 
 **What it is NOT:**
-- **Not a bar on REPORTING.** Filing the issue IS the sanctioned act; follow-up reporting on the filed thread stays allowed (`adolfousier/opencrabs#1255` exception, owner 2026-08-28 13:59Z).
+- **Not a bar on REPORTING.** Filing the issue IS the sanctioned act; follow-up reporting on the filed thread stays allowed (`opencrabs/opencrabs#1255` exception, owner 2026-08-28 13:59Z).
 - **Not a bar on fixing OUR OWN work.** A defect in a feature or fix we authored is ours to repair — this rule governs someone else's surface.
 - **Not fix-and-forget.** The report still carries its evidence, and any upstream PR lifecycle stays with the HARVEST lane under the MODE register.
 
@@ -166,7 +166,7 @@ Every PR this fleet opens carries a type prefix in the title so upstream release
 - `fix:` (or `fix(scope):`) — bug fix; corrects broken behavior
 - `feat:` (or `feat(scope):`) — new capability or behavior change
 - `chore:` — tooling/CI/docs/deps; zero user-visible behavior change
-Applies to upstream (adolfousier/opencrabs) AND fork PRs. New branches mirror the type in the slug: `leshchenko1979/fix/<slug>` / `feat/<slug>` / `chore/<slug>` (existing branches untouched). Retro-check 2026-08-30: upstream PR #1265 already conforms (`fix(plan): …`). Procedure detail: `/opencrabs-dev` skill, harvest.md Phase 7.
+Applies to upstream (opencrabs/opencrabs) AND fork PRs. New branches mirror the type in the slug: `leshchenko1979/fix/<slug>` / `feat/<slug>` / `chore/<slug>` (existing branches untouched). Retro-check 2026-08-30: upstream PR #1265 already conforms (`fix(plan): …`). Procedure detail: `/opencrabs-dev` skill, harvest.md Phase 7.
 
 ## Strict Atomicity & Zero Bundling (owner order 2026-09-13; lane 1a63f103 proposal) [LANE]
 
@@ -192,7 +192,7 @@ Every tool, schema, hint, error message, and prompt designed for agents must pri
 
 **THE ALWAYS-LOADED CROSS-ROLE REGISTER IS EXEMPT FROM THE 500-LINE BUDGET (owner ruling 2026-10-02, q44 "combine: move + exempt").** `fleet-directives.md` is the `[LANE]` register every worker reads in full at spawn and at compaction reload, and it holds exactly the law that binds MORE THAN ONE role — the residue left after every role-scoped section was moved to the file that owns it. Its size is therefore the price of the read-in-full guarantee, not a symptom of bloat: it cannot shrink by relocation without either dropping law that binds every lane or splitting the one artifact the reload law tells workers to read whole. **The relocation half of the ruling is the enforceable half** — law that binds ONE role lives in that role's file — and the exemption covers only what survives that test.
 
-Mandatory standards for any code slated for upstream harvest (`adolfousier/opencrabs`) or developed in the fork:
+Mandatory standards for any code slated for upstream harvest (`opencrabs/opencrabs`) or developed in the fork:
 
 1. **Test Isolation (NO inline tests in `src/`):** ALL tests must live under `src/tests/*_test.rs` registered in `src/tests/mod.rs`. Absolutely **NO inline `#[cfg(test)] mod tests { ... }`** blocks at the bottom of source files in `src/`. Inline tests hide behind source files in IDE outlines and grow unbounded. If an existing inline test block is found while working on a file, move it to `src/tests/` as part of the change.
 2. **`mod.rs` Declarations-Only:** A `mod.rs` file may contain exactly: module doc comments, `mod`/`pub mod` declarations, and `pub use` re-exports. **Zero function definitions (`fn`) inside `mod.rs`. Ever.** When a function grows in `mod.rs`, move it to a cohesive named submodule and re-export it. **This is FORK discipline, not a gate** (corrected 2026-09-19, lane 52058a75): upstream's own tree carries counterexamples — `src/channels/telegram/mod.rs` at `adolfousier/main` tip `b6e200a1` holds a top-level `pub(crate) async fn record_topic_created` — so do not cite this standard as a CI obligation when triaging a pre-existing `mod.rs` function. Apply it to code you write or touch.

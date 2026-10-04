@@ -1,7 +1,7 @@
 # opencrabs-dev
 
 Operational skill for **OpenCrabs source work** on `~/opencrabs`: the fork
-(`leshchenko1979/opencrabs`), upstream contact (`adolfousier/opencrabs`, PRs only),
+(`leshchenko1979/opencrabs`), upstream contact (`opencrabs/opencrabs`, PRs only),
 CI carrier lanes, artifact builds, and binary swaps to `/usr/local/bin/opencrabs`.
 
 Skill entry point: `SKILL.md` — invoked as `/opencrabs-dev`.

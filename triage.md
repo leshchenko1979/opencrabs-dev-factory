@@ -128,7 +128,7 @@ run
 
 On each harvest census,
   re-verify the state of every OPEN upstream PR of ours
-  (`gh pr list -R adolfousier/opencrabs --state open --json number,state,mergeable` —
+  (`gh pr list -R opencrabs/opencrabs --state open --json number,state,mergeable` —
   one command for the whole set, fresh receipt, never memory; a fleet census verb is
   ROUTED to Toolsmith, c27 J-6) and post the states in the census line.
   Closes the ownerless gap that let #1451's CONFLICTING sit undiscovered
@@ -282,7 +282,7 @@ surface (HQ ruling 2026-09-20, v0.4.232).** The harvest gate exists to make work
 reach UPSTREAM, so it has nothing to gate on when the repo CARRYING the fix has
 no upstream counterpart. The criterion is the **carrying repo**, never the path
 string: the fork repo `leshchenko1979/opencrabs` HAS an upstream
-(`adolfousier/opencrabs`), so `src/**` AND `.github/**` stay harvestable
+(`opencrabs/opencrabs`), so `src/**` AND `.github/**` stay harvestable
 (upstream carries `.github/workflows/{auto-assign,ci,prerelease,release}.yml`),
 while the skill repo `leshchenko1979/opencrabs-dev-factory` has NONE, so everything it
 carries — `tools/**` and every skill markdown file — is **harvest-exempt**. An
@@ -319,7 +319,7 @@ issues, one number, and the fix is meaningful only inside the fork.
 
 **The bar is FALSE-UPSTREAM, not merely UNNECESSARY-UPSTREAM.** State the
 post-fix text in the upstream tree and evaluate its truth. Inside upstream, a
-citation qualified `ex-upstream adolfousier/opencrabs#679` asserts a falsehood —
+citation qualified `ex-upstream opencrabs/opencrabs#679` asserts a falsehood —
 upstream's bare `#679` already resolves correctly — so the change is not
 redundant there, it is WRONG there. That is what makes the referent absent: no
 upstream object exists for the change to attach to. A fix that would be merely
@@ -559,7 +559,7 @@ One T5 sweep (ledger n=8331–8341) wired 8 issues; **5 of the 8 were OPEN AND c
 
 Owner, verbatim: *"if we are about to file an upstream issue about a defect in a feature that was not implemented by us or in a fix that was not ours, we expect the owner of that fix/feature to fix it instead of fixing it ourselves unless I want to have an urgent fix on our fork only. This is to respect contributor ownership and to preserve their motivation and to foster their learning."*
 
-**The gate.** An issue whose defect lies in a feature or fix **we did not author** — an upstream contributor's, another lane's, any author that is not us — is **NOT dispatchable for implementation** on our fork. It is **reported** (BINARY → `adolfousier/opencrabs`, FACTORY → `leshchenko1979/opencrabs-dev-factory`, per two-stream routing) and the fix belongs to **the owner of that feature/fix**. The report is the whole deliverable: **no fork fix branch, no fix PR, no editor work order** against a surface we did not author.
+**The gate.** An issue whose defect lies in a feature or fix **we did not author** — an upstream contributor's, another lane's, any author that is not us — is **NOT dispatchable for implementation** on our fork. It is **reported** (BINARY → `opencrabs/opencrabs`, FACTORY → `leshchenko1979/opencrabs-dev-factory`, per two-stream routing) and the fix belongs to **the owner of that feature/fix**. The report is the whole deliverable: **no fork fix branch, no fix PR, no editor work order** against a surface we did not author.
 
 **Authorship is read from the artifact, never assumed from the tracker.** The defective surface's own history decides — who wrote the code (upstream vs fork), and who filed the issue. Where the surface is OURS, the normal dispatch path applies unchanged; this gate never blocks our own work.
 

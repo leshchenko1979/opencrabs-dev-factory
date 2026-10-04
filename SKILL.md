@@ -20,7 +20,7 @@ author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
   references:
-    - https://github.com/adolfousier/opencrabs (upstream — BINARY issues + PRs; the binary tracker since 2026-10-03)
+    - https://github.com/opencrabs/opencrabs (upstream — BINARY issues + PRs; the binary tracker since 2026-10-03)
     - https://github.com/leshchenko1979/opencrabs-dev-factory (dev-factory issues — tooling, CI, release automation, process)
     - https://github.com/leshchenko1979/opencrabs (fork — push target + historical issue portfolio, READ-ONLY)
   provenance:
@@ -381,10 +381,10 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 ## Hard rules (all roles)
 
 - Reports to Alexey: every issue/PR reference
-  carries the LINK behind the number (binary issues: `https://github.com/adolfousier/opencrabs/issues/N`;
+  carries the LINK behind the number (binary issues: `https://github.com/opencrabs/opencrabs/issues/N`;
   factory issues: `https://github.com/leshchenko1979/opencrabs-dev-factory/issues/N`;
   historical fork issues: `https://github.com/leshchenko1979/opencrabs/issues/N`;
-  PRs: `https://github.com/adolfousier/opencrabs/pull/N`) — a bare `#N` is never enough.
+  PRs: `https://github.com/opencrabs/opencrabs/pull/N`) — a bare `#N` is never enough.
 - Refer to workers by TOPIC/CHAT NAME only (owner 2026-08-31) — NEVER by session uuid, on EVERY
   surface (owner reports, inter-lane advisories, session_notify text, verdict tables, ledger
   commentary). Uuids are for ROUTING fields only (`target_session`, `OC_ACTOR`, `Session-Id`
@@ -412,10 +412,10 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 
 | Rule | Applies to | Gate |
 |---|---|---|
-| **TWO-STREAM ISSUE ROUTING (owner order 2026-10-03 21:17Z — REVERSES the 2026-08-27 row below):** a **BINARY** issue (runtime behaviour, channels, providers, TUI, memory, tools) is filed on UPSTREAM `adolfousier/opencrabs` — the binary tracker; a **FACTORY** issue (tooling, CI, release automation, process) is filed on `leshchenko1979/opencrabs-dev-factory`. The historical portfolio `leshchenko1979/opencrabs` is **READ-ONLY** — no new issues. Mandatory duplicate sweep (open+closed, issues+PRs) BEFORE filing; core-surface changes carry `fix core` / `feat core` in the title | `adolfousier/opencrabs` (binary) · `leshchenko1979/opencrabs-dev-factory` (factory) | owner 2026-10-03 21:17Z |
-| PR body = detailed what/why. `Closes #N` is **VALID same-repo** (a binary issue on upstream, closed by its upstream PR) and **FORBIDDEN across trackers** (a factory/dev-factory issue has no upstream number space) — there the body ends `Original issue: <full URL>`, EXACTLY one | `adolfousier/opencrabs` PR bodies | owner 2026-10-03 (generalized upstream, PR adolfousier#1907) |
+| **TWO-STREAM ISSUE ROUTING (owner order 2026-10-03 21:17Z — REVERSES the 2026-08-27 row below):** a **BINARY** issue (runtime behaviour, channels, providers, TUI, memory, tools) is filed on UPSTREAM `opencrabs/opencrabs` — the binary tracker; a **FACTORY** issue (tooling, CI, release automation, process) is filed on `leshchenko1979/opencrabs-dev-factory`. The historical portfolio `leshchenko1979/opencrabs` is **READ-ONLY** — no new issues. Mandatory duplicate sweep (open+closed, issues+PRs) BEFORE filing; core-surface changes carry `fix core` / `feat core` in the title | `opencrabs/opencrabs` (binary) · `leshchenko1979/opencrabs-dev-factory` (factory) | owner 2026-10-03 21:17Z |
+| PR body = detailed what/why. `Closes #N` is **VALID same-repo** (a binary issue on upstream, closed by its upstream PR) and **FORBIDDEN across trackers** (a factory/dev-factory issue has no upstream number space) — there the body ends `Original issue: <full URL>`, EXACTLY one | `opencrabs/opencrabs` PR bodies | owner 2026-10-03 (generalized upstream, PR opencrabs#1907) |
 | A binary issue upstream closes via `Closes #N` on its own PR; historical fork issues stay READ-ONLY, never re-filed | trackers | owner 2026-10-03 |
-| Claiming = **assignment on the tracker** (the PUBLIC claim signal, owner order 2026-10-03) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48). **THE ASSIGNMENT LEG IS BEST-EFFORT AND MUST BE ATTEMPTED, NEVER ASSUMED (HQ ruling 2026-10-04, quirk flagged by the editor lane same-turn):** our account is **pull-only on the BINARY tracker** (`adolfousier/opencrabs` — `push`/`triage`/`maintain`/`admin` all false), so it **cannot** carry the public half there; on the FACTORY tracker we hold `admin` and it works. Where the platform denies the assignment, RECORD the denial and let the `claim` row + `Issue-Ref` trailer BE the claim — a SILENT skip is a violation, because it is indistinguishable from a permission limit (two independent measurements 2026-10-04: #1916 n=14302, #1917 — both `ReplaceActorsForAssignable`). Restoring a public signal on the binary tracker is parked on the owner (opencrabs-dev q57). NO tackling/status comments or labels; uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING chatter, not the design/implementation record | tracker assignment (best-effort) + ledger | owner 2026-10-03; best-effort leg HQ 2026-10-04 (supersedes the 2026-08-27 no-assignment rule) |
+| Claiming = **assignment on the tracker** (the PUBLIC claim signal, owner order 2026-10-03) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48). **THE ASSIGNMENT LEG IS BEST-EFFORT AND MUST BE ATTEMPTED, NEVER ASSUMED (HQ ruling 2026-10-04, quirk flagged by the editor lane same-turn):** our account is **pull-only on the BINARY tracker** (`opencrabs/opencrabs` — `push`/`triage`/`maintain`/`admin` all false), so it **cannot** carry the public half there; on the FACTORY tracker we hold `admin` and it works. Where the platform denies the assignment, RECORD the denial and let the `claim` row + `Issue-Ref` trailer BE the claim — a SILENT skip is a violation, because it is indistinguishable from a permission limit (two independent measurements 2026-10-04: #1916 n=14302, #1917 — both `ReplaceActorsForAssignable`). Restoring a public signal on the binary tracker is parked on the owner (opencrabs-dev q57). NO tackling/status comments or labels; uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING chatter, not the design/implementation record | tracker assignment (best-effort) + ledger | owner 2026-10-03; best-effort leg HQ 2026-10-04 (supersedes the 2026-08-27 no-assignment rule) |
 | PR SHIPMENT — **PR SHIPMENT LAW (single home): feature COMPLETE + smoke PASS (v0.4.104 4-Leg Smoke Rubric) → the EDITOR posts smoke evidence to its forum topic and its obligation ENDS there; the HARVEST lane ports, gates and files the upstream PR. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
 | APPROVAL = Alexey's reply or a positive Telegram reaction to the explicit request in the forum topic; silence is NOT consent; spontaneous / ad-hoc PRs remain forbidden | owner word | v0.4.1 |
 
@@ -452,7 +452,7 @@ links; development-time upstream contact is PR-comments only (supersedes the
   observe. Design smoke captures to be self-sufficient: every claim cites run
   id + sha + step evidence, so any verdict is re-derivable from logs alone. Source-precedence ranks EVIDENCE quality only - it never conflates kinds: a green CI/build log stays CODE-TEST/build evidence and substitutes nothing for a behavioral SMOKE pass.
 - UPSTREAM CI GATE (v0.4.22; encodes
-  adolfousier/opencrabs CONTRIBUTING.md): NO upstream PR leaves a lane until
+  opencrabs/opencrabs CONTRIBUTING.md): NO upstream PR leaves a lane until
   the owning worktree passed the CI gate — and since v0.4.28 CI is the only
   executor, never local (Box law; local cargo in ANY form is a violation;
   Compiler role RETIRED 2026-08-28). The
@@ -467,7 +467,7 @@ links; development-time upstream contact is PR-comments only (supersedes the
   (§Hard rules — CONSENT REGISTER / MODE REGISTER).
 - Issue-first, no exceptions (2026-08-25; routing revised 2026-10-03): a DISCOVERED problem
   gets its issue FILED before any fix work starts — on the BINARY tracker
-  `adolfousier/opencrabs` for a binary defect, on `leshchenko1979/opencrabs-dev-factory`
+  `opencrabs/opencrabs` for a binary defect, on `leshchenko1979/opencrabs-dev-factory`
   for a factory defect (tooling, CI, release automation, process). A mandatory duplicate
   sweep (open AND closed, issues AND PRs) precedes filing. Discoverer
   files it (symptom + evidence); fixer claims via the tracker ASSIGNMENT (the public claim

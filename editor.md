@@ -4,7 +4,7 @@
 
 > **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `editor.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
 
-Scope: work from an issue — a BINARY issue on `adolfousier/opencrabs` (the binary tracker since
+Scope: work from an issue — a BINARY issue on `opencrabs/opencrabs` (the binary tracker since
 2026-10-03), a FACTORY issue on `leshchenko1979/opencrabs-dev-factory`; the historical portfolio
 at `leshchenko1979/opencrabs` is READ-ONLY. Fix the code in a
 worktree, SIGN every commit with the session trailer, push the branch, then ship via

@@ -20,7 +20,7 @@ build/carrier surface, and the daemon facts.
   (push target) · remote **`adolfousier`** = sync source (upstream).
 - **`gh` in `~/opencrabs` defaults to UPSTREAM — `-R` is MANDATORY (2026-09-22).**
   The fork remote carries NO `gh-resolved` key while `remote.adolfousier.gh-resolved
-  base` does, so gh's resolver selects upstream `adolfousier/opencrabs` for ANY command
+  base` does, so gh's resolver selects upstream `opencrabs/opencrabs` for ANY command
   run from that directory without `-R` / `--repo`. It fails SILENTLY in both directions:
   a number that exists upstream returns a REAL but WRONG issue, and one that does not
   404s and reads as "no such issue" — while a write (`gh issue close` / `comment` / `edit`)
