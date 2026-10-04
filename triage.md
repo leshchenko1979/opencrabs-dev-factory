@@ -147,6 +147,17 @@ Verify the law-carrying
   `pacemakers-off` marker is what distinguishes an ordered stop from a dead patrol.
   Report them as ORDER-HONOURED, never as dead, and never re-enable one — a
   liveness patrol that flags them is re-reporting the owner's own order back to him.
+  **TWO orders, TWO end conditions (2026-10-04, raised by Triage `530c29ec`).** A
+  second owner order — `2026-09-29T09:19:48Z`, verbatim: *"Turn off all your crons
+  and set yourself a goal to finish the upstream sync. All questions requiring my
+  attention should go to the open questions board. You can finish when everything
+  has been resolved besides not closed open questions."* — disabled
+  `oc-triage-factory-patrol` (id `0c0b0ba2`) and `oc-triage-owner-digest` (id
+  `3e73d7ca`) at 09:22Z and SUPERSEDED the `2026-09-19T03:01:53Z` partial lift for
+  those two jobs. The two orders lift INDEPENDENTLY: the 09-18 freeze only on the
+  owner's word (*"Until I lift the freeze"*), the 09-29 order on its own completion
+  criterion. Classify BOTH groups ORDER-HONOURED, and read the MARKER, never this
+  enumeration alone — it carries one section per standing order.
 
 - **Checkable Completion Formula**: `DONE = all patrol dimensions checked with tool receipts (or explicit zero-event statement) + census posted on this lane's OWN topic.` Board topic 30220 is RETIRED as the census target (owner ruling 2026-09-19, v0.4.225 — see the Harvest backlog patrol bullet above). The post is still part of DONE and a patrol that cannot post is NOT dimensions-complete; only its surface changed. HQ is `session_notify`d only when a dimension is HQ-specific.
 
