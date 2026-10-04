@@ -68,14 +68,14 @@ The patrol triages **EVERY open fork issue** (owner order 2026-09-26: coverage 1
 
 | Disposition | Condition | What it means |
 |---|---|---|
-| **DISPATCH** | the defective surface is **OURS** — §D4 AUTHORSHIP passes (fork work, absent from upstream `main`) | wire it to the owning lane by the normal path (`oc-issue-dispatch`, claim row, `Issue-Ref` trailer). The fix lands on our fork. |
+| **DISPATCH** | the defective surface is **OURS** — §D4 AUTHORSHIP passes (fork work, absent from upstream `main`) | wire it to the owning lane by the normal path (`oc-issue-dispatch`, claim row, `Issue-Ref` trailer). The fix lands on our fork. **A wire is COMPLETE only on the TARGET's CLAIM ROW — a send returning rc=0 is NOT a delivery, and a target REFUSAL leaves the dispatcher's dedup row standing, so `--auto` will not re-send and `--redispatch` is required** (both halves measured 2026-10-04 on #1921). Zero-ack law: `fleet-directives.md:357`. |
 | **REPORT** | the surface is **upstream's own** — §D4 fails | the issue is a defect report; its fix belongs to its author and **nothing is built here**. Record the disposition **on the issue itself** (a comment), so a later reader cannot find it standing silently against an owner ruling. |
 
 **A REPORT whose fork fix the owner has DECLINED is PARKED on his word** — not re-dispatched, not withdrawn; it waits, and the wait is stated. (Live case: `opencrabs/opencrabs#1917` §1, declined in q41 on 2026-10-01; its §2 stands on its own merits.)
 
 **§D4 is applied BY HAND on this population too** — the tool does not implement it. Read the surface from the **ARTIFACT** (is the defective code fork work absent from upstream `main`?), never from the tracker the issue happens to live on: an issue on the binary tracker whose surface is OURS is dispatchable, and one on our own fork whose surface is upstream's is not.
 
-**Live dispositions, 2026-10-04 (the four):** #1916 → DISPATCH, lane done (ledger n=14339) · #1918 → DISPATCH, in flight (n=14389/14390, branch `fix/1918-file-link-marker`) · #1921 → DISPATCH, wired by Triage (n=14395/14396) — its surface is our own #289 work (`is_valid_telegram_photo_url` / `ORPHAN_MEDIA_SCHEMES` / `MediaKind`, commits `010bace66`/`73381aa20`/`8cdc7a7b7`/`91890ffe1`), absent from upstream `main`, so §D4 passes · #1917 → REPORT, §1 parked on the owner (q41), §2 standing.
+**Live dispositions, 2026-10-04 (the four):** #1916 → DISPATCH, lane done (ledger n=14339) · #1918 → DISPATCH, in flight (n=14389/14390, branch `fix/1918-file-link-marker`) · #1921 → DISPATCH, **wire RECEIPTED** — the first attempt to the rich-formatting lane was REFUSED (occupied: mid-ship-chain on #1918, so its n=14395/14396 are SEND notes, never a delivery), re-dispatched to the idle telegram lane `a5b34466` (n=14398/14399) and completed by that lane's claim **n=14401** — its surface is our own #289 work (`is_valid_telegram_photo_url` / `ORPHAN_MEDIA_SCHEMES` / `MediaKind`, commits `010bace66`/`73381aa20`/`8cdc7a7b7`/`91890ffe1`), absent from upstream `main`, so §D4 passes · #1917 → REPORT, §1 parked on the owner (q41), §2 standing.
 
 ### Stuck-lane routing — a stuck lane REGISTERS, it does not re-ask (owner order 2026-09-25)
 
