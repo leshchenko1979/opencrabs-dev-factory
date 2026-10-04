@@ -22,14 +22,15 @@
 #       - Exits 2 on usage / bad arguments.
 #       - Exits 3 on API/git failure.
 #   record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
-#          [--status filed|not-upstreamable] [--reason <text>]
+#          [--status filed|not-upstreamable|conditionally-upstreamable] [--reason <text>]
 #          [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
 #          [--state-file <path>]
 #       Records/updates a manual_records row (upsert keyed on UNIT, #761).
 #       --pr is required only for the default 'filed' status; a
-#       'not-upstreamable' row names none. --branches, --revert and
-#       --verified-at are OPTIONAL annotations on a not-upstreamable row
-#       and are carried forward on a re-record.
+#       'not-upstreamable' or 'conditionally-upstreamable' row names none
+#       (#564). --branches, --revert and --verified-at are OPTIONAL
+#       annotations on a not-upstreamable row and are carried forward on a
+#       re-record.
 #   purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
 #                                    REFUSED (rc 2) unless --dry-run: REMOVAL
 #                                    IS FORBIDDEN (harvest.md, #707)
@@ -90,7 +91,7 @@ Usage:
   $PROG scan [--repo <path>] [--upstream <owner/repo>] [--json]
   $PROG check <issue-number-or-slug> [--repo <path>] [--subject <text>] [--base <ref>]
   $PROG record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
-               [--status filed|not-upstreamable] [--reason <text>]
+               [--status filed|not-upstreamable|conditionally-upstreamable] [--reason <text>]
                [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
                [--state-file <path>]
       Records/updates a manual_records row (upsert keyed on UNIT, #761).
@@ -3246,7 +3247,8 @@ with open(reg_file, "w") as f:
     json.dump(data, f, indent=2)
 verb = "Updated" if replaced else "Recorded"
 _what = ("NOT UPSTREAMABLE" if record_entry.get("status") == "not-upstreamable"
-         else ("PR #%s" % record_entry["pr"] if int(record_entry.get("pr") or 0) else "NO PR recorded"))
+         else ("CONDITIONALLY UPSTREAMABLE" if record_entry.get("status") == "conditionally-upstreamable"
+               else ("PR #%s" % record_entry["pr"] if int(record_entry.get("pr") or 0) else "NO PR recorded")))
 _final_issues = record_entry.get("issues", [])
 print(f"{verb} Unit {unit} -> {_what} (issues: {_final_issues}) in {reg_file}")
 ' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason" "$branches" "$revert" "$verified_at"
@@ -4809,6 +4811,101 @@ sys.exit(0 if (len(rows) == 1
     echo "  bad  - #761 expected the three not-upstreamable fields carried forward on a re-record"
     return 1
   fi
+
+  # 9g. #13: a CONDITIONALLY-UPSTREAMABLE row -- not portable today, portable once a
+  #     prerequisite lands upstream. It is written with NO --pr (same arm as
+  #     not-upstreamable, #564) and must print AS ITSELF, never fall through to the
+  #     PR arms, because it carries pr=0 by construction.
+  local cu_reg="$selftest_tmp/mock_reg_cond.json"
+  printf '{"manual_records": []}\n' > "$cu_reg"
+  rc=0
+  out="$(bash "$0" record --unit "cond-unit" --status conditionally-upstreamable \
+      --reason "needs the fork-only telegram governor surface upstream first" \
+      --issue "999994" --state-file "$cu_reg" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "CONDITIONALLY UPSTREAMABLE"; then
+    ok "#13 record accepts --status conditionally-upstreamable WITHOUT --pr, and prints it"
+  else
+    echo "  bad  - #13 conditional record expected rc=0 + CONDITIONALLY UPSTREAMABLE, got rc=$rc ($out)"
+    return 1
+  fi
+  if oc_has "$out" "NO PR recorded" || oc_has "$out" "PR #"; then
+    echo "  bad  - #13 conditional row fell through to a PR arm: $out"
+    return 1
+  fi
+  ok "#13 a conditionally-upstreamable row does NOT render as a PR arm"
+
+  # 9h. #13: the row still REFUSES (not harvestable today) but says WHY, naming the
+  #     condition -- so the register is honest and the unit is re-considerable when
+  #     the prerequisite lands.
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$cu_reg" "cond-unit" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "CONDITIONALLY UPSTREAMABLE" && oc_has "$out" "governor surface upstream"; then
+    ok "#13 a conditional row REFUSES with rc=1, carrying the condition that gates it"
+  else
+    echo "  bad  - #13 expected rc=1 CONDITIONALLY UPSTREAMABLE + condition, got rc=$rc ($out)"
+    return 1
+  fi
+  if oc_has "$out" "filed in PR"; then
+    echo "  bad  - #13 emitted a false 'filed in PR' claim for a conditional row: $out"
+    return 1
+  fi
+  ok "#13 a conditional row emits NO 'filed in PR' claim"
+
+  # 9i. MUTATION CONTROL / class discrimination (#13). The three statuses must be
+  #     DISTINGUISHABLE, not merely present: if a later edit collapsed the branches
+  #     (e.g. returned the conditional constant for every non-filed row), the two
+  #     positive legs above would still pass while the register silently lost the
+  #     distinction. So assert the CROSS arms are NEGATIVE: a not-upstreamable row
+  #     must NOT read as conditional, and a conditional row must NOT read as
+  #     not-upstreamable. This fails the moment the classes are merged.
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$nu_reg" "not-up-unit" 2>&1)" || rc=$?
+  if oc_has "$out" "CONDITIONALLY UPSTREAMABLE"; then
+    echo "  bad  - #13 mutation control: a not-upstreamable row read as CONDITIONAL: $out"
+    return 1
+  fi
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$cu_reg" "cond-unit" 2>&1)" || rc=$?
+  if oc_has "$out" "NOT UPSTREAMABLE"; then
+    echo "  bad  - #13 mutation control: a conditional row read as NOT UPSTREAMABLE: $out"
+    return 1
+  fi
+  ok "#13 mutation control: the two non-filed classes stay distinguishable"
+
+  # 9j. #13 SAFETY PROPERTY (constraint 3): adding a status must NOT weaken the
+  #     fail-safe. Absent / empty / UNKNOWN must all still map to `filed` -- the arm
+  #     a human re-checks -- never to a silent terminal refusal. Asserted directly
+  #     against the shared predicate, and through the CLI for an unrecognised value.
+  if python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+sys.dont_write_bytecode = True
+import oc_claims as oc
+cases = [({}, oc.MANUAL_STATUS_FILED),
+         ({"status": ""}, oc.MANUAL_STATUS_FILED),
+         ({"status": "   "}, oc.MANUAL_STATUS_FILED),
+         ({"status": "bogus"}, oc.MANUAL_STATUS_FILED),
+         ({"status": "conditionally-upstreamable"}, oc.MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE),
+         ({"status": "not-upstreamable"}, oc.MANUAL_STATUS_NOT_UPSTREAMABLE)]
+bad = [(r, got, want) for r, want in cases
+       for got in [oc.manual_record_status(r)] if got != want]
+if bad:
+    print(bad); sys.exit(1)
+' "$(dirname "$0")/../lib"; then
+    ok "#13 safety property held: absent/empty/unknown -> filed; the two known classes preserved"
+  else
+    echo "  bad  - #13 the status vocabulary weakened the absent/unknown -> filed fail-safe"
+    return 1
+  fi
+  rc=0
+  out="$(bash "$0" record --unit "bogus-unit" --status bogus --issue "999993" --state-file "$cu_reg" 2>&1)" || rc=$?
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$cu_reg" "bogus-unit" 2>&1)" || rc=$?
+  if oc_has "$out" "NOT UPSTREAMABLE" || oc_has "$out" "CONDITIONALLY UPSTREAMABLE"; then
+    echo "  bad  - #13 an UNKNOWN status was read as a terminal class instead of filed: $out"
+    return 1
+  fi
+  ok "#13 an UNKNOWN status value is read as filed, never as a terminal class"
 
   # 10. SHA prefix lookup tests
   rc=0

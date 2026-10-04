@@ -898,6 +898,19 @@ def get_active_claims(ledger_file, repo_path=None):
 #: pre-existing row keeps the meaning it already had.
 MANUAL_STATUS_FILED = "filed"
 MANUAL_STATUS_NOT_UPSTREAMABLE = "not-upstreamable"
+#: #13 (owner, 2026-10-04): a unit that is NOT portable TODAY but BECOMES portable
+#: once a prerequisite lands upstream -- *"the harvest tool should differentiate
+#: between not upstreamable and conditionally upstreamable, given other PRs are
+#: upstreamed first"*. Without it such a unit must be written `not-upstreamable`,
+#: which every reader renders as TERMINAL: a welded-shut unit and one waiting on a
+#: prerequisite are indistinguishable, and the register loses the dependency that
+#: would let the unit be re-considered when its prerequisite lands. The class is
+#: measured, not hypothetical: five throttle units (fork #556/#580/#676/#757/#635)
+#: each conflict when cherry-picked onto `adolfousier/main`, and their prerequisite
+#: is the fork-only telegram governor surface, which has no upstream PR and no
+#: issue -- so no dependent PR can be filed today. A conditional row still REFUSES
+#: dispatch (it is not harvestable now); what changes is that it says WHY.
+MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE = "conditionally-upstreamable"
 
 
 def manual_record_status(record):
@@ -905,10 +918,14 @@ def manual_record_status(record):
 
     Absent, empty or unknown -> `filed`: the pre-schema meaning, so this
     addition cannot silently reclassify a row that never carried a status.
+    An UNRECOGNISED value lands here too -- the fail-safe direction, since
+    `filed` is the arm a human re-checks, never a silent terminal refusal.
     """
     st = str((record or {}).get("status") or "").strip().lower()
     if st == MANUAL_STATUS_NOT_UPSTREAMABLE:
         return MANUAL_STATUS_NOT_UPSTREAMABLE
+    if st == MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE:
+        return MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE
     return MANUAL_STATUS_FILED
 
 
@@ -951,6 +968,12 @@ def manual_record_claim(record, target):
         reason = str((record or {}).get("reason") or "").strip()
         why = "; reason: %s" % reason if reason else ""
         return "Target %s is manually recorded as NOT UPSTREAMABLE%s%s" % (target, tail, why)
+    if manual_record_status(record) == MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE:
+        reason = str((record or {}).get("reason") or "").strip()
+        why = "; condition: %s" % reason if reason else ""
+        return ("Target %s is manually recorded as CONDITIONALLY UPSTREAMABLE%s -- it is not "
+                "harvestable TODAY, but becomes portable once the prerequisite named here "
+                "lands upstream%s" % (target, tail, why))
     pr = (record or {}).get("pr")
     if pr:
         return "Target %s is manually recorded as filed in PR #%s%s" % (target, pr, tail)
