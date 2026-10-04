@@ -535,10 +535,38 @@ def parse_issue_map(prs):
         merged_at = p.get('mergedAt')
         
         issues = set()
-        for m in re.finditer(r'leshchenko1979/opencrabs#(?:issues/)?(\d+)', body):
-            issues.add(int(m.group(1)))
-        for m in re.finditer(r'leshchenko1979/opencrabs/issues/(\d+)', body):
-            issues.add(int(m.group(1)))
+        # factory#12: a whole-body scan cannot tell an IMPLEMENTATION from a
+        # MENTION. A PR that DECLARES its issue -- a labelled `Original issue:`
+        # / `Fork issue:` / `Originating fork issue:` line -- is authoritative:
+        # key the declaration's refs PLUS any STRUCTURED claim line (a markdown
+        # table row, or a line that is only the link). A prose mention is
+        # context, not a claim, and must not key IN_FLIGHT (measured: PR #1922
+        # named fork #580/#697 in prose while implementing #721 only, so
+        # `check 580` / `check 697` refused IN_FLIGHT falsely).
+        # A PR with NO declaration line keeps the permissive arms: the corpus
+        # carries older conventions (`Originating fork issue:`, `Fork issue:`,
+        # bare bullet lists) whose mappings must not be lost -- dropping a
+        # MERGED mapping is the DANGEROUS direction (a false release).
+        _DECL_RE = re.compile(
+            r'^\s*[>\-*]?\s*(?:original\s+issue|originating\s+fork\s+issue|fork\s+issue)\s*:', re.I)
+        _FULL_REF_RE = re.compile(
+            r'(?:https?://github\.com/)?leshchenko1979/opencrabs(?:/issues/|#(?:issues/)?)(\d+)')
+        _body_lines = body.split('\n')
+        if any(_DECL_RE.search(_ln) for _ln in _body_lines):
+            for _ln in _body_lines:
+                _claim = bool(_DECL_RE.search(_ln)) or _ln.lstrip().startswith('|')
+                if not _claim:
+                    _rest = _FULL_REF_RE.sub('', _ln)
+                    _claim = bool(_FULL_REF_RE.search(_ln)) and not re.sub(
+                        r'[\s|*>\-.,;:()\[\]]', '', _rest)
+                if _claim:
+                    for m in _FULL_REF_RE.finditer(_ln):
+                        issues.add(int(m.group(1)))
+        else:
+            for m in re.finditer(r'leshchenko1979/opencrabs#(?:issues/)?(\d+)', body):
+                issues.add(int(m.group(1)))
+            for m in re.finditer(r'leshchenko1979/opencrabs/issues/(\d+)', body):
+                issues.add(int(m.group(1)))
         for m in re.finditer(r'(?:fix|feat|up|harvest)[/-](\d+)', head):
             issues.add(int(m.group(1)))
         for m in re.finditer(r'/(\d+)-', head):
@@ -3855,6 +3883,22 @@ cmd_selftest() {
     "headRefName": "port/parser-trailer-split",
     "mergedAt": "2026-09-10T00:00:00Z",
     "body": "Fixes leshchenko1979/opencrabs#211"
+  },
+  {
+    "number": 1922,
+    "title": "feat(telegram): log every outbound request on the Telegram surface",
+    "state": "OPEN",
+    "headRefName": "leshchenko1979/feat/telegram-outbound-log",
+    "mergedAt": null,
+    "body": "Original issue: https://github.com/leshchenko1979/opencrabs/issues/721\n\nThe typing-dose pilot (leshchenko1979/opencrabs#580, leshchenko1979/opencrabs#697) is named here as context, not implemented."
+  },
+  {
+    "number": 1834,
+    "title": "feat(telegram): rich-plane primitives",
+    "state": "MERGED",
+    "headRefName": "leshchenko1979/feat/rich-plane",
+    "mergedAt": "2026-09-20T00:00:00Z",
+    "body": "Original issue: https://github.com/leshchenko1979/opencrabs/issues/680\n\n| Sub-issue | State |\n|---|---|\n| https://github.com/leshchenko1979/opencrabs/issues/681 | merged |\n| https://github.com/leshchenko1979/opencrabs/issues/682 | merged |"
   }
 ]
 EOF
@@ -4090,6 +4134,47 @@ EOF
     ok "check unharvested unit -> ELIGIBLE exit 0"
   else
     echo "  bad  - check unharvested unit expected rc=0, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3f. #12 -- a PR-body PROSE mention is not an implementation. Fixture PR 1922
+  #     DECLARES `Original issue: .../721` and names fork #580/#697 only as
+  #     context ("the typing-dose pilot (...)"), so `check 580` must NOT key
+  #     #1922.
+  #     HERMETIC: 580 is a REAL fork issue, so the cluster-set leg would
+  #     otherwise read its LIVE relatives (measured: {#262,#580,#676,#697,
+  #     #702,#721,#757}, youngest swap 2.8h). An explicit EMPTY relations map
+  #     pins the set to the target alone, which the leg excludes from its own
+  #     set -- so the unit lands ELIGIBLE.
+  #     MUTATION KILL: restore parse_issue_map's two whole-body arms and 580
+  #     keys PR 1922, so this leg reads
+  #     `REFUSED: Target 580 is currently IN_FLIGHT upstream in PR #1922`
+  #     (verified empirically: reverting the predicate flips this leg RED).
+  local rel12="$selftest_tmp/rel12.json"
+  printf '{"580": [], "681": []}\n' > "$rel12"
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel12" run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "580" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && ! oc_has "$out" "IN_FLIGHT upstream in PR #1922"; then
+    ok "prose mention: PR-body context does not key IN_FLIGHT (#12)"
+  else
+    echo "  bad  - target 580 expected rc=0 ELIGIBLE and no IN_FLIGHT #1922, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3g. #12 POSITIVE CONTROL (#1834 shape) -- a PR with a declaration line keeps
+  #     its STRUCTURED claim lines. Fixture PR 1834 declares `Original issue:
+  #     .../680` and lists 681/682 in a markdown TABLE: a real MERGED mapping
+  #     that must survive. `check 681` must therefore key #1834 and refuse
+  #     MERGED. This is the arm a naive "Original-issue-only" predicate would
+  #     have DROPPED -- the dangerous, false-release direction.
+  #     MUTATION KILL: key on the declaration line ONLY (ignore table rows) and
+  #     this leg goes RED -- 681 no longer keys #1834, so no MERGED refusal.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel12" run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "681" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "REFUSED: Target 681 is already MERGED upstream in PR #1834"; then
+    ok "declaration+table: structured table row still keys MERGED (#12 positive control)"
+  else
+    echo "  bad  - target 681 expected rc=1 MERGED PR #1834, got rc=$rc ($out)"
     return 1
   fi
 
@@ -4573,9 +4658,11 @@ PROSEEOF
   fi
 
   # 6. Scan outputs clean summary
+  #    (#12: the fixture corpus gained an OPEN PR -- 1922, the prose-mention
+  #    specimen -- so the open count is 2, not 1.)
   rc=0
   out="$(run_engine "scan" "mock/repo" "$selftest_tmp" "$mock_reg" "" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "Upstream In-Flight PRs (1 open)"; then
+  if [ "$rc" -eq 0 ] && oc_has "$out" "Upstream In-Flight PRs (2 open)"; then
     ok "scan classified output clean"
   else
     echo "  bad  - scan expected rc=0 with classified output, got rc=$rc ($out)"
