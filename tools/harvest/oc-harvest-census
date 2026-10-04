@@ -695,24 +695,48 @@ def check_fork_path_provenance(path, repo_path):
 #   * a bare `impl` header forces a backward scan that can land on a
 #     function-local `static` (a naive scan returned `CHECKED`), so the scan
 #     prefers the nearest `fn` and falls back to a static name only if none.
+#   * a hunk header may name a CONTAINER (struct/enum/trait/union/mod/impl)
+#     rather than a `fn` (#7). The header test and the backward scan must
+#     recognise those kinds too, or a hunk inside an upstream-present struct is
+#     attributed to the nearest preceding `fn` -- which can be an unrelated
+#     fork-only helper far above -- and reads as a false "fork-only symbol".
+#     Measured (#674): a doc-comment hunk inside `struct StreamingState`
+#     (present upstream) was attributed to `clean_tool_entry` (0 upstream).
 # Anything unresolved falls through to the declared-subject path (fail-closed).
 
 _HUNK_RE = re.compile(r'^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@(.*)$')
 _FN_DECL_RE = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)')
 _STATIC_DECL_RE = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?static\s+([A-Za-z_][A-Za-z0-9_]*)')
+# #7: CONTAINER declarations a hunk may sit inside. `impl` is deliberately NOT
+# listed here -- _ADDED_IMPL_RE (defined below, alongside the #633 added-decl
+# scan) already matches `impl <Type>`, and reusing it keeps one spelling of
+# "the type an impl introduces". Python resolves that global at CALL time, so
+# the later definition is in scope by the time this is used.
+_CONTAINER_DECL_RE = re.compile(
+    r'^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:unsafe\s+)?'
+    r'(?:struct|enum|trait|union|mod)\s+([A-Za-z_][A-Za-z0-9_]*)')
 
 def _show_at_rev(sha, path, repo_path, rev=None):
     spec = ('%s:%s' % (rev, path)) if rev else ('%s^:%s' % (sha, path))
     res = subprocess.run(['git', '-C', repo_path, 'show', spec], capture_output=True, text=True)
     return res.stdout if res.returncode == 0 else ''
 
-def _nearest_enclosing_fn(lines, start_idx):
+def _nearest_enclosing_symbol(lines, start_idx):
+    # #7: recognise CONTAINER declarations (struct/enum/trait/union/mod/impl)
+    # as well as `fn`. A hunk whose header names a container must resolve to
+    # that container, never to the nearest preceding `fn` -- which may be an
+    # unrelated fork-only helper far above the edit. The `static` fallback is
+    # unchanged: it is tried only when NO named declaration encloses the line,
+    # preserving the documented preference for the nearest `fn` over a
+    # function-local `static`.
     fallback_static = None
     for i in range(min(start_idx, len(lines) - 1), -1, -1):
-        m = _FN_DECL_RE.match(lines[i])
-        if m:
-            return m.group(1)
-        s = _STATIC_DECL_RE.match(lines[i])
+        line = lines[i]
+        for _rx in (_FN_DECL_RE, _CONTAINER_DECL_RE, _ADDED_IMPL_RE):
+            m = _rx.match(line)
+            if m:
+                return m.group(1)
+        s = _STATIC_DECL_RE.match(line)
         if s and fallback_static is None:
             fallback_static = s.group(1)
     return fallback_static
@@ -746,14 +770,22 @@ def derive_symbols(commits_list, repo_path):
             if not m:
                 continue
             stats['hunks'] += 1
-            fm = _FN_DECL_RE.search(m.group(2).strip())
+            # #7: the header may name a container (struct/enum/trait/impl/mod),
+            # not only a `fn`. Testing only for `fn` sent such a hunk to the
+            # backward scan, which could land on an unrelated fork-only fn.
+            hdr = m.group(2).strip()
+            fm = None
+            for _rx in (_FN_DECL_RE, _CONTAINER_DECL_RE, _ADDED_IMPL_RE):
+                fm = _rx.search(hdr)
+                if fm:
+                    break
             if fm:
                 stats['header'] += 1
                 pairs.append((cur_file, fm.group(1)))
                 continue
             if old_lines is None and cur_file:
                 old_lines = _show_at_rev(sha, cur_file, repo_path).split('\n')
-            sym = _nearest_enclosing_fn(old_lines or [], int(m.group(1)) - 1)
+            sym = _nearest_enclosing_symbol(old_lines or [], int(m.group(1)) - 1)
             if sym:
                 stats['backscan'] += 1
             else:
@@ -3294,6 +3326,38 @@ build_gate4_fixture() {
     return 0
   fi
 
+  if [ "$_fx_mode" = "container_hunk" ]; then
+    # #7 shape: a fork-only `fn` sits ABOVE an upstream-present struct, and one
+    # of the target's hunks is a line INSIDE the struct. At -U0 git's hunk
+    # header names the STRUCT (`@@ ... @@ pub(crate) struct StreamingState {`),
+    # so pre-#7 the header test (fn-only) matched nothing and the backward scan
+    # (fn/static-only) skipped the struct and landed on the fork-only fn above:
+    # every derived symbol read absent upstream -> a false UPSTREAM_VOID refusal
+    # plus a false "dropped at packaging" advisory.
+    #
+    # The target drives BOTH hunks in one unit: one inside the struct
+    # (upstream-present -> StreamingState) and one inside the fork-only fn
+    # (absent -> still flagged). So the fixed engine must read ELIGIBLE, must
+    # name clean_tool_entry in the advisory, and must NOT name StreamingState.
+    printf 'pub(crate) struct StreamingState {\n    pub chat: u8,\n}\n' > "$_fx_dir/src/flow.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "upstream struct" --trailer "Issue-Ref: leshchenko1979/opencrabs#900"
+    # Upstream carries the struct and NOT the fork-only helper added next.
+    git -C "$_fx_dir" update-ref refs/remotes/adolfousier/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+
+    # The fork adds a helper ABOVE the struct -- the wrong back-scan target.
+    printf 'pub fn clean_tool_entry() -> u8 {\n    1\n}\n\npub(crate) struct StreamingState {\n    pub chat: u8,\n}\n' > "$_fx_dir/src/flow.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "fork-only helper" --trailer "Issue-Ref: leshchenko1979/opencrabs#903"
+
+    # Target #907: a line inside the struct AND a line inside the fork-only fn.
+    printf 'pub fn clean_tool_entry() -> u8 {\n    2\n}\n\npub(crate) struct StreamingState {\n    // fork-only doc line\n    pub chat: u8,\n}\n' > "$_fx_dir/src/flow.rs"
+    git -C "$_fx_dir" add -A
+    git -C "$_fx_dir" commit -q -m "target fix" --trailer "Issue-Ref: leshchenko1979/opencrabs#907"
+    git -C "$_fx_dir" update-ref refs/remotes/origin/main "$(git -C "$_fx_dir" rev-parse HEAD)"
+    return 0
+  fi
+
   if [ "$_fx_mode" = "symbol_diverged" ] || [ "$_fx_mode" = "symbol_same_sig" ]; then
     # #758 shape: the hunk's enclosing symbol EXISTS upstream by NAME, so the
     # fork-only advisory never fires for it -- but its fork definition may have
@@ -4913,6 +4977,29 @@ sys.exit(0 if (len(rows) == 1 and str(rows[0].get("pr")) == "555002") else 1)
     ok "#341 shape: orphan path + subject upstream -> ELIGIBLE with orphan ADVISORY"
   else
     echo "  bad  - orphan-subject fixture expected rc=0 ELIGIBLE + orphan ADVISORY + no HELD_PARENT_UNHARVESTED, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 32b. #7 SHAPE: a hunk inside an upstream-present CONTAINER must resolve to
+  #      the container, not to a fork-only `fn` above it. The leg asserts the
+  #      POSITIVE (ELIGIBLE -- the struct hunk is upstream-present) and the
+  #      NEGATIVE in the SAME output: the genuinely fork-only hunk is STILL
+  #      flagged, and the upstream-present struct is NOT. A "fix" that simply
+  #      stopped attributing hunks to anything would pass the first and fail the
+  #      second, so the pair is the control.
+  fx_container="$selftest_tmp/fx_container"
+  build_gate4_fixture "$fx_container" container_hunk
+  rc=0
+  out="$(OC_HARVEST_MOCK_PRS='[]' OC_HARVEST_MOCK_COMMITS='' OC_HARVEST_MOCK_SQUASHED='' \
+        OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+        run_engine "check" "mock/repo" "$fx_container" "$selftest_tmp/mock_reg_fx.json" "907" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && oc_has "$out" "src/flow.rs :: clean_tool_entry" \
+     && ! oc_has "$out" "src/flow.rs :: StreamingState" \
+     && ! oc_has "$out" "UPSTREAM_VOID"; then
+    ok "#7 shape: hunk inside an upstream-present struct resolves to the struct -> ELIGIBLE; fork-only fn still flagged"
+  else
+    echo "  bad  - container-hunk fixture expected rc=0 ELIGIBLE + advisory naming clean_tool_entry only + no UPSTREAM_VOID, got rc=$rc ($out)"
     return 1
   fi
 
