@@ -1769,6 +1769,70 @@ else
   bad "generated-ignored sidecar class: $((_BAKC-_BAKSKIP)) of $_BAKC STILL enumerated as tools (#691)"
 fi
 
+# ---- 60b. RC-CONTRACT.md table integrity: no unescaped pipe in an oc-* row (#4)
+section "rc contract table integrity (unescaped pipes, #4)"
+# tools/docs/RC-CONTRACT.md is a GFM table read RENDERED (Telegram renders GFM
+# tables natively), and GFM splits a cell on EVERY unescaped pipe. A stray pipe
+# inside the Verdict-codes cell spills the text after it into columns the
+# 4-column header has no room for, and the renderer DROPS it -- so a reader
+# silently loses contract text that IS present in the file. Measured at
+# 85bade63: ten oc-* rows carried 56 internal unescaped pipes (oc-ledger's row
+# alone lost its close|confirm|reject|done|unclaim closure vocabulary). Literal
+# pipes belong escaped as a backslash-pipe.
+#
+# The scanner is exercised by a hermetic fixture pair so it cannot pass
+# vacuously: an ESCAPED pipe must still read as a well-formed 5-pipe row, and a
+# BARE pipe must be flagged. The canary rows are built by INTERPOLATION -- a
+# literal well-formed row written here would be found by this very scan as a
+# real site (section 82's shell-quoting canary makes the same move).
+RCG="$(mktemp -d)"
+cat > "$RCG/scan.py" <<'RCGEOF'
+import re, sys
+# A row of the 4-column RC contract table is `| tool | help | usage | verdict |`:
+# exactly FIVE unescaped pipes. Any other count means a literal pipe in a cell
+# was left unescaped.
+def scan(path):
+    rows = 0
+    bad = []
+    for i, ln in enumerate(open(path, encoding='utf-8').read().split('\n'), 1):
+        if not ln.startswith('| oc-'):
+            continue
+        rows += 1
+        u = len(re.findall(r'(?<!\\)\|', ln))
+        if u != 5:
+            bad.append((i, ln.split('|')[1].strip(), u))
+    return rows, bad
+rows, bad = scan(sys.argv[1])
+print('ROWS=%d' % rows)
+for i, name, u in bad:
+    print('BAD %d %s %d' % (i, name, u))
+RCGEOF
+RCG_PIPE="$(printf '\174')"     # a literal pipe
+RCG_ESC="$(printf '\134')"      # a literal backslash
+# POSITIVE control: an escaped pipe inside the verdict cell -> still 5 unescaped.
+printf '%s oc-good %s 0 %s 1 %s a %s%s b %s\n' \
+  "$RCG_PIPE" "$RCG_PIPE" "$RCG_PIPE" "$RCG_PIPE" "$RCG_ESC" "$RCG_PIPE" "$RCG_PIPE" > "$RCG/good.md"
+# NEGATIVE control: a bare pipe inside the verdict cell -> must be flagged.
+printf '%s oc-bad %s 0 %s 1 %s a %s b %s\n' \
+  "$RCG_PIPE" "$RCG_PIPE" "$RCG_PIPE" "$RCG_PIPE" "$RCG_PIPE" "$RCG_PIPE" > "$RCG/bad.md"
+RCG_GOOD="$(python3 "$RCG/scan.py" "$RCG/good.md")"
+RCG_BAD="$(python3 "$RCG/scan.py" "$RCG/bad.md")"
+case "$RCG_GOOD" in "ROWS=1") ok "rc contract: an ESCAPED pipe stays a 5-pipe row (positive control)" ;;
+  *) bad "rc contract: the scanner flagged an escaped pipe (control broken): $(printf '%s' "$RCG_GOOD" | tr '\n' ' ')" ;; esac
+case "$RCG_BAD" in "ROWS=1"*"BAD 1 oc-bad 6"*) ok "rc contract: a BARE pipe in a cell is SEEN (negative control)" ;;
+  *) bad "rc contract: the scanner cannot fire (canary unseen): $(printf '%s' "$RCG_BAD" | tr '\n' ' ')" ;; esac
+RC_LIVE="$(python3 "$RCG/scan.py" "$TOOLS_DIR/docs/RC-CONTRACT.md")"
+RC_ROWS="$(printf '%s\n' "$RC_LIVE" | sed -n 's/^ROWS=//p')"
+RC_NBAD="$(printf '%s\n' "$RC_LIVE" | grep -c '^BAD ' || true)"
+# FLOOR: a scanner that enumerated nothing passes vacuously -- assert the
+# population, so a path or format change reddens here instead of going quiet.
+[ "${RC_ROWS:-0}" -ge 40 ] && ok "rc contract: $RC_ROWS oc-* row(s) enumerated (floor 40)" \
+  || bad "rc contract: only ${RC_ROWS:-0} oc-* row(s) enumerated -- the scan stopped covering the table"
+[ "$RC_NBAD" = "0" ] && ok "rc contract: no oc-* row carries an unescaped pipe (#4)" \
+  || bad "rc contract: $RC_NBAD oc-* row(s) carry an unescaped pipe -- GFM drops the text after it (#4):
+$(printf '%s\n' "$RC_LIVE" | grep '^BAD ' | head -5)"
+rm -rf "$RCG"
+
 # ---- 61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)
 section "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"
 NF="$TOOLS_DIR/notify/oc-notify-fanout"
