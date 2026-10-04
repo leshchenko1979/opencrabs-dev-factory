@@ -21,7 +21,7 @@
 #
 # TRACKER (two-stream routing, SKILL.md v0.4.284, owner order 2026-10-03):
 # --tracker factory (DEFAULT) targets leshchenko1979/opencrabs-dev-factory;
-# --tracker binary targets adolfousier/opencrabs. The historical fork
+# --tracker binary targets opencrabs/opencrabs. The historical fork
 # leshchenko1979/opencrabs is READ-ONLY for new issues. --repo is a raw override
 # that wins over --tracker. The resolved target is PRINTED on every run, so the
 # default is DECLARED, never silent -- a silent default is what let this tool
@@ -53,7 +53,7 @@ FACTORY_REPO="${OC_ISSUE_CREATE_FACTORY:-leshchenko1979/opencrabs-dev-factory}"
 FORK_REPO="leshchenko1979/opencrabs"
 REPO_PATH="${OC_ISSUE_CREATE_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_ISSUE_CREATE_GH:-gh}"
-UPSTREAM_SLUG="${OC_ISSUE_CREATE_UPSTREAM:-adolfousier/opencrabs}"
+UPSTREAM_SLUG="${OC_ISSUE_CREATE_UPSTREAM:-opencrabs/opencrabs}"
 UPSTREAM_REMOTE="${OC_ISSUE_CREATE_UPSTREAM_REMOTE:-adolfousier}"
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
@@ -70,7 +70,7 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
 
   --parent <N>        set the parent AT CREATION (gh issue create --parent)
   --root <obj>        declare an UPSTREAM-INHERITED surface (upstream-rooted):
-                      upstream:<sha|PR|path> in adolfousier/opencrabs. The object
+                      upstream:<sha|PR|path> in opencrabs/opencrabs. The object
                       must RESOLVE; an unresolvable root is REFUSED, because it
                       is --no-parent in better clothes. Recorded as the first
                       comment (`root: <obj>`), never as an orphan.
@@ -81,7 +81,7 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
   --propose-parent    compute and print candidate parents only; file nothing
   --tracker <which>   target tracker: `factory` (default — the dev-factory repo,
                       leshchenko1979/opencrabs-dev-factory) or `binary` (upstream
-                      adolfousier/opencrabs). The historical fork
+                      opencrabs/opencrabs). The historical fork
                       leshchenko1979/opencrabs is READ-ONLY for new issues.
                       Aliases: --factory / --binary.
   --repo <slug>       raw override of the target repo; WINS over --tracker
@@ -347,9 +347,9 @@ JSN
   hasnt "…and NOT to the read-only fork"     "$T/o11" 'target=leshchenko1979/opencrabs$'
   bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --dry-run >"$T/o12" 2>&1
   chk "--tracker binary passes" 0 $?
-  has "…and targets upstream"                "$T/o12" 'tracker=binary target=adolfousier/opencrabs'
+  has "…and targets upstream"                "$T/o12" 'tracker=binary target=opencrabs/opencrabs'
   bash "$SELF" --title "feat(tools): routed" --body x --binary --dry-run >"$T/o13" 2>&1
-  has "…the --binary alias agrees"           "$T/o13" 'tracker=binary target=adolfousier/opencrabs'
+  has "…the --binary alias agrees"           "$T/o13" 'tracker=binary target=opencrabs/opencrabs'
   bash "$SELF" --title "feat(tools): routed" --body x --tracker nonsense --dry-run >"$T/o14" 2>&1
   chk "an unknown --tracker is a usage error" 2 $?
   bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --repo acme/widgets --dry-run >"$T/o15" 2>&1
@@ -438,7 +438,7 @@ fi
 # unresolvable root is refused rather than recorded as a declaration.
 #
 # Accepted, all normalised to an `upstream:` prefix when the caller omits it:
-#   upstream:<7-40 hex>   a commit in adolfousier/opencrabs
+#   upstream:<7-40 hex>   a commit in opencrabs/opencrabs
 #   upstream:<digits>     a PR number there
 #   upstream:<path>       a tracked path on that repo's main
 root_kind() { # $1 = value -> echoes sha|pr|path, or nothing
@@ -453,7 +453,8 @@ root_kind() { # $1 = value -> echoes sha|pr|path, or nothing
 root_resolves() { # $1 = value (with or without upstream:). rc 0 = resolves
   local v kind
   v="${1#upstream:}"
-  v="${v#adolfousier/opencrabs}"
+  v="${v#opencrabs/opencrabs}"            # canonical slug (post-rename)
+  v="${v#adolfousier/opencrabs}"          # legacy slug (pre-rename callers)
   kind="$(root_kind "$v")"
   case "$kind" in
     sha)  "$GH_BIN" api "repos/$UPSTREAM_SLUG/commits/$v" --jq .sha >/dev/null 2>&1 ;;

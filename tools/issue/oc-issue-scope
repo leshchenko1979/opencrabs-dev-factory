@@ -31,8 +31,8 @@
 # TRACKER (two-stream routing, SKILL.md v0.4.284, owner order 2026-10-03): the
 # DEFAULT repo is the FACTORY tracker leshchenko1979/opencrabs-dev-factory, whose
 # open-issue population is the factory's own work units -- exactly what the
-# factory-scoped patrol classifies. A BINARY issue (upstream adolfousier/opencrabs)
-# is classified by passing --repo adolfousier/opencrabs. The historical fork
+# factory-scoped patrol classifies. A BINARY issue (upstream opencrabs/opencrabs)
+# is classified by passing --repo opencrabs/opencrabs. The historical fork
 # leshchenko1979/opencrabs is READ-ONLY for new issues.
 #
 # THREE RULES, each measured before it was encoded:

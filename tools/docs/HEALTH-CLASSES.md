@@ -115,7 +115,7 @@ into two tiers:
 - **Remediation:** Report only. Never delete or rewrite log evidence.
 
 ### Class 8: `issue_portfolio`
-- **Objects Audited:** Fork issues (`leshchenko1979/opencrabs`), upstream issues (`adolfousier/opencrabs`), ledger issue claims.
+- **Objects Audited:** Fork issues (`leshchenko1979/opencrabs`), upstream issues (`opencrabs/opencrabs`), ledger issue claims.
 - **Invariants Checked:**
   - Unassigned open issues on the fork lacking a worker claim in `workers-ledger.json`.
   - Stale / abandoned claims: issues claimed in ledger where lane has had 0 commits >48h.

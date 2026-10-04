@@ -12,12 +12,12 @@
 # Usage:
 #   oc-issue-sweep '<query>' [--factory leshchenko1979/opencrabs-dev-factory]
 #                            [--fork leshchenko1979/opencrabs]
-#                            [--upstream adolfousier/opencrabs] [--limit N(=20)]
+#                            [--upstream opencrabs/opencrabs] [--limit N(=20)]
 #   oc-issue-sweep --selftest
 #
 # Two-stream routing (SKILL.md v0.4.284, owner order 2026-10-03): the mandatory
 # duplicate sweep covers BOTH live trackers — FACTORY
-# (leshchenko1979/opencrabs-dev-factory) and UPSTREAM (adolfousier/opencrabs) —
+# (leshchenko1979/opencrabs-dev-factory) and UPSTREAM (opencrabs/opencrabs) —
 # plus the historical fork, which is READ-ONLY for new issues but still holds
 # the older issue corpus a duplicate may live in. A sweep that misses one
 # tracker cannot discharge the law's duplicate-sweep duty.
@@ -45,7 +45,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDE
 die() { echo "oc-issue-sweep: $2" >&2; exit "$1"; }
 
 FACTORY="leshchenko1979/opencrabs-dev-factory"; FORK="leshchenko1979/opencrabs"
-UPSTREAM="adolfousier/opencrabs"; LIMIT=20; QUERY=""; SELFTEST=0
+UPSTREAM="opencrabs/opencrabs"; LIMIT=20; QUERY=""; SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --factory) FACTORY="${2:-}"; shift ;;
@@ -99,8 +99,8 @@ case "$*" in
       "leshchenko1979/opencrabs-dev-factory:closed") echo '[{"number":202,"title":"factory closed dup","state":"CLOSED","state_reason":"completed"}]' ;;
       "leshchenko1979/opencrabs:open")   echo '[{"number":101,"title":"gate probe","state":"OPEN","state_reason":null}]' ;;
       "leshchenko1979/opencrabs:closed") echo '[{"number":102,"title":"dup candidate","state":"CLOSED","state_reason":"duplicate"}]' ;;
-      "adolfousier/opencrabs:open")      echo '[{"number":8,"title":"upstream open","state":"OPEN","state_reason":null}]' ;;
-      "adolfousier/opencrabs:closed")    echo '[{"number":7,"title":"upstream closed","state":"CLOSED","state_reason":"completed"}]' ;;
+      "opencrabs/opencrabs:open")      echo '[{"number":8,"title":"upstream open","state":"OPEN","state_reason":null}]' ;;
+      "opencrabs/opencrabs:closed")    echo '[{"number":7,"title":"upstream closed","state":"CLOSED","state_reason":"completed"}]' ;;
       *) echo '[]' ;;
     esac ;;
 esac
@@ -109,13 +109,13 @@ SHIM
   OUT="$(OC_SWEEP_GH="$d/gh" "$0" "gate" --limit 5)" || [ $? -eq 1 ] || { echo "selftest: candidates rc != 1" >&2; exit 1; }
   grep -q "leshchenko1979/opencrabs	101	open	gate probe	-" <<< "$OUT" || { echo "selftest: row 101 wrong: $OUT" >&2; exit 1; }
   grep -q "close-reason: duplicate of #101" <<< "$OUT" || grep -q "duplicate" <<< "$OUT" || { echo "selftest: close-reason not harvested: $OUT" >&2; exit 1; }
-  grep -q "adolfousier/opencrabs	7	closed	upstream closed	completed" <<< "$OUT" || { echo "selftest: upstream fallback row wrong: $OUT" >&2; exit 1; }
+  grep -q "opencrabs/opencrabs	7	closed	upstream closed	completed" <<< "$OUT" || { echo "selftest: upstream fallback row wrong: $OUT" >&2; exit 1; }
   # Two-stream routing (SKILL.md v0.4.284): the FACTORY tracker must be swept too.
   # Discriminating by SLUG: the factory slug has the fork slug as a prefix, so the
   # `$`-anchored negative leg proves the factory rows are genuinely the factory's.
   grep -q "leshchenko1979/opencrabs-dev-factory	201	open	factory open dup	-" <<< "$OUT" || { echo "selftest: factory OPEN row missing: $OUT" >&2; exit 1; }
   grep -q "leshchenko1979/opencrabs-dev-factory	202	closed	factory closed dup	completed" <<< "$OUT" || { echo "selftest: factory CLOSED row missing: $OUT" >&2; exit 1; }
-  grep -q "adolfousier/opencrabs	8	open	upstream open	-" <<< "$OUT" || { echo "selftest: upstream OPEN row missing: $OUT" >&2; exit 1; }
+  grep -q "opencrabs/opencrabs	8	open	upstream open	-" <<< "$OUT" || { echo "selftest: upstream OPEN row missing: $OUT" >&2; exit 1; }
   [ "$(printf '%s\n' "$OUT" | grep -c .)" -eq 6 ] || { echo "selftest: row count $([ $(printf '%s\n' "$OUT" | grep -c .) ] && echo n) != 6: $OUT" >&2; exit 1; }
   OC_SWEEP_GH="$d/gh" "$0" "zzz-nothing" >/dev/null 2>&1; [ $? -eq 0 ] || { echo "selftest: no-candidates rc != 0" >&2; exit 1; }
   # v0.4.116: exit 3 must stay truthful — a hard gh failure (not a bad JSON

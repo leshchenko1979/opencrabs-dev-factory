@@ -38,7 +38,7 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-pr-atomicity" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
-REPO="${OC_REPO:-adolfousier/opencrabs}"
+REPO="${OC_REPO:-opencrabs/opencrabs}"
 VERBOSE=0
 
 fail() { echo "oc-pr-atomicity: $2" >&2; exit "$1"; }

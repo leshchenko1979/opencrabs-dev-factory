@@ -183,7 +183,7 @@ KINDS=" ruling idea idea-verdict design-feedback design-locked review-battery in
 # files issues on THREE trackers, so an issue number is probed against all of
 # them. BINARY, FACTORY, FORK. A bare `#N` is still fork space (that is the space
 # the ledger's own rows were written in before the split).
-HOME_REPOS=( adolfousier/opencrabs leshchenko1979/opencrabs-dev-factory leshchenko1979/opencrabs )
+HOME_REPOS=( opencrabs/opencrabs leshchenko1979/opencrabs-dev-factory leshchenko1979/opencrabs )
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 die() { echo "oc-ledger: $2" >&2; exit "$1"; }
@@ -2899,10 +2899,10 @@ AMBEOF
   # DISCRIMINATING control for that change -- a probe that still asked only the
   # fork fails both, and a `_found` hardwired to 1 fails the fail-all leg below.
   # The leg that used to sit here ran the REAL gh and relied on the fork having
-  # no #999: non-hermetic, and now simply false -- adolfousier/opencrabs#999
+  # no #999: non-hermetic, and now simply false -- opencrabs/opencrabs#999
   # EXISTS, so under the new law confirming it is correct, not an error.
   printf '#!/bin/sh\ncase "$*" in *"opencrabs-dev-factory"*) exit 0 ;; *) exit 1 ;; esac\n' > "$T/gh-factory-only.sh"; chmod +x "$T/gh-factory-only.sh"
-  printf '#!/bin/sh\ncase "$*" in *"adolfousier/opencrabs"*) exit 0 ;; *) exit 1 ;; esac\n' > "$T/gh-binary-only.sh"; chmod +x "$T/gh-binary-only.sh"
+  printf '#!/bin/sh\ncase "$*" in *"opencrabs/opencrabs"*) exit 0 ;; *) exit 1 ;; esac\n' > "$T/gh-binary-only.sh"; chmod +x "$T/gh-binary-only.sh"
   jq --arg u "$W2" '(.workers[] | select(.uuid==$u) | .confirmed) = false' "$OC_LEDGER" > "$T/tmp.json" && mv "$T/tmp.json" "$OC_LEDGER"
   bash "$ME" confirm "$W2" --gh "$T/gh-factory-only.sh" >/dev/null 2>&1; chk "confirm-probes-factory-tracker-rc0" 0 $?
   jq --arg u "$W2" '(.workers[] | select(.uuid==$u) | .confirmed) = false' "$OC_LEDGER" > "$T/tmp.json" && mv "$T/tmp.json" "$OC_LEDGER"
@@ -2926,13 +2926,13 @@ AMBEOF
   # a row is a dead letter that cmd_claims cannot see (it answered CLEAN).
   OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM without issue ref" >/dev/null 2>&1; chk "stamp-claim-no-ref-refused" 2 $?
   # #379 + v0.4.284: the dead-letter rule covers a claim naming ONLY a repository
-  # we do not own. The v0.4.284 change is that `adolfousier/opencrabs` is now one
+  # we do not own. The v0.4.284 change is that `opencrabs/opencrabs` is now one
   # OF OURS (the binary tracker), so a claim on it ANCHORS -- the second leg
   # proves that -- while a genuinely FOREIGN slug is still REFUSED. Without the
   # foreign leg a predicate that accepted EVERY slug would pass the anchor leg
   # vacuously, so this pair is a CONTROL, not a restatement.
   OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM third-party acme/widgets#7 only" >/dev/null 2>&1; chk "stamp-claim-foreign-only-refused" 2 $?
-  OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM upstream adolfousier/opencrabs#1419 only" >/dev/null 2>&1; chk "stamp-claim-binary-tracker-anchors" 0 $?
+  OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM upstream opencrabs/opencrabs#1419 only" >/dev/null 2>&1; chk "stamp-claim-binary-tracker-anchors" 0 $?
   chk "stamp-claim-binary-tracker-ref-value" "1419" "$(bash "$ME" claim-ref "$W3" 2>/dev/null)"
   # ...and the guard must carry an escape hatch (#19 has --allow-unattributed,
   # sync has --allow-sweep): a caller who DELIBERATELY wants a ref-less claim
@@ -3261,7 +3261,7 @@ DOMEOF
 # #55 is the fail-safe discriminator: CLOSED on the fork, OPEN on the factory.
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   case "$*" in
-    *"adolfousier/opencrabs"*) echo '[]' ;;
+    *"opencrabs/opencrabs"*) echo '[]' ;;
     *"opencrabs-dev-factory"*)
       case "$*" in
         *"--state closed"*) echo '[{"number":77,"title":"factory-closed"}]' ;;
@@ -4276,7 +4276,7 @@ if not open_claims:
 # and OPEN ON NONE; if ANY home repo has it open it stays OPEN, so the ambiguity
 # can only resolve toward "still open" -- the direction that never writes a
 # false unclaim.
-HOME_REPOS = ("adolfousier/opencrabs",
+HOME_REPOS = ("opencrabs/opencrabs",
               "leshchenko1979/opencrabs-dev-factory",
               "leshchenko1979/opencrabs")
 

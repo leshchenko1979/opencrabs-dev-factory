@@ -55,7 +55,7 @@ trap 'oc_log_finish $?' EXIT
 PROG="$(basename "$0")"
 REPO="${HOME}/opencrabs"
 BASE_REF="adolfousier/main"
-UPSTREAM_REPO="adolfousier/opencrabs"
+UPSTREAM_REPO="opencrabs/opencrabs"
 STATE_DIR="${HOME}/.opencrabs/profiles/ops/opencrabs-dev"
 LEDGER_FILE="${STATE_DIR}/workers-ledger.json"
 
@@ -1569,7 +1569,7 @@ EOF
 
   # 1. Test #95 (empty diff vs adolfousier/main) -> REJECTED (rc 1)
   rc=0
-  out="$(run_engine "vet" "$commit_95" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_95" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "ALREADY_MERGED_EMPTY_DIFF"; then
     echo "  ok 1 - vet #95 (empty diff) -> REJECTED exit 1"
   else
@@ -1579,7 +1579,7 @@ EOF
 
   # 2. Test #82 (patch-id / ancestor of upstream) -> REJECTED (rc 1)
   rc=0
-  out="$(run_engine "vet" "$fork_commit_82" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$fork_commit_82" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "ALREADY_MERGED"; then
     echo "  ok 2 - vet #82 (patch-id match) -> REJECTED exit 1"
   else
@@ -1589,7 +1589,7 @@ EOF
 
   # 3. Test #52 (superseded audit) -> REJECTED (rc 1)
   rc=0
-  out="$(run_engine "vet" "52" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "52" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "SUPERSEDED"; then
     echo "  ok 3 - vet #52 (superseded) -> REJECTED exit 1"
   else
@@ -1601,7 +1601,7 @@ EOF
   rc=0
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
   export OC_HARVEST_NOW_TS="1789010000"
-  out="$(run_engine "vet" "$commit_83" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_83" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED"; then
     echo "  ok 4 - vet #83 (novel diff) -> APPROVED exit 0"
   else
@@ -1613,7 +1613,7 @@ EOF
   rc=0
   export OC_HARVEST_MOCK_DEPLOYED_TS="1789000000"
   export OC_HARVEST_NOW_TS="1789010000"
-  out="$(run_engine "vet" "$commit_300" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_300" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "SOAK_GATE_VIOLATION"; then
     echo "  ok 4b - vet #300 (fresh feat within soak window) -> REJECTED exit 1"
   else
@@ -1725,7 +1725,7 @@ EOF
   export OC_HARVEST_NOW_TS="1789633800"
 
   rc=0
-  out="$(run_engine "vet" "$new_twin_sha" "$rebase_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$new_twin_sha" "$rebase_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED"; then
     echo "  ok 4c - vet rebased twin -> APPROVED on pre-rebase swap (guards --stable patch-id mode + duplicate-sha dedup)"
   else
@@ -1734,7 +1734,7 @@ EOF
   fi
 
   rc=0
-  out="$(run_engine "vet" "$new_fresh_sha" "$rebase_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$new_fresh_sha" "$rebase_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "SOAK_GATE_VIOLATION"; then
     echo "  ok 4d - vet genuinely new post-rebase feat -> SOAK_GATE_VIOLATION exit 1"
   else
@@ -1755,7 +1755,7 @@ EOF
   printf '2026-09-10T00:00:00Z\tPASS\tissue=#403\tsha=oldsha123\trun=12345\ttarget=live-ops\tevidence="smoke pass"\n' >> "$rebase_state/smoke-verdicts.log"
 
   rc=0
-  out="$(run_engine "vet" "$shifted_sha" "$rebase_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$shifted_sha" "$rebase_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED"; then
     echo "  ok 4e - vet rebased feat with changed patch-id -> APPROVED via smoke-verdicts.log issue-ref anchor (#292)"
   else
@@ -1776,7 +1776,7 @@ EOF
   # fork-qualified body ref, the same form a real upstream PR would.
   printf '[{"number": 1760, "state": "OPEN", "title": "mock upstream PR", "mergedAt": null, "headRefName": "fix/403-mock", "body": "Fixes leshchenko1979/opencrabs#403"}]\n' > "$OC_HARVEST_MOCK_PRS"
   rc=0
-  out="$(run_engine "vet" "$shifted_sha" "$rebase_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$shifted_sha" "$rebase_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "UPSTREAM_PR"; then
     echo "  ok 4f-628 - #628 the PR mock DECIDES: a mock naming the issue refuses where the empty mock approved"
   else
@@ -1819,7 +1819,7 @@ EOF
   export STATE_DIR="$anchor_state"
 
   rc=0
-  out="$(run_engine "vet" "$anchor_sha" "$anchor_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$anchor_sha" "$anchor_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "SOAK_GATE_VIOLATION" && grep -q "age: 0.3h" <<< "$out"; then
     echo "  ok 4f - a resolved swap anchor survives a foreign earlier smoke row (smoke fallback only at ts==0, #415)"
   else
@@ -1870,7 +1870,7 @@ EOF
   export OC_HARVEST_NOW_TS="1789633800"
 
   rc=0
-  out="$(run_engine "vet" "$un_sha" "$un_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$un_sha" "$un_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "SOAK_ANCHOR_UNRESOLVED"; then
     echo "  ok 4g - #563 an unresolvable soak anchor refuses under its OWN class"
   else
@@ -1894,7 +1894,7 @@ EOF
 
   # 5. Dispatch to busy lane -> CAPACITY_EXHAUSTED (rc 4)
   rc=0
-  out="$(run_engine "dispatch" "83" "$commit_83" "11111111-1111-1111-1111-111111111111" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$mock_ledger" "false" "true" 2>&1)" || rc=$?
+  out="$(run_engine "dispatch" "83" "$commit_83" "11111111-1111-1111-1111-111111111111" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)" || rc=$?
   if [ "$rc" -eq 4 ] && oc_has "$out" "CAPACITY_EXHAUSTED"; then
     echo "  ok 5 - dispatch to busy lane -> CAPACITY_EXHAUSTED exit 4"
   else
@@ -1941,7 +1941,7 @@ EOF
   # 6. Dispatch auto-selects idle lane -> SUCCESS (rc 0)
   rc=0
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$mock_ledger" "false" "true" 2>&1)" || rc=$?
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "22222222-2222-2222-2222-222222222222"; then
     echo "  ok 6 - dispatch auto-selects idle lane -> SUCCESS exit 0"
   else
@@ -1955,7 +1955,7 @@ EOF
   jq '.events += [{"n":99,"t":"2026-09-24T00:00:00Z","kind":"note","by":"hq","what":"MODE: HIGH-TRUST"}]' "$mock_ledger" > "$mode_ledger"
   export OC_LEDGER="$mode_ledger"
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$mock_ledger" "false" "true" 2>&1)"
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)"
   if [ "$?" -eq 0 ] && oc_has "$out" "Mode: HIGH-TRUST" && oc_has "$out" "Contract: AUTO-SHIP"; then
     echo "  ok 6a - HIGH-TRUST dispatch carries AUTO-SHIP contract"
   else
@@ -1963,7 +1963,7 @@ EOF
     return 1
   fi
   jq 'del(.events[-1])' "$mode_ledger" > "$mode_ledger.tmp" && mv "$mode_ledger.tmp" "$mode_ledger"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$mode_ledger" "false" "true" 2>&1)"
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mode_ledger" "false" "true" 2>&1)"
   rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "Mode: DEGRADED" && ! oc_has "$out" "AUTO-SHIP" && oc_has "$out" "owner approval" && ! oc_has "$out" "relaxed PR-Freeze Law"; then
     echo "  ok 6a-2 - missing MODE fails closed to DEGRADED"
@@ -1972,7 +1972,7 @@ EOF
     return 1
   fi
   export OC_LEDGER="$st_dir/missing-ledger.json"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$mock_ledger" "false" "true" 2>&1)"
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)"
   rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "Mode: DEGRADED" && ! oc_has "$out" "AUTO-SHIP"; then
     echo "  ok 6a-3 - unreadable ledger fails closed"
@@ -1996,19 +1996,19 @@ EOF
   local cursor_file="$st_dir/.oc-harvest-dispatch-lane-cursor"
   rm -f "$cursor_file"
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$spread_ledger" "false" "true" 2>&1)"
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$spread_ledger" "false" "true" 2>&1)"
   if ! oc_has "$out" "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"; then
     echo "  bad 6b - lane spread: no cursor should pick the first ordered lane, got: $out"
     return 1
   fi
   printf 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n' > "$cursor_file"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$spread_ledger" "false" "true" 2>&1)"
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$spread_ledger" "false" "true" 2>&1)"
   if ! oc_has "$out" "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"; then
     echo "  bad 6b - lane spread: cursor on aaaa should rotate to bbbb, got: $out"
     return 1
   fi
   printf 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\n' > "$cursor_file"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$spread_ledger" "false" "true" 2>&1)"
+  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$spread_ledger" "false" "true" 2>&1)"
   if oc_has "$out" "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"; then
     echo "  ok 6b - lane spread rotates across idle lanes (head -> bbbb -> wrap to aaaa)"
   else
@@ -2184,7 +2184,7 @@ EOF
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
 
   rc=0
-  out="$(run_engine "vet" "$commit_501" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_501" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_PARENT_UNHARVESTED"; then
     echo "  ok 8b - vet #501 (unharvested parent) -> REJECTED HELD_PARENT_UNHARVESTED exit 1"
   else
@@ -2193,7 +2193,7 @@ EOF
   fi
 
   rc=0
-  out="$(run_engine "vet" "$commit_502" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_502" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_BLOCKED_BY_DEPENDENCY"; then
     echo "  ok 8c - vet #502 (unharvested blocker) -> REJECTED HELD_BLOCKED_BY_DEPENDENCY exit 1"
   else
@@ -2202,7 +2202,7 @@ EOF
   fi
 
   rc=0
-  out="$(run_engine "vet" "$commit_503" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_503" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED"; then
     echo "  ok 8d - vet #503 (merged parent/blocker) -> APPROVED exit 0"
   else
@@ -2212,7 +2212,7 @@ EOF
 
   # 8e. Test dispatch with --draft flag
   rc=0
-  out="$(run_engine "dispatch" "503" "$commit_503" "none" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "$mock_ledger" "true" "true" 2>&1)" || rc=$?
+  out="$(run_engine "dispatch" "503" "$commit_503" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "true" "true" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "Draft: true (--draft)"; then
     echo "  ok 8e - dispatch with --draft -> envelope carries Draft: true exit 0"
   else
@@ -2231,7 +2231,7 @@ EOF
   commit_188="$(git -C "$mock_repo" rev-parse HEAD)"
 
   rc=0
-  out="$(run_engine "vet" "$commit_188" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_188" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_PARENT_UNHARVESTED"; then
     echo "  ok 8f - vet #188 (deleting path introduced by unharvested fork commit #126) -> REJECTED HELD_PARENT_UNHARVESTED exit 1"
   else
@@ -2266,7 +2266,7 @@ EOF
   export OC_HARVEST_MOCK_HIERARCHY="$mock_hier_file"
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
   rc=0
-  out="$(run_engine "vet" "$commit_601" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_601" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED" && oc_has "$out" "ADVISORY" && ! oc_has "$out" "UPSTREAM_VOID"; then
     echo "  ok 8g - vet #601 (same-issue add+modify, path absent upstream) -> APPROVED with ADVISORY, exit 0"
   else
@@ -2496,7 +2496,7 @@ EOF
   #      so 12b cannot pass merely because the gate refuses everything it sees.
   printf '{"manual_records": [{"unit": "some-other-unit", "pr": 1543, "issue": 9999}]}\n' > "$OC_HARVEST_REGISTRY_FILE"
   rc=0
-  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED"; then
     echo "  ok 12a - #564 control: an UNRELATED manual record does not block a clean unit"
   else
@@ -2507,7 +2507,7 @@ EOF
   # 12b. Match by ISSUE: the record names the issue, the target is the commit.
   printf '{"manual_records": [{"unit": "manual-gate-fixture", "pr": 1543, "issue": 9911}]}\n' > "$OC_HARVEST_REGISTRY_FILE"
   rc=0
-  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "MANUALLY_SETTLED"; then
     echo "  ok 12b - #564 a manual record matching by ISSUE refuses MANUALLY_SETTLED"
   else
@@ -2519,7 +2519,7 @@ EOF
   #      lane records a unit whose issue number it never learned.
   printf '{"manual_records": [{"unit": "9911", "pr": 1543, "issue": 9999}]}\n' > "$OC_HARVEST_REGISTRY_FILE"
   rc=0
-  out="$(run_engine "vet" "9911" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "9911" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "MANUALLY_SETTLED"; then
     echo "  ok 12c - #564 a manual record matching by UNIT refuses MANUALLY_SETTLED"
   else
@@ -2533,7 +2533,7 @@ EOF
   #      reported "filed in PR #1510" -- the OPPOSITE of the recorded decision.
   printf '{"manual_records": [{"unit": "manual-gate-fixture", "pr": 0, "issue": 9911, "status": "not-upstreamable", "reason": "carried upstream already"}]}\n' > "$OC_HARVEST_REGISTRY_FILE"
   rc=0
-  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "NOT UPSTREAMABLE" && oc_has "$out" "carried upstream already"; then
     echo "  ok 12d - #564 a not-upstreamable record refuses AS not-upstreamable, carrying its reason"
   else
@@ -2551,7 +2551,7 @@ EOF
   #      PR #0", which is a statement about the world that is false.
   printf '{"manual_records": [{"unit": "manual-gate-fixture", "pr": 0, "issue": 9911}]}\n' > "$OC_HARVEST_REGISTRY_FILE"
   rc=0
-  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 1 ] && oc_has "$out" "NO PR number recorded"; then
     echo "  ok 12e - #564 a row with no PR number refuses honestly instead of claiming PR #0"
   else
@@ -2569,7 +2569,7 @@ EOF
   export OC_HARVEST_REGISTRY_FILE="$st_dir/definitely-absent-registry.json"
   rm -f "$OC_HARVEST_REGISTRY_FILE"
   rc=0
-  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "adolfousier/opencrabs" "false" 2>&1)" || rc=$?
+  out="$(run_engine "vet" "$commit_m" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "false" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && oc_has "$out" "APPROVED"; then
     echo "  ok 12f - #564 an ABSENT registry leaves the gate inert (no false refusal)"
   else

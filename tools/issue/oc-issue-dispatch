@@ -116,13 +116,13 @@ if not os.path.exists(DEFAULT_LEDGER):
 DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
 
 # ---- two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03) ----
-# BINARY issues live upstream (adolfousier/opencrabs); FACTORY issues (this
+# BINARY issues live upstream (opencrabs/opencrabs); FACTORY issues (this
 # tools/** tree, CI, release automation, process) live on the dev-factory
 # tracker. The historical fork is READ-ONLY for NEW issues but still holds an
 # open corpus, so it stays selectable.
 TRACKER_SLUGS = {
     "factory": "leshchenko1979/opencrabs-dev-factory",
-    "binary":  "adolfousier/opencrabs",
+    "binary":  "opencrabs/opencrabs",
     "fork":    "leshchenko1979/opencrabs",
 }
 DEFAULT_TRACKER = os.environ.get("OC_ISSUE_DISPATCH_TRACKER", "factory")
@@ -853,7 +853,7 @@ def fetch_landed_issues(repo_path, mock_landed=None):
             if not value:
                 continue
             # A ref qualified with a DIFFERENT tracker names a different number
-            # namespace: `adolfousier/opencrabs#1419` is an EXPLICIT upstream
+            # namespace: `opencrabs/opencrabs#1419` is an EXPLICIT upstream
             # citation and must never mark a factory issue landed (the #337
             # defect, generalised to three trackers). Only bare refs and refs
             # qualified with the ACTIVE tracker are ours.
@@ -2719,7 +2719,7 @@ def run_selftest():
         # (3) FORK commit citing upstream's namespace EXPLICITLY.
         _mk("chore: absorb upstream",
             ["Session-Id: 22222222-2222-2222-2222-222222222222",
-             "Issue-Ref: adolfousier/opencrabs#1419"])
+             "Issue-Ref: opencrabs/opencrabs#1419"])
         # (4) FORK commit with the canonical QUALIFIED fork ref.
         _mk("fix(tools): qualified ref",
             ["Session-Id: 33333333-3333-3333-3333-333333333333",
@@ -3196,7 +3196,7 @@ def main():
     parser.add_argument("--to", help="Target session UUID for targeted dispatch")
     parser.add_argument("--tracker", choices=["factory", "binary", "fork"], default=DEFAULT_TRACKER,
                         help="Issue tracker to dispatch from (default: factory — the dev-factory repo "
-                             "leshchenko1979/opencrabs-dev-factory; 'binary' = upstream adolfousier/opencrabs; "
+                             "leshchenko1979/opencrabs-dev-factory; 'binary' = upstream opencrabs/opencrabs; "
                              "'fork' = the historical leshchenko1979/opencrabs, read-only for NEW issues). "
                              "Two-stream routing, SKILL.md v0.4.284")
     # NOT a slug: this --repo is the PATH to the opencrabs checkout (used as cwd

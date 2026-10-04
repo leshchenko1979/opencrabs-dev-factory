@@ -2,7 +2,7 @@
 # =============================================================================
 # oc-harvest-census — mechanized harvest inventory, gate verification, and settling
 #
-# Settling authority is the upstream GitHub PR API (adolfousier/opencrabs),
+# Settling authority is the upstream GitHub PR API (opencrabs/opencrabs),
 # cross-referenced with fork commit trailers (Issue-Ref: leshchenko1979/opencrabs#N)
 # and branch names.
 #
@@ -76,7 +76,7 @@ PROG="$(basename "$0")"
 # (#307 — the claim-closure + claim-footprint predicates live there, not here).
 export OC_TOOLS_DIR
 REPO="${HOME}/opencrabs"
-UPSTREAM_REPO="adolfousier/opencrabs"
+UPSTREAM_REPO="opencrabs/opencrabs"
 STATE_DIR="${HOME}/.opencrabs/profiles/ops/opencrabs-dev"
 REGISTRY_FILE="${STATE_DIR}/harvest-registry.json"
 # #365: a DECLARED subject, passed through to the engine as argv[6]. It is a
@@ -1772,7 +1772,7 @@ def get_main_resident_commits(repo_path):
     so once a member was harvested its anchor became unreachable and the swapped
     leg refused it PERMANENTLY -- unresolvable by any legitimate action, since
     the very act of harvesting is what broke it. Measured on #119: upstream PR
-    adolfousier/opencrabs#1481 MERGED, fork merge a0f581752 an ancestor of main,
+    opencrabs/opencrabs#1481 MERGED, fork merge a0f581752 an ancestor of main,
     and `git log adolfousier/main..origin/main` carries 0 commits for it while
     full history carries 5.
 
@@ -1886,7 +1886,7 @@ def member_ready(iss, commits_by_issue, repo_path, swaps, st_dir,
     # #654: a HARVESTED member can never satisfy the smoke leg. Its fork smoke
     # row was never owed -- the harvest IS the completion -- so demanding one
     # held the whole cluster forever, and no legitimate action could clear it.
-    # Measured: #119 CLOSED, upstream PR adolfousier/opencrabs#1481 MERGED, fork
+    # Measured: #119 CLOSED, upstream PR opencrabs/opencrabs#1481 MERGED, fork
     # merge a0f581752 an ancestor of main, and ZERO rows carry `issue=#119` in
     # smoke-verdicts.log (read by the structured field, not a substring -- the
     # prose form false-positives on cross-references, per #415). The harvest is
@@ -5613,7 +5613,7 @@ EOF
   cl_out="$(STATE_DIR="$selftest_tmp" OC_HARVEST_MOCK_PRS="$mock_prs" \
     OC_HARVEST_MOCK_COMMITS="$mock_cl_c" OC_HARVEST_MOCK_ISSUES="$mock_cl_i" \
     OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
-    run_engine "clusters" "adolfousier/opencrabs" "$selftest_tmp" "$mock_reg" "" "" "--json" 2>&1)" || rc=$?
+    run_engine "clusters" "opencrabs/opencrabs" "$selftest_tmp" "$mock_reg" "" "" "--json" 2>&1)" || rc=$?
   cl_verdicts="$(printf '%s' "$cl_out" | python3 -c '
 import json,sys
 try: d=json.load(sys.stdin)
@@ -5656,7 +5656,7 @@ sys.exit(0 if json.load(sys.stdin)["summary"]["open_fix_titled"]==2 else 1)
   cl_tbl="$(STATE_DIR="$selftest_tmp" OC_HARVEST_MOCK_PRS="$mock_prs" \
     OC_HARVEST_MOCK_COMMITS="$mock_cl_c" OC_HARVEST_MOCK_ISSUES="$mock_cl_i" \
     OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
-    run_engine "clusters" "adolfousier/opencrabs" "$selftest_tmp" "$mock_reg" "" "" 2>&1)" || rc=$?
+    run_engine "clusters" "opencrabs/opencrabs" "$selftest_tmp" "$mock_reg" "" "" 2>&1)" || rc=$?
   cl_rows="$(printf '%s\n' "$cl_tbl" | grep -c '^CLUSTER #')"
   cl_json_n="$(printf '%s' "$cl_out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["clusters"]))' 2>/dev/null || echo -1)"
   if [ "$rc" -eq 0 ] && [ "$cl_rows" = "$cl_json_n" ] && [ "$cl_rows" = "3" ]; then
@@ -5671,7 +5671,7 @@ sys.exit(0 if json.load(sys.stdin)["summary"]["open_fix_titled"]==2 else 1)
   cl_of="$(STATE_DIR="$selftest_tmp" OC_HARVEST_MOCK_PRS="$mock_prs" \
     OC_HARVEST_MOCK_COMMITS="$mock_cl_c" OC_HARVEST_MOCK_ISSUES="$mock_cl_i" \
     OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
-    run_engine "clusters" "adolfousier/opencrabs" "$selftest_tmp" "$mock_reg" "" "" "--open-fix" 2>&1)" || rc=$?
+    run_engine "clusters" "opencrabs/opencrabs" "$selftest_tmp" "$mock_reg" "" "" "--open-fix" 2>&1)" || rc=$?
   # #801 must be IN the narrowed view: it is fix-titled by ISSUE TITLE while its
   # commit is feat(...), so a commit-prefix classifier drops it and the row
   # count alone would still read 2 (it would swap in #800 instead).
@@ -5693,7 +5693,7 @@ sys.exit(0 if json.load(sys.stdin)["summary"]["open_fix_titled"]==2 else 1)
   rc=0
   cl_bad="$(PATH="$cl_stub:$PATH" STATE_DIR="$selftest_tmp" OC_HARVEST_MOCK_PRS="$mock_prs" \
     OC_HARVEST_MOCK_COMMITS="$mock_cl_c" OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
-    run_engine "clusters" "adolfousier/opencrabs" "$selftest_tmp" "$mock_reg" "" "" 2>&1)" || rc=$?
+    run_engine "clusters" "opencrabs/opencrabs" "$selftest_tmp" "$mock_reg" "" "" 2>&1)" || rc=$?
   if [ "$rc" -eq 3 ] && oc_has "$cl_bad" "cannot read the fork issue list"; then
     ok "clusters: unreadable issue list exits 3 and says why (never classifies against an empty map)"
   else
@@ -5977,7 +5977,7 @@ C601NEOF
   cv_out="$(OC_HARVEST_MOCK_RELATIONS="$rel_empty" OC_HARVEST_MOCK_ISSUE_STATE="$st_open" \
     OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
     OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
-    run_engine "clusters" "adolfousier/opencrabs" "$selftest_tmp" "$mock_reg" "" "" "--open-fix" 2>&1)" || cv_rc=$?
+    run_engine "clusters" "opencrabs/opencrabs" "$selftest_tmp" "$mock_reg" "" "" "--open-fix" 2>&1)" || cv_rc=$?
   if [ "$cv_rc" -eq 0 ] && oc_has "$cv_out" "HELD: 0 of 1 open fix-titled"; then
     ok "clusters view: an OPEN own issue does NOT hold its own set (target excluded)"
   else
@@ -6090,7 +6090,7 @@ C602MEOF
   # ---- #654: A HARVESTED MEMBER SATISFIES THE SMOKE LEG -------------------
   # A harvested member's fork smoke row was never owed -- the harvest IS the
   # completion -- so demanding one held the whole cluster forever. Measured:
-  # #119 CLOSED, upstream PR adolfousier/opencrabs#1481 MERGED, fork merge
+  # #119 CLOSED, upstream PR opencrabs/opencrabs#1481 MERGED, fork merge
   # a0f581752 an ancestor of main, and ZERO rows carry `issue=#119`.
   local mock_prs_harv="$setdir/mock_prs_harv.json"
   printf '%s\n' '[{"number": 1481, "title": "fix(set): a harvested member", "state": "MERGED", "headRefName": "leshchenko1979/fix/set-602", "mergedAt": "2026-09-10T00:00:00Z", "body": "Fixes leshchenko1979/opencrabs#602"}]' > "$mock_prs_harv"

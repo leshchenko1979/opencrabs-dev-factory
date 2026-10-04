@@ -270,11 +270,18 @@ _DIGITS_RE = re.compile(r"[0-9]+")
 #:
 #: Before v0.4.284 this was a SINGLE fork slug, so a reference qualified
 #: `adolfousier/opencrabs#N` read as foreign and was skipped. That was correct
-#: while the fork was the only tracker — and is WRONG now, because
-#: `adolfousier/opencrabs` IS the binary tracker, and a lane working a binary
-#: issue writes exactly that trailer. The set, not the slug, is the discriminator.
+#: while the fork was the only tracker — and is WRONG now, because that slug IS
+#: the binary tracker, and a lane working a binary issue writes exactly that
+#: trailer. The set, not the slug, is the discriminator.
+#:
+#: 2026-10-04 — the upstream repo was RENAMED `adolfousier/opencrabs` ->
+#: `opencrabs/opencrabs`. The NEW slug is the canonical one lanes now write; the
+#: LEGACY slug stays in the set because GitHub redirects it and refs written
+#: before the rename must keep anchoring. Dropping the legacy slug would turn
+#: every pre-rename binary-tracker ref into a #379 foreign-ref refusal.
 HOME_REPO_SLUGS = (
-    "adolfousier/opencrabs",                 # BINARY tracker (upstream)
+    "opencrabs/opencrabs",                   # BINARY tracker (upstream, canonical)
+    "adolfousier/opencrabs",                 # BINARY tracker (legacy slug; redirects)
     "leshchenko1979/opencrabs-dev-factory",  # FACTORY tracker
     "leshchenko1979/opencrabs",              # FORK (historical; PRs still land here)
 )

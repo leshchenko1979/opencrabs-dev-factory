@@ -852,13 +852,17 @@ chk("primary live n=8034 parenthetical excluded",
 # #379 + v0.4.284: the ownership test is a SET of our three trackers
 # (HOME_REPO_SLUGS), not one slug. This pair used to expect [] for a
 # slug-qualified reference -- the expectation pinned the OLD law, under which
-# `adolfousier/opencrabs` was foreign. Under v0.4.284 it IS the binary tracker,
-# so that reference ANCHORS; the refusal now applies only to a slug we do NOT own.
+# the binary-tracker slug was foreign. Under v0.4.284 it IS one of ours, and
+# since 2026-10-04 the tracker is `opencrabs/opencrabs` (renamed from the legacy
+# `adolfousier/opencrabs`, which still redirects and stays in the set), so a
+# reference on EITHER slug ANCHORS; the refusal applies only to a slug we do NOT own.
 chk("primary live n=1678 binary-tracker slug is now a target",
     oc.primary_issue_tokens(
         "md-plane wave lane claims n=1675 PATH-2 execution: upstream issue "
-        "adolfousier/opencrabs#1419 filed FIRST"), [1419])
+        "opencrabs/opencrabs#1419 filed FIRST"), [1419])
 chk("ref binary-tracker slug yields its number",
+    oc.issue_ref_tokens("upstream opencrabs/opencrabs#1419 filed"), [1419])
+chk("ref LEGACY binary-tracker slug still yields its number",
     oc.issue_ref_tokens("upstream adolfousier/opencrabs#1419 filed"), [1419])
 chk("ref factory-tracker slug yields its number",
     oc.issue_ref_tokens("factory leshchenko1979/opencrabs-dev-factory#344"), [344])
@@ -875,7 +879,7 @@ chk("ref fork slug still yields its number",
 chk("primary fork-qualified ref keeps its number",
     oc.primary_issue_tokens("Issue-Ref leshchenko1979/opencrabs#1419"), [1419])
 chk("primary bare ref in the body does not move the address",
-    oc.primary_issue_tokens("CLAIM #400 - upstream adolfousier/opencrabs#1419"), [400])
+    oc.primary_issue_tokens("CLAIM #400 - upstream opencrabs/opencrabs#1419"), [400])
 # the false-negative guard: a filesystem path before a SPACED `issue N` must
 # not read as a slug and silently drop a real fork reference. This is why the
 # predicate matches the immediate form only.
@@ -1019,15 +1023,15 @@ _g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(y): real work",
                          "--trailer", "Issue-Ref: #702")
 # cross-space trap: a trailer naming a repo we do NOT track must not fence a
 # home issue. v0.4.284: the ownership test is HOME_REPO_SLUGS (three trackers),
-# so this fixture must name a genuinely THIRD-PARTY slug -- `adolfousier/opencrabs`
-# used to stand here and is now one of ours, which is the positive control below.
+# so this fixture must name a genuinely THIRD-PARTY slug -- the binary-tracker
+# slug used to stand here and is now one of ours (the positive control below).
 with open(_fx + "/thirdparty.txt", "w") as f: f.write("u\n")
 _g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(z): third-party work",
                          "--trailer", "Issue-Ref: acme/widgets#703")
 # ...and the positive control: a BINARY-tracker trailer IS ours and must anchor.
 with open(_fx + "/binary.txt", "w") as f: f.write("b\n")
 _g(_fx, "add", "-A"); _g(_fx, "commit", "-q", "-m", "fix(b): binary-tracker work",
-                         "--trailer", "Issue-Ref: adolfousier/opencrabs#705")
+                         "--trailer", "Issue-Ref: opencrabs/opencrabs#705")
 _idx = oc.issue_ref_index(_fx)
 chk("#307 subject-prose mention resolves to NO commits", oc.resolve_issue_commits(_fx, 701), [])
 chk("#307 subject-prose mention resolves to NO files", oc.resolve_issue_files(_fx, 701), [])
