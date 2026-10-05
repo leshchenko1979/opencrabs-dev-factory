@@ -3513,7 +3513,7 @@ case "$MODE" in
       shadow_log ship "$SHA" "$FEATURES" "pushed"   # F-M2: remote mutation journaled before the next step can fail
       echo "pushed $SHA -> fork main"
       OC_REPO="$FORK" OC_LEDGER="$LEDGER" "$VALIDATE" --repo "$FORK" --ledger "$LEDGER" "$SHA" \
-        || { shadow_log ship "$SHA" "$FEATURES" "gate-fail"; die 2 "ORDER gates failed post-push (see validator exit code)"; }
+        || { shadow_log ship "$SHA" "$FEATURES" "gate-fail"; die 2 "OC_DEPLOY_GATE=order-gate-failed: ORDER gates failed post-push (see validator exit code)"; }
       echo "ORDER gates 4/4 PASS ($SHA)"
       "$GH" workflow run "$WF" --repo "$FORK" --ref "$CARRIER_REF" \
         -f source_repository="$FORK" -f source_ref="$SHA" -f features="$FEATURES" \

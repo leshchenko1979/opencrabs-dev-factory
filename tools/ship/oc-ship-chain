@@ -1365,6 +1365,14 @@ case "$SHIP_RC" in
       *OC_DEPLOY_GATE=gate-missing*|*OC_DEPLOY_GATE=gate-inflight*|*OC_DEPLOY_GATE=gate-red*|*OC_DEPLOY_GATE=gate-mismatch*)
         journal "LEG4 ship GATE-NOT-GREEN (oc-deploy refused the ungated landing)"
         die "GATE-NOT-GREEN: oc-deploy refused to land $SHA — the gate carried into ship was missing, in flight, or not green. This is a chain bookkeeping fault, NOT infra: re-run naming the run that gated this sha, oc-ship-chain --sha $SHA --branch $BRANCH --gated-run <id>." 4 ;;
+      *OC_DEPLOY_GATE=order-gate-failed*)
+        # #756: oc-deploy's post-push ORDER validator (oc-order-validate:
+        # SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA AFTER the push.
+        # Before this arm the producer emitted no token, so the fault fell to
+        # the INFRA catch-all below and sent the lane hunting a broken
+        # component instead of its own commit.
+        journal "LEG4 ship ORDER-GATE-FAILED (oc-deploy's post-push ORDER validator rejected $SHA)"
+        die "ORDER-GATE-FAILED: oc-deploy's post-push ORDER validator (SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA after the push — the sha is now on fork main but ungated. This is a chain bookkeeping fault, NOT infra: run oc-order-validate --repo <fork> --ledger <ledger> $SHA to read which gate failed, fix the branch (re-sign / rebase so it is contained in fork main), then re-run: oc-ship-chain --sha <new-sha> --branch $BRANCH" 4 ;;
     esac
     journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
 esac
@@ -1789,6 +1797,16 @@ FGHEOF
   RC=0; OUT="$(FAKE_SHIP_RC=4 run_chain --sha "$FSHA" --branch feat 2>&1)" || RC=$?
   check_rc "ship-infra-other-rc" "$RC" 6
   grep -q "LEG4 ship INFRA rc=4" "$T/journal.log" && ok "journal-ship-infra" || bad "journal-ship-infra"
+
+  # 3d-bis. #756: oc-deploy's post-push ORDER-validator death (die 2) now
+  #     carries OC_DEPLOY_GATE=order-gate-failed, so the chain names it as a
+  #     gate fault (rc 4) instead of the INFRA bucket (rc 6). Before the fix
+  #     the producer emitted no token and the catch-all mislabelled it INFRA.
+  rm -f "$T/journal.log"
+  RC=0; OUT="$(FAKE_SHIP_RC=2 FAKE_SHIP_STDERR='OC_DEPLOY_GATE=order-gate-failed: ORDER gates failed post-push (see validator exit code)' run_chain --sha "$FSHA" --branch feat 2>&1)" || RC=$?
+  check_rc "ship-order-gate-failed" "$RC" 4
+  grep -q "LEG4 ship ORDER-GATE-FAILED" "$T/journal.log" && ok "journal-ship-order-gate-failed" || bad "journal-ship-order-gate-failed"
+  grep -q "LEG4 ship INFRA" "$T/journal.log" && bad "order-gate-not-infra" || ok "order-gate-not-infra"
 
   # 3e. the LEG4 --wait DEFAULT is the other half of the fix: with no --wait
   #     flag the chain must hand ship a budget that outlasts a real carrier
