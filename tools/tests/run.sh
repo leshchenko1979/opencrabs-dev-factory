@@ -154,7 +154,7 @@ run_selftest() {
 # BATTERY_IN_CHUNK guards the re-entry so sourcing the extracted prelude
 # (which contains this driver) cannot recurse.
 BATTERY_MODE="sequential"
-extract_chunk() { # $1 = 1-based section chunk; prints prelude + that section
+extract_chunk() { # $1 = 1-based section chunk; $2 = file (default $0); prints prelude + that section
   # POSITIONAL CONSTRAINT (measured 2026-09-25): the `/^verdict=PASS/ { exit }`
   # guard below is what stops the prelude extraction at the receipt write. A
   # numbered section placed AFTER that line therefore extracts to an EMPTY chunk
@@ -162,11 +162,12 @@ extract_chunk() { # $1 = 1-based section chunk; prints prelude + that section
   # summary and the PASS count simply does not move. Section 78 landed there and
   # was invisible. Put new sections ABOVE the receipt write, and the leg in
   # section 78 asserts the last section stays reachable.
+  # $2 exists so the #671 control can run the extractor over a FIXTURE file.
   awk -v want="$1" '
     /^# ---- [0-9]/ { n++; insec = (n == want); next }
     /^verdict=PASS/ { exit }
     n == 0 || insec { print }
-  ' "$0"
+  ' "${2:-$0}"
 }
 if [ "${1:-}" = "--chunk" ] && [ -n "${2:-}" ] && [ -z "${BATTERY_IN_CHUNK:-}" ]; then
   export BATTERY_IN_CHUNK=1
@@ -2438,15 +2439,46 @@ done
 # clean summary. Measured 2026-09-25: section 78 landed there and the battery
 # count did not move (255 -> 255). Assert the extractor can reach the LAST
 # numbered section, so this trap reddens instead of hiding.
+#
+# #671: the first version of this leg was a BLIND COUNTER -- it grepped the
+# extracted chunk for /^# ---- [0-9]|oc-|negctl/, and the PRELUDE alone
+# satisfies that (it names oc-*, oc-root.sh, negctl-*, and the section-header
+# pattern in its own comments), so _reach was always > 0 and the leg stayed
+# green on a file where the trap was LIVE. Judge the extractor by RUNNING it:
+# the last section's chunk must carry lines BEYOND the prelude, a property only
+# a real extraction can satisfy. The two fixtures below are the control that
+# proves this check can FIRE (the blind counter could not).
+_extractor_reaches_last() { # $1 = battery script; 0 = last section reachable, 1 = not
+  local f="$1" n pre chunk
+  n="$(grep -cE '^# ---- [0-9]' "$f")"
+  [ "${n:-0}" -gt 0 ] || return 1
+  pre="$(extract_chunk 0 "$f" | wc -l)"
+  chunk="$(extract_chunk "$n" "$f" | wc -l)"
+  [ "${chunk:-0}" -gt "${pre:-0}" ]
+}
 _nch="$(grep -cE '^# ---- [0-9]' "$0")"
-_reach="$(awk -v want="$_nch" '
-    /^# ---- [0-9]/ { n++; insec = (n == want); next }
-    /^verdict=PASS/ { exit }
-    n == 0 || insec { print }
-  ' "$0" | grep -cE '^# ---- [0-9]|oc-|negctl')"
-[ "${_reach:-0}" -gt 0 ] \
-  && ok "battery extractor reaches the LAST numbered section (chunk $_nch)" \
-  || bad "battery extractor CANNOT reach section $_nch — it sits after the receipt write, so it runs zero legs in parallel mode"
+if _extractor_reaches_last "$0"; then
+  ok "battery extractor reaches the LAST numbered section (chunk $_nch)"
+else
+  bad "battery extractor CANNOT reach section $_nch — it sits after the receipt write, so it extracts to an EMPTY chunk and runs zero legs in parallel mode"
+fi
+# --- #671 controls: the check must REDDEN on a trapped file and stay GREEN on
+# a reachable one. Both are hermetic fixtures, so they do not depend on where
+# THIS file's own last section happens to sit.
+_671_ok="$(mktemp)"; _671_trap="$(mktemp)"
+# The prelude line carries an `oc-` token on purpose: the real run.sh prelude
+# self-matches /oc-|negctl/ (that is exactly what made the old counter blind),
+# so these fixtures model the trap faithfully -- the old check would have read
+# GREEN on _671_trap, this one reads UNREACHABLE.
+printf '# prelude mentioning oc-root.sh and negctl-*\n# ---- 1 one\nsection "one"\n# ---- 2 two\nsection "two"\nverdict=PASS; :\n' > "$_671_ok"
+printf '# prelude mentioning oc-root.sh and negctl-*\n# ---- 1 one\nsection "one"\n# ---- 2 two\nsection "two"\nverdict=PASS; :\n# ---- 3 three\nsection "three"\n' > "$_671_trap"
+_extractor_reaches_last "$_671_ok" \
+  && ok "#671 control: reachable last section reads REACHABLE" \
+  || bad "#671 control: reachable fixture wrongly read UNREACHABLE"
+_extractor_reaches_last "$_671_trap" \
+  && bad "#671 control: trapped fixture (last section after verdict=PASS) wrongly read REACHABLE — the check is blind" \
+  || ok "#671 control: trapped last section reads UNREACHABLE (check can fire)"
+rm -f "$_671_ok" "$_671_trap"
 
 
 
