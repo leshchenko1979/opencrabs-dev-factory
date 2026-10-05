@@ -202,6 +202,11 @@ fi
 _chain_wake_arming_lane() { # $1 = exit code
   local rc="$1" uuid="" chain_lib="" bin="" prof="" _dep="" _state=""
   case "$rc" in 0|2) return 0 ;; esac          # 0 = SWAPPED, 2 = usage
+  # #14: only a real chain ATTEMPT may wake. Set after the required-arg
+  # checks, so --help (usage, rc 0 now) and --eval-docs-skip (rc 1/3) never
+  # reach here with intent set. Without this, a routine `--help | head` woke
+  # the querying lane (five times, four lanes, 2026-09-30..10-05).
+  [ "${CHAIN_INTENT:-0}" = 1 ] || return 0
   [ "${OC_SHIPCHAIN_NO_WAKE:-0}" = 1 ] && return 0
   # HERMETICITY, and it must key on the ENVIRONMENT marker, not on argv.
   # oc_is_selftest() reads OC_LOG_ARGS -- the invocation's own argument list --
@@ -305,10 +310,18 @@ ISSUELOG_BIN="${OC_ISSUELOG_BIN:-$TOOLS_DIR/issue/oc-issue-log}"
 FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_GH:-gh}"
 
-usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF"; exit 0; }
+usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF" || :; exit 0; }
 die() { printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 SHA=""; BRANCH=""; ISSUE=""; ISSUE_REPO_FLAG=""; REPO=""; DRY=0; NOLEDGER=0; GATED_SHA=""; GATED_RUN=""
+# #14: set ONLY once the invocation has proven it is a chain attempt (both
+# --sha and --branch named). The EXIT-trap wake keys on this, so a NON-chain
+# invocation -- `--help`, or `--eval-docs-skip` (which exits 1/3) -- can never
+# wake a lane with a fabricated "your chain STOPPED". Measured 2026-10-05: five
+# `--help` exits at rc 141 (SIGPIPE from a short reader) across four lanes, each
+# one waking the lane that ran it, with SHA and STATE_DIR unset so the state line
+# read "deployed.sha is ABSENT" off the root path and the sha rendered "?".
+CHAIN_INTENT=0
 # #672: set when NO leg runs in this chain and the gate is carried forward from an
 # earlier run. The banner must not then claim a mode that never ran.
 GATE_CARRIED_FORWARD=""
@@ -494,6 +507,7 @@ fi
 
 [ -n "$SHA" ]    || die "--sha required"
 [ -n "$BRANCH" ] || die "--branch required"
+CHAIN_INTENT=1
 
 # ---- FREEZE GUARD (plan step 3, 2026-09-11; owner-scoped to opencrabs-dev) ----
 # Blocks NEW CHAINS during the fork-rebase window; remove the freeze file at
@@ -2313,7 +2327,7 @@ EOF
   ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" \
     OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
     OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
-    _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+    CHAIN_INTENT=1 _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"the ship LANDED for this sha"*) ok "wake-reads-marker-post-swap" ;;
     *) bad "wake-reads-marker-post-swap: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"UNSHIPPED"*) bad "wake-post-swap-claims-unshipped" ;;
@@ -2322,7 +2336,7 @@ EOF
   ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" \
     OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
     OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
-    _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+    CHAIN_INTENT=1 _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"deployed.sha is ABSENT"*) ok "wake-reads-marker-no-swap" ;;
     *) bad "wake-reads-marker-no-swap: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
 
@@ -2351,6 +2365,48 @@ EOF
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-hermetic-exit-code" "$RC" 7
   [ -s "$T/wake.log" ] && bad "wake-hermetic-no-allow-flag" || ok "wake-hermetic-no-allow-flag"
+
+  # 14. #14: a NON-chain invocation must never wake the arming lane. Measured
+  #     2026-10-05: `oc-ship-chain --help` piped into a short reader raised
+  #     SIGPIPE (awk, rc 141) which, under set -e, aborted BEFORE `exit 0` and
+  #     fired the EXIT-trap wake with SHA and STATE_DIR BOTH unset -- so
+  #     "${STATE_DIR:-}/deployed.sha" resolved to the ROOT path, was absent, and
+  #     the delivered message read "deployed.sha is ABSENT" with the sha rendered
+  #     "?". Five occurrences, four lanes, 2026-09-30..10-05. `--eval-docs-skip`
+  #     (exit 1/3) is the same class AND is a MANDATED lane invocation
+  #     (editor.md:691), so the routine query path woke the querying lane too.
+  #     The discriminator is CHAIN_INTENT (set only after the --sha/--branch
+  #     checks). These legs are the NEGATIVE half; the wake-rc7-fires and
+  #     wake-reads-marker-* legs above are the positive control (they set
+  #     CHAIN_INTENT=1).
+  # 14a. the pipe itself: rc 0, not 141 (usage() tolerates EPIPE).
+  RC=0; ( set -o pipefail; OC_SHIPCHAIN_IMPL=0 bash "$SELF" --help 2>/dev/null | head -2 >/dev/null ) || RC=$?
+  check_rc "help-short-pipe-rc0" "$RC" 0
+  # 14b. --help does not wake even with the stub armed.
+  rm -f "$T/wake.log"
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    bash "$SELF" --help 2>&1)" || RC=$?
+  check_rc "help-no-wake-rc0" "$RC" 0
+  [ -s "$T/wake.log" ] && bad "help-no-wake" || ok "help-no-wake"
+  # 14c. THE DISCRIMINATING LEG: rc 1 -- non-zero, so the pre-#14 predicate WOULD
+  #      wake -- yet no chain was attempted. Fixture feat.txt is code, so
+  #      --eval-docs-skip answers GATE-REQUIRED rc 1.
+  rm -f "$T/wake.log"
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" OC_FORK_REPO="$T/clone" \
+    bash "$SELF" --eval-docs-skip "$FSHA" 2>&1)" || RC=$?
+  check_rc "eval-docs-skip-rc1" "$RC" 1
+  [ -s "$T/wake.log" ] && bad "eval-docs-skip-no-wake" || ok "eval-docs-skip-no-wake"
+  # 14d. the predicate directly, intent unset -> suppressed. Positive twin is the
+  #      wake-reads-marker-* pair above (same call with CHAIN_INTENT=1).
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-14" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+  [ -s "$T/wake.log" ] && bad "wake-no-intent-suppressed" || ok "wake-no-intent-suppressed"
+
 
   # 11. FREEZE GUARD (contract fix 2026-09-11, owner word via HQ): a REAL chain
   #     is blocked rc 3 while the freeze file is present, and the sanctioned
