@@ -5,9 +5,11 @@
 # misattribution lesson — a RED gate is NOT automatically the PR's fault).
 #
 # Usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo <slug|path>] [--gh <cmd>]
-#   Pulls the PR's changed files and the failed run's failing files (parsed
-#   from `gh run view --log-failed` rust-style `--> path` markers and generic
-#   error lines), intersects, and verdicts:
+#        oc-pr-fault-scope --ref <branch-or-sha> --run <run-id> [--repo <path>] [--base <ref>]
+#   Pulls the changed files (the PR diff, or — for fork lanes with no PR —
+#   `git diff --name-only <base>...<ref>` when --ref is given) and the failed
+#   run's failing files (parsed from `gh run view --log-failed` rust-style
+#   `--> path` markers and generic error lines), intersects, and verdicts:
 #     IN-SCOPE   — at least one failing file is touched by the PR (the lane owns it)
 #     BASE-FAULT — zero intersection (pre-existing/base problem; do NOT chase)
 #
@@ -27,31 +29,60 @@ trap 'oc_log_finish $?' EXIT
 die() { echo "oc-pr-fault-scope: $2" >&2; exit "$1"; }
 
 cmd_scope() {
-  local pr="" run="" repo="${OC_REPO:-leshchenko1979/opencrabs}" gh="${GH_BIN:-gh}"
+  local pr="" ref="" base="" run="" repo="${OC_REPO:-leshchenko1979/opencrabs}" gh="${GH_BIN:-gh}"
   while [ $# -gt 0 ]; do case "$1" in
     --run) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --run needs a value" >&2; exit 2; }; run=""$2""; shift 2 ;;
     --repo) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --repo needs a value" >&2; exit 2; }; repo=""$2""; shift 2 ;;
     --gh) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --gh needs a value" >&2; exit 2; }; gh=""$2""; shift 2 ;;
-    -h|--help) echo "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh cmd]"; echo "Exit: 0 IN-SCOPE / 1 BASE-FAULT / 2 usage / 3 gh failure"; exit 0 ;;  # C-#3: help=0
+    --ref)  [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --ref needs a value" >&2; exit 2; }; ref="$2"; shift 2 ;;
+    --base) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --base needs a value" >&2; exit 2; }; base="$2"; shift 2 ;;
+    -h|--help) echo "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh cmd]"; echo "       oc-pr-fault-scope --ref <branch-or-sha> --run <run-id> [--repo path] [--base <ref>]"; echo "Exit: 0 IN-SCOPE / 1 BASE-FAULT / 2 usage / 3 gh failure"; exit 0 ;;  # C-#3: help=0
     --*) die 2 "unknown flag '$1'" ;;
     *) if [ -z "$pr" ]; then pr="$1"; fi; shift ;;
   esac; done
-  [ -n "$pr" ] && [ -n "$run" ] || die 2 "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh cmd]"
-  # PR touched files
-  local pr_files
-  pr_files="$("$gh" pr diff "$pr" --repo "$repo" --name-only 2>/dev/null)" || die 3 "gh pr diff failed for #$pr"
-  [ -n "$pr_files" ] || die 3 "no changed files for PR #$pr (is it merged/closed?)"
+  [ -n "$pr" ] || [ -n "$ref" ] || die 2 "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh cmd] | --ref <branch-or-sha> --run <run-id> [--base <ref>]"
+  [ -n "$run" ] || die 2 "oc-pr-fault-scope: --run <run-id> is required"
+  { [ -z "$pr" ] || [ -z "$ref" ]; } || die 2 "oc-pr-fault-scope: give EITHER <pr#> OR --ref, not both"
+  # touched files — PR diff, or a local branch/HEAD range for fork lanes (no PR)
+  local pr_files label
+  if [ -n "$ref" ]; then
+    # Defect 1 (#308): fork lanes have NO PR (the no-fork-PRs law routes all dev
+    # through worktree branches that are ff-merged, never opened as PRs), so the
+    # PR-only input made this tool unreachable on the very flow it was built for.
+    # --ref derives the changed files with `git diff` instead; --repo must be a
+    # local PATH here (a slug cannot be diffed).
+    [ -d "$repo/.git" ] || die 2 "--ref needs --repo <local-path> (got '$repo')"
+    base="${base:-origin/main}"
+    pr_files="$(git -C "$repo" diff --name-only "${base}...${ref}" 2>/dev/null)" \
+      || die 3 "git diff ${base}...${ref} failed in $repo (unresolvable base/ref?)"
+    [ -n "$pr_files" ] || die 3 "no changed files for ${base}...${ref} (wrong base, or empty diff?)"
+    label="${base}...${ref}"
+  else
+    pr_files="$("$gh" pr diff "$pr" --repo "$repo" --name-only 2>/dev/null)" || die 3 "gh pr diff failed for #$pr"
+    [ -n "$pr_files" ] || die 3 "no changed files for PR #$pr (is it merged/closed?)"
+    label="PR #$pr"
+  fi
   # failing files from the run's failed-step log
   local run_log fail_files
   run_log="$("$gh" run view "$run" --repo "$repo" --log-failed 2>/dev/null)" || die 3 "gh run view --log-failed failed for run $run"
-  fail_files="$(printf '%s\n' "$run_log" | grep -oE '(src|crates|tests)/[A-Za-z0-9_/.-]+\.[A-Za-z0-9]+' | sort -u)"
+  # Defect 2 (#308): the naive regex over-matched. It captured cargo registry
+  # checkouts (`src/index.crates.io-…`, `src/github.com-…`) and the bare crate
+  # roots `src/lib.rs` / `src/main.rs`, which appear in generic error context.
+  # Empirically 4 of 5 matches in the reported run were false, and a false
+  # IN-SCOPE tells the lane its change caused a base fault — the exact
+  # misdiagnosis this tool exists to prevent. Drop registry/vendor checkouts and
+  # the crate-root entry points from the failing-file set.
+  fail_files="$(printf '%s\n' "$run_log" \
+    | grep -oE '(src|crates|tests)/[A-Za-z0-9_/.-]+\.[A-Za-z0-9]+' \
+    | grep -vE '(^|/)(index\.crates\.io|github\.com-)|/\.cargo/|/registry/|/vendor/|/node_modules/|^src/(lib|main)\.rs$' \
+    | sort -u)"
   [ -n "$fail_files" ] || die 3 "no file paths parsed from failed log (non-code failure? check manually)"
   # intersection
   local inter
   inter="$(printf '%s\n' "$fail_files" | sort > /tmp/.ocpfs.$$; printf '%s\n' "$pr_files" | sort | comm -12 - /tmp/.ocpfs.$$; rm -f /tmp/.ocpfs.$$)"
   oc_log_extra failing_files "$(printf '%s' "$fail_files" | wc -l)"
   if [ -n "$inter" ]; then
-    printf 'IN-SCOPE: PR #%s owns the failure (run %s)\nfailing files:\n%s\nintersection:\n%s\n' "$pr" "$run" "$fail_files" "$inter"
+    printf 'IN-SCOPE: %s owns the failure (run %s)\nfailing files:\n%s\nintersection:\n%s\n' "$label" "$run" "$fail_files" "$inter"
     oc_log_extra verdict IN-SCOPE
     return 0
   fi
@@ -65,7 +96,7 @@ cmd_scope() {
   _br_sha="$("${OC_TOOLS_DIR:-.}/lib/oc-base-red" resolve \
               --repo "${OC_BASE_REPO:-$HOME/opencrabs}" 2>/dev/null || true)"
   if [ -n "$_br_sha" ]; then
-    "${OC_TOOLS_DIR:-.}/lib/oc-base-red" record --sha "$_br_sha" --run "$run" --pr "$pr" \
+    "${OC_TOOLS_DIR:-.}/lib/oc-base-red" record --sha "$_br_sha" --run "$run" --pr "${pr:-$ref}" \
       --failing-files "$(printf '%s' "$fail_files" | tr '\n' ',' | sed 's/,$//')" \
       --repo "${OC_BASE_REPO:-$HOME/opencrabs}" >/dev/null 2>&1 || true
     printf 'BASE-RED recorded for base %s (run %s) — oc-harvest-census will refuse a unit cut from it\n' \
@@ -74,7 +105,7 @@ cmd_scope() {
     printf 'BASE-RED NOT recorded: no cut-base resolvable in %s (set OC_BASE_REPO to the fork checkout)\n' \
       "${OC_BASE_REPO:-$HOME/opencrabs}"
   fi
-  printf 'BASE-FAULT: PR #%s clean — run %s fails outside the PR diff, do NOT chase\nfailing files:\n%s\n' "$pr" "$run" "$fail_files"
+  printf 'BASE-FAULT: %s clean — run %s fails outside the changed files, do NOT chase\nfailing files:\n%s\n' "$label" "$run" "$fail_files"
   oc_log_extra verdict BASE-FAULT
   return 1
 }
@@ -128,6 +159,31 @@ cmd_selftest() {
   bash "$ME" 42 --run 1000 --gh "$T/gh-inscope.sh" >/dev/null 2>&1
   [ -f "$T/state/base-red.json" ] && bad "in-scope arm recorded a base-red marker" \
     || ok "in-scope arm records nothing"
+  # ---- #308 Defect 2: a cargo-registry path must NOT yield IN-SCOPE --------
+  # The naive regex captured `src/index.crates.io-…` from a registry checkout;
+  # a run whose only diff-side "file" is such a path would read IN-SCOPE off a
+  # base fault. The registry candidate is dropped, so the one surviving failing
+  # file is the real fork file, which the diff does not touch -> BASE-FAULT.
+  printf '#!/bin/sh\ncase " $* " in *" pr diff "*) printf "src/index.crates.io-6f17d22bba15001f/libc-0.2.155/src/lib.rs\\n" ;; *" run view "*) printf "error[E0308]: mismatched types\\n --> /root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/libc-0.2.155/src/lib.rs:9:5\\n --> src/real_fork_file.rs:1:1\\n" ;; *) exit 1 ;; esac\n' > "$T/gh-registry.sh"
+  chmod +x "$T/gh-registry.sh"
+  OUT_REG="$(bash "$ME" 42 --run 1000 --gh "$T/gh-registry.sh" 2>&1)"; RC_REG=$?
+  [ "$RC_REG" -eq 1 ] && ok "#308 registry path does not yield IN-SCOPE (rc 1 BASE-FAULT)" \
+    || bad "#308 registry path yielded rc=$RC_REG (want 1)"
+  case "$OUT_REG" in *"index.crates.io"*) bad "#308 registry path survived the parser" ;;
+    *"src/real_fork_file.rs"*) ok "#308 real fork file survives; registry path dropped" ;;
+    *) bad "#308 unexpected output: $OUT_REG" ;; esac
+  # ---- #308 Defect 1: --ref derives the changed files with no PR present ---
+  # Fork lanes have no PR; a worktree branch must still be analysable.
+  git -C "$T/repo" checkout -q -b feature 2>/dev/null
+  mkdir -p "$T/repo/src"; echo x > "$T/repo/src/a.rs"
+  git -C "$T/repo" add -A; git -C "$T/repo" commit -qm "feat: a.rs"
+  printf '#!/bin/sh\ncase " $* " in *" run view "*) printf "error\\n --> src/a.rs:1:1\\n" ;; *) exit 1 ;; esac\n' > "$T/gh-ref.sh"
+  chmod +x "$T/gh-ref.sh"
+  bash "$ME" --ref feature --base main --run 1000 --repo "$T/repo" --gh "$T/gh-ref.sh" >/dev/null 2>&1
+  chk "#308 --ref mode: IN-SCOPE on a branch with no PR" 0 $?
+  # --ref with a slug --repo must refuse (a slug cannot be diffed)
+  bash "$ME" --ref feature --base main --run 1000 --repo leshchenko1979/opencrabs --gh "$T/gh-ref.sh" >/dev/null 2>&1
+  chk "#308 --ref with a slug --repo -> 2 (usage)" 2 $?
   # A BASE-FAULT with no resolvable base must DISCLOSE that it was not recorded
   # rather than fail silently.
   rm -rf "$T/state" "$T/repo"
