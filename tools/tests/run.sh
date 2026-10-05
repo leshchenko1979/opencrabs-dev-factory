@@ -794,6 +794,87 @@ if tool oc-questions; then
   rm -rf "$wqd"
 fi
 
+# ---- 00c2. the oc_questions bridge derives its argv from the CLI (#709) -----
+# The bridge used to hand-maintain VALUED/BOOLEAN maps -- a SECOND declaration
+# of what the CLI accepts -- and the two drifted: `list` gained --factory in the
+# CLI and not in the map, so a filtered query forwarded nothing, returned EVERY
+# factory's questions, and read as a filtered answer. The bridge now reads the
+# CLI's own schema. The discriminator is a PAIR against one temp store: the same
+# store must yield ONE lane with --factory and ALL THREE without it, so a bridge
+# that dropped the filter cannot pass both halves (pre-fix the "with" half read
+# lane-a,lane-b,lane-c -- measured live 2026-10-05).
+if tool oc-questions; then
+  _b709="$(mktemp -d)"
+  python3 - "$_b709/open.json" <<'OCPY709'
+import json, sys
+json.dump({"sets": [
+    {"id": "f-a", "lane": "lane-a", "status": "open",
+     "questions": [{"qid": "q1", "title": "A", "status": "open"}]},
+    {"id": "f-b", "lane": "lane-b", "status": "open",
+     "questions": [{"qid": "q2", "title": "B", "status": "open"}]},
+    {"id": "f-c", "lane": "lane-c", "status": "open",
+     "questions": [{"qid": "q3", "title": "C", "status": "open"}]},
+]}, open(sys.argv[1], "w"))
+OCPY709
+  "$TOOLS_DIR/state/oc-questions" --schema 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+v = d["verbs"]
+assert set(v) == {"ask","answer","amend","withdraw","list","publish","lint",
+                  "gc","notify","redeliver"}, sorted(v)
+assert v["list"]["valued"].get("factory") == "--factory", v["list"]["valued"]
+assert v["amend"]["valued"].get("set_id") == "--set", v["amend"]["valued"]
+assert "set_id" not in v["publish"]["valued"], v["publish"]["valued"]
+assert [e["name"] for e in v["answer"]["positional_params"]] == \
+       ["set_id","qid","choice"], v["answer"]["positional_params"]
+assert d["store"].endswith("open.json")
+' 2>/dev/null \
+    && ok "--schema publishes every verb + param->flag maps (#709)" \
+    || bad "--schema is missing the param->flag maps (#709)"
+  BRIDGE="$TOOLS_DIR/state/oc_questions_tool.py"
+  if [ -f "$BRIDGE" ]; then
+    python3 "$BRIDGE" --selftest >/dev/null 2>&1 \
+      && ok "bridge selftest: argv derived from the CLI schema (#709)" \
+      || bad "bridge selftest FAILED (#709)"
+    _lanes() { python3 -c 'import json,sys;print(",".join(l["lane"] for l in json.load(sys.stdin).get("lanes",[])))' 2>/dev/null; }
+    echo '{"action":"list","factory":"f-a"}' > "$_b709/one.json"
+    echo '{"action":"list"}' > "$_b709/all.json"
+    _one="$(OC_QUESTIONS_DIR="$_b709" OC_TOOLS_NOLOG=1 OPENCRABS_PARAMS="$_b709/one.json" python3 "$BRIDGE" 2>/dev/null | _lanes)"
+    _all="$(OC_QUESTIONS_DIR="$_b709" OC_TOOLS_NOLOG=1 OPENCRABS_PARAMS="$_b709/all.json" python3 "$BRIDGE" 2>/dev/null | _lanes)"
+    [ "$_one" = "lane-a" ] && [ "$_all" = "lane-a,lane-b,lane-c" ] \
+      && ok "bridge forwards factory: ONE lane with it, all three without (#709)" \
+      || bad "bridge factory filter WRONG (#709): with=[$_one] without=[$_all]"
+    echo '{"action":"publish","set_id":"f-a"}' > "$_b709/pub.json"
+    _pub="$(OC_QUESTIONS_DIR="$_b709" OC_TOOLS_NOLOG=1 OPENCRABS_PARAMS="$_b709/pub.json" python3 "$BRIDGE" 2>/dev/null)"
+    _prc=$?
+    printf '%s' "$_pub" | grep -q "set_id" && [ "$_prc" -ne 0 ] \
+      && ok "publish set_id is REFUSED by name (rc=$_prc), not forwarded as --set (#709)" \
+      || bad "publish set_id was not refused by name (#709): rc=$_prc out=${_pub:0:120}"
+  else
+    bad "bridge not found at $BRIDGE (#709)"
+  fi
+  # Every verb's handler must still PARSE through the published table: a cmd_*
+  # that stopped calling parse_flags (or called it with a stale list) would
+  # accept nothing or accept anything. Cheap pair per verb -- the declared form
+  # must NOT read "unknown flag", and a synthetic bogus flag MUST -- so a dead
+  # parser cannot pass by refusing everything. `publish` is excluded: it
+  # renders/pushes a page and has side effects a parser probe must not have.
+  _pverbs="$("$TOOLS_DIR/state/oc-questions" --schema 2>/dev/null \
+             | python3 -c 'import json,sys;print(" ".join(sorted(json.load(sys.stdin)["verbs"])))' 2>/dev/null)"
+  _pok=1; _pbad=""
+  for _v in $_pverbs; do
+    [ "$_v" = "publish" ] && continue
+    _e1="$(OC_QUESTIONS_DIR="$_b709" OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-questions" "$_v" --json 2>&1 >/dev/null)"
+    case "$_e1" in *"unknown flag"*) _pok=0; _pbad="$_v(declared)";; esac
+    _e2="$(OC_QUESTIONS_DIR="$_b709" OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-questions" "$_v" --zz-bogus 2>&1 >/dev/null)"
+    case "$_e2" in *"unknown flag"*) : ;; *) _pok=0; _pbad="$_v(bogus)";; esac
+  done
+  [ "$_pok" -eq 1 ] \
+    && ok "every verb parses via flag_spec: declared accepted, unknown refused (#709)" \
+    || bad "a verb's parser is not reading FLAG_SPEC (#709): $_pbad"
+  rm -rf "$_b709"
+fi
+
 # ---- 00d. the bare-`selftest` arm is TOOL-SCOPED (#749b) --------------------
 # oc_is_selftest()'s first-token arm silenced ANY invocation whose FIRST
 # positional read `selftest`. But oc-drift-check's first positional is a session

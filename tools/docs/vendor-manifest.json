@@ -5,8 +5,8 @@
     {
       "local": "tools/state/oc-questions",
       "upstream_path": "TEMPLATE/tools/questions",
-      "ref": "ece0f4e8c8c3efa11e2c50eb009f6181d62f6e61",
-      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-04 at origin/main ece0f4e; the content last changed upstream at ece0f4e (#309/#310 — a lane's identity becomes the pair (factory, lane): the cross-factory ask gate, `list --factory`, and `--help` on every verb) and this copy carries it byte-for-byte after the seven declared deltas. Two of the seven (the routing-default comment and the close-reason string) are now UPSTREAM-IDENTICAL — upstream adopted them since the old ref — so they match on both sides and stay declared no-ops, kept so the comparison stays symmetric.",
+      "ref": "a484af7efbd6a86339de3b2adddb8d09e87fd37b",
+      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-05 at origin/main a484af7; the content last changed upstream at a484af7 (#709 — `--schema` is DERIVED from FLAG_SPEC, the ONE flag table the handlers themselves parse with, so a consumer reads the contract instead of keeping a second copy that drifts; every cmd_* now parses via flag_spec(<verb>), behaviour-identical by construction) and this copy carries it byte-for-byte after the seven declared deltas. Two of the seven (the routing-default comment and the close-reason string) are now UPSTREAM-IDENTICAL — upstream adopted them since the old ref — so they match on both sides and stay declared no-ops, kept so the comparison stays symmetric.",
       "delta": [
         {
           "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
