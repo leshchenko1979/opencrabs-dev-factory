@@ -44,7 +44,11 @@ family's centre of gravity.
 
 SCOPE, stated rather than implied: tools/tests/ is EXCLUDED.  A test legitimately
 exercises the predicate, and the test tree is not a runtime consumer - the
-hazard is a copy that ANSWERS claim questions in production.
+hazard is a copy that ANSWERS claim questions in production.  The GENERATED
+sidecar class (`*.bak`, `*.bak-*`, `*.pre-*`) is EXCLUDED too: a pre-image is not
+source, and the battery's own tree fingerprint and the state-dir law both
+classify it GENERATED-IGNORED - this guard is the one instrument that disagreed,
+so a clean tree red on a lane's own `.bak` (#16).
 
 COVERAGE IS REPORTED, NOT ASSUMED.  A unit that fails to parse is SKIPPED - it
 cannot be scanned - so the ok line states BOTH figures, `scanned of declared`,
@@ -146,6 +150,22 @@ RE_PY_C = re.compile(r"\bpython3\s+-c\s*'")
 RE_PY_HEREDOC = re.compile(r"\bpython3\s+-\s*<<-?\s*'?([A-Za-z_][A-Za-z0-9_]*)'?")
 SKIP_DIRS = frozenset(("__pycache__", ".git", "tests"))
 
+#: The GENERATED sidecar class - a pre-image the editing tools leave beside the
+#: file they touch.  NOT source: the battery's own tree fingerprint excludes it
+#: (`-not -name '*.pre-*' -not -name '*.bak'`, tools/tests/run.sh) and the
+#: state-dir law classifies it GENERATED-IGNORED.  A sidecar of a scanned module
+#: is byte-identical to its source, so it carries the predicate's exact shape and
+#: BOTH arms fire on a copy of the canonical module - a clean tree reds the
+#: battery (measured 2026-10-05, #16).  The test is on the SUFFIX/INFIX, never a
+#: bare substring of "bak": a real source file whose name merely contains those
+#: letters (oc-bakery) is still scanned, so the exclusion cannot widen into a
+#: blind spot.
+SIDECAR_SUFFIXES = (".bak",)
+SIDECAR_INFIXES = (".bak-", ".pre-")
+
+def _is_generated_sidecar(name):
+    return name.endswith(SIDECAR_SUFFIXES) or any(i in name for i in SIDECAR_INFIXES)
+
 MAX_UNIT_BYTES = 400_000
 
 #: Stand-in for a shell substitution (`"$T/x.json"`) inside a reconstructed blob.
@@ -233,6 +253,8 @@ def iter_source_files(root):
         for name in sorted(filenames):
             path = os.path.join(dirpath, name)
             if os.path.islink(path) or not os.path.isfile(path):
+                continue
+            if _is_generated_sidecar(name):
                 continue
             rel = os.path.relpath(path, root)
             if rel == CANONICAL_REL:
@@ -779,8 +801,12 @@ def selftest():
         # ---- leg group 8: THE regression assertion -------------------------
         finds, units, skipped_live = scan(TOOLS_DIR)
         ck("LIVE tools/ tree: zero HARD findings", finds == [], repr(finds[:3]))
+        # ANCHORED, never a substring (#16): `CANONICAL_REL in r` is true of
+        # `lib/oc_claims.py.<ts>.bak`, so the leg used to red on a sidecar whose
+        # name merely CONTAINS the canonical path. An exact-rel test asks the
+        # question the exclusion actually answers.
         ck("LIVE tools/ tree: the canonical module was excluded",
-           not any(CANONICAL_REL in r for r, _, _ in finds),
+           not any(r == CANONICAL_REL for r, _, _ in finds),
            "units=%d" % unit_count(units))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -875,6 +901,50 @@ def selftest():
         ck("LIVE tools/ tree: declared figure equals parsed figure",
            whole == unit_count(units),
            "declared=%d parsed=%d" % (whole, unit_count(units)))
+
+        # ---- leg group 12: the GENERATED sidecar class is NOT source (#16) --
+        # The harness's editing tools leave a pre-image beside the file they
+        # touch, and a pre-image of a scanned module is byte-identical to its
+        # source: it carries the predicate's exact shape, both arms fire on it,
+        # and a CLEAN tree reds the battery (measured 2026-10-05). The exclusion
+        # must be NARROW, so this fixture plants the sidecars BESIDE a real
+        # private copy: the copy must still be caught, no finding may be
+        # attributed to a sidecar, and the `oc-bakery` control kills a widened
+        # exclusion (a bare `"bak" in name` test would silently skip it).
+        side = os.path.join(tmp, "sidecar")
+        _write_tree(side, {
+            "oc-roster": ROSTER_COPY,
+            "oc-roster.bak": ROSTER_COPY,
+            "oc-roster.bak-2026-10-05T111834": ROSTER_COPY,
+            "oc-roster.pre-2026-10-05T111834": ROSTER_COPY,
+            "oc-bakery": ROSTER_COPY,
+        })
+        finds_s, units_s, _ = scan(side)
+        a, b = _arm_counts(finds_s, "oc-roster")
+        ck("sidecar: the real private copy beside it is still caught",
+           a >= 1 and b >= 1, "a=%d b=%d finds=%r" % (a, b, finds_s))
+        ck("sidecar: no .bak/.pre- sidecar is enumerated as a unit",
+           not any(_is_generated_sidecar(r) for r in units_s),
+           repr([r for r in units_s if _is_generated_sidecar(r)]))
+        ck("sidecar: no finding is attributed to a sidecar",
+           not any(_is_generated_sidecar(r) for r, _, _ in finds_s),
+           repr([r for r, _, _ in finds_s if _is_generated_sidecar(r)][:3]))
+        ck("sidecar: a name merely CONTAINING bak is still scanned (no blind spot)",
+           _arm_counts(finds_s, "oc-bakery")[0] >= 1,
+           "bakery armA=%d" % _arm_counts(finds_s, "oc-bakery")[0])
+        # The REPORTED symptom, pinned exactly: a tree of sidecars ALONE is clean
+        # and the CLI exits 0 - before the fix this was the red battery receipt.
+        only_side = os.path.join(tmp, "only-sidecar")
+        _write_tree(only_side, {
+            "oc_roster.bak": ROSTER_COPY,
+            "oc_roster.py.bak-2026-10-05T111834": ROSTER_COPY,
+        })
+        finds_only, _, _ = scan(only_side)
+        ck("sidecar: a sidecar-only tree is CLEAN (the reported symptom)",
+           finds_only == [], repr(finds_only))
+        rc_only, _ = _run_cli(only_side)
+        ck("sidecar: CLI exits 0 on a sidecar-only tree", rc_only == 0,
+           "rc=%d" % rc_only)
 
     failed = [x for x in legs if not x[1]]
     for name, _, detail in failed:
