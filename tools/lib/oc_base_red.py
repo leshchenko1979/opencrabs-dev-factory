@@ -149,3 +149,37 @@ def describe(rec):
     return 'run %s, PR #%s, failing %s%s' % (
         rec.get('run', '?'), rec.get('pr', '?'),
         ', '.join(files[:3]) or '?', tail)
+
+
+def carries_failing_files(repo_path, rec, base_sha, ref='HEAD'):
+    """Commits on `ref` but NOT on `base_sha` that touch the marker's failing files.
+
+    Returns the list of shas, newest first (#15). The marker says the BASE is red;
+    it says nothing about whether THIS unit already CLEARED that fault by carrying
+    the sweep commit in its own PR -- the sanctioned path (harvest.md base CI gate
+    pre-claim; Duty-5 ruling n=13968: carry the sweep IN THE PR, never a separate
+    base-repair PR). A reader that refuses on the marker alone therefore reports a
+    carried unit as uncarried: the two states are indistinguishable, and the gate
+    is spent on a base fault the unit already fixed.
+
+    The predicate is read from the REPO UNDER INSPECTION (`git log <base>..<ref> --
+    <paths>`), never from the marker's prose: a marker is a claim about the base
+    generally and stays TRUE for other lanes, so only the diff settles the carry.
+
+    EMPTY means NOT carried, in every failure mode: no `failing_files` recorded
+    (nothing to discriminate on), `repo_path` not a git repo, `base_sha` empty,
+    the range unresolvable, or nothing touching the paths. Callers must keep the
+    refusal on EMPTY -- fail closed, because a false clear spends a red CI run
+    while a refusal costs one re-check.
+    """
+    files = [f for f in ((rec or {}).get('failing_files') or []) if f]
+    if not files or not base_sha or not repo_path:
+        return []
+    if not os.path.exists(os.path.join(repo_path, '.git')):
+        return []
+    cp = subprocess.run(['git', '-C', repo_path, 'log', '--format=%H',
+                         '%s..%s' % (base_sha, ref or 'HEAD'), '--'] + files,
+                        capture_output=True, text=True)
+    if cp.returncode != 0:
+        return []
+    return [ln.strip() for ln in cp.stdout.splitlines() if ln.strip()]

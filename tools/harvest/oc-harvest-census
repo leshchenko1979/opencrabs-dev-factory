@@ -90,6 +90,13 @@ usage() {
 Usage:
   $PROG scan [--repo <path>] [--upstream <owner/repo>] [--json]
   $PROG check <issue-number-or-slug> [--repo <path>] [--subject <text>] [--base <ref>]
+              [--carry-ref <ref>]
+      --base pins the sha the unit is cut from (the #630 BASE-RED key); empty
+      resolves origin/main, then main.
+      --carry-ref names the ref whose CARRY of a base fault is read (#15); empty
+      = HEAD. A unit that cleared its base fault by carrying the sweep commit in
+      its own PR is not refused [HELD_BASE_RED] -- the two states were
+      indistinguishable before, and the carry is read from the repo's own diff.
   $PROG record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
                [--status filed|not-upstreamable|conditionally-upstreamable] [--reason <text>]
                [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
@@ -133,6 +140,7 @@ EOF
 
 # --- Core Python Engine (Deterministic Parsing & Matching) ---
 run_engine() { # argv[7] = optional cut-base pin for the #630 base-red leg ('' = resolve)
+               # argv[8] = optional carry ref for the #15 carry leg ('' = HEAD)
   python3 - "$@" <<'OCPY'
 import sys, os, json, re, subprocess, argparse, time, datetime, glob
 
@@ -1730,6 +1738,11 @@ declared_subject = sys.argv[6] if len(sys.argv) > 6 else ''
 # #630: argv[7] = the cut-base PIN (cmd_check --base). Empty = resolve the base
 # the unit would be cut from, which is `oc-wt add`'s documented default.
 base_pin = sys.argv[7] if len(sys.argv) > 7 else ''
+# #15: argv[8] = the ref whose CARRY of the base fault is read (cmd_check
+# --carry-ref). Empty = HEAD, which is the unit's own branch whenever `--repo`
+# names its worktree (the harvest repro path). Named explicitly when the branch
+# is not checked out.
+carry_ref = sys.argv[8] if len(sys.argv) > 8 else ''
 mock_prs = os.environ.get('OC_HARVEST_MOCK_PRS')
 mock_commits = os.environ.get('OC_HARVEST_MOCK_COMMITS')
 mock_ledger = os.environ.get('OC_HARVEST_MOCK_LEDGER')
@@ -2421,7 +2434,21 @@ if action == 'check':
     _cr_base = oc_base_red.resolve_base(
         repo_path, (base_pin or '').strip() or os.environ.get('OC_CENSUS_BASE', '').strip())
     _cr_rec = oc_base_red.lookup(st_dir, _cr_base) if _cr_base else None
-    if _cr_rec:
+    # #15: the marker says the BASE is red -- it says nothing about whether THIS
+    # unit already CLEARED that fault by carrying the sweep commit in its own PR
+    # (the sanctioned path; harvest.md base CI gate pre-claim). Without this read
+    # a carried unit is indistinguishable from an uncarried one and reads REFUSED,
+    # which is the false negative: the marker stays TRUE for the base generally,
+    # so only the unit's OWN diff can settle the carry.
+    _cr_carried = (oc_base_red.carries_failing_files(repo_path, _cr_rec, _cr_base, carry_ref)
+                   if _cr_rec else [])
+    if _cr_rec and _cr_carried:
+        print('NOTE(HELD_BASE_RED): cut-base %s carries a BASE-RED marker [%s], but this '
+              'unit CARRIES the sweep -- %s touches %s -- so the base fault is cleared '
+              'IN the PR. Refusal SUPPRESSED (#15).'
+              % (_cr_base[:12], oc_base_red.describe(_cr_rec), _cr_carried[0][:12],
+                 ', '.join((_cr_rec.get('failing_files') or [])[:3]) or '?'))
+    elif _cr_rec:
         refuse('REFUSED: Target %s is cut from base %s, which carries a BASE-RED marker '
                '[HELD_BASE_RED: %s] -- the gate fails there on content OUTSIDE this '
                "unit's own diff, so branching and gating it would spend a gate run on "
@@ -3118,10 +3145,13 @@ cmd_check() {
   # cuts from). The token exists so the selftest can drive the leg hermetically,
   # without a live fork checkout.
   CHECK_BASE_REF=""
+  # #15: the ref whose CARRY of a base fault is read. Empty = HEAD.
+  CHECK_CARRY_REF=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
       --base) [ $# -ge 2 ] || { echo "oc-harvest-census: --base needs a value" >&2; usage; }; CHECK_BASE_REF="$2"; shift 2 ;;
+      --carry-ref) [ $# -ge 2 ] || { echo "oc-harvest-census: --carry-ref needs a value" >&2; usage; }; CHECK_CARRY_REF="$2"; shift 2 ;;
       --subject) [ $# -ge 2 ] || { echo "oc-harvest-census: --subject needs a value" >&2; usage; }; DECLARED_SUBJECT="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       -*) usage ;;
@@ -3138,7 +3168,7 @@ cmd_check() {
   if [ -z "$target" ]; then
     usage
   fi
-  run_engine "check" "$UPSTREAM_REPO" "$REPO" "$REGISTRY_FILE" "$target" "$DECLARED_SUBJECT" "${CHECK_BASE_REF:-}"
+  run_engine "check" "$UPSTREAM_REPO" "$REPO" "$REGISTRY_FILE" "$target" "$DECLARED_SUBJECT" "${CHECK_BASE_REF:-}" "${CHECK_CARRY_REF:-}"
 }
 
 cmd_record() {
@@ -4229,6 +4259,94 @@ EOF
     echo "  bad  - base-red unresolved expected rc=0 + disclosure, got rc=$rc ($out)"
     return 1
   fi
+
+  # 3f. #15 CARRY: the base-red leg reads the marker (the BASE is red) but must
+  #     also read the unit's OWN diff, or a unit that CLEARED its base fault by
+  #     carrying the sweep commit in its PR is indistinguishable from one that
+  #     did not -- the false negative this leg removes. Three arms, on a real
+  #     fixture repo (the existing base-red legs use a non-git dir, so the carry
+  #     predicate, which reads `git log`, has nothing to read there).
+  CARRY_REPO="$selftest_tmp/carry_repo"
+  mkdir -p "$CARRY_REPO/src"
+  git -C "$CARRY_REPO" init -q
+  git -C "$CARRY_REPO" config user.name fixture
+  git -C "$CARRY_REPO" config user.email fixture@example.invalid
+  git -C "$CARRY_REPO" config commit.gpgsign false
+  printf 'pub fn base_fn() -> u8 {\n    1\n}\n' > "$CARRY_REPO/src/a.rs"
+  git -C "$CARRY_REPO" add -A
+  git -C "$CARRY_REPO" commit -q -m "base"
+  CARRY_BASE="$(git -C "$CARRY_REPO" rev-parse HEAD)"
+  # branch `sweep`: the CARRY -- a commit on the unit's ref touching the file
+  # the base fault names.
+  git -C "$CARRY_REPO" checkout -q -b sweep
+  printf 'pub fn base_fn() -> u8 {\n    2\n}\n' > "$CARRY_REPO/src/a.rs"
+  git -C "$CARRY_REPO" add -A
+  git -C "$CARRY_REPO" commit -q -m "test: carry the base sweep"
+  CARRY_SWEEP="$(git -C "$CARRY_REPO" rev-parse HEAD)"
+  # branch `nofix`: a commit that touches NOTHING the base fault names.
+  git -C "$CARRY_REPO" checkout -q -b nofix "$CARRY_BASE"
+  printf 'pub fn other_fn() -> u8 {\n    3\n}\n' > "$CARRY_REPO/src/other.rs"
+  git -C "$CARRY_REPO" add -A
+  git -C "$CARRY_REPO" commit -q -m "unrelated change"
+  printf '{"markers": {"%s": {"sha": "%s", "run": "555", "pr": "42", "failing_files": ["src/a.rs"], "recorded_at": "2026-09-27T00:00:00Z"}}}\n' \
+    "$CARRY_BASE" "$CARRY_BASE" > "$selftest_tmp/base-red.json"
+  # (i) HEAD = nofix: the marker stands and the unit does NOT carry it -> the
+  #     refusal is unchanged (the arm is not a blanket clear).
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$CARRY_REPO" "$mock_reg" "200" "" "$CARRY_BASE" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_BASE_RED"; then
+    ok "#15: marker + NO carry -> still REFUSED HELD_BASE_RED"
+  else
+    echo "  bad  - #15 uncarried expected rc=1 HELD_BASE_RED, got rc=$rc ($out)"
+    return 1
+  fi
+  # (ii) --carry-ref sweep: the carry is read from the NAMED ref, so the refusal
+  #      is suppressed and the disclosure names the carrying commit.
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$CARRY_REPO" "$mock_reg" "200" "" "$CARRY_BASE" "sweep" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && oc_has "$out" "CARRIES the sweep" \
+     && oc_has "$out" "$(printf '%s' "$CARRY_SWEEP" | cut -c1-12)" && ! oc_has "$out" "HELD_BASE_RED:"; then
+    ok "#15: --carry-ref naming a carrying ref -> refusal SUPPRESSED, carry sha disclosed"
+  else
+    echo "  bad  - #15 carried expected rc=0 ELIGIBLE + carry disclosure, got rc=$rc ($out)"
+    return 1
+  fi
+  # (iii) HEAD = sweep, no flag: the DEFAULT ref is HEAD, so a unit checked out
+  #       on its own carrying branch is cleared without any flag -- the repro's
+  #       exact shape (`--repo` names the unit's worktree).
+  git -C "$CARRY_REPO" checkout -q sweep
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$CARRY_REPO" "$mock_reg" "200" "" "$CARRY_BASE" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && oc_has "$out" "CARRIES the sweep"; then
+    ok "#15: carried unit on HEAD -> cleared with no flag (the live repro shape)"
+  else
+    echo "  bad  - #15 HEAD carry expected rc=0 ELIGIBLE, got rc=$rc ($out)"
+    return 1
+  fi
+  # (iv) the FLAG IS NOT A BLIND BYPASS: --carry-ref names a ref that carries
+  #      nothing (nofix), so the marker stands and the refusal names the missing
+  #      evidence. Without this arm the flag would be a gate failing open.
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$CARRY_REPO" "$mock_reg" "200" "" "$CARRY_BASE" "nofix" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_BASE_RED"; then
+    ok "#15: --carry-ref on a NON-carrying ref -> REFUSED (no blind bypass)"
+  else
+    echo "  bad  - #15 non-carrying ref expected rc=1 HELD_BASE_RED, got rc=$rc ($out)"
+    return 1
+  fi
+  # (v) the flag is WIRED, not merely documented: drive cmd_check end-to-end.
+  _cc_repo="$REPO"; _cc_up="$UPSTREAM_REPO"; _cc_reg="$REGISTRY_FILE"
+  REPO="$CARRY_REPO"; UPSTREAM_REPO="mock/repo"; REGISTRY_FILE="$mock_reg"
+  rc=0
+  out="$(cmd_check 200 --base "$CARRY_BASE" --carry-ref sweep 2>&1)" || rc=$?
+  REPO="$_cc_repo"; UPSTREAM_REPO="$_cc_up"; REGISTRY_FILE="$_cc_reg"
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" && oc_has "$out" "CARRIES the sweep"; then
+    ok "#15: cmd_check --carry-ref is WIRED (end-to-end rc=0 + disclosure)"
+  else
+    echo "  bad  - #15 cmd_check --carry-ref expected rc=0 ELIGIBLE, got rc=$rc ($out)"
+    return 1
+  fi
+  rm -f "$selftest_tmp/base-red.json"
 
   # 3a. NUMBERING SPACE (#415). Fixture PR 1990's TITLE ends `(#199)` -- PR-number
   #     space -- while its BODY refs fork issue 211 explicitly. It must therefore
