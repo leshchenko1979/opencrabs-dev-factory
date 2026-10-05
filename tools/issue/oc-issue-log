@@ -14,13 +14,17 @@
 #        exists — see the idempotency note below; both callers treat it as
 #        success ("the mandatory note for this sha is on the issue").
 #
-# IDEMPOTENT per (issue, sha) since issue #392. Before posting, the existing
-# comments are read and searched for the body's own full-sha marker; a hit
-# skips the post and exits 0. `--force` bypasses the check for a deliberate
-# re-post. A FAILED read does not skip — it fails OPEN to posting, because the
-# per-commit note is mandatory and a duplicate is cheaper than a missing note.
-# This guard lives at the posting authority because the tool has two callers
-# (oc-ship-chain LEG2, oc-commit); a caller-side guard would cover only one.
+# IDEMPOTENT per (issue, sha) since issue #392, and per (issue, PATCH) since
+# issue #621. Before posting, the existing comments are read and searched for
+# the body's own full-sha marker; a hit skips the post and exits 0. A miss then
+# tries the CONTENT arm: every sha already cited on the issue is compared to
+# this one with oc_same_patch (lib/oc-patch.sh — the fleet's patch-id
+# predicate), so a content-identical REBASE skips too. `--force` bypasses both
+# arms for a deliberate re-post. A FAILED read does not skip — it fails OPEN to
+# posting, because the per-commit note is mandatory and a duplicate is cheaper
+# than a missing note. This guard lives at the posting authority because the
+# tool has two callers (oc-ship-chain LEG2, oc-commit); a caller-side guard
+# would cover only one.
 #
 # Body composition: git log -1 subject + trailers (Session-Id, Issue-Ref) +
 # --state text; written to a mktemp body file; no backticks, no substitutions.
@@ -43,6 +47,12 @@ if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/o
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-log" "$@"; else oc_log_finish() { :; }; oc_log_extra() { :; }; fi
 trap 'oc_log_finish $?' EXIT
+# #621: the fleet's content-identity predicate — ONE home (lib/oc-patch.sh), the
+# same oc_same_patch oc-ship-chain LEG1's carry uses. A missing lib degrades the
+# patch-id arm to non-match, which is the FAIL-SAFE direction here: the note is
+# mandatory, so a duplicate comment is cheaper than a missing one.
+_OC_PATCH_LIB="$OC_TOOLS_DIR/lib/oc-patch.sh"
+if [ -f "$_OC_PATCH_LIB" ]; then . "$_OC_PATCH_LIB"; else oc_same_patch() { return 1; }; fi
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
   local rc="${1:-2}" fd=2
@@ -102,6 +112,10 @@ FAKEGH
       chmod +x "$d/fakegh"
       _il_run() { OC_TOOLS_NOLOG=1 OC_ISSUELOG_GH="$d/fakegh" OC_FAKE_SENTINEL="$d/sentinel" \
                     bash "$_SELF" 1 "$s" --repo-path "$d" "$@"; }
+      # #621: same runner, but the posted sha is a parameter (the patch-id legs
+      # need two commits that differ in sha and agree in content).
+      _il_run_sha() { local _s="$1"; shift; OC_TOOLS_NOLOG=1 OC_ISSUELOG_GH="$d/fakegh" \
+                    OC_FAKE_SENTINEL="$d/sentinel" bash "$_SELF" 1 "$_s" --repo-path "$d" "$@"; }
       # A. marker PRESENT -> skip: rc 0, self-reporting, and NOTHING posted.
       rm -f "$d/sentinel"
       a_out="$(OC_FAKE_VIEW_BODY="Implementation commit: \`$s\`" _il_run 2>&1)"; a_rc=$?
@@ -142,6 +156,54 @@ FAKEGH
         bash "$_SELF" 1 "$s" --repo-path "$d" >/dev/null 2>&1 || { echo "selftest: logged-run failed" >&2; exit 1; }
       e_idem="$(jq -r 'select(.tool=="oc-issue-log") | .extra.idem // ""' "$d/tools.log" 2>/dev/null | tail -1)"
       [ "$e_idem" = "skip" ] || { echo "selftest: tools.log extra.idem expected 'skip', got '$e_idem'" >&2; exit 1; }
+      # ---- #621 patch-id legs ------------------------------------------------
+      # A REBASE, hermetically: the SAME patch content committed on two
+      # DIFFERENT bases => two distinct shas, ONE patch-id. The bases MUST
+      # differ, and the difference must be STRUCTURAL: two commits sharing
+      # tree+parent+message and landing in the same second mint the SAME
+      # object, so a timing-dependent fixture reads c1 == c2 and asserts
+      # nothing (measured 2026-10-05: it did exactly that on a fast run).
+      git -C "$d" checkout -q -B cbase "$s" 2>/dev/null
+      printf 'same\n' > "$d/f.txt"; git -C "$d" add f.txt
+      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "same patch"
+      c1="$(git -C "$d" rev-parse HEAD)"
+      git -C "$d" checkout -q -B cother "$s" 2>/dev/null
+      printf 'noise\n' > "$d/noise.txt"; git -C "$d" add noise.txt
+      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "unrelated base shift"
+      printf 'same\n' > "$d/f.txt"; git -C "$d" add f.txt
+      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "same patch"
+      c2="$(git -C "$d" rev-parse HEAD)"
+      # fixture sanity: the two shas MUST differ and their patch-ids MUST agree,
+      # else the leg below asserts nothing (a vacuous control).
+      [ "$c1" != "$c2" ] || { echo "selftest: #621 fixture did not mint two shas" >&2; exit 1; }
+      p1="$(printf '%s' "$(git -C "$d" show --no-color --pretty=format: "$c1" | git patch-id --stable | cut -d' ' -f1)")"
+      p2="$(printf '%s' "$(git -C "$d" show --no-color --pretty=format: "$c2" | git patch-id --stable | cut -d' ' -f1)")"
+      [ -n "$p1" ] && [ "$p1" = "$p2" ] || { echo "selftest: #621 fixture patch-ids differ ($p1 vs $p2)" >&2; exit 1; }
+      # F. the issue cites c1, we post c2 (same patch) -> SKIP, nothing posted.
+      rm -f "$d/sentinel"
+      f_out="$(OC_FAKE_VIEW_BODY="Implementation commit: \`$c1\`" _il_run_sha "$c2" 2>&1)"; f_rc=$?
+      [ "$f_rc" = 0 ] || { echo "selftest: patch-id skip expected rc 0, got $f_rc: $f_out" >&2; exit 1; }
+      [ ! -f "$d/sentinel" ] || { echo "selftest: patch-id skip STILL posted a comment" >&2; exit 1; }
+      case "$f_out" in *"idem=skip-patch"*) : ;; *) echo "selftest: patch-id skip did not emit idem=skip-patch: $f_out" >&2; exit 1 ;; esac
+      # G. NEGATIVE CONTROL: a genuinely DIFFERENT patch must still post — this
+      #    is the leg that reddens if the arm ever degrades to "skip on any
+      #    cited sha".
+      printf 'different\n' > "$d/g.txt"; git -C "$d" add g.txt
+      git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "different patch"
+      c3="$(git -C "$d" rev-parse HEAD)"
+      rm -f "$d/sentinel"
+      g_out="$(OC_FAKE_VIEW_BODY="Implementation commit: \`$c1\`" _il_run_sha "$c3" 2>&1)"; g_rc=$?
+      [ "$g_rc" = 0 ] || { echo "selftest: different-patch expected rc 0, got $g_rc: $g_out" >&2; exit 1; }
+      [ -f "$d/sentinel" ] || { echo "selftest: a DIFFERENT patch was wrongly skipped (false skip)" >&2; exit 1; }
+      case "$g_out" in *"idem=posted"*) : ;; *) echo "selftest: different-patch did not emit idem=posted: $g_out" >&2; exit 1 ;; esac
+      # H. FAIL-CLOSED: a cited sha ABSENT from the local store cannot yield a
+      #    patch-id, so it must never be read as "same" — post.
+      Z40="$(printf '0%.0s' $(seq 1 40))"
+      rm -f "$d/sentinel"
+      h_out="$(OC_FAKE_VIEW_BODY="Implementation commit: \`$Z40\`" _il_run_sha "$c2" 2>&1)"; h_rc=$?
+      [ "$h_rc" = 0 ] || { echo "selftest: fail-closed expected rc 0, got $h_rc: $h_out" >&2; exit 1; }
+      [ -f "$d/sentinel" ] || { echo "selftest: an UNRESOLVABLE cited sha was wrongly read as same" >&2; exit 1; }
+      case "$h_out" in *"idem=posted"*) : ;; *) echo "selftest: fail-closed did not emit idem=posted: $h_out" >&2; exit 1 ;; esac
       echo "selftest OK"; exit 0 ;;
     -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) if [ -z "$ISSUE" ]; then ISSUE="$1"; elif [ -z "$SHA" ]; then SHA="$1"; else usage; fi; shift ;;
@@ -193,8 +255,8 @@ MARKER="Implementation commit: ${BT}${FULL_SHA}${BT}"
 # minted #392's duplicate) no row is written at all, and the chain's journal
 # read a bare "LEG2 issue-log done" whether the comment posted or the guard
 # skipped it. So: extra{} for the log, plus a stable `idem=<verdict>` stdout
-# line that the chain parses and journals. Verdicts: posted | skip | fail-open
-# | forced. _idem_emit is the single writer of both.
+# line that the chain parses and journals. Verdicts: posted | skip | skip-patch
+# | fail-open | forced. _idem_emit is the single writer of both.
 IDEM="posted"
 _idem_emit() {
   IDEM="$1"
@@ -219,6 +281,34 @@ else
       _idem_emit skip
       exit 0
     fi
+    # ---- #621: the patch-id arm ------------------------------------------
+    # The exact marker above is sha-pinned, so a content-identical REBASE (same
+    # patch, new sha) slipped past it and the retry posted a SECOND
+    # implementation comment for one logical change — measured 2026-09-26 on
+    # #609: `af25718f` and `7acf0514`, both patch-id `8d18d30880a7aa9a…`. The
+    # rebase is forced by the ship chain's OWN ff-merge precondition, so this
+    # fires on the normal path, and it made the chain asymmetric: LEG1's carry
+    # tolerates a rebase (#581) while LEG2 duplicated on one.
+    #
+    # Reuse the fleet's existing content predicate rather than adding a second
+    # one — oc_same_patch from lib/oc-patch.sh, the same predicate oc-ship-chain
+    # LEG1's carry and oc-rebase-safety's SAME/CHANGED arms use (one home, per
+    # the oc-claims-single-source rule).
+    #
+    # FAIL-CLOSED: oc_same_patch returns non-zero for an uncomputable patch-id
+    # (root commit, merge commit, sha absent from the local object store), so
+    # "unknown" is never read as "same". The fail-OPEN behaviour on an
+    # unreadable comment list is unchanged — that is the `else` arm below.
+    while IFS= read -r _cand; do
+      [ -n "$_cand" ] || continue
+      [ "$_cand" = "$FULL_SHA" ] && continue
+      if oc_same_patch "$REPO_PATH" "$FULL_SHA" "$_cand"; then
+        rm -f "$BODY"
+        echo "already posted: $FORK#$ISSUE carries an implementation comment for a content-identical commit ($_cand — same patch-id as $FULL_SHA) — nothing to do (idempotent rebase; use --force to re-post)"
+        _idem_emit skip-patch
+        exit 0
+      fi
+    done <<< "$(printf '%s\n' "$EXISTING" | grep -oE "Implementation commit: ${BT}[0-9a-f]{40}${BT}" | grep -oE '[0-9a-f]{40}' | sort -u)"
   else
     # FAIL-OPEN, deliberately. The per-commit note is MANDATORY (owner
     # 2026-08-28 22:54Z): a duplicate comment is cosmetic, a MISSING mandatory
