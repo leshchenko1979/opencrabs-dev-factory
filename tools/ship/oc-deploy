@@ -564,6 +564,37 @@ shadow_log() { # <op> <sha> <features> <result>
     >> "$SHADOW" 2>/dev/null || true
 }
 
+# ---------------------------------------------- #729 swap in-flight guard ---
+# The poll handoff (below) had NO in-flight guard: whenever the newest GREEN
+# run's built sha differed from `deployed.sha` it unconditionally armed a NEW
+# `oc-swap-<sha8>-<epoch>` unit. A caller that loops faster than the marker
+# flips — `oc-ship-chain` LEG5 polls 12x at 10 s, and `deployed.sha` does not
+# move until the swap unit has downloaded, verified, backed up, installed and
+# bounced (minutes) — therefore armed a DUPLICATE unit on every pass. Measured
+# 2026-10-01 (run 36799172575, sha e1525d27): THREE units ~19 s apart, all real,
+# and the only thing that stopped a double swap was `swap-execute`'s own
+# post-download "ALREADY the deployed sha" refusal — after each duplicate had
+# already downloaded the artifact and pruned backups. Same class as the closed
+# #42 fanout double-notify (missing in-flight guard, sibling path).
+#
+# swap_inflight_units prints the live swap units for a sha8. "In flight" is
+# systemd's own ACTIVE/ACTIVATING state, NOT `--all`: a FAILED unit must not
+# block its own legitimate retry, and a finished transient unit is GC'd by
+# systemd and never listed (measured live, systemd 255: a stopped transient
+# unit is absent even from `--all`; a failed one lingers in `--all` only).
+# OC_SWAP_INFLIGHT_LISTER is the hermetic selftest shim, mirroring the proven
+# OC_SWAP_SIDECAR_LISTER idiom.
+swap_inflight_units() { # $1 = sha8 ; one live `oc-swap-<sha8>-*.service` name per line
+  local SHA8="$1" LIST=""
+  if [ -n "${OC_SWAP_INFLIGHT_LISTER:-}" ]; then
+    LIST="$("$OC_SWAP_INFLIGHT_LISTER" 2>/dev/null || true)"
+  else
+    LIST="$(systemctl --user list-units --plain --no-legend \
+      --state=active,activating 'oc-swap-*.service' 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  printf '%s\n' "$LIST" | grep -E "^oc-swap-${SHA8}-" || true
+}
+
 # ------------------------------------------------------- journal (S2 spec) --
 JF=""; SEQ=0
 journal_init() { # $1 = short label
@@ -1018,7 +1049,7 @@ STUB
   # 10. poll at S2, --execute -> HANDOFF to launch stub (Phase A
   #     exits pre-bounce); backup listed explicitly in the plan line
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_SWAP_LAUNCH="$SD/launch" "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" "$SELF_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-handoff-rc" $rc 0
   check_has "poll-handoff" "$out" "HANDOFF"
   check_has "poll-plan-backup" "$out" "backup"
@@ -1027,6 +1058,27 @@ STUB
   grep -q -- "--features telegram" "$T/launch.log" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: carrier-resolved features not handed to swap"; }
   grep -q "handed-off" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no handed-off shadow row"; }
+  # 10a. #729: in-flight guard — a LIVE oc-swap unit for THIS sha must stop a
+  #      duplicate handoff (LEG5 loops faster than deployed.sha flips; the
+  #      measured defect armed 3 units for ONE run). Control below: a live unit
+  #      for a DIFFERENT sha must NOT block — the guard keys on the sha.
+  printf '#!/usr/bin/env bash\necho oc-swap-aaaaaaaa-1790817190.service\n' > "$SD/inflight-live"; chmod +x "$SD/inflight-live"
+  L_BEFORE="$(grep -c 'swap-execute' "$T/launch.log" 2>/dev/null || true)"; L_BEFORE="${L_BEFORE:-0}"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_SWAP_INFLIGHT_LISTER="$SD/inflight-live" OC_SWAP_LAUNCH="$SD/launch" \
+    "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+  check_rc "poll-inflight-rc" $rc 0
+  check_has "poll-inflight-msg" "$out" "already in flight"
+  L_AFTER="$(grep -c 'swap-execute' "$T/launch.log" 2>/dev/null || true)"; L_AFTER="${L_AFTER:-0}"
+  [ "$L_AFTER" = "$L_BEFORE" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #729 in-flight guard still armed a duplicate (launch swap-execute calls $L_BEFORE -> $L_AFTER)"; }
+  grep -q "inflight" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #729 no inflight shadow row"; }
+  # 10a-neg: a live unit for ANOTHER sha must NOT block this handoff (control)
+  printf '#!/usr/bin/env bash\necho oc-swap-bbbbbbbb-1790817190.service\n' > "$SD/inflight-other"; chmod +x "$SD/inflight-other"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_SWAP_INFLIGHT_LISTER="$SD/inflight-other" OC_SWAP_LAUNCH="$SD/launch" \
+    "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+  check_rc "poll-inflight-other-rc" $rc 0
+  check_has "poll-inflight-other-handoff" "$out" "HANDOFF"
   # 10b. C-#2: poll --wait with nothing new -> timeout rc 5 + notify wake
   printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$SD/deployed.sha"
   : > "$T/notify.log"
@@ -1088,7 +1140,7 @@ NSTUB2
   rm -f "$SD/deployed.sha"
   : > "$T/notify.log"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_DEPLOY_NOFANOUT=1 OC_SWAP_LAUNCH="$SD/launch" OC_DEPLOY_NOTIFY="$SD/notify" \
+    OC_DEPLOY_NOFANOUT=1 OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" OC_DEPLOY_NOTIFY="$SD/notify" \
     "$SELF_BIN" poll --execute --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
   check_rc "poll-wait-handoff-rc" $rc 0
   grep -q "HANDOFF" "$T/notify.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: handoff did not notify session"; }
@@ -3693,6 +3745,18 @@ case "$MODE" in
       plan "auto-swap armed: GREEN run + artifact verify -> swap (consent eliminated owner 2026-08-28)"
       if [ "$EXECUTE" = 1 ]; then
         plan "swap chain: download artifact run=$RUN_ID -> oc-artifact-verify -> backup to $BACKUP_DIR -> atomic install -> seal -> marker writes -> bounce -> disk==proc verify -> ledger stamp -> receipt (auto-rollback on verify fail)"
+        # #729: do NOT arm a duplicate unit while one for THIS sha is in flight
+        # (see swap_inflight_units above). Exit 0 pre-bounce by design — exactly
+        # like a successful handoff: the live unit owns the swap and will flip
+        # deployed.sha, and the caller's marker poll (LEG5) keeps going.
+        INFLIGHT="$(swap_inflight_units "${B_SHA:0:8}")"
+        if [ -n "$INFLIGHT" ]; then
+          INFLIGHT_1="$(printf '%s\n' "$INFLIGHT" | head -1)"
+          shadow_log swap "$B_SHA" "$FEATURES" "inflight:$INFLIGHT_1"
+          plan "swap already in flight for ${B_SHA:0:8}: $INFLIGHT_1 — NOT arming a duplicate"
+          echo "swap already in flight: $INFLIGHT_1 owns sha=${B_SHA:0:8} (run=$RUN_ID) — not arming a duplicate" >&2
+          exit 0
+        fi
         UNIT="oc-swap-${B_SHA:0:8}-$(date +%s)"
         OC_SWAP_DETACHED=1 $LAUNCH --unit="$UNIT" --collect "$SELF" swap-execute --sha "$B_SHA" --run "$RUN_ID" --features "$FEATURES" \
           || { shadow_log swap "$B_SHA" "$FEATURES" "launch-fail"; die 4 "systemd-run handoff failed — nothing touched"; }
