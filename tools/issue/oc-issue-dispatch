@@ -224,12 +224,22 @@ AFFINITY_KEYWORDS = {
     "harvest": ["harvest", "upstream", "port", "cherry-pick", "census", "sweep"],
     # The tools/ CLI surface (fork #342). Keywords were chosen by MEASUREMENT, not
     # guesswork: scored over the 125 open fork issues against ground truth "names a
-    # path that exists under tools/** or carries the (tools): scope prefix" (45
-    # issues), this list fires on exactly those 45 -- 100% precision, 100% recall,
-    # zero false positives. A bare "tools/" was REJECTED: it fires on 60 and also
-    # matches nine daemon-source tokens (src/**/tools/*.rs), which are Editor
-    # territory and must never accrue affinity for this lane.
-    "tools": ["(tools):", "tools/oc-", "tools/lib/", "tools/tests/", "tools/ship/", "tools/harvest/", "tools/state/", "tools/audit/", "tools/git/", "tools/notify/", "tools/issue/", "tools/smoke/"],
+    # path that exists under tools/**" (45 issues), this list fires on exactly
+    # those 45 -- 100% precision, 100% recall, zero false positives. A bare
+    # "tools/" was REJECTED: it fires on 60 and also matches nine daemon-source
+    # tokens (src/**/tools/*.rs), which are Editor territory and must never
+    # accrue affinity for this lane.
+    #
+    # #641 CORRECTION. The original ground truth for this list read "names a path
+    # that exists under tools/** OR carries the (tools): scope prefix", and the
+    # list then scored that prefix as a keyword -- so the label was validated
+    # against a ground truth that already contained it. Circular, and it baked
+    # the defect in. The label is REMOVED: the owner files EVERY tool-related
+    # issue as `fix(tools):` whether the fix lands in tools/** (Toolsmith) or in
+    # src/brain/tools/** (Editor), so the prefix spans two repos and decides
+    # nothing on its own. A body that names a REAL oc-* script still claims the
+    # domain (`_names_fleet_tool`) -- that is a surface, not a label.
+    "tools": ["tools/oc-", "tools/lib/", "tools/tests/", "tools/ship/", "tools/harvest/", "tools/state/", "tools/audit/", "tools/git/", "tools/notify/", "tools/issue/", "tools/smoke/"],
     # The plan tool (fork #529). Chosen by MEASUREMENT, same method as `tools`
     # above. Ground truth = the issue TITLE carries the `(plan)` scope prefix
     # (3 open issues: #374, #506, #510). Scored over the 159 open fork issues:
@@ -1040,15 +1050,92 @@ def declared_scope_domains(issue):
     return doms
 
 
-def detect_issue_domains(issue):
-    """Domains an issue touches: the DECLARED prefix first, prose keywords as fallback.
+# The FLEET TOOL NAMES on disk (fork #641). A body that NAMES one of these makes
+# a surface claim -- it points at a script that lives under tools/**. The SCOPE
+# LABEL is not such a claim (see the `tools` bucket above): MEASURED over the
+# #641 acceptance set, the label was the ONLY `tools` signal on all 14 rows, 8 of
+# which must NOT hold it because their fix lands in src/brain/tools/**.
+# `oc-issue-scope`'s header rules identically (variant 1, TITLE-PREFIX: "the
+# prefix is a LABEL, not a surface"), so this is the same law, not a new one.
+#
+# A SYMBOL arm was built for the 14th acceptance row (#634) and REJECTED on
+# measurement (2026-10-05). Three candidate signals, all measured against the
+# 403-issue corpus and the 14-row acceptance set:
+#   (1) camelCase-or-underscore ids present in tools/** but not src/** -> 10/14,
+#       and it gave `tools` to 44 open issues (leaked capitalised English:
+#       `Reproduced`, `Relationship`, `Infra`).
+#   (2) underscore ids present in tools/** (no src subtraction) -> 6/14 with 102
+#       open issues gained: dominated by fleet-wide builtins every body mentions
+#       (`edit_file`, `write_file`, `session_notify`, `TOOL_EXEC`).
+#   (3) underscore ids present in tools/** and NOT in src/** -> 14/14 acceptance,
+#       but its ONLY live effect was to give `tools` to fork #757, a
+#       `fix(telegram)` issue. Cause: tools/** docs and comments QUOTE other
+#       subsystems' symbols -- `tools/harvest/oc-harvest-census` quotes
+#       `spacing_ok` / `spacing_floor_ms` / `RichAdmission` from a telegram issue
+#       inside a comment -- so "present in tools/, absent from src/" does NOT
+#       imply "tools-specific". The vocabulary is contaminated at the source.
+# The src subtraction is load-bearing either way, and it makes the arm depend on
+# a foreign repo's checkout; (3) is therefore BOTH wrong on the live corpus and
+# the most expensive. #634 (CLOSED) is the #610/#471 indistinguishability class
+# `oc-issue-scope`'s header already rules unseparable: no text signal splits it
+# from #471, and the acceptance row that demands one is over-specified.
+_FLEET_TOOL_CACHE = None
 
-    The union is what #551 asks for and what keeps the zero-empty-domain
-    invariant: the declaration can only ADD a domain, never remove one, so an
-    unmapped or absent scope behaves exactly as before.
+def _fleet_tool_names():
+    """The `oc-*` scripts that actually exist under tools/** (basenames)."""
+    global _FLEET_TOOL_CACHE
+    if _FLEET_TOOL_CACHE is None:
+        names = set()
+        try:
+            for _dirpath, _dirs, files in os.walk(TOOL_DIR):
+                for fn in files:
+                    if fn.startswith("oc-") and not fn.endswith(".pyc"):
+                        names.add(fn)
+        except OSError:
+            names = set()
+        _FLEET_TOOL_CACHE = names
+    return _FLEET_TOOL_CACHE
+
+_FLEET_TOOL_RE = re.compile(r"(?<![a-z0-9_-])oc-[a-z][a-z0-9-]*")
+
+def _names_fleet_tool(text):
+    """True when the text names a real `oc-*` script under tools/** (fork #641).
+
+    Resolution is what separates a surface claim from a bare mention: a name that
+    exists on disk claims the domain, a name that resolves NOWHERE (`oc-race`, a
+    scratch fixture) does not.
+    """
+    if not text:
+        return False
+    names = _fleet_tool_names()
+    return any(tok in names for tok in _FLEET_TOOL_RE.findall(text.lower()))
+
+def detect_issue_domains(issue):
+    """Domains an issue touches: body surfaces, then the DECLARED prefix.
+
+    The `(tools):` scope is CONFIRM-ONLY (#641): it spans two repos, so it may
+    not establish the domain on its own. Every other scope keeps #551's
+    behaviour (the declaration ADDS a domain, which is what preserves the
+    zero-empty-domain invariant for the mapped scopes).
     """
     text = issue.get("title", "") + " " + issue.get("body", "")
-    return declared_scope_domains(issue) | _domains_for_text(text)
+    doms = _domains_for_text(text)
+    if _names_fleet_tool(text):
+        doms.add("tools")
+    doms |= (declared_scope_domains(issue) - {"tools"})
+    return doms
+
+def title_disagrees(issue):
+    """True when the `(tools):` LABEL claims a domain the body does not support.
+
+    The disagreement is DISCLOSED, never scored (#641): a caller with a mechanism
+    override can act on it, while the classifier itself refuses to guess which of
+    the two repos the fix lands in. False for every issue that does not carry the
+    label, so this is silent on the rest of the corpus.
+    """
+    if "tools" not in declared_scope_domains(issue):
+        return False
+    return "tools" not in detect_issue_domains(issue)
 
 def role_owned_domains(lane):
     """Domains a lane OWNS by ROLE (fork #342), independent of its feature prose.
@@ -1717,6 +1804,14 @@ def cmd_auto(args):
         num = issue["number"]
 
         print(f"\nDispatching issue #{num}: {issue['title']}")
+        if title_disagrees(issue):
+            # #641: the same signal `oc-issue-scope` emits (its report prints
+            # `[TITLE-DISAGREES]`, its --json carries `title_disagrees`). The
+            # classifier refuses to guess which repo the fix lands in, so the
+            # disagreement is DISCLOSED here instead of being silently scored.
+            print("  [TITLE-DISAGREES] the (tools): label claims a domain the body does "
+                  "not support -- the fix may land in src/brain/tools/** (Editor) rather "
+                  "than tools/** (Toolsmith). Verify before acting on the routing.")
         print(f"  Target: {best_lane['uuid']} (topic {best_lane['topic']})")
         print(f"  Branch: {branch}")
         print("  Payload:")
@@ -2178,7 +2273,11 @@ def run_selftest():
     }
     lane_tools_prose = {
         "uuid": "lane-tools-prose", "class": "ACTIVE", "is_busy": False,
-        "feature": "(tools): dispatch affinity", "raw": {"role": "editor"},
+        # #641: this feature must NAME the surface. It was the bare `(tools):`
+        # label, which is no longer a domain signal -- left as-is, the leg below
+        # would pass for a lane whose prose names nothing at all.
+        "feature": "tools/issue/oc-issue-dispatch dispatch affinity",
+        "raw": {"role": "editor"},
     }
     s_owner = score_affinity(issue_tools, lane_toolsmith)
     s_verbose = score_affinity(issue_tools, lane_editor_verbose)
@@ -2284,9 +2383,38 @@ def run_selftest():
     issue_bash_noise = {"title": "fix: should push finished", "body": ""}
     assert_true("#543: prose sh does not match inside should/push/finished",
                 "bash" not in detect_issue_domains(issue_bash_noise))
-    issue_tools_scope = {"title": "fix(tools): dispatch affinity", "body": ""}
-    assert_true("#543: structured tools scope keeps substring matching",
-                "tools" in detect_issue_domains(issue_tools_scope))
+    # #543: structured scopes still map through the shared matcher. RETARGETED by
+    # #641: the example here was `(tools):`, which is now CONFIRM-ONLY, so it can
+    # no longer serve as the positive control for "a structured scope maps".
+    issue_plan_scope = {"title": "fix(plan): card revision", "body": ""}
+    assert_true("#543: structured plan scope keeps substring matching",
+                "plan" in detect_issue_domains(issue_plan_scope))
+    # #641: the tools LABEL alone no longer claims the domain -- it spans two
+    # repos (tools/** Toolsmith, src/brain/tools/** Editor) and decides nothing.
+    # A body that NAMES a real tools/** script still claims it (see #605 control).
+    assert_true("#641: a bare (tools): label no longer claims the tools domain",
+                "tools" not in detect_issue_domains(
+                    {"title": "fix(tools): dispatch affinity", "body": ""}))
+    assert_true("#641: the label/body disagreement is DISCLOSED, never scored",
+                title_disagrees({"title": "fix(tools): dispatch affinity", "body": ""}))
+    assert_true("#641: an agreeing label is not reported as a disagreement",
+                not title_disagrees(
+                    {"title": "fix(tools): dispatch affinity",
+                     "body": "tools/issue/oc-issue-dispatch"}))
+    assert_true("#641: an issue with no tools label is never a disagreement",
+                not title_disagrees({"title": "fix(telegram): zzz", "body": ""}))
+    # #641: the 14th acceptance row (#634) is NOT satisfiable by a symbol arm,
+    # and this leg LOCKS that boundary so a later lane cannot re-ship one. The
+    # fixture is the real measured counterexample: fork #757 is `fix(telegram)`,
+    # yet a `tools/`-minus-`src/` symbol vocabulary gave it `tools` because
+    # `tools/harvest/oc-harvest-census` quotes `spacing_ok` in a COMMENT. A
+    # generic implementation symbol must therefore never confirm the domain --
+    # only a tools/** path or a real oc-* script name may (see #605 control).
+    assert_true("#641: a generic implementation symbol never confirms the domain",
+                "tools" not in detect_issue_domains(
+                    {"title": "fix(telegram): the #676 spacing floor governs droppable chrome only",
+                     "body": "`src/channels/telegram/governor.rs`: "
+                             "`if class.is_droppable() && !spacing_ok(peer, now, lim.spacing_floor)`"}))
     lane_topic = {"feature": "generic lane", "topic": "spill"}
     assert_true("#543: optional topic participates through shared matcher",
                 "bash" not in _domains_for_text(lane_topic["feature"]))
@@ -2304,9 +2432,11 @@ def run_selftest():
     assert_true("#605: a negated subdir token does NOT claim the domain",
                 "tools" not in detect_issue_domains(
                     {"title": "", "body": "this is not tools/lib/oc-notify.sh work"}))
-    assert_true("#605: the legitimate structured form still claims it (control)",
+    assert_true("#605 control (retargeted by #641): naming a real tools/** script "
+                "still claims the domain -- the bare label alone no longer does",
                 "tools" in detect_issue_domains(
-                    {"title": "fix(tools): dispatch affinity", "body": ""}))
+                    {"title": "fix(tools): dispatch affinity",
+                     "body": "the culprit is tools/issue/oc-issue-dispatch"}))
     assert_true("#605: naming a tools file still claims it (control)",
                 "tools" in detect_issue_domains(
                     {"title": "", "body": "the culprit is tools/issue/oc-issue-dispatch"}))
