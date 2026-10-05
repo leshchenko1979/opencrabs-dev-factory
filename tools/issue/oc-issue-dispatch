@@ -1076,10 +1076,14 @@ def select_best_lane(issue, candidate_lanes, allow_fallback=False):
     # even when busy: see owner_candidate_for.
     available = [lane for lane in candidate_lanes
                  if not lane["is_busy"] or owner_candidate_for(lane, issue_domains)]
-    if not available:
-        # Fallback: lanes with class ACTIVE or IDLE but no dirty/worktree
-        available = [lane for lane in candidate_lanes if lane["class"] in ("ACTIVE", "IDLE") and not lane["is_busy"]]
-
+    # ONE definition of "available", used by both lane selection and the idle
+    # count: no active claim and no dirty worktree (is_busy). Lane CLASS is
+    # deliberately NOT part of it — oc-roster marks a lane ACTIVE for any update
+    # inside RECENT_S (24h, oc-roster:96/:326), so treating ACTIVE as busy would
+    # strand nearly every live lane and collapse dispatch capacity. The old
+    # class-filtered fallback that stood here was dead code: `class in
+    # (ACTIVE,IDLE) and not is_busy` is a strict SUBSET of the primary predicate,
+    # so it could never rescue an empty primary (#310).
     if not available:
         return None
 
@@ -1572,7 +1576,9 @@ def cmd_auto(args):
         wanted_domains |= detect_issue_domains(_iss)
     available_lanes = [l for l in editor_lanes
                        if not l["is_busy"] or owner_candidate_for(l, wanted_domains)]
-    print(f"Candidate roster: {len(editor_lanes)} registered, {len(available_lanes)} idle/available.")
+    print(f"Candidate roster: {len(editor_lanes)} registered, {len(available_lanes)} idle/available "
+          f"(available = no open claim + clean tree; a busy lane that OWNS a wanted domain stays "
+          f"eligible -- this is NOT oc-roster's IDLE class, see #310).")
 
     if not available_lanes:
         print("CAPACITY_EXHAUSTED: No idle editor lanes available for dispatch.", file=sys.stderr)

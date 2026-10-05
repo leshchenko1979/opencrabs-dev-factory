@@ -636,6 +636,35 @@ grep -Eq "$_760_private_re" "$_760c" \
   || bad "control: detector is blind to a private copy"
 rm -f "$_760c"
 
+# ---- 00a4. one availability definition in oc-issue-dispatch (#310) ----------
+# oc-issue-dispatch carried TWO definitions of "available": the primary
+# `not is_busy or owner_candidate_for(...)` and a class-filtered fallback
+# `lane["class"] in ("ACTIVE","IDLE") and not is_busy`. The fallback was DEAD
+# CODE -- its `not is_busy` clause makes it a strict SUBSET of the primary, so it
+# could never rescue an empty primary (0 rescue cases over an exhaustive search)
+# -- but it READ as a second, contradicting rule and invited the wrong fix
+# ("make class authoritative"), which would strand every lane touched inside
+# oc-roster's RECENT_S (24h) and collapse dispatch capacity. Removed; the count
+# line now names the one definition. The guard keys on the SHAPE (a class
+# membership test conjoined with is_busy on an availability path), never on a
+# comment, and is mutation-checked against a synthetic copy.
+section "one availability definition in oc-issue-dispatch (#310)"
+_310_tool="$TOOLS_DIR/issue/oc-issue-dispatch"
+_310_fallback_re='class"\] in \("ACTIVE",[[:space:]]*"IDLE"\).*is_busy'
+if [ ! -f "$_310_tool" ]; then
+  bad "issue/oc-issue-dispatch missing"
+elif grep -Eq "$_310_fallback_re" "$_310_tool"; then
+  bad "oc-issue-dispatch re-introduced a class-filtered availability path: $(grep -Em1 "$_310_fallback_re" "$_310_tool")"
+else
+  ok "oc-issue-dispatch has no class-filtered availability path"
+fi
+_310c="$(mktemp)"
+printf '        available = [lane for lane in candidate_lanes if lane["class"] in ("ACTIVE", "IDLE") and not lane["is_busy"]]\n' > "$_310c"
+grep -Eq "$_310_fallback_re" "$_310c" \
+  && ok "control: detector flags a re-introduced class-filtered fallback" \
+  || bad "control: detector is blind to a class-filtered fallback"
+rm -f "$_310c"
+
 # ---- 00b. unified-log WIRE test (real tool -> tmp OC_TOOLS_LOG) -------------
 section "unified-log wire (real tool -> tmp log)"
 if tool oc-attrib; then
