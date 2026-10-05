@@ -603,7 +603,18 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
   sweep_stale_temps "$sd"
   _OC_TMP="$(mktemp "$sd/.ledger.XXXXXX")" || { _OC_TMP=""; return 4; }
   local tmp="$_OC_TMP"
-  if ! jq "$@" "$LEDGER" > "$tmp" 2>/dev/null; then rm -f "$tmp"; _OC_TMP=""; return 3; fi
+  # (#570) NEVER let jq's own message die here. `2>/dev/null` turned a clear jq type
+  # error ("string and array cannot be added") into a bare rc=3 that was
+  # indistinguishable from a bad uuid or a missing ledger — Triage spent several turns
+  # re-deriving the cause. The ledger is still UNTOUCHED on failure; only the SILENCE
+  # is removed. stderr is captured (`2>&1 >"$tmp"` — fd2 to the capture, fd1 to the
+  # temp) so the message survives the redirection that used to eat it.
+  local jerr=""
+  if ! jerr="$(jq "$@" "$LEDGER" 2>&1 >"$tmp")"; then
+    rm -f "$tmp"; _OC_TMP=""
+    echo "oc-ledger: atomic_jq failed (rc=3) — the ledger was NOT modified: ${jerr:-<jq gave no message>}" >&2
+    return 3
+  fi
   if ! jq -e . "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; _OC_TMP=""; return 4; fi
   mv "$tmp" "$LEDGER" || { rm -f "$tmp"; _OC_TMP=""; return 4; }
   _OC_TMP=""
@@ -1661,7 +1672,8 @@ cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
          .role = $r
          | (if $has_topic then .topic_id = $tid else . end)
          | (if $has_feature then .feature = $f else . end)
-         | .notes += [("promoted at " + $t + ": " + $changes)])
+         | .notes = (((.notes // []) | if type == "array" then . else [.] end)
+                     + [("promoted at " + $t + ": " + $changes)]))
        | .events += [{n: ($n|tonumber), t: $t, by: "oc-ledger promote", kind: "note",
                       what: ("promoted " + $u + ": " + $changes)}]
        | .updated_at = $t' || return $?
@@ -3800,6 +3812,51 @@ SHIMEOF
   fi
   rm -rf "$T"
 
+
+  # --- #570 (2026-10-05, toolsmith lane): atomic_jq must never fail SILENTLY ---
+  # Triage spent several turns re-deriving a cause jq had ALREADY stated: the
+  # `2>/dev/null` in atomic_jq turned "string and array cannot be added" into a
+  # bare rc=3 -- indistinguishable from a bad uuid or a missing ledger. Two legs,
+  # and BOTH assert the store is UNTOUCHED on failure:
+  #   A. the provoking row class -- a legacy `.notes` STRING -- is COERCED by
+  #      promote (rc 0) instead of failing the addition, so such a row self-heals;
+  #   B. a GENUINE jq failure still returns 3, but now PRINTS jq's own message.
+  # Leg B is the discriminating one: a bare rc=3 cannot distinguish the cause,
+  # which IS the defect. Fixture shapes are the ones proven in this lane's
+  # hermetic harness (string .notes for A; string .events for B), and the
+  # no-silent-failure assertion is on stderr CONTENT, never on the rc alone.
+  Q5U="cccccccc-1111-2222-3333-444444444444"
+  Q5ARR='[{"n":1,"t":"2026-10-05T00:00:00Z","by":"seed","kind":"note","what":"seed"}]'
+  Q5STR='"legacy string | 2026-09-06 roster-amend n=1604"'
+  q5seed() { # $1=dir $2=notes-json $3=events-json
+    mkdir -p "$1/state" "$1/skill"
+    printf '{"workers":[{"uuid":"%s","role":"editor","topic_id":9,"feature":"q570","notes":%s}],"events":%s,"updated_at":"2026-10-05T00:00:00Z"}\n' \
+      "$Q5U" "$2" "$3" > "$1/state/workers-ledger.json"
+  }
+  # A -- a string .notes must be COERCED, not fatal
+  Q5A="$(mktemp -d)"; q5seed "$Q5A" "$Q5STR" "$Q5ARR"
+  OC_NO_FLOODGUARD=1 OC_ACTOR= OC_SKILL_DIR="$Q5A/skill" OC_LEDGER="$Q5A/state/workers-ledger.json" \
+    bash "$ME" promote "$Q5U" reviewer >/dev/null 2>"$Q5A/err"
+  chk "q570-A-promote-coerces-a-string-notes" 0 $?
+  chk "q570-A-notes-became-an-array" "array" \
+    "$(jq -r '.workers[0].notes|type' "$Q5A/state/workers-ledger.json")"
+  chk "q570-A-legacy-entry-survived" "legacy string | 2026-09-06 roster-amend n=1604" \
+    "$(jq -r '.workers[0].notes[0]' "$Q5A/state/workers-ledger.json")"
+  chk "q570-A-role-was-applied" "reviewer" \
+    "$(jq -r '.workers[0].role' "$Q5A/state/workers-ledger.json")"
+  # B -- a REAL jq failure must be LOUD, and must not touch the store
+  Q5B="$(mktemp -d)"; q5seed "$Q5B" "$Q5ARR" "$Q5STR"
+  Q5BEFORE="$(md5sum "$Q5B/state/workers-ledger.json" | cut -d' ' -f1)"
+  OC_NO_FLOODGUARD=1 OC_ACTOR= OC_SKILL_DIR="$Q5B/skill" OC_LEDGER="$Q5B/state/workers-ledger.json" \
+    bash "$ME" promote "$Q5U" reviewer >/dev/null 2>"$Q5B/err"
+  chk "q570-B-jq-failure-still-returns-3" 3 $?
+  chk "q570-B-names-the-cause-on-stderr" "true" \
+    "$(grep -q 'atomic_jq failed' "$Q5B/err" && echo true || echo false)"
+  chk "q570-B-carries-jq-s-OWN-message" "true" \
+    "$(grep -q 'cannot be added' "$Q5B/err" && echo true || echo false)"
+  chk "q570-B-store-UNTOUCHED-on-failure" "$Q5BEFORE" \
+    "$(md5sum "$Q5B/state/workers-ledger.json" | cut -d' ' -f1)"
+  rm -rf "$Q5A" "$Q5B"
 
   # --- A1b: a SELF verb's uuid is OPTIONAL and derived from the environment ----
   # (owner directive 2026-09-26 23:14Z: the tools still required the lane to pass
