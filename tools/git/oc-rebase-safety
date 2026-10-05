@@ -10,11 +10,12 @@
 #
 # Subcommands:
 #   oc-rebase-safety overlap --old-main X --new-main Y [--tree PATH]
-#       Intersection of `git diff --name-only X Y` with the merge-changed set.
-#       Merge-changed set (with --tree): files HEAD introduced over its first
-#       parent (2-parent merge => HEAD^1..HEAD; single-parent => conservative
-#       fallback: full X..Y set is treated as overlapping). Without --tree the
-#       merge-changed set is unknown => conservative: any X..Y change = overlap.
+#       Intersection of `git diff --name-only X Y` (the MAIN SHIFT) with the
+#       branch-side changed set. Branch-side set (with --tree): a 2-parent merge
+#       => HEAD^2..HEAD; a single-parent HEAD already REBASED onto Y => Y..HEAD
+#       (the rebase case, #590); otherwise conservative: the full X..Y set is
+#       treated as overlapping. Without --tree the branch-side set is unknown
+#       => conservative: any X..Y change = overlap.
 #       Exit 0 = zero overlap (gate-skip permitted) / 1 = gate-required.
 #   oc-rebase-safety audit --old-tip A --new-tip B [--base C]
 #       Per-file patch-id compare of the branch's own changes (C..A) against
@@ -85,9 +86,35 @@ cmd_overlap() {
       git -C "$repo" diff --name-only "$tip^2" "$tip" | sort -u > "$tmp_merge" || die 3 "git diff failed"
       conservative=0
     else
-      # Single-parent tip: cannot derive the branch-side set here; conservative (all main changes require gate).
-      cp "$tmp_main" "$tmp_merge"
-      conservative=1
+      # Single-parent tip. #590 (2026-10-05, toolsmith lane): a REBASED head is
+      # single-parent by construction, so it could never take the 2-parent arm
+      # and always fell to conservative — where the main-shift set is COPIED and
+      # every main-shift file is reported as colliding. `overlap` therefore
+      # answered gate-required at ZERO real overlap, and the law's condition (a)
+      # was unsatisfiable through this verb in the very case the NON-FF path
+      # prescribes (rebase onto a shifted main).
+      #
+      # For a tip already rebased onto --new-main the branch-side set IS
+      # well-defined: new_main..HEAD is exactly what the branch contributes on
+      # top of the new main. It is NOT old_main..HEAD — new_main descends from
+      # old_main, so that range re-includes the whole main shift and can never
+      # read zero (the shape the issue proposed; measured false).
+      #
+      # Two guards keep this from becoming a false skip, per "a zero is a verdict
+      # only from a working instrument":
+      #   - new_main must be an ANCESTOR of the tip (the rebase signature). A tree
+      #     not rebased onto it does not get the derived read.
+      #   - the derived set must be NON-EMPTY. An empty branch-side set means the
+      #     instrument cannot speak, so the conservative read stands.
+      if git -C "$repo" merge-base --is-ancestor "$new_main" "$tip" 2>/dev/null \
+         && git -C "$repo" diff --name-only "$new_main" "$tip" | sort -u > "$tmp_merge" \
+         && [ -s "$tmp_merge" ]; then
+        conservative=0
+      else
+        # Not rebased onto --new-main, or nothing to read: conservative (all main changes require gate).
+        cp "$tmp_main" "$tmp_merge"
+        conservative=1
+      fi
     fi
   fi
 
@@ -228,8 +255,30 @@ cmd_selftest() {
   grep -q '^MAIN-SHIFT' "$T/ov6.out" && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-conservative-labelled: $t"
   grep -qi 'NOT an intersection' "$T/ov6.err" && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-conservative-stderr-honest: $t"
   grep -q '^OVERLAP (real' "$T/ov6.out" && { t=FAIL; rc=1; } || t=OK; echo "selftest overlap-conservative-not-called-real: $t"
+  # 7. #590: a REBASED single-parent head. Main shift touches f1 only, the branch
+  #    f2 only => ZERO real overlap, and the verb MUST read 0. Before the fix this
+  #    returned 1 via the conservative copy (the discriminating leg).
+  git checkout -q -B rmain "$BASE"; echo rm >> f1.txt; git commit -qam rmain1
+  git checkout -q -B reb "$BASE";  echo rb >> f2.txt; git commit -qam reb1
+  git rebase -q rmain >/dev/null 2>&1
+  "$SELF" overlap --old-main "$BASE" --new-main rmain --tree "$T/repo" >"$T/ov7.out" 2>"$T/ov7.err"
+  [ $? -eq 0 ] && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-rebased-disjoint-rc: $t"
+  grep -q '^MAIN-SHIFT' "$T/ov7.out" && { t=FAIL; rc=1; } || t=OK; echo "selftest overlap-rebased-not-main-shift: $t"
+  # 8. same rebase shape, but the branch ALSO touches f1 => real intersection, rc 1.
+  git checkout -q -B rmain2 "$BASE"; echo rm2 >> f1.txt; git commit -qam rmain2a
+  git checkout -q -B reb2 "$BASE";   echo rb2 >> f1.txt; git commit -qam reb2a
+  git rebase -q rmain2 >/dev/null 2>&1 || { echo resolved >> f1.txt; git add f1.txt; GIT_EDITOR=true git rebase --continue >/dev/null 2>&1; }
+  "$SELF" overlap --old-main "$BASE" --new-main rmain2 --tree "$T/repo" >"$T/ov8.out" 2>"$T/ov8.err"
+  [ $? -eq 1 ] && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-rebased-clash-rc: $t"
+  grep -q '^OVERLAP (real intersection' "$T/ov8.out" && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-rebased-real-labelled: $t"
+  # 9. FALSE-SKIP GUARD: a single-parent tip NOT rebased onto --new-main must NOT
+  #    get the derived read (HEAD does not contain rmain), so it stays conservative.
+  git checkout -q -B plain "$BASE"; echo p >> f2.txt; git commit -qam plain1
+  "$SELF" overlap --old-main "$BASE" --new-main rmain --tree "$T/repo" >"$T/ov9.out" 2>/dev/null
+  [ $? -eq 1 ] && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-unrebased-conservative-rc: $t"
+  grep -q '^MAIN-SHIFT' "$T/ov9.out" && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-unrebased-labelled: $t"
 
-  [ "$rc" -eq 0 ] && echo "selftest: 12/12 OK" >&2 || echo "selftest: FAILURES" >&2
+  [ "$rc" -eq 0 ] && echo "selftest: 18/18 OK" >&2 || echo "selftest: FAILURES" >&2
   exit "$rc"
 }
 
