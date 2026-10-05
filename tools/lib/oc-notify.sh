@@ -3,7 +3,8 @@
 #
 # Single owner of the session-notify wake logic previously duplicated between
 # oc-deploy (notify_session, fanout path) and oc-waiter (resolve_notify_bin +
-# notify_lane). Both consumers now source this file and delegate.
+# notify_lane; oc-waiter was RETIRED in v0.4.135 and its stub deleted in #737).
+# Consumers source this file and delegate.
 # Also serves as an executable CLI wrapper for cross-session task chaining:
 #   cmd && tools/lib/oc-notify.sh <target-uuid> <text> [title]
 #

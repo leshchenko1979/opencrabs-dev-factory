@@ -52,7 +52,6 @@ Highlights:
 - `oc-deploy` — ship / poll (fused `--wait N` bounded poll, v0.4.100) / swap-execute / fanout
 - `oc-ledger` — worker ledger: claims, `claims` verb, sync, version stamps, cadence
 - `oc-prchecks` — CI-wait on `pr-checks.yml` (poll, resume-before-dispatch, lane gates; `--notify` is RETIRED)
-- `oc-waiter` — RETIRED v0.4.135 (stub only: `--help` rc 0, every subcommand rc 1). Detached waits run natively — bash `background: true`, and the harness wakes the caller with the exit code; for cross-session chaining use `tools/lib/oc-notify.sh`
 - `oc-notify.sh` (tools/lib) — shared wake/notify contract (sourced by `oc-deploy`; also an executable CLI wrapper for cross-session chaining)
 - `oc-attrib` — Session-Id attribution; `--contributors` is the single contributors shape (oc-deploy contributors retired v0.4.90)
 - `oc-commit` / `oc-issue-log` — signed commits + tracked-issue receipts
