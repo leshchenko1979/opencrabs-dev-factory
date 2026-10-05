@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.284
+version: 0.4.285
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -486,6 +486,20 @@ links; development-time upstream contact is PR-comments only (supersedes the
   surface is upstream-inherited (`upstream-rooted`), or `--no-parent "<reason>"` as the last resort. A DECLARED root
   or orphan is legal; a SILENT one is the violation. The `--root` object must RESOLVE, or the flag is `--no-parent`
   in better clothes. Full clause + Duty T5 backstop: `upstream-merge-runbook.md`, `triage.md`.**
+  **THE GATE HAS THREE LEGS, NOT ONE — ASSIGNMENT and NATIVE LINK joined ORIGIN (owner order 2026-10-05, origin
+  opencrabs/opencrabs#1932).** **(a) ASSIGNMENT:** a `fix(`/`bug(`-titled issue MUST carry an assignee ON the
+  creating command (`--assignee <login>`): on the BINARY tracker the maintainer `adolfousier`, on the FACTORY
+  tracker the filing role's owner. This leg exists because upstream's `auto-assign.yml` assigns the AUTHOR: #1932
+  landed on `leshchenko1979` and had to be hand-corrected to `adolfousier` (unassigned+assigned
+  2026-10-05T06:27:32Z). **(b) NATIVE LINK:** where the declared origin resolves to a SAME-TRACKER issue, the native
+  parent link is OBLIGATORY — `--parent <N>` at creation, or `gh issue edit <issue> --parent <N>` as the immediate
+  next action. A comment-only `root:` satisfies DECLAREDNESS, never the link when a same-tracker parent exists: for
+  `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer (#1932's
+  root commit `ede0763be` carries `Closes #737`, so #737 is its parent). Where the origin has no same-tracker issue
+  counterpart (an upstream PR or path), the comment declaration IS the link and no native link is possible.
+  **TOOL follow-up (Toolsmith):** `oc-issue-create` gains `--assignee` as a first-class flag with the per-tracker
+  default, and derives `--parent` from a `--root upstream:<sha>` commit's `Closes #N` trailer. Until it lands, the
+  filing lane passes `--assignee` / `--parent` by hand — the LANE owns the leg, the tool only automates it.**
   **READ a relation with `gh issue view <N> --json parent,subIssues,blockedBy,blocking` — NEVER the issue object's
   `.parent` projection.** `gh api ... --jq '.parent.number'` returns a confident **null for every issue**, since the
   REST issue object omits the field; the same call returns a real title, so the null reads as "no parent". One

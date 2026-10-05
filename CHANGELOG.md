@@ -1,5 +1,28 @@
 # Changelog — opencrabs-dev
 
+## v0.4.285 — the creation gate has THREE legs: origin, assignee, native link (owner order 2026-10-05, origin opencrabs/opencrabs#1932)
+
+**Owner order 2026-10-05 10:19Z** (channel `OC Dev`), verbatim: *"First: https://github.com/opencrabs/opencrabs/issues/1932 — It was not linked to the parent issue and not assigned to Adolfo. Fix the laws so that this is done correctly next time"*.
+
+**What #1932 measured.** The issue was filed on the BINARY tracker under the v0.4.284 two-stream routing, correctly declared `upstream-rooted` — its `root: ede0763be` comment named a commit by **adolfousier** whose body carries `Closes #737`, i.e. the defect it reports lives inside the maintainer's own commit, so the ORIGIN leg was honest and satisfied. Two gaps remained, and both are now closed:
+
+1. **No assignee mechanism.** `oc-issue-create` had no `--assignee` handling at all (one doc-string mention). GitHub's upstream `auto-assign.yml` then assigns the **author** — #1932 landed on `leshchenko1979` at 23:17:42Z and the owner hand-corrected it to `adolfousier` at 2026-10-05T06:27:32Z. Live read: **40 of 40** recent upstream issues carry `adolfousier`, so the assignment is the tracker's standing convention, not a one-off.
+2. **Comment-only root, no native link.** A `root:` comment satisfies DECLAREDNESS but creates no native parent edge. #1932 still reads `parent: null`. For `--root upstream:<sha>` the parent is **derivable** — from that commit's own `Closes #N` / `Fixes #N` trailer (`ede0763be` → `Closes #737`) — and the law never asked for the derivation.
+
+**Why the gate, not a reminder.** Measured live 2026-10-05: **all 30** sampled recent upstream issues carry `parent=null` — upstream does not use native parents at all — so the same-tracker parent for a regression like #1932 must be *derived*, not looked up, and only a gate that states the derivation can make that happen. This is the same failure shape the 2026-09-25 origin gate was built for: a mandate without a detector lapses unseen.
+
+**What lands.** The CREATION-TIME PARENT GATE becomes a **THREE-LEG** gate on every `fix(`/`bug(`-titled issue: **(a) ORIGIN** (unchanged: `--parent <N>` / `--root upstream:<obj>` / `--no-parent "<reason>"`), **(b) ASSIGNEE** (`--assignee <login>` — binary tracker `adolfousier`, factory tracker the filing role's owner), **(c) NATIVE LINK** where the declared origin resolves to a same-tracker issue (`--parent <N>` at creation, or `gh issue edit <issue> --parent <N>` as the immediate next action; for `--root upstream:<sha>` the parent is derived from the commit's `Closes #N` trailer). Triage's Duty T5 backstop gains the matching questions with **per-leg population boundaries** — legs (a)/(c) keep the origin gate's 2026-09-25T22:33:06Z boundary, leg (b) runs on issues created at or after the owner order (2026-10-05T10:19Z), since #1932 itself predates it and was corrected by hand.
+
+| file | change | LOC |
+|---|---|---:|
+| `SKILL.md` | §Upstream relations · ISSUE ROUTING — the gate's three legs + Toolsmith follow-up | 504 → 518 lines |
+| `triage.md` | CREATION GATE (three legs) + BACKSTOP LEGS (b)/(c) with per-leg boundaries | 597 → 597 lines |
+| `editor.md` | Phase 1 item 2 — the three legs on the creating command | 763 → 762 lines |
+| `upstream-merge-runbook.md` | §Native Sub-Issues Mandate — the three legs + T5 backstop extension | 514 → 514 lines |
+
+**The Toolsmith half is NOT in this commit.** `oc-issue-create` gains `--assignee` as a first-class flag with the per-tracker default, and derives `--parent` from a `--root upstream:<sha>` commit's `Closes #N` trailer. Until it lands, the filing LANE passes both by hand — the lane owns the leg, the tool only automates it. The full spec is carried in the `SKILL.md` §Upstream relations clause and is dispatched to the Toolsmith lane.
+
+
 ## v0.4.284 — the two-stream issue routing: binary upstream, factory to the dev-factory repo (owner order 2026-10-03)
 
 Bundles the routing overhaul below with the window's other lanes' work: **`c377eeb0`** + **`d1404d7a`** (#730 header-parser guard, Toolsmith); **`3fe3618f`** + **`839868e5`** (#764 — the declaration-dependency predicate reads CODE, not PROSE); **`12d316e3`** + **`ee792ad3`** (#765 — `NOTE(HUNK_SYMBOL_DIVERGED)` names the DIFFERING region); **`4c5bf657`** + **`062861b7`** (#761 step 3 — the `walk` verb); **`994951f7`** (law — #761 step 3/4 precision: rows key on `unit`, branches-absent is UNCOVERED, CLOSED is mechanical); **`0bbc4da5`** (re-vendor `oc-questions`); **`e6c3bb25`** (docs — the open-questions architecture doc describes the shipped shape); **`0942d203`** (docs — the v0.4.283 C8 naming fix, which post-dates the `v0.4.283` tag and therefore rides this window rather than its own).
