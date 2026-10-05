@@ -109,6 +109,21 @@ import subprocess
 import sys
 import time
 
+# #760: the unified tools log has ONE Python home (tools/lib/oc_log.py, #739).
+# The inline copy that used to live below matched `--selftest` ONLY -- it missed
+# the #749b bare-subcommand form, the exact class that silently swallowed rows
+# for five tools. Importing the module also arms the canonical flood guard and
+# signal traps. A failure here is LOUD: a tool that cannot log must say so, never
+# run silently (the same contract oc_claims is imported under in oc-issue-dispatch).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+try:
+    from oc_log import oc_log_init, oc_log_extra, oc_log_finish
+except ImportError as _e:  # pragma: no cover
+    sys.stderr.write(
+        "oc-census: cannot import tools/lib/oc_log.py (%s) -- the canonical "
+        "unified-log parity is missing; refusing to run uninstrumented\n" % _e)
+    sys.exit(2)
+
 TOOL = "oc-census"
 DEFAULT_REPO = "/root/opencrabs"
 DEFAULT_BASE = "origin/main"
@@ -136,92 +151,6 @@ UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
 def is_lane(key):
     """True when a Session-Id trailer value is a well-formed lane UUID."""
     return bool(UUID_RE.match(key or ""))
-
-# ============================================================================
-# Unified tools log (parity with tools/lib/oc-log.sh; see tools/docs/RC-CONTRACT.md
-# "Unified tools log").  One JSONL line per invocation, flock-serialized.
-# ============================================================================
-_LOG_ENABLED = False
-_LOG_ARGS = ""
-_LOG_EXTRA = {}
-_LOG_START = 0.0
-_LOG_FINISHED = False
-
-
-def _is_selftest():
-    return "--selftest" in sys.argv[1:]
-
-
-def oc_log_init():
-    global _LOG_ENABLED, _LOG_ARGS, _LOG_EXTRA, _LOG_START, _LOG_FINISHED
-    _LOG_ARGS = " ".join(sys.argv[1:])
-    _LOG_EXTRA = {}
-    _LOG_FINISHED = False
-    if "--no-log" in sys.argv[1:] or _is_selftest():
-        os.environ["OC_TOOLS_NOLOG"] = "1"
-    if os.environ.get("OC_TOOLS_NOLOG", "0") == "1":
-        return
-    _LOG_ENABLED = True
-    _LOG_START = time.time()
-
-    def _sig(signum, _frame):
-        sig_map = {signal.SIGTERM: ("TERM", 143), signal.SIGINT: ("INT", 130),
-                   signal.SIGHUP: ("HUP", 129)}
-        name, code = sig_map.get(signum, ("SIG%d" % signum, 128 + signum))
-        oc_log_extra("signal", name)
-        oc_log_finish(code)
-        sys.exit(code)
-
-    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        try:
-            signal.signal(s, _sig)
-        except Exception:
-            pass
-
-
-def oc_log_extra(key, value):
-    if _LOG_ENABLED:
-        _LOG_EXTRA[str(key)] = str(value)
-
-
-def _log_path():
-    return os.environ.get(
-        "OC_TOOLS_LOG",
-        os.path.join(
-            os.environ.get("OC_DEV_STATE",
-                           os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")),
-            "tools.log"))
-
-
-def oc_log_finish(exit_code=0):
-    global _LOG_FINISHED
-    if not _LOG_ENABLED or _LOG_FINISHED:
-        return
-    _LOG_FINISHED = True
-    secs = round(time.time() - (_LOG_START if _LOG_START > 0 else time.time()), 1)
-    entry = {
-        "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "tool": TOOL,
-        "actor": os.environ.get("OC_ACTOR") or os.environ.get("OPENCRABS_SESSION_ID") or "unknown",
-        "args": _LOG_ARGS[:500],
-        "exit": int(exit_code) if isinstance(exit_code, int) else 1,
-        "secs": secs,
-        "extra": _LOG_EXTRA,
-    }
-    logf = _log_path()
-    try:
-        os.makedirs(os.path.dirname(logf), exist_ok=True)
-        with open(logf + ".lock", "a") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            try:
-                with open(logf, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, separators=(",", ":")) + "\n")
-                    f.flush()
-            finally:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-    except Exception:
-        pass
-
 
 # ============================================================================
 # git helpers (read-only)
@@ -1000,7 +929,7 @@ def main(argv):
                          % (TOOL, args.lane))
         return 2
 
-    oc_log_init()
+    oc_log_init(TOOL)
     rc = 0
     try:
         try:

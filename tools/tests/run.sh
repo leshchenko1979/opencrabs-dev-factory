@@ -601,6 +601,41 @@ else
   bad "lib/oc_log.py missing (#739)"
 fi
 
+# ---- 00a3. oc_log.py consumers -- the retired copies stay retired (#760) ------
+# Two Python tools carried their OWN copy of the unified-log parity and drifted
+# from the contract (#739's evidence table): oc-census matched --selftest ONLY,
+# and oc-issue-dispatch raised its private flood guard at rc 7 where the fleet
+# contract says 8. They now import tools/lib/oc_log.py. A copy that comes BACK is
+# the defect, so the guard keys on the copy's SHAPE -- a private DEFINITION of
+# oc_log_init / the flood guard / the selftest predicate -- never on the file's
+# own claim to be a consumer (a consumer that also shadows the module would read
+# clean under a presence-only check). The detector is mutation-checked against a
+# synthetic copy, so an always-green grep cannot pass it.
+section "oc_log.py consumers stay retired (#760)"
+_760_private_re='^def (oc_log_init|_oc_log_flood_guard|_is_selftest)\('
+_760_consumes_re='(^|[[:space:]])(from oc_log import|import oc_log)'
+for _t760 in issue/oc-census issue/oc-issue-dispatch; do
+  _f760="$TOOLS_DIR/$_t760"
+  if [ ! -f "$_f760" ]; then
+    bad "$_t760 missing"
+  elif grep -Eq "$_760_consumes_re" "$_f760"; then
+    ok "$_t760 consumes tools/lib/oc_log.py"
+  else
+    bad "$_t760 no longer imports tools/lib/oc_log.py"
+  fi
+  if [ -f "$_f760" ] && grep -Eq "$_760_private_re" "$_f760"; then
+    bad "$_t760 re-defines a private log copy: $(grep -Em1 "$_760_private_re" "$_f760")"
+  else
+    ok "$_t760 defines no private log copy"
+  fi
+done
+_760c="$(mktemp)"
+printf 'def oc_log_init(tool):\n    pass\n' > "$_760c"
+grep -Eq "$_760_private_re" "$_760c" \
+  && ok "control: detector flags a re-introduced private copy" \
+  || bad "control: detector is blind to a private copy"
+rm -f "$_760c"
+
 # ---- 00b. unified-log WIRE test (real tool -> tmp OC_TOOLS_LOG) -------------
 section "unified-log wire (real tool -> tmp log)"
 if tool oc-attrib; then

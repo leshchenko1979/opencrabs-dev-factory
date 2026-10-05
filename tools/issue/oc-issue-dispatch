@@ -56,22 +56,23 @@ Exit codes (tools/docs/RC-CONTRACT.md row 36 is the canonical register):
   6: sent-receipt-unverified -- the send may have landed and no receipt was seen
      yet. The dispatch IS recorded, so do NOT re-send. rc 2 is the ONLY code
      that proves nothing was sent.
-  7: FLOOD-GUARD -- this exact tool+args already failed >=4x in the last 120s, so
-     the run was refused at init and NOTHING happened. Bypass with
-     OC_NO_FLOODGUARD=1 (and say why in the lane journal). This code is the
-     tool's OWN guard; the fleet-wide guard in tools/lib/oc-log.sh raises the
-     same class and exits 8 -- see the note below.
-  8: targeted-landed-refused (#370) -- the issue's fix has already landed, so
-     NOTHING was sent. Override with --allow-landed.
+  7: RETIRED (#760). This was the tool's OWN in-process flood guard -- a copy of
+     the fleet guard that exited 7. The copy is gone; the guard now comes from
+     tools/lib/oc_log.py and exits 8, like every other tool's.
+  8: flood-guard (SHARED) OR targeted-landed-refused (#370) -- both leave
+     NOTHING sent, told apart by their MESSAGE. Either this exact tool+args
+     already failed >=4x in the last 120s (bypass OC_NO_FLOODGUARD=1, and say
+     why in the lane journal), or the issue's fix has already landed (override
+     with --allow-landed). A consumer branching on rc 8 must match the message,
+     not the code alone.
   9: targeted-already-dispatched (#370) -- already wired to a lane and not yet
      acked, so NOTHING was sent. Override with --redispatch.
 
-  rc 8 is shared with the FLEET-WIDE flood guard (tools/lib/oc-log.sh, which
-  pre-empts ANY tool and exits 8). Both leave nothing sent; they are told apart
-  by their message, and the tool's own flood guard is rc 7 above. Any consumer
-  branching on rc 8 must therefore match the message, not the code alone.
+  The flood class is FLEET-WIDE (tools/lib/oc-log.sh, which pre-empts ANY tool
+  and exits 8); this tool used to raise its own copy at rc 7, which is why the
+  register once listed 7. Any consumer branching on rc 8 must match the message.
   6 is DISTINCT from 8/9: 6 means the dispatch IS recorded and must NOT be
-  re-sent, while 7/8/9 prove nothing was sent -- opposite operator actions.
+  re-sent, while 8/9 prove nothing was sent -- opposite operator actions.
 """
 
 import os
@@ -149,160 +150,21 @@ except ImportError as _e:  # pragma: no cover — loud, never a silent fallback
         "canonical claim predicate is missing; refusing to guess claim state\n" % _e)
     sys.exit(2)
 
-# Unified tools log (D0, 2026-08-28; parity with lib/oc-log.sh)
-_LOG_ENABLED = False
-_LOG_TOOL = "oc-issue-dispatch"
-_LOG_ARGS = ""
-_LOG_EXTRA = {}
-_LOG_START = 0.0
-_LOG_FINISHED = False
-
-
-def _is_selftest():
-    args_str = f" {' '.join(sys.argv[1:])} "
-    if " --selftest " in args_str:
-        return True
-    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
-        return True
-    return False
-
-
-def oc_log_init(tool_name="oc-issue-dispatch"):
-    global _LOG_ENABLED, _LOG_TOOL, _LOG_ARGS, _LOG_EXTRA, _LOG_START, _LOG_FINISHED
-    _LOG_TOOL = tool_name
-    _LOG_ARGS = " ".join(sys.argv[1:])
-    _LOG_EXTRA = {}
-    _LOG_FINISHED = False
-    if " --no-log " in f" {_LOG_ARGS} ":
-        os.environ["OC_TOOLS_NOLOG"] = "1"
-    if _is_selftest():
-        os.environ["OC_TOOLS_NOLOG"] = "1"
-    if os.environ.get("OC_TOOLS_NOLOG", "0") == "1":
-        _LOG_ENABLED = False
-        return
-
-    _LOG_ENABLED = True
-    _LOG_START = time.time()
-    _oc_log_flood_guard()
-
-    def _sig_handler(signum, frame):
-        sig_map = {signal.SIGTERM: ("TERM", 143), signal.SIGINT: ("INT", 130), signal.SIGHUP: ("HUP", 129)}
-        sig_name, exit_code = sig_map.get(signum, (f"SIG{signum}", 128 + signum))
-        oc_log_extra("signal", sig_name)
-        oc_log_finish(exit_code)
-        sys.exit(exit_code)
-
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        try:
-            signal.signal(sig, _sig_handler)
-        except Exception:
-            pass
-
-
-def _oc_log_flood_guard():
-    if os.environ.get("OC_NO_FLOODGUARD", "0") == "1" or _is_selftest():
-        return
-    logf = os.environ.get(
-        "OC_TOOLS_LOG",
-        os.path.join(
-            os.environ.get("OC_DEV_STATE", os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")),
-            "tools.log"
-        )
-    )
-    if not os.path.isfile(logf):
-        return
-    cutoff = time.time() - 120
-    failed_count = 0
-    args_prefix = _LOG_ARGS[:500]
-    try:
-        with open(logf, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-        for line in lines[-300:]:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-                if (
-                    row.get("tool") == _LOG_TOOL
-                    and row.get("args", "")[:500] == args_prefix
-                    and int(row.get("exit", 0)) != 0
-                ):
-                    ts_str = row.get("ts", "")
-                    if ts_str.endswith("Z"):
-                        ts_val = datetime.datetime.fromisoformat(ts_str[:-1] + "+00:00").timestamp()
-                    else:
-                        ts_val = datetime.datetime.fromisoformat(ts_str).timestamp()
-                    if ts_val >= cutoff:
-                        failed_count += 1
-            except Exception:
-                continue
-        if failed_count >= 4:
-            sys.stderr.write(
-                f"FLOOD-GUARD (rc 7): {_LOG_TOOL} with identical args already failed {failed_count}x in the last 120s — refusing to run again.\n"
-                f"  Fix the underlying failure, change the args, or set OC_NO_FLOODGUARD=1 to bypass (and say why in the lane journal).\n"
-            )
-            sys.exit(7)
-    except SystemExit:
-        raise
-    except Exception:
-        pass
-
-
-def oc_log_extra(key, value):
-    global _LOG_EXTRA
-    if not _LOG_ENABLED:
-        return
-    _LOG_EXTRA[str(key)] = str(value)
-
-
-def oc_log_finish(exit_code=0):
-    global _LOG_FINISHED
-    if not _LOG_ENABLED or _LOG_FINISHED:
-        return
-    _LOG_FINISHED = True
-    end_time = time.time()
-    secs = round(end_time - (_LOG_START if _LOG_START > 0 else end_time), 1)
-    actor = os.environ.get("OC_ACTOR") or os.environ.get("OPENCRABS_SESSION_ID") or "unknown"
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    log_entry = {
-        "ts": ts,
-        "tool": _LOG_TOOL,
-        "actor": actor,
-        "args": _LOG_ARGS[:500],
-        "exit": int(exit_code) if isinstance(exit_code, int) else 1,
-        "secs": secs,
-        "extra": _LOG_EXTRA
-    }
-    line = json.dumps(log_entry, separators=(",", ":"))
-
-    logf = os.environ.get(
-        "OC_TOOLS_LOG",
-        os.path.join(
-            os.environ.get("OC_DEV_STATE", os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")),
-            "tools.log"
-        )
-    )
-    try:
-        os.makedirs(os.path.dirname(logf), exist_ok=True)
-        lock_file = f"{logf}.lock"
-        try:
-            with open(lock_file, "a") as lf:
-                fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-                try:
-                    with open(logf, "a", encoding="utf-8") as f:
-                        f.write(f"{line}\n")
-                        f.flush()
-                finally:
-                    fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-        except Exception:
-            with open(logf, "a", encoding="utf-8") as f:
-                f.write(f"{line}\n")
-                f.flush()
-    except Exception:
-        pass
-
+# #760: the unified tools log has ONE Python home (tools/lib/oc_log.py, #739).
+# The inline copy that used to live below had DRIFTED from the contract: its
+# flood guard exited 7 where the fleet says 8 (RC-CONTRACT registered the drift),
+# and its selftest predicate was a third spelling of the same test. Importing the
+# module makes dispatch a consumer, not a fourth copy. bare_selftest=True is the
+# one behaviour dispatch had that oc-census did not (a leading `selftest` token).
+try:
+    from oc_log import (oc_log_init, oc_log_extra, oc_log_finish,
+                        FLOOD_GUARD_RC_DEFAULT)
+except ImportError as _e:  # pragma: no cover
+    sys.stderr.write(
+        "oc-issue-dispatch: cannot import tools/lib/oc_log.py (%s) -- the "
+        "canonical unified-log parity is missing; refusing to run "
+        "uninstrumented\n" % _e)
+    sys.exit(2)
 
 # Topic keywords and domain affinities
 AFFINITY_KEYWORDS = {
@@ -2551,16 +2413,15 @@ def run_selftest():
         old_log = os.environ.get("OC_TOOLS_LOG")
         old_nolog = os.environ.get("OC_TOOLS_NOLOG")
         os.environ["OC_TOOLS_LOG"] = tmp_log_file
-        os.environ["OC_TOOLS_NOLOG"] = "0"
-        # Test simulated run logging
-        global _LOG_ENABLED, _LOG_TOOL, _LOG_ARGS, _LOG_EXTRA, _LOG_START, _LOG_FINISHED
-        _LOG_ENABLED = True
-        _LOG_TOOL = "oc-issue-dispatch"
-        _LOG_ARGS = "--auto --dry-run"
-        _LOG_EXTRA = {"test_key": "test_val"}
-        _LOG_START = time.time() - 1.2
-        _LOG_FINISHED = False
-        oc_log_finish(0)
+        os.environ.pop("OC_TOOLS_NOLOG", None)
+        # #760: the row is written by the canonical module -- this leg asserts
+        # dispatch WIRES it, never that a private copy still works.
+        import oc_log as _oclog
+        _oclog._LOG_ENABLED = False
+        _oclog._LOG_FINISHED = False
+        _oclog.oc_log_init("oc-issue-dispatch", argv=["--auto", "--dry-run"], signals=False)
+        _oclog.oc_log_extra("test_key", "test_val")
+        _oclog.oc_log_finish(0)
         assert_true("tools.log created by oc_log_finish", os.path.isfile(tmp_log_file))
         with open(tmp_log_file, "r") as lf:
             logged_lines = lf.readlines()
@@ -2572,9 +2433,10 @@ def run_selftest():
 
         # Negative control: OC_TOOLS_NOLOG=1 suppresses logging
         os.environ["OC_TOOLS_NOLOG"] = "1"
-        _LOG_ENABLED = False
-        _LOG_FINISHED = False
-        oc_log_finish(0)
+        _oclog._LOG_ENABLED = False
+        _oclog._LOG_FINISHED = False
+        _oclog.oc_log_init("oc-issue-dispatch", argv=["--auto", "--dry-run"], signals=False)
+        _oclog.oc_log_finish(0)
         with open(tmp_log_file, "r") as lf:
             logged_lines_after = lf.readlines()
         assert_eq("Suppressed invocation appends 0 lines (negative control)", len(logged_lines_after), 1)
@@ -3174,18 +3036,25 @@ def run_selftest():
 
 
 def main():
-    if not _is_selftest():
-        oc_log_init("oc-issue-dispatch")
-        # Line-buffer stdout (#451). This tool can block for minutes inside a
-        # notify, and an outer `timeout` kills it, which DISCARDS a block-buffered
-        # stdout: the run then reads as a silent hang with no output and no side
-        # effect, when in fact it had reached the send. Line buffering leaves the
-        # evidence of where it died. Guarded -- reconfigure() needs a real stdout
-        # (not a replaced stream) and Python >= 3.7.
-        try:
-            sys.stdout.reconfigure(line_buffering=True)
-        except (AttributeError, ValueError):
-            pass
+    # #760: the canonical module (tools/lib/oc_log.py) arms the log and
+    # self-suppresses on --selftest in either spelling, so there is no local
+    # predicate to drift out of contract. bare_selftest=True keeps the one
+    # behaviour dispatch had that oc-census did not. flood_guard_rc carries the
+    # guard dispatch used to hand-roll at rc 7 -- now the fleet contract's rc 8
+    # (the module's FLOOD_GUARD_RC_DEFAULT), so the guard is preserved, not
+    # silently dropped with the copy.
+    oc_log_init("oc-issue-dispatch", bare_selftest=True,
+                flood_guard_rc=FLOOD_GUARD_RC_DEFAULT)
+    # Line-buffer stdout (#451). This tool can block for minutes inside a
+    # notify, and an outer `timeout` kills it, which DISCARDS a block-buffered
+    # stdout: the run then reads as a silent hang with no output and no side
+    # effect, when in fact it had reached the send. Line buffering leaves the
+    # evidence of where it died. Guarded -- reconfigure() needs a real stdout
+    # (not a replaced stream) and Python >= 3.7.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     parser = argparse.ArgumentParser(
         prog="oc-issue-dispatch",
         description="Mechanized issue vetting, lane selection, and dispatch tool.",
