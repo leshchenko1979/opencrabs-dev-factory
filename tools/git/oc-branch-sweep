@@ -94,6 +94,10 @@ cmd_sweep() {
   done < <(git -C "$repo" for-each-ref --merged="$base" refs/heads/ --format='%(refname:short)' 2>/dev/null)
 
   printf 'branch\tclass\ttip\taction\n'
+  # #525: oc_log_extra writes a FIXED key, so a per-branch call inside this loop
+  # overwrote the previous tip -- only the LAST branch's tip survived in the
+  # journal. Accumulate every entry and log the set ONCE after the loop.
+  local bd_log=""
   while IFS=$'\t' read -r b tip committer_ts; do
     [ -n "$b" ] || continue
     local cls action=""
@@ -133,8 +137,10 @@ cmd_sweep() {
         local err_out
         if err_out="$(git -C "$repo" branch -D "$b" 2>&1)"; then
           action="deleted(tip=$tip archived)"
-          # F10 (lens F, v0.4.72): tip sha must survive in the journal, not only in stdout TSV
-          oc_log_extra branch-delete "$b@$tip"
+          # F10 (lens F, v0.4.72): tip sha must survive in the journal, not only
+          # in stdout TSV. #525: accumulate -- a per-branch oc_log_extra call
+          # writes the same fixed key and would keep only the last tip.
+          bd_log="${bd_log:+$bd_log,}$b@$tip"
         else
           if grep -qiE "used by worktree|checked out at" <<< "$err_out"; then
             action="held-by-worktree"
@@ -207,6 +213,7 @@ cmd_sweep() {
     printf '%s\t%s\t%s\t%s\n' "$rb" "$rcls" "$rtip" "$raction"
   done < <(git -C "$repo" for-each-ref refs/remotes/origin/ --format='%(refname:short)%09%(objectname:short)%09%(committerdate:unix)' 2>/dev/null)
 
+  [ -n "$bd_log" ] && oc_log_extra branch-delete "$bd_log"
   oc_log_extra deleted "$deleted"
   [ "$deleted" -eq 0 ] && return 0 || return 1
 }

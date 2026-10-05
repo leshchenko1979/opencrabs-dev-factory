@@ -1703,6 +1703,44 @@ run_selftest oc-branch-sweep
 if tool oc-branch-sweep; then
   "$TOOLS_DIR/git/oc-branch-sweep" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no repo -> 2 (usage)" || bad "no repo -> expected 2"
 fi
+if tool oc-branch-sweep; then
+  # #525: the journal's `branch-delete` extra must carry EVERY deleted tip.
+  # oc_log_extra writes a FIXED key, so the per-branch call that used to sit in
+  # the delete loop overwrote the previous entry -- a two-branch sweep journaled
+  # ONE tip and read as complete. This leg sweeps a real repo with two deletable
+  # MERGED branches and reads the extra back off a scratch tools log.
+  BS="$(mktemp -d)"
+  git init -q "$BS/r" >/dev/null 2>&1
+  git -C "$BS/r" config user.email t@t; git -C "$BS/r" config user.name t
+  echo a > "$BS/r/f"; git -C "$BS/r" add f; git -C "$BS/r" commit -q -m base
+  BSB="$(git -C "$BS/r" rev-parse --abbrev-ref HEAD)"
+  for _n in bs-one bs-two; do
+    git -C "$BS/r" checkout -qb "$_n"
+    echo "$_n" > "$BS/r/$_n"; git -C "$BS/r" add "$_n"; git -C "$BS/r" commit -q -m "$_n"
+    git -C "$BS/r" checkout -q "$BSB"
+    git -C "$BS/r" merge -q --no-ff -m "merge $_n" "$_n"
+  done
+  # FULL shas, captured BEFORE the sweep deletes the branches: the journal
+  # records `%(objectname:short)`, so the leg asserts the recorded tip is a
+  # PREFIX of the real head rather than pinning an abbreviation length.
+  F1="$(git -C "$BS/r" rev-parse bs-one)"; F2="$(git -C "$BS/r" rev-parse bs-two)"
+  # the battery exports OC_TOOLS_NOLOG=1 globally -- unset it for this leg or the
+  # journal is suppressed and the assertion would pass on an EMPTY string.
+  env -u OC_TOOLS_NOLOG OC_TOOLS_LOG="$BS/tools.log" OC_ACTOR="test-runner" \
+    "$TOOLS_DIR/git/oc-branch-sweep" --repo "$BS/r" >/dev/null 2>&1
+  _bd="$(jq -r 'select(.tool=="oc-branch-sweep") | .extra["branch-delete"] // empty' "$BS/tools.log" 2>/dev/null | tail -1)"
+  _f1="${_bd%%,*}"; _f2="${_bd##*,}"
+  chk "#525 first journal entry names bs-one" "${_f1%%@*}" "bs-one"
+  chk "#525 last journal entry names bs-two" "${_f2%%@*}" "bs-two"
+  case "$F1" in "${_f1#*@}"*) ok "#525 first tip is bs-one's real head" ;; *) bad "#525 first tip wrong (got '${_f1#*@}')" ;; esac
+  case "$F2" in "${_f2#*@}"*) ok "#525 last tip is bs-two's real head" ;; *) bad "#525 last tip wrong (got '${_f2#*@}')" ;; esac
+  # CONTROL: both branches really are gone, so the two legs above test the
+  # journal and not a sweep that deleted nothing.
+  [ -z "$(git -C "$BS/r" branch --list bs-one bs-two)" ] \
+    && ok "#525 control: both merged branches were deleted" \
+    || bad "#525 control: sweep deleted nothing"
+  rm -rf "$BS"
+fi
 
 section "oc-pr-fault-scope"
 run_selftest oc-pr-fault-scope
