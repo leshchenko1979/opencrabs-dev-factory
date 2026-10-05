@@ -3,7 +3,9 @@
 # oc-commit — C5 (lens C, Duty-6 2026-08-31): gated commit wrapper enforcing
 # the three per-commit laws of editor.md in one place (lens G regroup v0.4.70: detached-HEAD + signing → §Phase 4, writer-exclusivity → §Phase 2):
 #   1. HEAD-attached check (refuses detached HEAD — incident class)
-#   2. Session-Id trailer from OC_ACTOR (refuses unset actor)
+#   2. Session-Id trailer from OC_ACTOR (refuses unset actor; normalises a
+#      `session_`-prefixed or `<role> <uuid>` actor to the BARE 36-char uuid
+#      and refuses anything else at commit time — #754)
 #   3. Issue-Ref trailer derived from the actor's latest ledger claim event
 #      (same derivation as `oc-ledger confirm`; override with --issue N)
 #      #501: the derivation picks the NEWEST open claim, so it is a GUESS when
@@ -100,13 +102,34 @@ exit 3
   # 1b. OPENCRABS_SESSION_ID fallback works -> 0
   ( cd "$R" && echo x > f && git add f && env -u OC_ACTOR OPENCRABS_SESSION_ID=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "test: fallback" --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: OPENCRABS_SESSION_ID fallback != 0" >&2; exit 1; }
-  # 1c. (#441) a NON-uuid actor: the derivation must fail rc 3 and the verb's
-  #     domain diagnostic must reach the caller's stderr (it names claims N),
-  #     rather than a bare "no OPEN claim". This is the domain guard's blast
-  #     radius on THIS tool, pinned.
+  # 1c. (#441) a NON-uuid actor: refused rc 3 with a diagnostic that names the
+  #     session-uuid contract. Since #754 this fires at gate 2b (commit time),
+  #     BEFORE the derivation — the earlier "is not a session uuid" came from
+  #     the derivation's own domain guard. Both paths carry the phrase; the
+  #     assertion is unchanged and now pins the earlier, cheaper refusal.
   ( cd "$R" && echo x1c > f1c && git add f1c && OC_ACTOR=u-fix "$OC" -m "test: non-uuid actor" --repo "$R" ) >/dev/null 2>"$d/1c.err"
   [ $? -eq 3 ] || { echo "selftest: non-uuid actor must not derive (want 3)" >&2; exit 1; }
   grep -q "is not a session uuid" "$d/1c.err" || { echo "selftest: non-uuid actor domain diagnostic must reach the caller" >&2; exit 1; }
+  # 1d. (#754) the 'session_' PREFIX is normalised to the bare uuid — the shape
+  #     the harness ambient OPENCRABS_SESSION_ID carried (measured 2026-10-01),
+  #     which previously passed the presence-only guard, was written verbatim,
+  #     and was then WIPED by gate 4 (ship rc 2, main stranded).
+  ( cd "$R" && echo x1d > f1d && git add f1d && OC_ACTOR=session_f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "test: session_-prefixed actor" --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #754 session_-prefixed actor must normalise, not refuse (want 0)" >&2; exit 1; }
+  git -C "$R" log -1 --format='%(trailers)' | grep -q '^Session-Id: f1c7c0de-0000-4000-8000-000000000149$' \
+    || { echo "selftest: #754 session_ prefix not stripped from the trailer" >&2; exit 1; }
+  # 1e. (#754) the '<role> <uuid>' form is normalised to its trailing uuid — the
+  #     form fleet-directives.md documents (lane 63d775f9, 2026-09-26).
+  ( cd "$R" && echo x1e > f1e && git add f1e && OC_ACTOR="editor f1c7c0de-0000-4000-8000-000000000149" "$OC" -m "test: role-labelled actor" --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #754 <role> <uuid> actor must normalise, not refuse (want 0)" >&2; exit 1; }
+  git -C "$R" log -1 --format='%(trailers)' | grep -q '^Session-Id: f1c7c0de-0000-4000-8000-000000000149$' \
+    || { echo "selftest: #754 role label not stripped from the trailer" >&2; exit 1; }
+  # 1f. (#754) CONTROL: an actor that is NOT a uuid even after normalisation is
+  #     REFUSED at commit time (rc 3), never written verbatim for gate 4 to wipe.
+  #     This is the leg that reddens if the normaliser is neutered.
+  ( cd "$R" && echo x1f > f1f && git add f1f && OC_ACTOR="editor not-a-uuid-at-all" "$OC" -m "test: unnormalisable actor" --no-comment --repo "$R" ) >/dev/null 2>"$d/1f.err"
+  [ $? -eq 3 ] || { echo "selftest: #754 unnormalisable actor must be refused at commit time (want 3)" >&2; exit 1; }
+  grep -q "is not a session uuid" "$d/1f.err" || { echo "selftest: #754 refusal must name the bare-uuid contract" >&2; exit 1; }
   # 2. detached HEAD -> 3
   ( cd "$R" && git checkout -q --detach && echo y > g && git add g \
       && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>&1
@@ -331,6 +354,25 @@ $G symbolic-ref -q HEAD >/dev/null 2>&1 \
 # gate 2: actor present (defaults to OPENCRABS_SESSION_ID when OC_ACTOR is unset)
 OC_ACTOR="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
 [ -n "$OC_ACTOR" ] || { echo "gate-fail: OC_ACTOR unset — Session-Id trailer cannot be derived" >&2; exit 3; }
+# gate 2b (#754): the actor MUST be the BARE 36-char session uuid. The trailer
+# carries it VERBATIM, so any other shape passes this tool and is then WIPED by
+# gate 4 (oc-order-validate SIGNATURE), which refuses the ship UNSIGNED and
+# strands fork main — the fault surfaces ~25 CI-minutes later, at SHIP time,
+# where it is expensive (measured 2026-10-01, chain CHAIN-541119b2). Normalise
+# the two observed non-bare forms, then REFUSE anything else HERE, at commit
+# time — fleet-directives.md: the Session-Id trailer carries the BARE session
+# uuid, never a role label:
+#   session_<uuid>  — the harness ambient OPENCRABS_SESSION_ID (measured 2026-10-01)
+#   <role> <uuid>   — an actor carrying a leading role label (measured 2026-09-26)
+OC_ACTOR="$(printf '%s' "$OC_ACTOR" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^session[_-]//')"
+case "$OC_ACTOR" in
+  ????????-????-????-????-????????????) : ;;
+  *) OC_ACTOR="${OC_ACTOR##* }" ;;   # '<role> <uuid>' -> the trailing uuid token
+esac
+case "$OC_ACTOR" in
+  ????????-????-????-????-????????????) : ;;
+  *) echo "gate-fail: actor '$OC_ACTOR' is not a session uuid — the Session-Id trailer must carry the BARE 36-char uuid; a prefixed or role-labelled actor is refused here because gate 4 wipes it and the ship fails UNSIGNED, stranding main (#754)" >&2; exit 3 ;;
+esac
 # gate 3: something staged (never stages anything itself)
 $G diff --cached --quiet 2>/dev/null \
   && { echo "gate-fail: nothing staged — stage your paths first (stage-only-your-paths rule)" >&2; exit 3; }
