@@ -1181,6 +1181,38 @@ chk("parents-first order is input-independent", oc.order_commits_parents_first(_
 
 _sh.rmtree(_fx, ignore_errors=True)
 
+# --- soak anchor basis disclosure (#315): the no-swap fallback used to render a
+# --- COMMIT time as `anchor_deployed_ts` indistinguishably from a real deploy
+# --- time, so a reader could not tell which basis produced the age. The basis
+# --- now travels with the value. Three arms: swap (default), the no-swap
+# --- fallback, and no anchor at all.
+chk("#315 soak basis defaults to swap",
+    oc.soak_anchor_fields("abc1234", 1759276800).split()[0], "soak_basis=swap")
+chk("#315 no-swap fallback is labelled commit",
+    oc.soak_anchor_fields("abc1234", 1759276800, "commit").split()[0], "soak_basis=commit")
+chk("#315 unresolved anchor is labelled unresolved",
+    oc.soak_anchor_fields("abc1234", 0, "unresolved").split()[0], "soak_basis=unresolved")
+# the #415 anchor triple is a PREFIX concern: it must survive verbatim behind
+# the new field, or every existing consumer of the triple breaks.
+_a315 = oc.soak_anchor_fields("abc1234", 1759276800)
+chk("#315 anchor_commit survives behind the prefix",
+    "anchor_commit=abc1234" in _a315 and "anchor_deployed_ts=" in _a315
+    and "eligible_at=" in _a315, True)
+# DRIVE the fallback through classify_soak_anchor, not only the renderer: the
+# basis must be chosen by the classifier's own branch, and the age must be the
+# COMMIT's (an upper bound on the true soak age, which is why it is labelled).
+# Pop the mock hook so an ambient value cannot silently take the swap arm.
+oc.os.environ.pop("OC_HARVEST_MOCK_DEPLOYED_TS", None)
+_c315, _age315, _n315 = oc.classify_soak_anchor(
+    "deadbeef", 1759276800, lambda sha, ts: 0, [], 1759363200)
+chk("#315 no-swap classify labels commit", "soak_basis=commit" in _n315, True)
+chk("#315 no-swap classify age is measured from the commit instant",
+    round(_age315, 1), 24.0)
+_u315, _uage315, _un315 = oc.classify_soak_anchor(
+    "", 0, lambda sha, ts: 0, [], 1759363200)
+chk("#315 unresolved classify basis", "soak_basis=unresolved" in _un315, True)
+chk("#315 unresolved classify carries no age", _uage315, None)
+
 if fails:
     for f in fails:
         sys.stderr.write("  unit-fail: %s\n" % f)

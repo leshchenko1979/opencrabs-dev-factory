@@ -150,8 +150,8 @@ def fmt_iso_ts(ts):
         int(ts), datetime.timezone.utc).isoformat()
 
 
-def soak_anchor_fields(anchor_commit, anchor_ts):
-    """The anchor triple carried by EVERY 24h-soak refusal (#415).
+def soak_anchor_fields(anchor_commit, anchor_ts, basis="swap"):
+    """The anchor quadruple carried by EVERY 24h-soak refusal (#415, #315).
 
     ``anchor_commit``/``anchor_deployed_ts`` name the instant the soak clock
     started and ``eligible_at`` is that instant plus the window — a schedule,
@@ -159,13 +159,21 @@ def soak_anchor_fields(anchor_commit, anchor_ts):
     the anchor from the swap journals by hand (the defect a Duty-6 review
     routed here, 2026-09-19).
 
+    ``soak_basis`` (#315) STATES the definition with the value: ``swap`` when
+    the anchor is a deploy/swap-journal time, ``commit`` when no swap history
+    resolved and the commit time was used instead (a DIFFERENT basis, whose age
+    is an upper bound on the true soak age), ``unresolved`` when there is no
+    anchor at all. Without it the no-swap fallback was labelled
+    ``anchor_deployed_ts`` indistinguishably from a real deploy time, so a
+    reader could not tell which basis produced the number.
+
     Rendering it in ONE place is what keeps ``eligible_at`` arithmetically
     equal to ``anchor + 24h`` at every refusal site rather than re-derived —
     and mis-derived — at each.
     """
     ts = int(anchor_ts) if anchor_ts else 0
-    return "anchor_commit=%s anchor_deployed_ts=%s eligible_at=%s" % (
-        anchor_commit, fmt_iso_ts(ts),
+    return "soak_basis=%s anchor_commit=%s anchor_deployed_ts=%s eligible_at=%s" % (
+        basis, anchor_commit, fmt_iso_ts(ts),
         fmt_iso_ts(ts + SOAK_SECONDS if ts > 0 else 0))
 
 
@@ -194,13 +202,18 @@ def classify_soak_anchor(commit_sha, commit_ts, resolve_fn, swaps, now_ts):
     does not change and no consumer breaks.
     """
     d_ts = resolve_fn(commit_sha, commit_ts)
+    # #315: the basis travels with the value. A swap-resolved anchor is a DEPLOY
+    # time; the no-swap-history fallback is the COMMIT time -- a different basis
+    # that must be labelled distinctly, not rendered as anchor_deployed_ts.
+    basis = "swap"
     if not d_ts and not swaps and not os.environ.get("OC_HARVEST_MOCK_DEPLOYED_TS"):
         d_ts = commit_ts
+        basis = "commit"
     if d_ts and d_ts > 0:
         age_hours = (now_ts - d_ts) / 3600.0
         return ("fresh" if age_hours < SOAK_HOURS else "soaked",
-                max(0.0, age_hours), soak_anchor_fields(commit_sha, d_ts))
-    return "unresolved", None, soak_anchor_fields(commit_sha, 0)
+                max(0.0, age_hours), soak_anchor_fields(commit_sha, d_ts, basis))
+    return "unresolved", None, soak_anchor_fields(commit_sha, 0, "unresolved")
 
 
 def soak_unresolved_note(commit_ts, now_ts):
