@@ -1264,6 +1264,31 @@ if ! git -C "$FORK_REPO" merge-base --is-ancestor origin/main "$TIP" 2>/dev/null
   die "STALE-BASE (rc 5, caught BEFORE the merge attempt): origin/main advanced while this chain waited for the landing lock, so $BRANCH is no longer based on it. The gate validated $SHA, but the range is now based on a superseded main. Rebase onto the current main and re-run: oc-rebase-safety (then) oc-ship-chain --sha <rebased-tip> --branch $BRANCH. NOTE: if the rebase changes NOTHING but the parent -- i.e. the same patch-id -- oc-ship-chain --gated-run carries the existing GREEN forward instead of burning a fresh ~25-min gate (Duty-4 n=2520)." 5
 fi
 
+# ---- #755: SIGNATURE pre-check (pure git, BEFORE the ff-merge) -------------
+# upstream-merge-runbook.md (HQ ruling 2026-09-26, §Swap-head signature) states
+# the chain pre-checks SIGNATURE before LEG3's merge so a bad trailer never
+# strands main. The ORDER validator (oc-order-validate) runs INSIDE oc-deploy
+# at LEG4 — AFTER this merge — and oc-deploy is push-then-validate by design
+# (`git push` then `die 2 ORDER gates failed post-push`), so a shape fault
+# landed main at an ungated tip and only THEN refused (measured 2026-09-26,
+# lane 63d775f9: `Session-Id: editor <uuid>` — the ledger's `--by` form written
+# verbatim — -> gate 4 stripped whitespace -> `editor<uuid>` failed the strict
+# pattern -> ship rc 2, main stranded undeployed). This applies the SAME
+# 36-char pattern gate 4 applies (tr -d whitespace, then the case glob), to the
+# tip that is about to land. The read is the chain's OWN inline trailer read
+# (`ship_chain_default_actor`, above) rather than the lib's `oc_session_trailer`,
+# because the selftest runs a COPY of this script whose TOOLS_DIR has no lib/ —
+# a lib call would read empty there and misfire. Pure git, no CI, no ledger:
+# gate 4's SECOND arm (uuid absent from the workers ledger) is still caught at
+# LEG4, but the SHAPE fault — the one measured — is caught here, pre-merge.
+_SID="$(git -C "$FORK_REPO" log -1 --format='%(trailers:key=Session-Id,valueonly)' "$TIP" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 || true)"
+_SID="$(printf '%s' "$_SID" | tr -d '[:space:]')"
+case "$_SID" in ????????-????-????-????-????????????) : ;; *) _SID="" ;; esac
+if [ -z "$_SID" ]; then
+  journal "LEG3 PRE-SIGNATURE FAIL tip=$(printf '%s' "$TIP" | cut -c1-8) — no valid Session-Id trailer"
+  die "UNSIGNED (rc 3, caught BEFORE the merge): $SHA carries no valid Session-Id trailer (the BARE 36-char session uuid). gate 4 would wipe it and refuse the ship at LEG4, AFTER the ff-merge — stranding main at an unattributable tip. Re-sign the commit's trailer and re-run: oc-ship-chain --sha <re-signed-sha> --branch $BRANCH" 3
+fi
+
 set +e
 git -C "$FORK_REPO" merge --ff-only "$TIP" >/dev/null 2>&1
 FF_RC=$?
@@ -1820,6 +1845,27 @@ FGHEOF
   grep -q -- "--wait 2700" "$T/ship-argv.log" 2>/dev/null \
     && ok "default-ship-wait-2700" || bad "default-ship-wait-2700: $(cat "$T/ship-argv.log" 2>/dev/null)"
 
+  # 3f. (#755) SIGNATURE pre-check: a tip whose Session-Id trailer is ABSENT is
+  #     refused rc 3 BEFORE the ff-merge, so main is never stranded at an
+  #     unattributable tip. Before the fix the ORDER validator ran at LEG4
+  #     (AFTER the merge) and main was left ungated — measured 2026-10-01,
+  #     chain CHAIN-541119b2.
+  rm -f "$T/journal.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" checkout -qb feat-unsigned
+  echo us > "$T/clone/us.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "unsigned tip"   # NO Session-Id trailer
+  USHA2="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" push -q origin feat-unsigned
+  git -C "$T/clone" checkout -q main
+  MB="$(git -C "$T/clone" rev-parse main)"
+  RC=0; OUT="$(run_chain --sha "$USHA2" --branch feat-unsigned --issue 42 2>&1)" || RC=$?
+  check_rc "leg3-unsigned-pre-check" "$RC" 3
+  case "$OUT" in *"UNSIGNED (rc 3, caught BEFORE the merge)"*) ok "leg3-unsigned-names-cause" ;; *) bad "leg3-unsigned-names-cause: $OUT" ;; esac
+  grep -q "LEG3 PRE-SIGNATURE FAIL" "$T/journal.log" && ok "journal-leg3-pre-signature" || bad "journal-leg3-pre-signature"
+  MA="$(git -C "$T/clone" rev-parse main)"
+  [ "$MB" = "$MA" ] && ok "leg3-unsigned-main-not-advanced" || bad "leg3-unsigned-main-not-advanced (main moved $MB -> $MA)"
+
   # 4. NON-FF: create divergent main, branch can't ff
   rm -f "$T/journal.log"
   git -C "$T/clone" reset -q --hard origin/main
@@ -1892,7 +1938,7 @@ FGHEOF
   git -C "$T/clone" reset -q --hard origin/main
   git -C "$T/clone" checkout -qb stale-feat origin/main
   echo stale > "$T/clone/stale.txt"
-  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "stale-feat on current origin/main"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "stale-feat on current origin/main" --trailer "Session-Id: $FIXTURE_SESSION"
   git -C "$T/clone" push -q origin stale-feat
   STALE_TIP="$(git -C "$T/clone" rev-parse HEAD)"
   git -C "$T/clone" checkout -q main
@@ -2727,10 +2773,18 @@ EOF
   git -C "$T/clone" reset -q --hard origin/main
   rm -f "$T/journal.log" "$T/actor.seen"
   RC=0; OUT="$( unset OC_ACTOR; actor_probe "$T/actor.seen" --sha "$NTSHA" --branch feat --wait 5 2>&1 )" || RC=$?
-  check_rc "actor-no-trailer-rc" "$RC" 0
+  # (c) #755 re-aim: an untrailered tip is now refused by the LEG3 SIGNATURE
+  # pre-check (rc 3) BEFORE the merge, so the deploy leg never runs. The
+  # 'never invent an actor' invariant still holds, asserted two ways: the fake
+  # deploy wrote no actor, and the chain journaled no 'actor defaulted' row.
+  # (Before #755 the chain proceeded with the actor unset — same invariant,
+  # reached one leg later; gate 4 refused the tip at LEG4 and stranded main.)
+  check_rc "actor-no-trailer-rc" "$RC" 3
   SEEN="$(cat "$T/actor.seen" 2>/dev/null || true)"
-  [ "$SEEN" = "<unset>" ] && ok "actor-never-invented" \
-    || bad "actor-never-invented (want <unset> got '$SEEN')"
+  [ -z "$SEEN" ] && ok "actor-never-invented" \
+    || bad "actor-never-invented (want '' got '$SEEN')"
+  grep -q "actor defaulted" "$T/journal.log" && bad "actor-no-trailer-no-fabrication" \
+    || ok "actor-no-trailer-no-fabrication"
 
   # 20. DOCS-ONLY GATE SKIP (owner ruling 2026-09-12 11:04Z). A commit whose
   #     every changed path is markdown NOT compiled into the binary must skip
