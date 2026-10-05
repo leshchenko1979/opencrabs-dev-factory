@@ -103,6 +103,19 @@ oc_log_init() {
   return 0
 }
 
+# OC_LOG_JQ_TS — unified-log timestamp -> epoch seconds, as a jq FUNCTION
+# DEFINITION to prepend to any reader program. Producers write the ts in TWO
+# forms: this lib emits `…Z` (date -u +%Y-%m-%dT%H:%M:%SZ) and the vendored
+# Python register (tools/state/oc-questions) emits `…+00:00` (datetime.isoformat).
+# jq's fromdateiso8601 accepts ONLY the Z form and yields null for an offset, so
+# the naive read `(.ts // "" | fromdateiso8601? // 0)` silently DROPS every
+# +00:00 row — #738: oc_log_flood_guard below was blind to oc-questions, the one
+# tool it exists to stop, and the failure mode was silent. ONE home for the
+# reader: splice it as ADJACENT quoted strings so a consumer keeps its own
+# single-quoted program —
+#     jq -R -r "$OC_LOG_JQ_TS"'… | select((ts_epoch) >= $cutoff)'
+OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601? // 0);'
+
 # oc_log_flood_guard — C-F1 (lens C 2026-08-31, owner "Go all"): a runaway
 # lane re-invoking a failing tool in a loop (evidence: 140-row storm, one
 # night) is refused at init. Counts PRIOR failed invocations with identical
@@ -121,9 +134,9 @@ oc_log_flood_guard() {
   local cutoff n
   cutoff="$(($(date +%s) - 120))"
   n="$(tail -n 300 "$logf" 2>/dev/null | jq -R -r \
-    --arg tool "$OC_LOG_TOOL" --arg args "${OC_LOG_ARGS:0:500}" --argjson cutoff "$cutoff" '
-    fromjson? | select(.tool == $tool and .args == $args and ((.exit // 0) != 0))
-    | ((.ts // "" | fromdateiso8601? // 0)) | select(. >= $cutoff)' 2>/dev/null | wc -l)"
+    --arg tool "$OC_LOG_TOOL" --arg args "${OC_LOG_ARGS:0:500}" --argjson cutoff "$cutoff" \
+    "$OC_LOG_JQ_TS"'fromjson? | select(.tool == $tool and .args == $args and ((.exit // 0) != 0))
+    | select((ts_epoch) >= $cutoff)' 2>/dev/null | wc -l)"
   if [ "${n:-0}" -ge 4 ]; then
     echo "FLOOD-GUARD (rc 8): $OC_LOG_TOOL with identical args already failed ${n}x in the last 120s — refusing to run again." >&2
     echo "  Fix the underlying failure, change the args, or set OC_NO_FLOODGUARD=1 to bypass (and say why in the lane journal)." >&2

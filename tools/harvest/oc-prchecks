@@ -1333,11 +1333,11 @@ if command -v jq >/dev/null 2>&1 && [ -f "${OC_TOOLS_LOG:-/nonexistent}" ]; then
   # non-terminal -> adopt; completed -> fall through to fresh dispatch;
   # liveness unverifiable -> fail-closed rc 8 (#115B, n=1663 Q2).
   PR_CUTOFF="$(($(date +%s) - ${OC_PRCHECKS_DEDUP_WINDOW:-21600}))"
-  PR_PRIOR="$(tail -n 300 "$OC_TOOLS_LOG" 2>/dev/null | jq -R -r --arg sha "$SHA" --arg ref "$REF" --argjson cutoff "$PR_CUTOFF" '
-    fromjson? | select(.tool == "oc-prchecks")
+  PR_PRIOR="$(tail -n 300 "$OC_TOOLS_LOG" 2>/dev/null | jq -R -r --arg sha "$SHA" --arg ref "$REF" --argjson cutoff "$PR_CUTOFF" \
+    "${OC_LOG_JQ_TS:-}"'fromjson? | select(.tool == "oc-prchecks")
     | select(((.extra.run_id // "") | tostring) != "")
     | select(((.extra.sha // "") == $sha) or ((.args // "") | contains($sha)) or ((.extra.ref // "") == $ref and ($ref | length) > 3))
-    | select(((.ts // "" | fromdateiso8601? // 0)) >= $cutoff)
+    | select((ts_epoch) >= $cutoff)
     | (.extra.run_id // empty)' 2>/dev/null | tail -1)"
   if [ -n "$PR_PRIOR" ]; then
     # set -e survival: run view failing is an EXPECTED path here (drives the

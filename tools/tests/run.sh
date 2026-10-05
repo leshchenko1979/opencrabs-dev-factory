@@ -665,6 +665,70 @@ grep -Eq "$_310_fallback_re" "$_310c" \
   || bad "control: detector is blind to a class-filtered fallback"
 rm -f "$_310c"
 
+# ---- 00a5. the ts parser reads BOTH log forms (#738) ------------------------
+# Producers write the unified-log ts in TWO forms: lib/oc-log.sh emits `…Z`
+# (date -u +%Y-%m-%dT%H:%M:%SZ) and the vendored Python register
+# (tools/state/oc-questions) emits `…+00:00` (datetime.isoformat). jq's
+# fromdateiso8601 accepts ONLY the Z form and yields null for an offset, so the
+# naive read `(.ts // "" | fromdateiso8601? // 0)` silently DROPS every +00:00
+# row -- the flood guard was blind to oc-questions, the one tool it exists to
+# stop, and the failure was silent. The lib now exports ONE parser,
+# OC_LOG_JQ_TS, and both consumers splice it. Three legs: the fragment maps BOTH
+# forms to the same epoch; the REAL guard trips on +00:00 rows (behavioural, not
+# string presence); and no consumer keeps the naive read (shape-keyed,
+# mutation-checked). Pre-fix the behavioural leg reads rc 0 on +00:00 (blind).
+section "flood guard reads both ts forms (#738)"
+_738_def="$(bash -c '. "$1/lib/oc-log.sh"; printf "%s" "$OC_LOG_JQ_TS"' _ "$TOOLS_DIR" 2>/dev/null)"
+_738_z="$(jq -n --arg t '2026-10-01T12:00:00Z'      "${_738_def}"'{ts:$t} | ts_epoch' 2>/dev/null)"
+_738_o="$(jq -n --arg t '2026-10-01T12:00:00+00:00' "${_738_def}"'{ts:$t} | ts_epoch' 2>/dev/null)"
+_738_n="$(jq -n --arg t '2026-10-01T12:00:00+00:00' '{ts:$t} | (.ts // "" | fromdateiso8601? // 0)' 2>/dev/null)"
+[ "$_738_z" = "1790856000" ] && ok "ts parser: Z form -> 1790856000" || bad "ts parser: Z form -> '$_738_z'"
+[ "$_738_o" = "1790856000" ] && ok "ts parser: +00:00 form -> 1790856000" || bad "ts parser: +00:00 form -> '$_738_o'"
+[ "$_738_n" = "0" ] && ok "control: the naive read drops the +00:00 form (leg discriminates)" \
+                    || bad "control: naive read -> '$_738_n' (expected 0)"
+# behavioural: the REAL guard, driven with 4 identical failing rows in each form.
+_fgd="$(mktemp -d)"; _fgl="$_fgd/tools.log"
+_fg_rc() { # $1 = ts suffix (Z | +00:00) ; prints the guard's rc with 4 prior rows
+  local i ts; ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  : > "$_fgl"
+  i=1; while [ "$i" -le 4 ]; do
+    printf '{"ts":"%s%s","tool":"oc-fg","actor":"x","args":"--same","exit":7,"secs":0.1,"extra":{}}\n' "$ts" "$1" >> "$_fgl"
+    i=$((i+1))
+  done
+  # oc_log_init sets OC_LOG_TOOL/ARGS AFTER sourcing (the lib RESETS them on
+  # source), so assign them post-source here too -- a prefix-env form is wiped.
+  OC_TOOLS_LOG="$_fgl" bash -c '. "$1/lib/oc-log.sh"; OC_LOG_TOOL=oc-fg; OC_LOG_ARGS=--same; oc_log_flood_guard' _ "$TOOLS_DIR" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+for _fgf in Z '+00:00'; do
+  _fgrc="$(_fg_rc "$_fgf")"
+  [ "$_fgrc" = "8" ] && ok "flood guard trips (rc 8) on 4 prior '$_fgf' rows" \
+                     || bad "flood guard BLIND to the '$_fgf' form: rc=$_fgrc"
+done
+rm -rf "$_fgd"
+# structural: no consumer keeps a ts read straight into fromdateiso8601.
+# Comment lines may QUOTE the naive form as documentation (this lib's own
+# OC_LOG_JQ_TS note does), so the detector reads CODE only -- a comment-stripped
+# stream -- and pairs the negative with the positive: each consumer must
+# reference the shared parser.
+_738_naive_re='\.ts // "" \| fromdateiso8601'
+for _738_c in lib/oc-log.sh harvest/oc-prchecks; do
+  if grep -v '^[[:space:]]*#' "$TOOLS_DIR/$_738_c" | grep -Eq "$_738_naive_re"; then
+    bad "$_738_c keeps a naive ts read: $(grep -v '^[[:space:]]*#' "$TOOLS_DIR/$_738_c" | grep -Em1 "$_738_naive_re")"
+  else
+    ok "$_738_c has no naive ts read in code"
+  fi
+  grep -Eq 'OC_LOG_JQ_TS' "$TOOLS_DIR/$_738_c" \
+    && ok "$_738_c reads ts through the shared parser (OC_LOG_JQ_TS)" \
+    || bad "$_738_c does not reference OC_LOG_JQ_TS"
+done
+_738c="$(mktemp)"
+printf '    | ((.ts // "" | fromdateiso8601? // 0)) | select(. >= $cutoff)\n' > "$_738c"
+grep -Eq "$_738_naive_re" "$_738c" \
+  && ok "control: detector flags a re-introduced naive ts read" \
+  || bad "control: detector is blind to a naive ts read"
+rm -f "$_738c"
+
 # ---- 00b. unified-log WIRE test (real tool -> tmp OC_TOOLS_LOG) -------------
 section "unified-log wire (real tool -> tmp log)"
 if tool oc-attrib; then
