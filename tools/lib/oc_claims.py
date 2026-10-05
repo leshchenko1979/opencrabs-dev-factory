@@ -299,6 +299,12 @@ HOME_REPO_SLUGS = (
     "leshchenko1979/opencrabs",              # FORK (historical; PRs still land here)
 )
 
+#: The FORK slug specifically. On UPSTREAM (`adolfousier/main`) a bare `#N`
+#: trailer names an upstream issue/PR, a DIFFERENT number space from the fork's,
+#: so only a value SLUG-QUALIFIED with this slug anchors a fork issue there
+#: (#356).
+FORK_SLUG = "leshchenko1979/opencrabs"
+
 #: The historical single slug. Still the meaning of an UNQUALIFIED `#N`: a bare
 #: number is fork space, because that is the space the ledger's own rows were
 #: written in before the split.
@@ -626,7 +632,7 @@ def _git(repo_path, *args):
         return None
     return proc.stdout
 
-def parse_issue_ref_value(value, home_slugs=HOME_REPO_SLUGS):
+def parse_issue_ref_value(value, home_slugs=HOME_REPO_SLUGS, require_slug=False):
     """Issue numbers a single `Issue-Ref` trailer value anchors to.
 
     HOME space ONLY (v0.4.284): a value naming a repository OUTSIDE
@@ -639,6 +645,13 @@ def parse_issue_ref_value(value, home_slugs=HOME_REPO_SLUGS):
 
     ``home_slugs`` is the ownership set; a bare string is accepted for
     back-compat and treated as a one-element set.
+
+    ``require_slug`` (default False) REJECTS the bare `#N` form and accepts only
+    a slug-qualified value. That is the UPSTREAM-side mode (#356): scanning
+    upstream, a bare `#N` trailer names an UPSTREAM issue/PR — a different number
+    space from the fork's — so it must not anchor a fork issue. Callers reading
+    fork refs leave it False; the upstream reader passes True with
+    ``home_slugs=(FORK_SLUG,)``.
     """
     if isinstance(home_slugs, str):
         home_slugs = (home_slugs,)
@@ -650,12 +663,16 @@ def parse_issue_ref_value(value, home_slugs=HOME_REPO_SLUGS):
         match = _SLUG_REF_RE.match(part)
         if match:
             slug, num = match.group(1), int(match.group(2))
+            if require_slug and not slug:
+                continue
             if slug and slug not in home_slugs:
                 continue
             out.append(num)
             continue
         match = _BARE_REF_RE.match(part)
         if match:
+            if require_slug:
+                continue
             out.append(int(match.group(1)))
     return out
 
@@ -692,7 +709,7 @@ def commit_issue_refs(trailer_value, subject=""):
     match = re.search(r"#(\d+)", str(subject or ""))
     return [int(match.group(1))] if match else []
 
-def issue_ref_index(repo_path, ref="--all"):
+def issue_ref_index(repo_path, ref="--all", home_slugs=HOME_REPO_SLUGS, require_slug=False):
     """``{sha: [issue, ...]}`` for commits carrying a HOME-space `Issue-Ref`.
 
     ONE `git log` pass, so a caller resolving many issues pays for it once and
@@ -700,6 +717,11 @@ def issue_ref_index(repo_path, ref="--all"):
     purpose: a lane's work lives on its own branch until the ff-merge, so a
     fork-main-only scan cannot see it (#307 — issue #262's own lane commits
     were invisible, and its file set came out 3 instead of 5).
+
+    ``home_slugs`` / ``require_slug`` are threaded to
+    :func:`parse_issue_ref_value`; the upstream-side reader (#356) passes a
+    single fork slug with ``require_slug=True`` so a bare upstream `#N` never
+    anchors a fork issue.
     """
     out = _git(repo_path, "log", ref,
                "--format=%H" + _FLD_ESC +
@@ -718,7 +740,8 @@ def issue_ref_index(repo_path, ref="--all"):
         nums = []
         # A multi-value trailer field arrives newline-separated.
         for line in values.splitlines():
-            for num in parse_issue_ref_value(line):
+            for num in parse_issue_ref_value(line, home_slugs=home_slugs,
+                                             require_slug=require_slug):
                 if num not in nums:
                     nums.append(num)
         if nums:
@@ -741,6 +764,36 @@ def resolve_issue_commits(repo_path, iss, ref="--all", index=None):
     target = int(iss)
     idx = issue_ref_index(repo_path, ref) if index is None else index
     return [sha for sha, nums in idx.items() if target in nums]
+
+#: fork_refs_in_ref memo -- one inverted scan per (repo, ref) per process.
+_FORK_REF_INDEX_CACHE = {}
+
+def fork_refs_in_ref(repo_path, ref):
+    """``{fork_issue_num: [sha, ...]}`` anchored by an UPSTREAM ref (#356).
+
+    The upstream-side reader. Scanning ``base_ref`` (upstream `adolfousier/main`)
+    for a FORK issue cannot use the bare `#N` trailer form: upstream carries bare
+    trailers that name UPSTREAM issues, a different number space from the fork's,
+    so a bare value must never anchor a fork issue. Only a SLUG-QUALIFIED
+    ``leshchenko1979/opencrabs#N`` value counts — hence
+    ``home_slugs=(FORK_SLUG,)`` with ``require_slug=True``.
+
+    This replaces an unanchored ``git log --grep='#N'`` over ``base_ref`` whose
+    prose match made an unharvested fork issue read as harvested and CLEARED the
+    parent/blocker gates (a gate failing OPEN — the third locus of the #307
+    class). Cached per (repo, ref): the scan is a full log and a dispatch asks it
+    once per parent/blocker/introduced-by issue.
+    """
+    key = (os.path.abspath(str(repo_path)), str(ref))
+    if key not in _FORK_REF_INDEX_CACHE:
+        raw = issue_ref_index(repo_path, ref=ref, home_slugs=(FORK_SLUG,),
+                              require_slug=True)
+        inv = {}
+        for sha, nums in raw.items():
+            for num in nums:
+                inv.setdefault(num, []).append(sha)
+        _FORK_REF_INDEX_CACHE[key] = inv
+    return _FORK_REF_INDEX_CACHE[key]
 
 def commit_files(repo_path, shas):
     """Union of the paths ``shas`` touch, as a sorted list."""

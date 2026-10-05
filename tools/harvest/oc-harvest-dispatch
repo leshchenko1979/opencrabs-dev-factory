@@ -527,10 +527,15 @@ def is_issue_harvested_upstream(issue_num, upstream_repo, repo_path, base_ref, s
         if not fork_issue_is_reopened(issue_num):
             return True
     
-    # 2. Check if base_ref already has a commit mentioning this issue
+    # 2. Check if base_ref already carries a commit whose Issue-Ref trailer
+    #    anchors this FORK issue. ANCHORED (machine-written trailer only) and
+    #    SLUG-QUALIFIED: on upstream a bare '#N' names an UPSTREAM issue/PR, a
+    #    different number space from the fork's, so it must not clear this gate.
+    #    The body this replaced used 'git log --grep=#N', whose prose match read
+    #    an unrelated upstream commit as fork work and made an unharvested issue
+    #    read as harvested — a gate failing OPEN (the third locus of #307; #356).
     if repo_path and os.path.isdir(repo_path):
-        rc, out, _ = run_cmd(['git', '-C', repo_path, 'log', '-n', '100', f'--grep=#{issue_num}', '--format=%H', base_ref])
-        if rc == 0 and out.strip():
+        if int(issue_num) in oc_claims.fork_refs_in_ref(repo_path, base_ref):
             return True
 
     # 3. Check if all commits for this issue are ancestors of base_ref or match patch-ids
@@ -1153,14 +1158,33 @@ elif action == 'test-harvested':
     # issue-state file. repo_path is a path that does not exist, so the two
     # git legs inside the function are skipped and the merged arm is the only
     # one under test.
+    #
+    # #356: args 5/6 (optional) point the SAME hook at a REAL fixture repo and
+    # base_ref, so step 2 -- the anchored, slug-qualified trailer scan -- is
+    # exercised end-to-end. Omitted, the default '/nonexistent-repo-path'
+    # preserves every pre-#356 leg verbatim.
     issue_num = int(sys.argv[2])
     mock_prs_file = sys.argv[3]
     mock_state_file = sys.argv[4]
+    repo_path = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else '/nonexistent-repo-path'
+    base_ref = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else 'adolfousier/main'
     os.environ['OC_HARVEST_MOCK_ISSUE_STATE'] = mock_state_file
     with open(mock_prs_file) as f:
         mock_prs = json.load(f)
-    got = is_issue_harvested_upstream(issue_num, 'mock/repo', '/nonexistent-repo-path', 'adolfousier/main', mock_prs=mock_prs)
+    got = is_issue_harvested_upstream(issue_num, 'mock/repo', repo_path, base_ref, mock_prs=mock_prs)
     print('HARVESTED' if got else 'NOT_HARVESTED')
+    sys.exit(0)
+
+elif action == 'test-fork-refs':
+    # #356: expose the step-2 PREDICATE directly. The function-level verdict
+    # cannot discriminate the bare 'Issue-Ref: #N' form, because step 3 (all
+    # commits ancestors of base_ref) legitimately answers True for a fork-space
+    # bare anchor sitting on base_ref -- but the number-space collision IS a
+    # predicate property, so the predicate is what the fixture asserts.
+    repo_path = sys.argv[2]
+    ref = sys.argv[3]
+    inv = oc_claims.fork_refs_in_ref(repo_path, ref)
+    print(json.dumps(sorted(inv.keys())))
     sys.exit(0)
 
 elif action == 'test-active-claims':
@@ -1496,7 +1520,13 @@ cmd_selftest() {
   git -C "$mock_repo" checkout -q main
   echo "Merged table content" > "$mock_repo/table.rs"
   git -C "$mock_repo" add table.rs
-  git -C "$mock_repo" commit -q -m "fix(table): blank line"
+  # #356: the fork commit MUST carry a real Issue-Ref anchor. This fixture used to
+  # rely on the UPSTREAM commit's prose 'upstream table merge (#95)' to make parent
+  # #95 read as harvested -- the very prose-match defect #356 removes. In reality a
+  # fork commit is anchored by oc-commit's own trailer, so it carries one here, and
+  # the parent lands through the patch-id leg (identical diff vs upstream) rather
+  # than through a prose false positive.
+  git -C "$mock_repo" commit -q -m "fix(table): blank line" --trailer "Issue-Ref: #95"
   local commit_95
   commit_95="$(git -C "$mock_repo" rev-parse HEAD)"
 
@@ -2128,6 +2158,85 @@ EOF
     echo "  ok 8k - #415: negative control -- a COMPLETED fork issue still refuses -> exit 0"
   else
     echo "  bad 8k - #415: COMPLETED fork issue #199 expected HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # 8l-8o. #356 numbering-space leg: step 2 of is_issue_harvested_upstream used
+  # 'git log --grep=#N' over upstream, whose PROSE match read an unrelated
+  # upstream commit as fork work and CLEARED the parent/blocker gates -- a gate
+  # failing OPEN (the third locus of #307). The scan is now anchored to a
+  # slug-qualified 'Issue-Ref: leshchenko1979/opencrabs#N' trailer, because on
+  # upstream a bare '#N' names an UPSTREAM issue/PR -- a different number space.
+  # Fixture on adolfousier/main: a PROSE '#900', a slug-qualified trailer #901,
+  # a bare trailer #902; on a NON-merged side branch a bare trailer #903.
+  local refspace="$st_dir/refspace"
+  mkdir -p "$refspace"
+  git -C "$refspace" init -q -b main
+  git -C "$refspace" config user.email "test@example.com"
+  git -C "$refspace" config user.name "Test Runner"
+  echo "base" > "$refspace/base.txt"
+  git -C "$refspace" add .
+  git -C "$refspace" commit -q -m "base commit"
+  git -C "$refspace" branch adolfousier/main
+  git -C "$refspace" checkout -q adolfousier/main
+  echo "prose" > "$refspace/prose.txt"
+  git -C "$refspace" add .
+  git -C "$refspace" commit -q -m "upstream: unrelated work mentioned in #900 prose"
+  echo "slug" > "$refspace/slug.txt"
+  git -C "$refspace" add .
+  git -C "$refspace" commit -q -m "upstream: real fork work" --trailer "Issue-Ref: leshchenko1979/opencrabs#901"
+  echo "bare" > "$refspace/bare.txt"
+  git -C "$refspace" add .
+  git -C "$refspace" commit -q -m "upstream: bare ref" --trailer "Issue-Ref: #902"
+  git -C "$refspace" checkout -q main
+  git -C "$refspace" checkout -q -b feature
+  echo "side" > "$refspace/side.txt"
+  git -C "$refspace" add .
+  git -C "$refspace" commit -q -m "fork: side work" --trailer "Issue-Ref: #903"
+
+  local mock_prs_empty="$st_dir/mock_prs_empty.json"
+  printf '[]\n' > "$mock_prs_empty"
+  local mock_state_empty="$st_dir/mock_state_empty.json"
+  printf '{}\n' > "$mock_state_empty"
+
+  # 8l. The predicate itself: ONLY the slug-qualified trailer anchors. The bare
+  # trailer (#902) and the prose (#900) must not, and neither may a bare trailer
+  # on a branch upstream has not taken (#903).
+  out="$(run_engine "test-fork-refs" "$refspace" "adolfousier/main")"
+  if [ "$out" = "[901]" ]; then
+    echo "  ok 8l - #356: step-2 predicate anchors ONLY the slug-qualified trailer -> exit 0"
+  else
+    echo "  bad 8l - #356: fork_refs_in_ref expected [901], got ($out)"
+    return 1
+  fi
+
+  # 8m. THE DISCRIMINATOR: a PROSE '#900' on upstream must not read as fork
+  # work. The pre-#356 '--grep=#900' matched that subject and answered True.
+  out="$(run_engine "test-harvested" "900" "$mock_prs_empty" "$mock_state_empty" "$refspace" "adolfousier/main")"
+  if [ "$out" = "NOT_HARVESTED" ]; then
+    echo "  ok 8m - #356: an upstream PROSE mention does not clear the gate -> exit 0"
+  else
+    echo "  bad 8m - #356: prose-only #900 expected NOT_HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # 8n. Positive control: the slug-qualified trailer DOES clear. Without this a
+  # predicate that anchored NOTHING would pass 8l/8m vacuously.
+  out="$(run_engine "test-harvested" "901" "$mock_prs_empty" "$mock_state_empty" "$refspace" "adolfousier/main")"
+  if [ "$out" = "HARVESTED" ]; then
+    echo "  ok 8n - #356: slug-qualified fork trailer clears the gate (positive twin) -> exit 0"
+  else
+    echo "  bad 8n - #356: slug-qualified #901 expected HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # 8o. A bare trailer on a branch upstream has NOT taken is not harvested
+  # either: step 2 scans base_ref only, and step 3 finds no ancestor of it.
+  out="$(run_engine "test-harvested" "903" "$mock_prs_empty" "$mock_state_empty" "$refspace" "adolfousier/main")"
+  if [ "$out" = "NOT_HARVESTED" ]; then
+    echo "  ok 8o - #356: a bare trailer on an unmerged branch does not clear -> exit 0"
+  else
+    echo "  bad 8o - #356: bare #903 on side branch expected NOT_HARVESTED, got ($out)"
     return 1
   fi
 

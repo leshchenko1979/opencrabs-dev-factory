@@ -1213,6 +1213,29 @@ _u315, _uage315, _un315 = oc.classify_soak_anchor(
 chk("#315 unresolved classify basis", "soak_basis=unresolved" in _un315, True)
 chk("#315 unresolved classify carries no age", _uage315, None)
 
+# --- #356: the UPSTREAM-side reader must accept ONLY a slug-qualified fork
+# --- trailer. A bare '#N' scanned on upstream names an UPSTREAM issue -- a
+# --- different number space -- so it must not anchor a fork issue. The bare
+# --- form stays valid for the FORK-side reader (default require_slug=False).
+chk("#356 slug-qualified fork ref anchors under require_slug",
+    oc.parse_issue_ref_value("leshchenko1979/opencrabs#356",
+                             home_slugs=(oc.FORK_SLUG,), require_slug=True), [356])
+chk("#356 bare ref is REJECTED under require_slug",
+    oc.parse_issue_ref_value("#356",
+                             home_slugs=(oc.FORK_SLUG,), require_slug=True), [])
+chk("#356 the binary-tracker slug is not the fork slug",
+    oc.parse_issue_ref_value("opencrabs/opencrabs#356",
+                             home_slugs=(oc.FORK_SLUG,), require_slug=True), [])
+chk("#356 a third-party slug is not the fork slug",
+    oc.parse_issue_ref_value("acme/widgets#356",
+                             home_slugs=(oc.FORK_SLUG,), require_slug=True), [])
+# Positive controls for the DEFAULT (fork-side) reader: both forms still anchor,
+# so the new parameter cannot have quietly disabled the existing contract.
+chk("#356 default reader still accepts the bare form",
+    oc.parse_issue_ref_value("#356"), [356])
+chk("#356 default reader still accepts the slug form",
+    oc.parse_issue_ref_value("leshchenko1979/opencrabs#356"), [356])
+
 if fails:
     for f in fails:
         sys.stderr.write("  unit-fail: %s\n" % f)
