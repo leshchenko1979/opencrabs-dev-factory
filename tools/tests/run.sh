@@ -2908,11 +2908,22 @@ def scan_file(p):
     return out
 
 target = sys.argv[1]
+
+# The GENERATED sidecar class (*.bak, *.bak-*, *.pre-*) is NOT source (#17).
+# An editing tool leaves a pre-image beside the file it touches, so a sidecar of
+# a tool that was MID-EDIT carries the hazard the live file no longer has: while
+# fixing #356, four sidecars of oc-harvest-dispatch held a backtick this lane had
+# already removed, and the guard reddened on its own debris while the tree was
+# clean. The test is NARROW on purpose -- suffix/infix only, never a bare "bak"
+# substring -- so a real source file named oc-bakery is still scanned.
+def _is_generated_sidecar(name):
+    return (name.endswith('.bak') or '.bak-' in name or '.pre-' in name)
+
 if os.path.isdir(target):
     files = []
     for dp, dn, fn in os.walk(target):
         dn[:] = [d for d in dn if d not in ('__pycache__', '.git')]
-        files.extend(os.path.join(dp, f) for f in fn)
+        files.extend(os.path.join(dp, f) for f in fn if not _is_generated_sidecar(f))
 else:
     files = [target]
 for f in sorted(files):
@@ -2937,6 +2948,25 @@ case "$SQ_HAZ" in *ARM-B*) ok "shell-quoting: an unquoted heredoc feeding python
   *) bad "shell-quoting: ARM B cannot fire (canary unseen: $SQ_HAZ)" ;; esac
 [ -z "$SQ_SAFE" ] && ok "shell-quoting: the SAFE fence forms stay green (control)" \
   || bad "shell-quoting: the control fired on safe forms: $SQ_SAFE"
+# #17: the GENERATED sidecar class is not source. The hazard is planted in
+# sidecars ONLY (all three name forms) beside a CLEAN real file, so a guard that
+# read a pre-image would fire here. Built by interpolation for the same reason as
+# the canary above: a literal hazard in this file would be a REAL site.
+mkdir -p "$SQD/sidecar"
+printf "python3 -c 'print(1)'\n" > "$SQD/sidecar/clean.sh"
+printf 'python3 -c "print(%sdate%s)"\n' "$SQ_BT" "$SQ_BT" > "$SQD/sidecar/clean.sh.2026-10-05T120617.bak"
+printf 'python3 -c "print(%sdate%s)"\n' "$SQ_BT" "$SQ_BT" > "$SQD/sidecar/clean.sh.bak-2026-10-05T120617"
+printf 'python3 -c "print(%sdate%s)"\n' "$SQ_BT" "$SQ_BT" > "$SQD/sidecar/clean.sh.pre-2026-10-05T120617"
+SQ_SIDE="$(python3 "$SQD/scan.py" "$SQD/sidecar" 2>&1)"
+[ -z "$SQ_SIDE" ] && ok "shell-quoting: a hazard-carrying sidecar is NOT a site (#17)" \
+  || bad "shell-quoting: the pre-image class was scanned as source: $SQ_SIDE"
+# NEGATIVE CONTROL: the exclusion must be NARROW. A real file whose NAME merely
+# contains "bak" (oc-bakery) is still source, and a hazard in it must still fire.
+mkdir -p "$SQD/widen"
+printf 'python3 -c "print(%sdate%s)"\n' "$SQ_BT" "$SQ_BT" > "$SQD/widen/oc-bakery.sh"
+SQ_WIDE="$(python3 "$SQD/scan.py" "$SQD/widen" 2>&1)"
+case "$SQ_WIDE" in *ARM-A*) ok "shell-quoting: the sidecar exclusion is NARROW (oc-bakery still scanned)" ;;
+  *) bad "shell-quoting: widening control failed to fire: $SQ_WIDE" ;; esac
 SQ_LIVE="$(python3 "$SQD/scan.py" "$TOOLS_DIR" 2>&1)"
 if [ -z "$SQ_LIVE" ]; then
   ok "shell-quoting: no hazard site in the fleet"
