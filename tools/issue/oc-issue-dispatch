@@ -39,6 +39,14 @@ lookup, and REFUSES when even that fails. A stub is never constructed, because a
 fabricated title with an EMPTY body makes the claim gate and the affinity
 scoring evaluate nothing (#483).
 
+Lane selection reads an issue's domains in TWO arms (#551). The DECLARED
+`type(scope):` prefix is read FIRST, because it is a deliberate statement of what
+the issue is about; the prose-keyword arm is the FALLBACK, for the many issues
+that carry no prefix or whose scope names nothing we hold affinity for. A scope
+is a DECLARATION, not a mention, so a title's own negation does not cancel it.
+The two arms are a UNION: the declaration can only ADD a domain, never remove
+one, which is what keeps a prefix-less issue reading exactly as it always did.
+
 A dispatch's ceiling is therefore the notify budget PLUS the receipt grace (150s
 by default), on top of the gh/roster reads that precede it. An outer `timeout`
 shorter than that kills the run MID-SEND -- which is how a slow run was reported
@@ -945,10 +953,102 @@ def _domains_for_text(text):
             if any(_keyword_matches(text, kw) for kw in kws)}
 
 
+# ---------------------------------------------------------------------------
+# The DECLARED scope prefix (fork #551)
+# ---------------------------------------------------------------------------
+# An issue title carries a deterministic domain declaration -- `type(scope):` --
+# and the classifier used to ignore it, routing on noisy prose keywords alone.
+# The declaration is now read FIRST and the keyword arm is the FALLBACK, so a
+# scope that names a domain we hold affinity for is honoured even when the
+# issue's prose never repeats the word.
+#
+# MEASURED (2026-10-05, 184 open fork issues, 172 prefixed, 37 distinct scopes):
+# 22 of the 37 scope words were UNRECOGNISED by the keyword arm. The cause is
+# structural, not accidental: `_keyword_matches` matches a prose token on WORD
+# BOUNDARIES, so the plural/abbreviated form of a domain name never matches the
+# singular keyword -- `fix(skills):` never matches the `skill` keyword,
+# `fix(channels):` never matches `channel`, `fix(tg):` matches nothing at all.
+# Only a handful of domains were reachable by declaration, and only because
+# their scope token happened to be spelled exactly like their keyword.
+#
+# `_keyword_matches`'s negation guard (#605) does NOT apply here, and that is
+# deliberate: a scope prefix is a DECLARATION, not a mention. "fix(daemon): not
+# (tools): ..." declares daemon; there is no polarity to resolve.
+_SCOPE_PREFIX_RE = re.compile(
+    r"^\s*(?:fix|feat|chore|bug|refactor|docs|test|perf|ci|build|style)"
+    r"\s*\(\s*([^)]+?)\s*\)\s*:", re.I)
+
+#: Scope -> affinity domain. A scope is mapped ONLY when it names a domain this
+#: classifier actually holds affinity for; an UNMAPPED scope is not an error and
+#: not a domain -- it falls through to the keyword arm unchanged, which is what
+#: preserves the zero-empty-domain invariant (measured: 0 empty sets across all
+#: 184 open issues). Adding a scope here must therefore never invent a domain
+#: that no lane owns: that is how a harness issue would hand the toolsmith lane
+#: affinity for `tool_loop`, which owns no fleet script.
+SCOPE_DOMAINS = {
+    # The domain names themselves. Kept EXACT (#551): `(tools):` means the tools
+    # domain and nothing else -- no fuzzy prefix matching.
+    "tools": "tools", "plan": "plan", "goal": "goal", "provider": "provider",
+    "telegram": "telegram", "mermaid": "mermaid", "db": "db", "cron": "cron",
+    "memory": "memory", "skills": "skills", "notify": "notify",
+    "harvest": "harvest", "bash": "bash", "config": "config",
+    # Measured aliases -- the plural/abbreviated/synonym forms the keyword arm
+    # structurally drops. Each one is a scope word observed on the live corpus,
+    # or the obvious singular/plural twin of one.
+    "skill": "skills", "slash": "skills", "prompt": "skills", "context": "skills",
+    "tg": "telegram", "channels": "telegram", "channel": "telegram",
+    "topics": "telegram", "topic": "telegram",
+    "diagrams": "mermaid", "diagram": "mermaid",
+    "dbs": "db", "sqlite": "db", "storage": "db", "retention": "db",
+    "jobs": "cron", "scheduler": "cron", "scheduling": "cron",
+    "notifications": "notify", "notification": "notify", "delivery": "notify",
+    "upstream": "harvest", "census": "harvest", "sweep": "harvest",
+    "tooling": "tools", "toolsmith": "tools", "ledger": "tools", "roster": "tools",
+    "dispatch": "tools", "issue": "tools", "issues": "tools", "lint": "tools",
+    "ship": "tools", "deploy": "tools", "smoke": "tools", "vendor": "tools",
+    "prchecks": "tools", "battery": "tools", "selftest": "tools",
+    "providers": "provider", "handshake": "provider",
+    "plans": "plan", "cards": "plan",
+    "goals": "goal",
+    "codegraph": "memory", "embedding": "memory",
+    "settings": "config", "toml": "config", "read_config": "config",
+    "shell": "bash", "subshell": "bash", "spill": "bash",
+}
+
+
+def declared_scope_domains(issue):
+    """Domains the title's `type(scope):` prefix DECLARES (fork #551).
+
+    A compound scope names each of its parts ("tools, plan" / "tools/plan"),
+    and the whole scope is tried first so a multi-word scope can be mapped as a
+    unit before it is split. An unmapped scope returns the empty set -- never a
+    guess, and never a fallback to the type verb.
+    """
+    mt = _SCOPE_PREFIX_RE.match(issue.get("title", "") or "")
+    if not mt:
+        return set()
+    scope = mt.group(1).strip().lower()
+    doms = set()
+    direct = SCOPE_DOMAINS.get(scope)
+    if direct:
+        doms.add(direct)
+    for part in re.split(r"[,\s/|+]+", scope):
+        if part:
+            d = SCOPE_DOMAINS.get(part)
+            if d:
+                doms.add(d)
+    return doms
+
+
 def detect_issue_domains(issue):
-    """Domains an issue touches, from its title+body prose."""
+    """Domains an issue touches: the DECLARED prefix first, prose keywords as fallback.
+
+    The union is what #551 asks for and what keeps the zero-empty-domain
+    invariant: the declaration can only ADD a domain, never remove one, so an
+    unmapped or absent scope behaves exactly as before.
+    """
     text = issue.get("title", "") + " " + issue.get("body", "")
-    return _domains_for_text(text)
+    return declared_scope_domains(issue) | _domains_for_text(text)
 
 def role_owned_domains(lane):
     """Domains a lane OWNS by ROLE (fork #342), independent of its feature prose.
@@ -1970,6 +2070,63 @@ def run_selftest():
     assert_eq("--force overrides the zero-affinity refusal",
               select_best_lane(issue_db, [lane_mermaid, lane_generic], allow_fallback=True)["uuid"],
               "lane-generic-1")
+
+    # Test 3c (#551): the DECLARED `type(scope):` prefix is read FIRST, with the
+    # keyword arm as FALLBACK. Before this the classifier routed on prose alone,
+    # so a scope whose token differs from its keyword -- the plural, the
+    # abbreviation -- declared a domain that was never read. `fix(skills):` was
+    # invisible because `_keyword_matches` matches on WORD BOUNDARIES while the
+    # corpus keyword is the singular `skill`; `fix(tg):` matched nothing at all.
+    # MEASURED on the live corpus (184 open issues, 37 distinct scopes): the
+    # declaration arm takes reachable scopes 15 -> 19 and loses zero.
+    _N = "lorem ipsum dolor sit amet"          # neutral prose: no keyword can fire
+    def _decl(title):
+        return detect_issue_domains({"number": 1, "labels": [], "title": title, "body": _N})
+
+    assert_eq("#551 a plural scope reaches its domain on a NEUTRAL body",
+              sorted(_decl("fix(skills): zzz qqq")), ["skills"])
+    assert_eq("#551 an abbreviated scope reaches its domain",
+              sorted(_decl("fix(tg): zzz qqq")), ["telegram"])
+    assert_eq("#551 a scope the prose arm can never reach",
+              sorted(_decl("fix(read_config): zzz qqq")), ["config"])
+    # Negative controls: a scope naming NO domain must stay empty, or the
+    # declaration arm would be inventing affinity no lane owns.
+    assert_true("#551 control: an unmapped scope declares nothing",
+                not declared_scope_domains({"title": "fix(daemon): zzz qqq"}))
+    assert_true("#551 control: a scope-less title declares nothing",
+                not declared_scope_domains({"title": "zzz qqq"}))
+    assert_true("#551 control: the type verb is not a domain",
+                not declared_scope_domains({"title": "fix: zzz qqq"}))
+    # A scope is a DECLARATION, not a mention, so #605's negation guard must NOT
+    # apply: a title that negates the domain in its PROSE still declares it.
+    assert_eq("#551 a scope is a declaration, not a mention (#605 does not apply)",
+              sorted(declared_scope_domains({"title": "fix(tools): not (plan): zzz"})),
+              ["tools"])
+    # Compound scopes name each part.
+    assert_eq("#551 a compound scope names each part",
+              sorted(declared_scope_domains({"title": "fix(tools, plan): zzz"})),
+              ["plan", "tools"])
+    # The invariant: the declaration may only ADD. A prefix-less issue must read
+    # EXACTLY as the prose arm alone did -- asserted against that arm directly,
+    # never against a hand-guessed domain list.
+    _plain = {"number": 2, "labels": [], "title": "chore: wheels turn slowly",
+              "body": "telegram cron tools"}
+    assert_eq("#551 a prefix-less issue reads EXACTLY as the prose arm did",
+              sorted(detect_issue_domains(_plain)),
+              sorted(_domains_for_text(_plain["title"] + " " + _plain["body"])))
+    # ...and a PREFIXED issue is a SUPERSET of the prose arm, never a subset.
+    _pref = {"number": 3, "labels": [], "title": "fix(telegram): cron flakiness",
+             "body": "telegram cron tools"}
+    assert_true("#551 a prefixed issue is a SUPERSET of the prose arm",
+                _domains_for_text(_pref["title"] + " " + _pref["body"])
+                <= detect_issue_domains(_pref))
+    # Every target in the map must be a domain a lane can actually own, or the
+    # arm would hand out affinity no role holds.
+    _real_domains = set(AFFINITY_KEYWORDS)
+    for _ds in ROLE_DOMAINS.values():
+        _real_domains |= set(_ds)
+    assert_true("#551 every mapped scope names a REAL domain",
+                all(v in _real_domains for v in SCOPE_DOMAINS.values()))
 
     # Test 3d (#668): domain intersection is a GATE, not a score component. A
     # POSITIVE score built purely from feature PROSE used to satisfy both sign
