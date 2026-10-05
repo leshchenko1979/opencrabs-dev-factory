@@ -45,6 +45,10 @@
 #
 # Env: OC_LINT_LAWS_TOOLS_DIR  (TEST HOOK — point the tool scan at a fixture
 #     tools/ dir. It exists so the selftest never depends on the live corpus.)
+#      OC_LINT_LAWS_GAPMAX      (default 3) how far a flag may sit from the tool
+#     token that owns it before attribution is REFUSED. Raising it re-attributes
+#     wider gaps (the flag is then judged against that tool's source); lowering
+#     it moves more flags into the UNATTRIBUTABLE class (#643).
 #
 # Exit: 0 clean / 1 findings / 2 usage / 3 tools dir or named corpus file missing
 # =============================================================================
@@ -313,10 +317,19 @@ EOT
   run "$T/clean.md" --json
   if [ "$RC" = 0 ] && [ -z "$OUTP" ]; then ok "--json on a clean corpus is empty, rc 0"; else bad "--json clean (rc=$RC stdout=$OUTP)"; fi
 
-  # The live false positive, as a regression guard: a flag five tokens past the
-  # tool token belongs to prose, not to that tool.
-  printf 'standalone `oc-good` stays the fallback only when --gamma is unavailable.\n' > "$T/wide-gap.md"
-  run "$T/wide-gap.md"; chk "flag 5 tokens past the tool is NOT attributed" 0 "" "oc-good --gamma"
+  # #643: a flag past GAPMAX used to be SILENTLY dropped, so a wide-gap phantom
+  # read exactly like a clean corpus. Two legs pin the new behaviour. NOTE the flag
+  # must sit INSIDE the code span: the scanner only lints spans/fences, so a flag in
+  # plain prose is never a candidate at all — the previous guard here put it in
+  # prose and therefore asserted rc 0 VACUOUSLY (a disarmed control).
+  #  (a) NO tool owns the flag -> a real finding (class UNATTRIBUTABLE), and it is
+  #      never misattributed to the tool named five tokens back;
+  #  (b) SOME tool owns it -> a legitimate wide-gap citation, dropped (rc 0), which
+  #      is what GAPMAX is for (live shape: `--create`, owned by oc-ship-audit).
+  printf 'The law cites `oc-good stays the fallback only when --gamma` in prose.\n' > "$T/wide-gap.md"
+  run "$T/wide-gap.md"; chk "wide-gap flag NO tool owns -> UNATTRIBUTABLE, rc 1" 1 "UNATTRIBUTABLE" "oc-good --gamma"
+  printf 'The law cites `oc-good stays the fallback only when --beta` in prose.\n' > "$T/wide-gap-owned.md"
+  run "$T/wide-gap-owned.md"; chk "wide-gap flag SOME tool owns -> dropped, rc 0" 0 "" "UNATTRIBUTABLE"
 
   # --- usage / arg contract ------------------------------------------------
   run "$T/clean.md" --bogus-arg; chk "unknown arg -> rc 2" 2 "unknown arg"
@@ -386,7 +399,7 @@ done
 # command. Live case: "standalone oc-wt stays the fallback only when
 # --create is unavailable" — that --create belongs to oc-wt, named three
 # lines earlier. Gap 5 correctly refuses to attribute.
-CANDS="$(awk -v GAPMAX=3 '
+CANDS="$(awk -v GAPMAX="${OC_LINT_LAWS_GAPMAX:-3}" '
   { line = $0
     if (line ~ /^[ \t]*(```|~~~)/) { fence = !fence; next }
     if (fence) { unit(line, FNR, FILENAME); next }
@@ -396,25 +409,34 @@ CANDS="$(awk -v GAPMAX=3 '
   function unit(u, ln, fn,   m, i, tok, t, f) {
     gsub(/[",;:()\[\]`]/, " ", u)
     m = split(u, toks, /[ \t]+/)
-    cur = ""; pv = ""; gap = 0; seenf = 0
+    cur = ""; pv = ""; gap = 0; seenf = 0; lost = 0
     for (i = 1; i <= m; i++) {
       tok = toks[i]
       sub(/[.,*!?]+$/, "", tok)
       if (tok == "") continue
-      if (tok ~ /^oc-[a-z0-9]/) { t = tok; sub(/[^a-z0-9-].*$/, "", t); cur = t; pv = ""; gap = 0; seenf = 0; continue }
-      if (cur == "") continue
+      if (tok ~ /^oc-[a-z0-9]/) { t = tok; sub(/[^a-z0-9-].*$/, "", t); cur = t; pv = ""; gap = 0; seenf = 0; lost = 0; continue }
+      if (cur == "") {
+        # #643: attribution was refused past GAPMAX (lost=1). Emit the flag with a
+        # "-" owner so the shell can ask "does ANY tool carry this flag?". The old
+        # code dropped it here, which is exactly the silent blind spot the issue
+        # names: a wide-gap PHANTOM read identically to a clean corpus.
+        if (lost && tok ~ /^--[a-z0-9]/) { f = tok; sub(/=.*$/, "", f); printf "%s\t%d\t-\t%s\t\n", fn, ln, f }
+        continue
+      }
       if (tok ~ /^--[a-z0-9]/) {
         f = tok; sub(/=.*$/, "", f)
         printf "%s\t%d\t%s\t%s\t%s\n", fn, ln, cur, f, (seenf ? "" : pv)
         seenf = 1; pv = ""; gap = 0; continue
       }
-      if (tok ~ /^[a-z][a-z0-9-]*$/) { if (gap == 0) pv = tok; gap++; if (gap > GAPMAX) cur = ""; continue }
-      gap++; if (gap > GAPMAX) cur = ""
+      if (tok ~ /^[a-z][a-z0-9-]*$/) { if (gap == 0) pv = tok; gap++; if (gap > GAPMAX) { cur = ""; lost = 1 }; continue }
+      gap++; if (gap > GAPMAX) { cur = ""; lost = 1 }
     }
   }
 ' $ABS)"
 
 SEEN_UNKNOWN=""
+# #643: dedup set for wide-gap flags that NO tool owns (see the "-" branch below).
+SEEN_UNATTR=""
 OLDIFS="$IFS"; IFS='
 '
 # tool_path <name> — resolve a tool to its real path.
@@ -434,10 +456,43 @@ tool_path() {
   return 1
 }
 
+# flag_owned_anywhere <flag> — does ANY tool under tools/ carry this flag? (#643)
+# Used only for wide-gap candidates, to tell a LEGITIMATE citation from a phantom:
+#   owned  -> the law cites a real flag of some other tool a few tokens back
+#             (live case: `--create`, owned by oc-ship-audit, cited 5 tokens after
+#             `oc-wt`) — drop it, exactly as GAPMAX intends.
+#   unowned-> NO tool has the flag, so the law names a flag that does not exist.
+#             That is a real defect and must be reported, never silently dropped.
+# Backup sidecars are skipped: a .bak copy is not a tool.
+flag_owned_anywhere() {
+  _fo="$1"
+  for _fp in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
+    [ -f "$_fp" ] || continue
+    case "$_fp" in *.bak|*.bak-*) continue ;; esac
+    if grep -qF -- "$_fo" "$_fp" 2>/dev/null; then return 0; fi
+  done
+  return 1
+}
+
 for cand in $CANDS; do
   IFS="$(printf '\t')" read -r cfile cln ctool cflag cverb <<EOC
 $cand
 EOC
+  if [ "${ctool:-}" = "-" ]; then
+    # #643: the flag sat past GAPMAX from EVERY tool token, so no owner can be
+    # attributed. Reporting it against the nearest tool would be a false positive;
+    # dropping it (the old behaviour) hides a phantom. So report it as its own
+    # class, and only when NO tool owns the flag at all.
+    if ! flag_owned_anywhere "$cflag"; then
+      _uk="$cfile:$cln:$cflag"
+      case " $SEEN_UNATTR " in
+        *" $_uk "*) : ;;
+        *) SEEN_UNATTR="$SEEN_UNATTR $_uk"
+           add "${cfile#"$SKILL_DIR"/}" "$cln" "UNATTRIBUTABLE" "-" "$cflag" "no tool token within GAPMAX of it, and NO tool in tools/ carries this flag" ;;
+      esac
+    fi
+    continue
+  fi
   [ -n "${ctool:-}" ] || continue
   rel="${cfile#"$SKILL_DIR"/}"
   CTOOL_PATH="$(tool_path "$ctool" || true)"
