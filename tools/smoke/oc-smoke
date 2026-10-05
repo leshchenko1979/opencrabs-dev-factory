@@ -34,6 +34,9 @@ set -e
 
 SCRIPT_DIR="$OC_TOOLS_DIR"
 STATE_DIR="${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}"
+# #673: the fork checkout, for the by-hand lineage ancestry check. Same
+# convention as oc-ship-chain (OC_FORK_REPO, else $HOME/opencrabs).
+FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 CANON_LOG="$STATE_DIR/smoke-verdicts.log"
 EVIDENCE_TOOL="$SCRIPT_DIR/smoke/oc-smoke-evidence"
 LEDGER_TOOL="$SCRIPT_DIR/state/oc-ledger"
@@ -52,12 +55,21 @@ UNIT="opencrabs-ops"
 NO_LEDGER=0
 SELFTEST=0
 LINEAGE="unverified"
+LINEAGE_DECLARED=0
 # #598: the behavioral leg (leg 4). Empty means "caller did not declare";
 # the probe block below sets it from the ACTUAL run, and the final
 # resolution sets `absent` when no probe ran at all.  #306 gave lineage an
 # `unverified` default on the reasoning that a leg this tool did not check
 # must not read as a checked one; leg 4 had no equivalent guard, so a
 # probe-less run was durably recorded as a 4-leg verdict.
+# #673: `unverified` stays the DEFAULT, but it is no longer the ONLY thing
+# this tool can say. The tool already resolves the sha and the deployed
+# artifact for its identity leg, so when the caller does NOT declare
+# --lineage it ATTEMPTS the ancestry check itself (fetch + merge-base
+# --is-ancestor <deployed.sha> origin/main) and records verified/failed;
+# it falls back to `unverified` only when the check cannot run. An explicit
+# --lineage still overrides (LINEAGE_DECLARED), so the #306 caller contract
+# is unchanged — the tool just stops under-claiming when it can do better.
 BEHAVIORAL=""
 
 usage() {
@@ -82,9 +94,13 @@ Options:
   --markers <m1,m2>   Comma-separated presence markers to verify in binary
   --evidence <text>   Prose summary of verification evidence (recorded IN
                       ADDITION to --probe, never instead of it)
-  --lineage <tok>     Lineage leg status: verified|failed|unverified (default:
-                      unverified — oc-smoke computes no ancestry itself, so it
-                      never claims a lineage it did not check)
+  --lineage <tok>     Lineage leg status: verified|failed|unverified. When
+                      OMITTED, oc-smoke runs the check itself (#673): best-effort
+                      fetch, then \`git merge-base --is-ancestor <deployed.sha>
+                      origin/main\` in the fork checkout, recording verified or
+                      failed. It falls back to \`unverified\` only when the check
+                      cannot run (no checkout, no origin/main ref, unknown
+                      object). An explicit --lineage always overrides.
   --behavioral <tok>  Behavioral leg (leg 4) status when NO --probe is given:
                       verified|failed|absent|na. Default: derived — a probe that
                       runs sets verified/failed; with no probe it is \`absent\`,
@@ -168,8 +184,29 @@ do_selftest() {
 
   # Create fake deployed state and fake evidence tool
   mkdir -p "$d/state"
-  printf '0123456789abcdef0123456789abcdef01234567\n' > "$d/state/deployed.sha"
-  printf '{"run_id":34917665398,"source_sha":"0123456789abcdef0123456789abcdef01234567"}\n' > "$d/state/deployed.meta.json"
+  # #673: a HERMETIC fork checkout, so the new by-hand lineage check is
+  # testable and NEVER touches the real $HOME/opencrabs. OC_FORK_REPO pins
+  # every invocation below to this fixture; OC_SMOKE_NO_FET keeps it off the
+  # network (the fixture has no remote anyway).
+  export OC_FORK_REPO="$d/fork"
+  export OC_SMOKE_NO_FET=1
+  git init -q "$d/fork"
+  git -C "$d/fork" config user.email "selftest@example.invalid"
+  git -C "$d/fork" config user.name "selftest"
+  printf 'base\n' > "$d/fork/f.txt"
+  git -C "$d/fork" add f.txt
+  git -C "$d/fork" commit -qm "base"
+  git -C "$d/fork" branch -M main
+  git -C "$d/fork" update-ref refs/remotes/origin/main HEAD
+  local FORK_HEAD FORK_ORPHAN
+  FORK_HEAD="$(git -C "$d/fork" rev-parse HEAD)"
+  # An ORPHAN commit (no parent, hence not an ancestor of origin/main): the
+  # negative control proving the auto-check can actually read `failed`.
+  # commit-tree writes the object without touching the working tree or HEAD,
+  # so there is no checkout churn to trip over.
+  FORK_ORPHAN="$(git -C "$d/fork" commit-tree "$(git -C "$d/fork" rev-parse 'HEAD^{tree}')" -m orphan-673)"
+  printf '%s\n' "$FORK_HEAD" > "$d/state/deployed.sha"
+  printf '{"run_id":34917665398,"source_sha":"%s"}\n' "$FORK_HEAD" > "$d/state/deployed.meta.json"
 
   cat > "$d/fake-evidence" <<'EOF'
 #!/usr/bin/env bash
@@ -427,25 +464,59 @@ MBEOF
     t_bad "--target override (rc=$rc row=$row245)"
   fi
 
-  # ---- #436 + #306: the row must not contradict its own verdict -----------
+  # ---- #436 + #306 (+#673): the row must not contradict its own verdict ----
   # #436: the opening clause was the literal "4-leg smoke pass:" on EVERY row,
   # so all 7 FAIL rows in the canonical log asserted a pass in their first five
   # words — the precise rows a reader consults when something went wrong.
   # #306: the same clause asserted lineage=true for a leg this tool cannot
-  # compute (it runs no ancestry command at all). Both literals lived on ONE
-  # line, so they are covered by ONE fixture. Assertions are on the ROW, never
-  # on stdout, because the row is the artifact of record. The PASS-side control
-  # is row244, written by the #432 fixture above.
-  local row246 row247 row248 row249 v249
+  # compute. #673 removed that premise: the tool now computes the ancestry
+  # itself when the caller declares nothing, so an undeclared --lineage reads a
+  # CHECKED token (verified in this fixture) and `unverified` survives only as
+  # the cannot-run fallback. Both literals lived on ONE line, so they are
+  # covered by ONE fixture. Assertions are on the ROW, never on stdout, because
+  # the row is the artifact of record. The PASS-side control is row244, written
+  # by the #432 fixture above.
+  local row246 row247 row248 row249 v249 row246b row246c v246b
   rc=0
   out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
     "$0" 246 --probe "echo probe-ok" 2>&1)" || rc=$?
   row246="$(grep 'issue=#246' "$d/state/smoke-verdicts.log" | tail -n 1)"
-  if grep -q 'evidence="4-leg smoke pass: lineage=unverified ' <<< "$row246" ; then
-    t_ok "PASS row keeps the pass clause; lineage reads unverified, never true (#306)"
+  if [ "$rc" -eq 0 ] && grep -q 'evidence="4-leg smoke pass: lineage=verified ' <<< "$row246" ; then
+    t_ok "an undeclared --lineage reads the CHECKED token, not unverified (#673)"
   else
-    t_bad "PASS default opening clause (rc=$rc row=$row246)"
+    t_bad "auto-check verified (rc=$rc row=$row246)"
+  fi
+
+  # #673 NEGATIVE CONTROL: a deployed sha that is NOT an ancestor of
+  # origin/main must read `failed` AND force the row to FAIL. Without this leg
+  # the auto-check could return `verified` unconditionally and still pass.
+  printf '%s\n' "$FORK_ORPHAN" > "$d/state/deployed.sha"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 2461 --probe "echo probe-ok" 2>&1)" || rc=$?
+  row246b="$(grep 'issue=#2461' "$d/state/smoke-verdicts.log" | tail -n 1)"
+  v246b="$(printf '%s' "$row246b" | awk -F'\t' '{print $2}')"
+  if [ "$rc" -eq 1 ] && [ "$v246b" = "FAIL" ] && grep -q 'lineage=failed' <<< "$row246b" ; then
+    t_ok "a deployed sha outside origin/main reads lineage=failed and forces FAIL (#673)"
+  else
+    t_bad "auto-check failed leg (rc=$rc verdict=$v246b row=$row246b)"
+  fi
+  printf '%s\n' "$FORK_HEAD" > "$d/state/deployed.sha"
+
+  # #673 FALLBACK: with no usable checkout the tool must fall back to
+  # `unverified` — the #306 contract (a leg it did not check never reads as
+  # checked) is preserved exactly where the check cannot run.
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 OC_FORK_REPO="$d/no-such-repo" \
+    "$0" 2462 --probe "echo probe-ok" 2>&1)" || rc=$?
+  row246c="$(grep 'issue=#2462' "$d/state/smoke-verdicts.log" | tail -n 1)"
+  if [ "$rc" -eq 0 ] && grep -q 'lineage=unverified ' <<< "$row246c" ; then
+    t_ok "no fork checkout -> lineage falls back to unverified (#673/#306)"
+  else
+    t_bad "auto-check fallback (rc=$rc row=$row246c)"
   fi
 
   rc=0
@@ -605,7 +676,8 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || die 2 "--lineage requires a token (verified|failed|unverified)"
       case "$2" in
         verified|VERIFIED|failed|FAILED|unverified|UNVERIFIED)
-          LINEAGE="$(printf '%s' "$2" | tr 'A-Z' 'a-z')" ;;
+          LINEAGE="$(printf '%s' "$2" | tr 'A-Z' 'a-z')"
+          LINEAGE_DECLARED=1 ;;
         *)
           die 2 "--lineage accepts exactly verified|failed|unverified (got: $2)" ;;
       esac
@@ -726,14 +798,49 @@ if [ -n "$PROBE_CMD" ]; then
   fi
 fi
 
-# 2b. The lineage leg (#306). This tool runs no ancestry command — `grep -c
-#     'is-ancestor|merge-base'` over it returns 0 — so it CANNOT compute leg 1 of
-#     the 4-leg rubric; it can only report what the caller checked. The caller
-#     says so with --lineage, and the default is `unverified`: a leg this tool
-#     did not check must not read as a checked one. A caller reporting the leg
-#     FAILED forces the row to FAIL, on the same reasoning that already forces
-#     FAIL on an identity mismatch or a failed probe — a row reading
-#     `PASS ... lineage=failed` is the self-contradiction #436 fixes below.
+# 2a-bis. By-hand lineage (#673). #306 made --lineage caller-only, which was
+#     right while this tool had no way to check ancestry. It has one now: the
+#     fork checkout and the deployed sha are both in hand (the identity leg
+#     resolves them), so when the caller does NOT declare a token we ATTEMPT
+#     leg 1 ourselves and record what the check returned — `verified`,
+#     `failed`, or `unverified` when the check cannot run at all (no checkout,
+#     no origin/main ref, unknown object). A best-effort fetch keeps the ref
+#     fresh and is NEVER fatal (offline -> the local ref stands; set
+#     OC_SMOKE_NO_FETCH=1 to skip the network entirely). An explicit --lineage
+#     still wins, so the #306 caller contract is unchanged — the tool simply
+#     stops under-claiming when it can do the check itself.
+if [ "$LINEAGE_DECLARED" -eq 0 ]; then
+  LINEAGE="unverified"
+  if [ -d "$FORK_REPO/.git" ] || [ -f "$FORK_REPO/.git" ]; then
+    if [ "${OC_SMOKE_NO_FETCH:-0}" != "1" ]; then
+      timeout 20 git -C "$FORK_REPO" fetch --quiet origin main >/dev/null 2>&1 || true
+    fi
+    if git -C "$FORK_REPO" rev-parse --verify -q origin/main >/dev/null 2>&1; then
+      set +e
+      git -C "$FORK_REPO" merge-base --is-ancestor "$DEPLOYED_SHA" origin/main >/dev/null 2>&1
+      _lin_rc=$?
+      set -e
+      case "$_lin_rc" in
+        0) LINEAGE="verified" ;;
+        1) LINEAGE="failed" ;;
+        *) LINEAGE="unverified" ;;
+      esac
+    fi
+  fi
+  echo "$PROG: lineage auto-check (#673): $DEPLOYED_SHA vs origin/main -> $LINEAGE" >&2
+fi
+
+# 2b. The lineage leg (#306, revised #673). #306 made --lineage caller-only
+#     because this tool ran no ancestry command, so it could not compute leg 1
+#     of the 4-leg rubric and a leg it did not check had to read as unchecked.
+#     #673 kept that rule but removed its premise: the ancestry check now runs
+#     above (2a-bis) whenever the caller declares nothing, so the recorded
+#     token is a CHECKED value where the check was possible and `unverified`
+#     only where it was not. The caller's --lineage still overrides. A leg
+#     reporting FAILED forces the row to FAIL, on the same reasoning that
+#     already forces FAIL on an identity mismatch or a failed probe — a row
+#     reading `PASS ... lineage=failed` is the self-contradiction #436 fixes
+#     below.
 if [ "$LINEAGE" = "failed" ]; then
   echo "$PROG: caller reported the lineage leg FAILED — verdict forced to FAIL" >&2
   VERDICT="FAIL"
