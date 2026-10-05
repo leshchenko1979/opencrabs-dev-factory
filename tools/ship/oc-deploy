@@ -1258,6 +1258,34 @@ NSTUB2
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo 0" "$SELF_BIN" status --json 2>&1)"; rc=$?
   check_has "status-json-pid-zero-null" "$out" '"pid": null'
 
+  # 20b. #746: the documented rc 1 was UNREACHABLE — status_run() ended in an
+  # unconditional `return 0`, so `oc-deploy status || handle-mismatch` could
+  # never fire. Four discriminating legs: a marker/meta sha DISAGREEMENT (a
+  # half-written swap), a record that exists ALONE in either direction (a
+  # deployment no swap ever completed), NEITHER (nothing deployed -> nothing
+  # to contradict -> rc 0), and the usage error (rc 2). The rc-0 MATCHING pair
+  # is the section-20 control above, so a leg that always returned 1 would
+  # redden there.
+  printf '{"sha":"2222222222222222222222222222222222222222","stage":"S3"}\n' > "$SD/deployed.meta.json"
+  printf '3333333333333333333333333333333333333333\n' > "$SD/deployed.sha"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  check_rc "status-mismatch-rc" $rc 1
+  rm -f "$SD/deployed.sha"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  check_rc "status-unswapped-meta-only-rc" $rc 1
+  rm -f "$SD/deployed.meta.json"
+  printf '3333333333333333333333333333333333333333\n' > "$SD/deployed.sha"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  check_rc "status-unswapped-marker-only-rc" $rc 1
+  rm -f "$SD/deployed.sha" "$SD/deployed.meta.json"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  check_rc "status-nothing-deployed-rc" $rc 0
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status --bogus 2>&1)"; rc=$?
+  check_rc "status-unknown-arg-rc" $rc 2
+  # restore the matching pair the later watch legs read
+  printf '{"sha":"1111111111111111111111111111111111111111","ts":"2026-09-11T12:00:00Z","stage":"S3","features":"telegram,code-graph","run_id":999,"target_host":"local"}\n' > "$SD/deployed.meta.json"
+  printf '1111111111111111111111111111111111111111\n' > "$SD/deployed.sha"
+
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_GH="$SD/gh" "$SELF_BIN" watch 2>&1)"; rc=$?
   check_rc "watch-alert-rc" $rc 2
   check_has "watch-alert-line" "$out" "WATCH-ALERT"
