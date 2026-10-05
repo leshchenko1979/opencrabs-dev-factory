@@ -1051,6 +1051,12 @@ EOF_WT
   else
     cv_out="$(cd "$TOOLS_DIR" && ./state/oc-ledger check-version 2>&1)"; cv_rc=$?
     case "$cv_out" in
+      # #359: the mismatch NAMES its cause (FLEET-LEVEL = a skipped sync, no
+      # worker behind; LANE-LEVEL = real lane drift). The CAUSE line already
+      # carries the cause-appropriate remedy, so print IT rather than the
+      # unconditional "fix is oc-ledger sync" — which is the wrong heal for a
+      # lane-level lag.
+      *CAUSE*) add_finding 7 QUIRK version-mismatch "$(printf '%s' "$cv_out" | grep -m1 'CAUSE ')" ;;
       *MISMATCH*) add_finding 7 QUIRK version-mismatch "$(printf '%s' "$cv_out" | head -1) — fix is oc-ledger sync" ;;
       *) [ "$cv_rc" = "0" ] && clean_line "version: consistent" || add_finding 7 QUIRK version-unreadable "check-version rc=$cv_rc: $(printf '%s' "$cv_out" | head -1)" ;;
     esac

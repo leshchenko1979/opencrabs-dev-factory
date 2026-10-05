@@ -60,7 +60,11 @@
 #                                          commit. WITHOUT it the sync REFUSES
 #                                          and names them (stray-guard) - a bump
 #                                          must never absorb another actor's work
-#   check-version                          SKILL.md vs 3 ledger fields (RO)
+#   check-version                          SKILL.md vs 3 ledger fields (RO);
+#                                          on mismatch names the CAUSE —
+#                                          FLEET-LEVEL (0 workers behind:
+#                                          skipped sync) vs LANE-LEVEL
+#                                          (>=1 worker ack behind) (#359)
 #   cadence                                skill-bumps since last review (RO)
 #   ack <uuid> <0.N.N version> [--at <ts>]  worker last_acked + ack event
 #                                          (v0.4.55: full skill version shape —
@@ -105,9 +109,10 @@
 #                                          to NO fork issue is reported as
 #                                          UNRESOLVED and the clean verdict is
 #                                          withheld (see cmd_sweep_closed_claims).
-#   --selftest                             fixture suite (418 cases)
+#   --selftest                             fixture suite (585 cases)
 #
-# Exit codes: 0 ok · 1 verdict (cadence FIRE / check-version mismatch) ·
+# Exit codes: 0 ok · 1 verdict (cadence FIRE / check-version mismatch — both
+#   FLEET-LEVEL and LANE-LEVEL; check-version names the cause in its output, #359) ·
 #   2 usage (bad kind/shape/dup) · 3 ledger missing/parse/unknown-uuid ·
 #   4 write-fail (live file untouched) · 5 battery gate · 6 version mismatch.
 # Kinds (frozen v1; v1.1 adds claim; v1.2 adds shipchain; v1.3 adds
@@ -1415,7 +1420,25 @@ cmd_check_version() {
     if [ "$nm" = "SKILL.md" ]; then continue; fi
     if [ "$got" != "$want" ]; then echo "MISMATCH $nm=$got (SKILL.md=$want)"; bad=1; fi
   done
-  [ "$bad" -eq 0 ] && { echo "ok: all fields agree at $sv"; return 0; } || return 1
+  if [ "$bad" -eq 0 ]; then echo "ok: all fields agree at $sv"; return 0; fi
+  # #359: name the CAUSE, because two structurally different states shared one
+  # rc and a bare MISMATCH could not tell them apart. The exit code stays 1 for
+  # BOTH — hq.md:109 codifies rc=1 as the FLEET-LEVEL heal ("treat rc=1 as a
+  # bump-propagation failure to heal with `oc-ledger sync --version ...`, not as
+  # a worker defect"), so the contract is made LEGIBLE, not changed.
+  #   FLEET-LEVEL — registry fields lag SKILL.md with NO worker behind: a
+  #     skipped `oc-ledger sync`; heal with: oc-ledger sync --version $sv
+  #   LANE-LEVEL  — >=1 worker's last_acked.version is behind SKILL.md: real
+  #     lane drift; each lagging lane must re-ack.
+  local behind
+  behind="$(jq --arg v "$sv" '[.workers[]? | select(.last_acked.version != null and .last_acked.version != $v)] | length' "$LEDGER" 2>/dev/null)" || behind=""
+  case "${behind:-}" in ''|*[!0-9]*) behind=0 ;; esac
+  if [ "$behind" -eq 0 ]; then
+    echo "CAUSE FLEET-LEVEL: registry lags SKILL.md with 0 worker(s) behind — skipped sync, not lane drift; heal with: oc-ledger sync --version $sv"
+  else
+    echo "CAUSE LANE-LEVEL: $behind worker(s) ack behind SKILL.md — real drift; those lanes must re-ack"
+  fi
+  return 1
 }
 
 # ---- cadence (RO) ------------------------------------------------------------
@@ -2004,6 +2027,13 @@ PAYLOAD
   jq '.meta.skill_version = "0.4.1"' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
   bash "$ME" check-version > "$T/cv.out" 2>&1; grep -q "meta.skill_version" "$T/cv.out" && ok || bad "check-version-names-field"   # v0.4.72 pipefail: capture-then-grep, pipeline rc no longer masks tool exit
   bash "$ME" check-version >/dev/null 2>&1; chk "check-version-drift-rc" 1 $?
+  # #359: a mismatch must NAME its cause, and both shapes keep rc 1.
+  bash "$ME" check-version > "$T/cv1.out" 2>&1; chk "check-version-fleet-rc" 1 $?
+  grep -q "FLEET-LEVEL" "$T/cv1.out" && ok || bad "check-version-names-fleet-cause"
+  jq '.workers[0].last_acked = {version:"0.4.1", at:"2026-01-01T00:00:00Z"}' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
+  bash "$ME" check-version > "$T/cv2.out" 2>&1; chk "check-version-lane-rc" 1 $?
+  grep -q "LANE-LEVEL" "$T/cv2.out" && ok || bad "check-version-names-lane-cause"
+  jq '.workers[0].last_acked = null' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
   jq '.meta.skill_version = "0.4.2"' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
   # 20-22: cadence
   bash "$ME" cadence | grep -q "2/5 WAIT" && ok || bad "cadence-count"   # two skill-bumps (happy + payload-sweep; re-syncs were idempotent)

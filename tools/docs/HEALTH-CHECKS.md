@@ -78,7 +78,11 @@ after sloppy lanes and hide the pattern.
 - **Where:** `SKILL.md` version vs `workers-ledger.json` metadata.
 - **Invariant:** `tools/state/oc-ledger check-version` must report MATCH. Lane `last_acked` must
   not be stale (>7 days).
-- **Remediation:** Report; resolution requires `oc-ledger sync` (HQ release flow).
+- **Remediation:** Report. The verdict NAMES its cause (#359) and the remediation follows it:
+  **FLEET-LEVEL** (the registry fields lag `SKILL.md` while 0 workers are behind — a skipped
+  sync) → `oc-ledger sync` (HQ release flow); **LANE-LEVEL** (≥1 worker's `last_acked.version`
+  is behind `SKILL.md`) → those lanes must re-ack (`oc-ledger ack <uuid> <version>`), and a
+  fleet sync is the WRONG heal. Both keep rc 1 (`hq.md:109`).
 
 ## 8. Cron liveness & routing — `QUIRK` + `SAFE` (re-arm)
 
