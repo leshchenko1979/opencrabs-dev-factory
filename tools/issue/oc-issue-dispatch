@@ -651,6 +651,17 @@ RC_UNVERIFIED = 6
 RC_TARGETED_LANDED = 8
 RC_TARGETED_ALREADY_DISPATCHED = 9
 
+#: #706: an EMPTY `available_lanes` has two unrelated causes, and the empty list
+#: alone cannot tell them apart. `4` (CAPACITY_EXHAUSTED) is a verdict about the
+#: FLEET ("no lane is free"). When the oc-roster classify read FAILED, every lane
+#: defaults to busy (conservative safety, get_worker_roster) and the empty list is
+#: an ARTEFACT of the broken instrument, not a capacity reading -- the roster is
+#: UNKNOWN, not full. Collapsing the two sends the operator to wait for capacity
+#: (or add lanes) when the fix is to repair the read: opposite actions, so the two
+#: get distinct codes, the same discipline as 6 vs 8/9 above.
+#: Registered in tools/docs/RC-CONTRACT.md.
+RC_ROSTER_READ_FAILED = 10
+
 #: Greppable marker for a dispatch that routed WITHOUT an affinity table (#390).
 #: ONE home, so a caller can count degraded runs with `grep -c '^DEGRADED:'`.
 DEGRADED_MARKER = "DEGRADED"
@@ -914,6 +925,29 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
         })
 
     return editor_lanes
+
+
+def roster_read_failed(editor_lanes):
+    """True when the roster read BROKE, so every lane defaulted to busy (#706).
+
+    `available_lanes` is empty under two unrelated causes, and the empty list
+    alone cannot tell them apart:
+
+      * every lane is genuinely busy -- a verdict about the FLEET
+        -> CAPACITY_EXHAUSTED (rc 4);
+      * the oc-roster classify read FAILED, so get_worker_roster defaulted every
+        lane to busy with `busy_known=False` -- the roster is UNKNOWN, not full
+        -> ROSTER_READ_FAILED (rc 10).
+
+    The second must not borrow the first's verdict: "no idle lanes" is an
+    ARTEFACT of the failed read, and an operator acting on it would wait for
+    capacity (or add lanes) instead of repairing the instrument. `busy_known` is
+    the discriminator -- it is False on EVERY lane exactly when classify failed.
+
+    An EMPTY roster is NOT this case: no registered lanes is a genuine (if
+    unhelpful) capacity reading and keeps the capacity verdict.
+    """
+    return bool(editor_lanes) and not any(l.get("busy_known") for l in editor_lanes)
 
 
 # A match whose token is the DIRECT OBJECT of a negation is not a surface claim
@@ -1768,6 +1802,14 @@ def cmd_auto(args):
           f"eligible -- this is NOT oc-roster's IDLE class, see #310).")
 
     if not available_lanes:
+        # #706: an empty list here is either a full fleet or a BROKEN roster read.
+        # Tell them apart before printing a verdict -- see roster_read_failed.
+        if roster_read_failed(editor_lanes):
+            print("ROSTER_READ_FAILED: the oc-roster classify read failed, so every "
+                  "lane defaulted to busy -- 0 idle is an ARTEFACT of the failed "
+                  "read, NOT a capacity verdict (see the DEGRADED line above); "
+                  "repair the instrument and re-run.", file=sys.stderr)
+            return RC_ROSTER_READ_FAILED
         print("CAPACITY_EXHAUSTED: No idle editor lanes available for dispatch.", file=sys.stderr)
         return 4
 
@@ -1978,6 +2020,14 @@ def cmd_targeted(args):
                      if not l["is_busy"]
                      or owner_candidate_for(l, detect_issue_domains(target_issue))]
         if not available:
+            # #706: same split as the --auto path -- a broken roster read must not
+            # borrow the capacity verdict.
+            if roster_read_failed(editor_lanes):
+                print("ROSTER_READ_FAILED: the oc-roster classify read failed, so every "
+                      "lane defaulted to busy -- 0 idle is an ARTEFACT of the failed "
+                      "read, NOT a capacity verdict (see the DEGRADED line above); "
+                      "repair the instrument and re-run.", file=sys.stderr)
+                return RC_ROSTER_READ_FAILED
             print("CAPACITY_EXHAUSTED: No idle editor lanes available for dispatch.", file=sys.stderr)
             return 4
         target_lane = select_best_lane(target_issue, available, allow_fallback=args.force)
@@ -2686,6 +2736,36 @@ def run_selftest():
     # inner budget is unreachable by construction (#390).
     assert_true("#390 default classify budget >= oc-roster's own 120s allowance",
                 ROSTER_TIMEOUT_SECS >= 120)
+
+    # (E) #706: a FAILED roster read must not borrow CAPACITY_EXHAUSTED's verdict.
+    # Both cases leave `available_lanes` empty, so the empty list is NOT the
+    # discriminator -- `busy_known` is. Assert it in both directions, plus the
+    # empty-roster control, then drive a BROKEN oc-roster end-to-end to prove the
+    # shape the terminal branch actually receives.
+    assert_true("#706 a degraded roster (every lane busy_known=False) is READ-FAILED",
+                roster_read_failed([{"is_busy": True, "busy_known": False},
+                                    {"is_busy": True, "busy_known": False}]))
+    assert_true("#706 a genuinely-busy roster (busy_known=True) is NOT a read failure",
+                not roster_read_failed([{"is_busy": True, "busy_known": True},
+                                        {"is_busy": True, "busy_known": True}]))
+    assert_true("#706 one KNOWN lane beside unknown ones means the read worked",
+                not roster_read_failed([{"is_busy": True, "busy_known": True},
+                                        {"is_busy": True, "busy_known": False}]))
+    assert_true("#706 an EMPTY roster is a capacity reading, not a read failure",
+                not roster_read_failed([]))
+    assert_eq("#706 the read-failure verdict has its OWN rc, not CAPACITY's 4",
+              RC_ROSTER_READ_FAILED, 10)
+    # end-to-end: a broken classify yields a READ-FAILED roster, never an empty one
+    TOOL_DIR = _stub_roster("exit 3")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            _broken = get_worker_roster(mock_ledger_classify_fail, mock_classify=None,
+                                        mock_sessions={"lane-safety-1"},
+                                        db_path="/tmp/nonexistent-db.sqlite")
+        assert_true("#706 a broken classify read is reported as READ-FAILED, not capacity",
+                    roster_read_failed(_broken))
+    finally:
+        TOOL_DIR = _saved_tool_dir
 
     # Test 7: Negative control for CLI argument parsing
     p = argparse.ArgumentParser()
