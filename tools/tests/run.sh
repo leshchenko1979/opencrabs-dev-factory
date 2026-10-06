@@ -3063,6 +3063,48 @@ SQD="$(mktemp -d)"
 cat > "$SQD/scan.py" <<'SQSCANEOF'
 import os, re, sys
 
+# #327: sites that DELIBERATELY interpolate shell values into Python source
+# (class (a) in the issue). Each entry is (normalised path, stripped line), so an
+# edit that MOVES a site does not churn the list, while an edit that CHANGES the
+# interpolating line re-surfaces it for re-review. Keep this SHORT -- passing the
+# value via sys.argv (the oc-harvest-census form) is the real fix, not an entry.
+_SITE_ALLOW = {
+    ('tools/state/oc-health', "with open('$ROTATION_FILE') as f:"),
+    ('tools/state/oc-health', "path = '$ROTATION_FILE'"),
+    ('tools/state/oc-health', "data['current_class'] = '$CURRENT_ROTATION_CLASS'"),
+    ('tools/state/oc-health', "data['next_class'] = '$NEXT_ROTATION_CLASS'"),
+    ('tools/state/oc-health', "data['cycle_count'] = $CYCLE_COUNT"),
+    ('tools/state/oc-health', "hist['$CURRENT_ROTATION_CLASS'] = {"),
+    ('tools/state/oc-health', "'findings': $FINDINGS,"),
+    ('tools/state/oc-health', "'reaped': $REAPED"),
+    ('tools/ship/oc-deploy', "pats = [l.strip() for l in open('$OC_DEV_STATE/.gitignore') if l.strip() and not l.startswith('#')]"),
+    # The value below is written with \x22 escapes on purpose: the scanner reads
+    # THIS source, so a literal `python3 -c` followed by a double quote here would
+    # be reported as a real site in run.sh (#327). Python resolves \x22 to '"'.
+    ('tools/lib/oc_sqlite', 'exec python3 -c \x22$_PY\x22 \x22$_DB\x22 \x22$_SQL\x22'),
+    ('tools/issue/oc-issue-create', "import sys; sys.path.insert(0,'$OC_TOOLS_DIR/lib')"),
+    ('tools/issue/oc-issue-create', "d = open('$R/f.txt').read() or ''"),
+}
+
+def _norm(p):
+    return ('tools/' + p.split('tools/', 1)[1]) if 'tools/' in p else p
+
+def _dquote_body(text, start):
+    # The region bash reads as the -c body: up to the first UNESCAPED double-quote.
+    # Reading it the way bash does is the point -- a stray interior " is invisible
+    # HERE (bash stops at it too), so that failure mode is caught by the bash -n
+    # sweep in the leg, which cannot be fooled by what the author MEANT.
+    j = start
+    while j < len(text):
+        c = text[j]
+        if c == '\\':
+            j += 2
+            continue
+        if c == '"':
+            return text[start:j], j
+        j += 1
+    return text[start:], len(text)
+
 def scan_file(p):
     try:
         text = open(p, encoding='utf-8', errors='replace').read()
@@ -3083,6 +3125,20 @@ def scan_file(p):
             if c == '"':
                 break
             i += 1
+    # ARM D: an UNESCAPED $ that bash expands in the Python SOURCE (#327 class b).
+    # A regex end-anchor ($ before a non-name char) never matches this pattern, so
+    # it stays green; a site that DELIBERATELY interpolates must be declared in
+    # _SITE_ALLOW. Correctness of an undeclared site is incidental, not structural:
+    # any later edit putting a $ before a name char corrupts the Python silently.
+    for m in re.finditer(r'python3\s+-c\s+"', text):
+        body, _ = _dquote_body(text, m.end())
+        base = text[:m.end()].count('\n')
+        for dm in re.finditer(r'(?<!\\)\$([A-Za-z_][A-Za-z0-9_]*)', body):
+            ln = base + body[:dm.start()].count('\n') + 1
+            line = text.split('\n')[ln-1].strip()
+            if (_norm(p), line) in _SITE_ALLOW:
+                continue
+            out.append((p, 'ARM-D: unescaped $%s in a python3 -c body (line %d) -- pass it via sys.argv, or declare the site in _SITE_ALLOW' % (dm.group(1), ln)))
     # ARM B: a heredoc feeding python3 whose delimiter is UNQUOTED. The
     # delimiter must be a bare word, so a quoted one does not match by
     # construction -- which is what separates the hazard from the safe form.
@@ -3150,6 +3206,51 @@ printf 'python3 -c "print(%sdate%s)"\n' "$SQ_BT" "$SQ_BT" > "$SQD/widen/oc-baker
 SQ_WIDE="$(python3 "$SQD/scan.py" "$SQD/widen" 2>&1)"
 case "$SQ_WIDE" in *ARM-A*) ok "shell-quoting: the sidecar exclusion is NARROW (oc-bakery still scanned)" ;;
   *) bad "shell-quoting: widening control failed to fire: $SQ_WIDE" ;; esac
+# ARM D canaries (#327). Built by INTERPOLATION like the ARM-A canary above: this
+# file is under tools/, so the live scan reads it -- a literal $NAME inside a
+# "python3 -c \"" construct here would be found as a REAL site. The $ arrives from
+# SQ_DL, so no literal hazard text exists in this file.
+SQ_DL='$'
+printf 'python3 -c "\npath = %sROTATION_FILE\n"\n' "$SQ_DL" > "$SQD/dollar.sh"
+printf 'python3 -c "\nimport re\nprint(re.findall(r%s[0-9]+$%s, s))\n"\n' "'" "'" > "$SQD/dollar-safe.sh"
+SQ_DOL="$(python3 "$SQD/scan.py" "$SQD/dollar.sh" 2>&1)"
+case "$SQ_DOL" in *ARM-D*) ok "shell-quoting: an unescaped \$ in a -c body is SEEN (#327)" ;;
+  *) bad "shell-quoting: ARM D cannot fire (canary unseen: $SQ_DOL)" ;; esac
+SQ_DSAFE="$(python3 "$SQD/scan.py" "$SQD/dollar-safe.sh" 2>&1)"
+[ -z "$SQ_DSAFE" ] && ok "shell-quoting: a regex end-anchor \$ stays green (control)" \
+  || bad "shell-quoting: the \$ control fired on an inert anchor: $SQ_DSAFE"
+# The allowlist is keyed on (path, LINE CONTENT), never on the path alone: the same
+# path carrying a DIFFERENT interpolating line must still fire, else the list would
+# whitelist a whole file rather than the four reviewed sites inside it.
+mkdir -p "$SQD/tools/state"
+printf 'python3 -c "\npath = %sROTATION_FILE\n"\n' "$SQ_DL" > "$SQD/tools/state/oc-health"
+SQ_ALLOWNEG="$(python3 "$SQD/scan.py" "$SQD/tools" 2>&1)"
+case "$SQ_ALLOWNEG" in *ARM-D*) ok "shell-quoting: the \$ allowlist is LINE-keyed, not path-keyed (control)" ;;
+  *) bad "shell-quoting: the allowlist whitelisted a whole file: $SQ_ALLOWNEG" ;; esac
+# ARM C: the #323 SYMPTOM itself -- a stray interior " closes the -c body early, so
+# the Python that follows is read as SHELL. bash -n is INTENT-FREE: it reports what
+# the shell reads, never what the author meant, so it is the one detector that sees
+# this class. This is the check that would have blocked #323 before it landed.
+printf '#!/usr/bin/env bash\npython3 -c "\nprint(1)  # a stray " here\nmore(\n"\n' > "$SQD/broken.sh"
+bash -n "$SQD/broken.sh" 2>/dev/null && bad "shell-quoting: ARM C control -- bash -n passed a BROKEN file" \
+  || ok "shell-quoting: ARM C sees the #323 symptom (bash -n fails on it)"
+SQ_SYN_BAD=0; SQ_SYN_N=0; SQ_SYN_LIST=""
+while IFS= read -r _sqf; do
+  [ -n "$_sqf" ] || continue
+  case "$_sqf" in */tests/*|*.py|*.md|*.json|*.txt) continue;; esac
+  head -1 "$_sqf" 2>/dev/null | grep -Eq '^#!.*(bash|/sh|sh$)' || continue
+  SQ_SYN_N=$((SQ_SYN_N+1))
+  bash -n "$_sqf" 2>/dev/null || { SQ_SYN_BAD=$((SQ_SYN_BAD+1)); SQ_SYN_LIST="$SQ_SYN_LIST $_sqf"; }
+done <<EOF
+$(git -C "$TOOLS_DIR/.." ls-files 'tools/*' 2>/dev/null)
+EOF
+if [ "$SQ_SYN_N" -eq 0 ]; then
+  bad "shell-quoting: ARM C scanned ZERO shell files (instrument broken, not a clean fleet)"
+elif [ "$SQ_SYN_BAD" -eq 0 ]; then
+  ok "shell-quoting: bash -n clean across $SQ_SYN_N shell tools (#327 ARM C)"
+else
+  bad "shell-quoting: bash -n FAILS on $SQ_SYN_BAD/$SQ_SYN_N:$SQ_SYN_LIST"
+fi
 SQ_LIVE="$(python3 "$SQD/scan.py" "$TOOLS_DIR" 2>&1)"
 if [ -z "$SQ_LIVE" ]; then
   ok "shell-quoting: no hazard site in the fleet"
