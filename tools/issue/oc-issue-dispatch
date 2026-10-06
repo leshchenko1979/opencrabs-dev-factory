@@ -1527,6 +1527,25 @@ def select_best_lane(issue, candidate_lanes, allow_fallback=False):
     return best_lane
 
 
+def classify_queue_reason(issue, available_lanes, allow_fallback=False):
+    """Why a DISPATCHABLE issue was LEFT QUEUED: "capacity" or "affinity".
+
+    `candidates` (the set cmd_auto actually selects from) EXCLUDES lanes already
+    assigned in THIS cycle, so "no candidate matches" is ambiguous -- and reading
+    it as affinity was measured WRONG (#21 follow-up, Triage census rev.3 intake
+    ruling 2026-10-06): on the rev.3 census 36 of 38 queued issues matched a lane
+    that the run's own first 7 dispatches had CONSUMED. Re-test against the FULL
+    available set: a match there means the matching lane exists and was consumed
+    this cycle (CAPACITY -- remedy: wait for a lane to free, or add lanes); no
+    match anywhere means no idle lane holds the domain (AFFINITY -- remedy:
+    commission a domain-appropriate lane). Two constraints, two remedies, so the
+    tool must not collapse them into one message.
+    """
+    if select_best_lane(issue, available_lanes, allow_fallback=allow_fallback):
+        return "capacity"
+    return "affinity"
+
+
 def format_wire_envelope(issue):
     """
     Format wire envelope conforming to v0.4.169 Zero-Ack law and explicit refusal affordance.
@@ -2019,6 +2038,7 @@ def cmd_auto(args):
 
     dispatched_count = 0
     affinity_skipped = 0
+    capacity_skipped = 0
     assigned_lanes = set()
 
     # Wall-clock budget for the whole run (#S). Without one, a hung notify costs
@@ -2040,9 +2060,23 @@ def cmd_auto(args):
 
         best_lane = select_best_lane(issue, candidates, allow_fallback=args.force)
         if not best_lane:
+            # CAPACITY vs AFFINITY (#21 follow-up, Triage census rev.3 intake ruling
+            # 2026-10-06). `candidates` EXCLUDES lanes already assigned in THIS cycle,
+            # so "no candidate matches" is ambiguous -- and reporting it as affinity
+            # was measured WRONG: on the rev.3 census 36 of 38 queued issues matched a
+            # lane that the run's own first 7 dispatches had consumed. Re-test against
+            # the FULL available set: a match there means the matching lane exists and
+            # was consumed (CAPACITY); no match anywhere means the domain is unheld
+            # (AFFINITY). Two different constraints, two different remedies.
             affinity_skipped += 1
-            print(f"Skipping issue #{issue.get('number')}: no idle lane with matching domain affinity "
-                  f"-- LEFT QUEUED (pass --force to override).")
+            if classify_queue_reason(issue, available_lanes,
+                                     allow_fallback=args.force) == "capacity":
+                capacity_skipped += 1
+                print(f"Skipping issue #{issue.get('number')}: matching lane already assigned "
+                      f"in this cycle -- LEFT QUEUED (capacity, pass --force to override).")
+            else:
+                print(f"Skipping issue #{issue.get('number')}: no idle lane with matching domain "
+                      f"affinity -- LEFT QUEUED (pass --force to override).")
             continue
 
         assigned_lanes.add(best_lane["uuid"])
@@ -2091,7 +2125,8 @@ def cmd_auto(args):
                 print(f"  Delivery SUCCESS for issue #{num}")
 
     print(f"\nSummary: {dispatched_count} issue(s) dispatched"
-          + (f", {affinity_skipped} left queued for want of domain affinity"
+          + (f", {affinity_skipped} left queued "
+             f"({capacity_skipped} capacity / {affinity_skipped - capacity_skipped} affinity)"
              if affinity_skipped else "")
           + ".")
     if dispatched_count == 0 and affinity_skipped > 0:
@@ -2099,7 +2134,8 @@ def cmd_auto(args):
         # the false-success shape clause 3 exists to prevent. Same code as the
         # no-idle-lanes case, told apart by the MESSAGE (the rc-8 precedent).
         print(f"CAPACITY_EXHAUSTED: {affinity_skipped} dispatchable issue(s) had no idle lane "
-              f"with matching domain affinity; all left queued.", file=sys.stderr)
+              f"({capacity_skipped} capacity / {affinity_skipped - capacity_skipped} affinity); "
+              f"all left queued.", file=sys.stderr)
         return 4
     return 0
 
@@ -2815,6 +2851,21 @@ def run_selftest():
 
     # Test 5: Capacity exhausted when all lanes are busy
     assert_true("None returned when all lanes busy", select_best_lane(issue_tg, [lane_busy]) is None)
+
+    # Test 5b: CAPACITY vs AFFINITY on a queued issue (#21 follow-up, Triage census
+    # rev.3 intake ruling 2026-10-06). Both causes leave the issue queued, but the
+    # remedies differ: a matching lane this cycle already CONSUMED (capacity) vs no
+    # idle lane holding the domain at all (affinity). The classifier re-tests the
+    # FULL available set, so the POSITIVE control is an idle MATCHING lane -- it
+    # must read "capacity", never "affinity". The negative control is a lane whose
+    # only domain is DISJOINT from the issue's ({memory,telegram} vs {bash}) --
+    # measured score -50, not selected -- so it must read "affinity".
+    lane_tg_idle = {"uuid": "lane-tg", "feature": "telegram-buttons", "is_busy": False, "class": "IDLE"}
+    lane_bash_only = {"uuid": "lane-bash", "feature": "bash tool env carries no session identity", "is_busy": False, "class": "IDLE"}
+    assert_eq("CAPACITY: an idle matching lane EXISTS in the full set (consumed this cycle)",
+              classify_queue_reason(issue_tg, [lane_tg_idle]), "capacity")
+    assert_eq("AFFINITY: no lane in the full set holds the issue's domain",
+              classify_queue_reason(issue_tg, [lane_bash_only]), "affinity")
 
     # Test 6: Claim-gate detection and refusal affordance
     issue_gated_1 = {
