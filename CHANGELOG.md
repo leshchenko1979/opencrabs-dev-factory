@@ -1,5 +1,15 @@
 # Changelog — opencrabs-dev
 
+## v0.4.287 — the fork-only walk's coverage is keyed on `status` alone: a `class` field is invisible, and the conditional concept has lived in two shapes (2026-10-06)
+
+**What the first real run measured.** The #761 step-3 leg (`oc-harvest-census walk`) ran against the live register for the first time — the walk's own `rc=1`, over **15** OPEN `not-upstreamable` rows: **2 CHANGED** (units 556, 580), **13** UNVERIFIED/UNCOVERED, **0 VERIFIED**. It also exposed a register-hygiene split the law had never named: the walked set is `oc_claims.manual_record_status(r) == not-upstreamable`, an **equality on `status` alone**, so units **635 / 556 / 580** — which express "conditionally upstreamable" through a **hand-added `class` field** while `status` stays `not-upstreamable` — were walked **as plain fork-only rows**, while units **676 / 757 / 763** (the sanctioned `status: conditionally-upstreamable`, token `ba8982cc`, #13) were **skipped** entirely.
+
+**What changed.** `upstream-merge-runbook.md` §Process step 12 gains a coverage clause: the walked set is the TERMINAL arm; `class` is an UNDECLARED second vocabulary for a concept the row schema already owns (`status`); units **635 / 556 / 580** are **FLAGGED FOR RE-RECORD** into the sanctioned `status: conditionally-upstreamable` — the blocker those rows themselves named (*"status stays not-upstreamable until the census vocabulary carries the new class"*) having lapsed — carrying `reason` / `branches` / `condition` / `prerequisite` forward, never a bare status flip; and the leg's silence on a conditional row is **disclosed as silence, never a pass**.
+
+**Scope.** Law text only — `tools/**` unchanged, the walked set still keys on `not-upstreamable` (matching design [#761](https://github.com/leshchenko1979/opencrabs/issues/761) step 3, which was written before the conditional status existed, so this is a post-design coverage gap disclosed rather than retro-fitted). The register re-record of the three rows is **flagged, not performed** — a state write owed to the harvest lane. `oc-lint-laws` clean.
+
+**Also in this window.** `90ad5ff9` — `resolve_lane` prefers a `topic_edited` rename over a stale `topic_name` echo ([#762](https://github.com/leshchenko1979/opencrabs/issues/762)).
+
 ## v0.4.286 — C1's ADDRESSING half gets its own measured instance (lane 2fae1230, 2026-10-06)
 
 **What was measured.** C1 (`fleet-directives.md` §C1) has always been explicit about both halves of the claim-closure predicate — the closing KIND *and* the ADDRESS — but its only worked instance (the #299 `note`-vs-`unclaim` case, v0.4.202) demonstrates the KIND half alone. Two `done` rows on 2026-10-06 were written the natural post-merge way, prefixing the BRANCH name: `fix/343-harvest-sweep-union-leg landed f0122176 …` (n=14800) and `fix/301-squash-identity landed e5b2c668 …` (n=14803). Each named its issue only inside the slug, so neither addressed it; both claims stayed OPEN on CLOSED issues whose work had genuinely landed, and both lanes believed the release had taken. `sweep-closed-claims --dry-run` caught both and released at n=14805 (#301) / n=14806 (#343).
