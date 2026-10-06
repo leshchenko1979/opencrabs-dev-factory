@@ -364,6 +364,11 @@ YEOF
       job_failed)  printf '{"jobs":[{"name":"lint","conclusion":"failure","steps":[{"name":"cargo fmt","conclusion":"success"}]}]}\n' ;;
       fmt_gate_ok) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"success"},{"name":"Apply cargo fmt (fix mode)","conclusion":"skipped"},{"name":"Upload fmt-fix patch","conclusion":"skipped"}]}]}\n' ;;
       fmt_gate_failed) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"failure"}]}]}\n' ;;
+      red_logged|red_nomarker|red_logfail)
+        # #642: a job-level failure carrying a NAMED failing step — the shape the
+        # RED diagnosis must surface. All three scenarios share it; only the
+        # --log-failed payload differs (markers / no markers / fetch failure).
+        printf '{"jobs":[{"name":"lint","conclusion":"failure","steps":[{"name":"Run cargo clippy","conclusion":"failure"},{"name":"Upload artifact","conclusion":"skipped"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;
       supersede_*)
         # #703: REAL gh keys the job list on the run id, so the fixture must too -
         # otherwise both sides of the comparison read the same pin and the
@@ -388,11 +393,27 @@ YEOF
       *)           printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"success"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;   # #631: real job names carry the tested sha
     esac ;;
   *"run view"*)
+    # #642: --log-failed is a DIFFERENT payload from the status read, and real gh
+    # keys it on the run id, so the fixture must answer per scenario rather than
+    # falling through to the status JSON (a fall-through would feed JSON to the
+    # log parser and make the leg vacuous).
+    case "\$*" in
+      *--log-failed*)
+        case "\$S" in
+          red_logged)   printf 'lint\tRun cargo clippy\t2026-09-27T10:00:00Z\terror[E0599]: no method named \`foo\` found for struct \`Bar\` in the current scope\nlint\tRun cargo clippy\t2026-09-27T10:00:00Z\t  --> src/baz.rs:42:9\ntest\tRun tests\t2026-09-27T10:01:00Z\tFAILED: some_test\n' ;;
+          red_nomarker) printf 'lint\tRun cargo clippy\t2026-09-27T10:00:00Z\tCompiling opencrabs v0.5.4\nlint\tRun cargo clippy\t2026-09-27T10:00:00Z\tFinished \`dev\` profile\n' ;;
+          red_logfail)  exit 1 ;;
+        esac
+        exit 0 ;;
+    esac
     case "\$S" in
       inflight)       printf '{"status":"in_progress","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' && exit 0 ;;
       cancelled|cancelled_timeout|cancelled_short) printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       supersede_*)    printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       run_failed)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      red_logged)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      red_nomarker)   printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      red_logfail)    printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       nullconclusion) printf '{"status":"completed","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       run_view_fail)  exit 1 ;;
       run_view_die)   exit 1 ;;
@@ -539,6 +560,34 @@ do_selftest() {
   if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"run-failure"*) true ;; *) false ;; esac; then
     t_ok "run conclusion failure -> 3 RED reason run-failure"
   else t_bad "run_failed (rc=$T_RC out=$T_OUT)"; fi
+  # #642: a RED verdict must never be the whole diagnosis. The carrier leg
+  # auto-extracts its failure; this leg printed a category and nothing else, so
+  # every RED cost a lane a manual `gh run view --log` round trip. Asserted
+  # against a FIXTURE with a planted failure, never a live run.
+  run_t red_logged "$SHA"
+  if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"Run cargo clippy"*) true ;; *) false ;; esac; then
+    t_ok "#642: RED names the failing STEP from the jobs payload already fetched"
+  else t_bad "#642: failing step not named (rc=$T_RC out=$T_OUT)"; fi
+  if case "$T_OUT" in *"E0599"*) true ;; *) false ;; esac; then
+    t_ok "#642: RED prints the error[...] line from --log-failed"
+  else t_bad "#642: no error line extracted (out=$T_OUT)"; fi
+  if case "$T_OUT" in *"failed log (run 222"*) true ;; *) false ;; esac; then
+    t_ok "#642: the log block is labelled with its run id"
+  else t_bad "#642: log block unlabelled (out=$T_OUT)"; fi
+  # NEGATIVE CONTROL: the log carries no error[...]/FAILED marker — the block must
+  # say the instrument ran and found nothing, never print an empty block that
+  # reads as "no errors".
+  run_t red_nomarker "$SHA"
+  if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"no error[...]/FAILED marker found"*) true ;; *) false ;; esac; then
+    t_ok "#642 NEGATIVE CONTROL: a marker-free log is reported as searched-and-empty"
+  else t_bad "#642: marker-free log mishandled (rc=$T_RC out=$T_OUT)"; fi
+  # ROBUSTNESS: a --log-failed fetch failure is DIAGNOSIS, so it must not change
+  # the verdict or the rc — the RED verdict and the failing step name still print.
+  run_t red_logfail "$SHA"
+  if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"Run cargo clippy"*) true ;; *) false ;; esac \
+     && case "$T_OUT" in *"log-failed returned nothing"*) true ;; *) false ;; esac; then
+    t_ok "#642: a failed log fetch leaves the verdict RED and says so"
+  else t_bad "#642: failed log fetch changed the outcome (rc=$T_RC out=$T_OUT)"; fi
   run_t nullconclusion "$SHA"
   if [ "$T_RC" -eq 5 ] && case "$T_OUT" in *"non-terminal at verdict time"*) true ;; *) false ;; esac; then
     t_ok "non-terminal at verdict time -> 5, no verdict emitted (stale-read guard)"
@@ -1536,6 +1585,51 @@ CONCLUSION="$(printf '%s' "$ST" | jq -r '.conclusion')"
 RUN_CREATED_AT="$(printf '%s' "$ST" | jq -r '.createdAt // empty')"
 oc_log_extra "conclusion" "$CONCLUSION"
 
+# ---------- RED diagnosis (#642) ----------
+# A RED verdict must never be the whole diagnosis. The CARRIER leg already
+# auto-extracts its failure (editor.md §Red-run triage heuristics: rc=3
+# build-failed -> `gh run view <id> --log-failed`, parse `error[E…]`); this leg
+# printed a CATEGORY (`run-failure`) and nothing else, so every RED cost a lane a
+# manual `gh run view --log` round trip before it could start the fix cycle —
+# with the information one API call away at the moment the verdict was computed.
+#
+# Failing STEP names come from the jobs payload ALREADY fetched for the verdict
+# (free — no extra call); the error lines cost one `--log-failed`. Best-effort
+# throughout: this is DIAGNOSIS, so no failure here may change the verdict, the
+# reason, or the rc.
+red_diagnostics() { # $1=run-id ; reads $JOBS ; always returns 0
+  local steps log hits
+  steps="$(printf '%s' "$JOBS" | jq -r '
+    .jobs[]
+    | select(.conclusion=="failure" or .conclusion=="cancelled"
+             or .conclusion=="timed_out" or .conclusion=="startup_failure")
+    | ([.steps[]? | select(.conclusion=="failure") | .name] | join(", ")) as $s
+    | "  - \(.name)\(if $s == "" then "" else ": \($s)" end)"' 2>/dev/null || true)"
+  if [ -n "$steps" ]; then
+    echo "--- failing steps (run $1) ---"
+    printf '%s\n' "$steps"
+  else
+    echo "--- failing steps (run $1): none named in the jobs payload (job-level failure?) ---"
+  fi
+  log="$(gh_retry run view "$1" --repo "$REPO" --log-failed 2>/dev/null || true)"
+  if [ -z "$log" ]; then
+    echo "--- failed log (run $1): unavailable (gh run view --log-failed returned nothing) ---"
+    return 0
+  fi
+  # Bounded, and matched on the marker classes the carrier leg parses: rustc
+  # diagnostics, test failures, panics. A log that matches NOTHING is reported as
+  # such — an empty block would read as "no errors", which is a claim the
+  # instrument has not made (a zero is a verdict only from a working instrument).
+  hits="$(printf '%s\n' "$log" | grep -E 'error(\[|:)|FAILED|panicked at|^Error:|assertion' | head -20 || true)"
+  if [ -n "$hits" ]; then
+    echo "--- failed log (run $1, first 20 diagnostic lines) ---"
+    printf '%s\n' "$hits"
+  else
+    echo "--- failed log (run $1): $(printf '%s\n' "$log" | wc -l) line(s) fetched, no error[...]/FAILED marker found ---"
+  fi
+  return 0
+}
+
 # ---------- step 5: verdict — RUN conclusion authoritative (v0.4.56) ----------
 # Verdicts fire ONLY on a terminal run conclusion (the 23:45:07Z RED fired 7s
 # BEFORE conclusion=success — stale reads must never verdict).
@@ -1689,6 +1783,7 @@ echo "VERDICT $VERDICT${REASON:+ (reason: $REASON)}"
 echo "RUN $RUN_URL"
 if [ "$VERDICT" = "GREEN" ]; then exit 0; fi
 echo "$PROG: RED — $REASON" >&2
+red_diagnostics "$RUN_ID"   # #642: never let a RED verdict be the whole diagnosis
 if [ -n "$FAULT_PR" ]; then   # E5 (v0.4.78): RED triage auto-runs fault-scope — RED stays rc 3
   echo "--- fault-scope (RED triage: failing-files vs PR-files) ---"
   FS_OUT="$("$FAULT_TOOL" "$FAULT_PR" --run "$RUN_ID" --repo "$REPO" 2>&1)"; FS_RC=$?
