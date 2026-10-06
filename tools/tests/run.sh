@@ -1317,6 +1317,32 @@ chk("#356 default reader still accepts the bare form",
 chk("#356 default reader still accepts the slug form",
     oc.parse_issue_ref_value("leshchenko1979/opencrabs#356"), [356])
 
+# --- #301 squash_signature: THREE arms over `%H%x1f%s%x1f%P%x1f%b%x1e` ------
+# Records are split on \x1e (a body is MULTI-LINE), never on newlines. The
+# BODY arm is the #288 mechanism: a landing whose subject names the ISSUE and
+# whose PR number exists only in the body (PR #1556 -> issue #133). Dropping it
+# made `census check 133` read ELIGIBLE rc=0 -- a duplicate-PR allow.
+def _rec(sha, subj, parents, body=''):
+    return '%s\x1f%s\x1f%s\x1f%s' % (sha, subj, parents, body)
+
+chk("#301 subject arm: single-parent subject ending (#N)",
+    oc.squash_signature([_rec('a' * 40, 'fix(x): y (#1556)', 'p1')]), {1556: 'a' * 40})
+chk("#301 merge arm: single-parent `Merge PR #N`",
+    oc.squash_signature([_rec('b' * 40, 'Merge PR #1557', 'p1')]), {1557: 'b' * 40})
+chk("#301 BODY arm: subject names the ISSUE, PR number lives in the body",
+    oc.squash_signature([_rec('c' * 40, 'feat(t): dedup (#133)', 'p1',
+                              'Squashed from PR #1556.\n\nCloses #1556')]),
+    {133: 'c' * 40, 1556: 'c' * 40})
+chk("#301 multi-parent commits are excluded from the SUBJECT/MERGE arms (#416)",
+    oc.squash_signature([_rec('d' * 40, 'Merge branch (#999)', 'p1 p2')]), {})
+chk("#301 the subject arm wins a collision with the body arm (tried first)",
+    oc.squash_signature([_rec('e' * 40, 'fix(x): y (#1556)', 'p1',
+                              'Squashed from PR #1556')]), {1556: 'e' * 40})
+chk("#301 an unshaped commit with no body keyword mints nothing",
+    oc.squash_signature([_rec('f' * 40, 'plain commit', 'p1', 'no keywords')]), {})
+chk("#301 blank records and short records are skipped, never crashed on",
+    oc.squash_signature(['', '\x1f\x1f', '   ']), {})
+
 if fails:
     for f in fails:
         sys.stderr.write("  unit-fail: %s\n" % f)

@@ -532,17 +532,17 @@ def fork_issue_is_reopened(issue_num, mock_file=None, record=None):
 
 def _local_squash_shas(repo_path, base_ref):
     # {pr_number: sha} for upstream commits carrying a SQUASH/MERGE signature.
-    # ONE home for the arm set (#301): oc_claims.squash_signature owns the two
-    # commit-shape arms so this tool and oc-harvest-census cannot drift. Read
-    # from the LOCAL upstream ref -- no network.
+    # ONE home for the arm set (#301): oc_claims.squash_signature owns the
+    # SUBJECT / MERGE / BODY arms so this tool and oc-harvest-census cannot
+    # drift. Read from the LOCAL upstream ref -- no network.
     # NOTE: no triple-quoted docstring here -- the engine body lives inside a
     # DOUBLE-QUOTED shell string and a triple quote ENDS it (the 2026-09-18
     # truncation). Comments only, and no backticks.
     ref = base_ref or 'adolfousier/main'
-    r = run_cmd(['git', '-C', repo_path, 'log', '--format=%H%x1f%s%x1f%P', ref])
+    r = run_cmd(['git', '-C', repo_path, 'log', '--format=%H%x1f%s%x1f%P%x1f%b%x1e', ref])
     if not r or r[0] != 0:
         return {}
-    return oc_claims.squash_signature((r[1] or '').splitlines())
+    return oc_claims.squash_signature((r[1] or '').split('\x1e'))
 
 
 def is_issue_harvested_upstream(issue_num, upstream_repo, repo_path, base_ref, swaps=None, mock_prs=None):
@@ -2410,6 +2410,35 @@ EOF
     echo "  ok 8t - #301 negative control: a CLOSED PR with NO local squash commit stays NOT_HARVESTED"
   else
     echo "  bad 8t - #301: CLOSED PR #1441 with no local squash expected NOT_HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # 8u. #301 BODY arm -- the #288 regression. A landing whose SUBJECT names the
+  # ISSUE and whose PR number exists ONLY in the commit BODY (PR #1556 -> issue
+  # #133) is invisible to the subject/merge shape arms. The subject here keys
+  # #1400 deliberately, so 1441 can be keyed ONLY by the body arm: dropping that
+  # arm makes this leg read NOT_HARVESTED and the unit is offered for rework --
+  # the duplicate upstream PR.
+  local squash_repo_body="$st_dir/squash_repo_body"
+  mkdir -p "$squash_repo_body"
+  git -C "$squash_repo_body" init -q -b main
+  git -C "$squash_repo_body" config user.email "test@example.com"
+  git -C "$squash_repo_body" config user.name "Test Runner"
+  echo "base" > "$squash_repo_body/base.txt"
+  git -C "$squash_repo_body" add .
+  git -C "$squash_repo_body" commit -q -m "base commit"
+  git -C "$squash_repo_body" branch adolfousier/main
+  git -C "$squash_repo_body" checkout -q adolfousier/main
+  echo "landed" > "$squash_repo_body/landed.txt"
+  git -C "$squash_repo_body" add .
+  git -C "$squash_repo_body" commit -q -m "fix(hand): body-only landing (#1400)" -m "Squashed from PR #1441."
+  git -C "$squash_repo_body" checkout -q main
+
+  out="$(run_engine "test-harvested" "1441" "$mock_squash_prs" "$mock_squash_state" "$squash_repo_body" "adolfousier/main")"
+  if [ "$out" = "HARVESTED" ]; then
+    echo "  ok 8u - #301 BODY arm: a PR keyed ONLY by the commit body reads HARVESTED (the #288 case)"
+  else
+    echo "  bad 8u - #301: body-only landing for PR #1441 expected HARVESTED, got ($out)"
     return 1
   fi
 

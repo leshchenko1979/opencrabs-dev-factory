@@ -513,20 +513,20 @@ def get_squashed_upstream_prs(repo_path, mock_squashed_file=None):
     if not os.path.isdir(repo_path):
         return {}
     ref = upstream_ref(repo_path)
-    # #301: FULL history, and the arms read the COMMIT SHAPE -- a single-parent
-    # subject ending `(#N)` (a squash) or `Merge PR #N` (a merge-button landing)
-    # -- never a commit BODY. A maintainer who applies the work by hand writes
-    # no body at all, so the old body-only arm matched 0 of the 13 CLOSED
-    # registry PRs (measured 2026-10-06) while the shape arms matched 3, and
-    # `-n 1000` against 4991 upstream commits silently hid the older landings
-    # this leg exists to find (census `clusters` trap (c): never page silently).
-    # The full subject+parents pass is 778 KB here (bodies would be 4.0 MB).
-    cmd = ['git', '-C', repo_path, 'log', '--format=%H%x1f%s%x1f%P', ref]
+    # #301: FULL history (a `-n 1000` window against 4991 upstream commits
+    # silently hid the older landings this leg exists to find -- census
+    # `clusters` trap (c): never page silently), and the arms live in ONE home,
+    # `oc_claims.squash_signature`: subject `(#N)` / `Merge PR #N` / body
+    # `Squashed from PR #N`. The BODY arm is load-bearing -- 55 landings exist
+    # ONLY in a body (#288: PR #1556 -> issue #133), so a shape-only pass
+    # re-opens the false allow #288 closed. Full pass 4.0 MB / 0.42 s.
+    # Records split on \x1e, NOT newlines: a body is multi-line.
+    cmd = ['git', '-C', repo_path, 'log', '--format=%H%x1f%s%x1f%P%x1f%b%x1e', ref]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         return {}
     squashed = {}
-    for pr_num, sha in oc_claims.squash_signature(res.stdout.splitlines()).items():
+    for pr_num, sha in oc_claims.squash_signature(res.stdout.split('\x1e')).items():
         squashed[pr_num] = {
             'sha': sha,
             'short_sha': sha[:12],

@@ -28,6 +28,12 @@
 #   [4] oc-harvest-dispatch --selftest — the widened `states=` that lets a
 #       CLOSED PR reach leg 1b at all (check_upstream_pr skips CLOSED by
 #       default). Mutant restores the default -> leg 8s.
+#   [5] oc-harvest-dispatch --selftest — the BODY arm inside squash_signature
+#       (`Squashed from PR #N` / `Closes #N`), the #288 mechanism: a landing
+#       whose subject names the ISSUE and whose PR number lives ONLY in the
+#       body (PR #1556 -> issue #133). Dropping it re-opens the false allow
+#       #288 closed (`census check 133` -> ELIGIBLE rc=0). Mutant drops ONLY
+#       that arm -> leg 8u, while the subject-shaped 8s stays green.
 #
 # The two dispatch mutants share leg 8s on purpose: one proves the signature
 # decides, the other proves the widening is what lets it be consulted. Neither
@@ -99,6 +105,7 @@ require_green "$WORK/base-census.out" "  ok   - #301: a CLOSED PR whose head com
 require_green "$WORK/base-census.out" "  ok   - #301: a CLOSED PR whose head commit IS an ancestor of the upstream ref REFUSES" "census 4c" || true
 require_green "$WORK/base-census.out" "  ok   - closed PR squash-merged upstream -> REFUSED MERGED exit 1" "census leg 12" || true
 require_green "$WORK/base-dispatch.out" "  ok 8s - #301: a CLOSED PR whose squash commit IS local reads HARVESTED" "dispatch 8s" || true
+require_green "$WORK/base-dispatch.out" "  ok 8u - #301 BODY arm: a PR keyed ONLY by the commit body reads HARVESTED" "dispatch 8u" || true
 
 # --- apply a python mutation to a fresh copy of the tree --------------------
 # apply_mutation <label> <rel-path-in-tree> <helper-file> ; helper is a python
@@ -254,6 +261,33 @@ print("  mutated: %s (anchor occurrences=%d)" % (label, n))
 PYEOF
 if apply_mutation "states_not_widened" "$DISPATCH_REL" "$WORK/mut_states.py"; then
   assert_caught "states_not_widened" "$DISPATCH_REL" "hand-applied CLOSED PR #1441 expected HARVESTED" '^  bad '
+fi
+
+# --- [5] the BODY arm inside squash_signature (the #288 mechanism) -----------
+# A landing whose SUBJECT names the ISSUE and whose PR number exists ONLY in the
+# commit body (PR #1556 -> issue #133) is keyed by no shape arm. Dropping the
+# BODY arm re-opens the false allow #288 closed, while leg 8s -- a landing whose
+# subject DOES carry `(#1441)` -- stays green, so the FIRST failure is 8u.
+echo
+echo "[5] dispatcher body arm — squash_signature loses its BODY arm"
+cat > "$WORK/mut_body_arm.py" <<'PYEOF'
+import sys
+path, label = sys.argv[1], sys.argv[2]
+# Drop ONLY the body arm; the SUBJECT/MERGE arms stay, so the subject-shaped
+# leg 8s stays green and the first reddened leg is 8u (keyed only by the body).
+anchor = ("        body = parts[3] if len(parts) > 3 else ''\n"
+          "        for bm in _BODY_SQUASH_RE.finditer(body):\n"
+          "            out.setdefault(int(bm.group(1)), sha)\n")
+src = open(path).read()
+n = src.count(anchor)
+if n != 1:
+    sys.stderr.write("mutation %s: anchor occurs %d times, need exactly 1\n" % (label, n))
+    sys.exit(2)
+open(path, "w").write(src.replace(anchor, ""))
+print("  mutated: %s (anchor occurrences=%d)" % (label, n))
+PYEOF
+if apply_mutation "body_arm_dropped" "$CLAIMS_REL" "$WORK/mut_body_arm.py"; then
+  assert_caught "body_arm_dropped" "$DISPATCH_REL" "body-only landing for PR #1441 expected HARVESTED" '^  bad '
 fi
 
 echo

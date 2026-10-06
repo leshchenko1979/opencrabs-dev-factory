@@ -1189,12 +1189,17 @@ def identity_leg_passes(files, tokens):
 # tooling read that as "rejected" and offered the unit for rework. The work was
 # already upstream; the rework IS the duplicate PR.
 #
-# The signature is read from the upstream COMMIT, never from a commit body: the
-# body is written by whoever squashed and is absent on a plain cherry-pick.
-# Measured on adolfousier/main, 2026-10-06, over the 13 registry units whose
-# PRs are CLOSED: the body arm matched 0, the subject arm 3, and the
-# subject + merge-title + ancestor union 7 (5 residual objects are not local,
-# so they classify as unreadable -> REFUSED, never allowed).
+# THREE arms, because no single one sees every landing (measured on
+# adolfousier/main, 2026-10-06, 4991 commits): the SUBJECT arm alone reads 932
+# PRs, the BODY arm alone 62, and their union 987 -- 55 landings are
+# BODY-ONLY, invisible to the subject shape because the subject names the
+# ISSUE, not the PR. PR #1556 -> issue #133 is exactly that shape:
+#   subject: feat(telegram): dedup group history ... (#133)
+#   body:    Squashed from PR #1556.
+# It is also the #288 case (CLOSED 2026-09-17T14:33:29Z), and a subject-only
+# arm re-opened that hole: `census check 133` went back to ELIGIBLE rc=0 --
+# the false allow that would file a duplicate upstream PR. Restoring the body
+# arm costs 0.42 s vs 0.44 s for the full pass (4.0 MB vs 778 KB), i.e. free.
 #
 # TWO consumers, one predicate each, no overlap:
 #   * the SIGNATURE arms (`squash_signature`) -- the census uses them to
@@ -1205,31 +1210,46 @@ def identity_leg_passes(files, tokens):
 
 _SQUASH_SUBJECT_RE = re.compile(r'\(#(\d{1,6})(?:\s[^)]*)?\)\s*$')
 _MERGE_TITLE_RE = re.compile(r'^Merge PR #(\d{1,6})\b')
+_BODY_SQUASH_RE = re.compile(r'(?:Squashed from PR|Closes)\s+#(\d+)', re.IGNORECASE)
 
 
-def squash_signature(log_lines):
-    """{pr_number: sha} from a `git log` pass whose format LEADS with
-    `%H%x1f%s%x1f%P` (sha, subject, parents); trailing fields are ignored.
+def squash_signature(records):
+    """{pr_number: sha} from a `git log` pass formatted
+    `%H%x1f%s%x1f%P%x1f%b%x1e` (sha, subject, parents, body; records split on
+    \\x1e because a body is MULTI-LINE). `records` is therefore the stdout split
+    on \\x1e, NOT on newlines. Fields after the body are ignored.
 
-    TWO arms, both keyed on the upstream COMMIT SHAPE:
-      * a SQUASH is a SINGLE-PARENT commit whose subject ends `(#N)` -- the
-        number GitHub appends to a squashed subject;
-      * a merge-button landing is a subject of the form `Merge PR #N`.
-    A multi-parent commit is excluded from the subject arm: on a merge commit
-    `(#N)` names the PR of the merge itself and says nothing about what it
-    carries, so the arm would mint a false attribution (#416).
+    THREE arms, tried in that order, first hit per PR number wins:
+      * SUBJECT -- a SQUASH is a SINGLE-PARENT commit whose subject ends `(#N)`,
+        the number GitHub appends to a squashed subject;
+      * MERGE   -- a merge-button landing has the subject `Merge PR #N`;
+      * BODY    -- `Squashed from PR #N` / `Closes #N`. This arm is what finds a
+        landing whose subject names the ISSUE and whose PR number exists ONLY in
+        the body (#288: PR #1556 -> issue #133), and it costs 0.42 s vs 0.44 s.
+    The two SUBJECT arms are restricted to a single-parent commit: on a merge
+    commit `(#N)` names the PR of the merge itself and says nothing about what
+    it carries, so the arm would mint a false attribution (#416). The BODY arm
+    is NOT parent-restricted -- it is the pre-#301 behaviour, restored verbatim,
+    and narrowing it is a separate change with its own evidence needs.
     """
     out = {}
-    for line in log_lines:
-        parts = line.rstrip('\n').split('\x1f')
+    for rec in records:
+        if not rec.strip():
+            continue
+        parts = rec.split('\x1f')
         if len(parts) < 3:
             continue
         sha, subj, parents = parts[0].strip(), parts[1], parts[2].split()
-        if not sha or len(parents) != 1:
+        if not sha:
             continue
-        m = _SQUASH_SUBJECT_RE.search(subj) or _MERGE_TITLE_RE.match(subj)
+        m = None
+        if len(parents) == 1:
+            m = _SQUASH_SUBJECT_RE.search(subj) or _MERGE_TITLE_RE.match(subj)
         if m:
             out.setdefault(int(m.group(1)), sha)
+        body = parts[3] if len(parts) > 3 else ''
+        for bm in _BODY_SQUASH_RE.finditer(body):
+            out.setdefault(int(bm.group(1)), sha)
     return out
 
 
