@@ -714,17 +714,102 @@ def _parse_ledger_ts(value):
         return None
     return ts if ts.tzinfo else ts.replace(tzinfo=datetime.timezone.utc)
 
-def fetch_landed_issues(repo_path, mock_landed=None):
+# --- #455: the landed arm's IDENTITY leg -------------------------------------
+# A trailer or auto-link naming `#N` is an ATTRIBUTION, not identity (the
+# v0.4.216 close-identity guard, triage.md). `oc-commit` derives `Issue-Ref`
+# from the actor's LATEST open claim, so a lane holding several claims stamps
+# its BOOKKEEPING commits -- a battery receipt, a runtime-artifacts sweep --
+# with whichever claim happens to be newest. Those commits touch none of the
+# named issue's surface, yet the landed arm counted them, so an OPEN issue with
+# zero work on it read as finished and was never re-proposed.
+#
+# Measured (this issue): #441's only claiming commit `6b90149c` changed
+# `tools/tests/battery-last.json` alone, while #441's surface is
+# `tools/state/oc-ledger`.
+#
+# The surface is "the path/module the issue NAMES" -- read from the issue's OWN
+# title+body. It must NOT be derived from the commits that anchor the issue:
+# that is CIRCULAR (the offending commit would define its own surface, so the
+# leg would be a no-op on the very instance above -- verified live against
+# `oc_claims.resolve_issue_files(441)`, which carries battery-last.json BECAUSE
+# `6b90149c` is one of the anchoring commits).
+#
+# FAIL-OPEN BY CONSTRUCTION: an issue naming no repo path has an EMPTY surface
+# and this leg does not fire. The change can therefore only ever REMOVE a false
+# landing, never add one.
+
+#: A repo-relative path token in issue prose: a known top-level dir, a slash,
+#: then a path-ish run. The lookbehind keeps a URL tail (`.../issues/441`) from
+#: reading as a path.
+_ISSUE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])"
+    r"((?:tools|src|skills|docs|tests|scripts)/[A-Za-z0-9_.\-]+"
+    r"(?:/[A-Za-z0-9_.\-]+)*)")
+
+def issue_surface(issue):
+    """Repo paths the issue NAMES, as a set (empty when it names none)."""
+    text = "%s\n%s" % (issue.get("title") or "", issue.get("body") or "")
+    return set(_ISSUE_PATH_RE.findall(text))
+
+def _file_on_surface(changed, tokens):
+    """Is the changed file ``changed`` on the surface named by ``tokens``?"""
+    c = str(changed or "").strip().strip("/")
+    if not c:
+        return False
+    cb = os.path.basename(c)
+    for token in tokens:
+        t = str(token or "").strip().strip("/")
+        if not t:
+            continue
+        if c == t or c.startswith(t + "/"):
+            return True
+        # Reorg-robust: the one-level-per-kind move renamed tools/oc-ledger to
+        # tools/state/oc-ledger, so an issue naming the OLD path must still
+        # recognise the file it names. Basename is the stable join.
+        if cb == os.path.basename(t):
+            return True
+    return False
+
+def issue_surfaces(issues):
+    """``{issue_number: surface}`` for every issue whose surface is NON-EMPTY.
+
+    An issue ABSENT from the map is one the identity leg does not fire for --
+    the fail-open side of #455.
+    """
+    out = {}
+    for iss in issues or []:
+        try:
+            num = int(iss.get("number"))
+        except (TypeError, ValueError):
+            continue
+        surface = issue_surface(iss)
+        if surface:
+            out[num] = surface
+    return out
+
+def fetch_landed_issues(repo_path, mock_landed=None, surfaces=None):
     """Issue numbers whose fix is already on origin/main, in the ACTIVE tracker's
-    number space (SKILL.md v0.4.284 — the scope follows --tracker)."""
+    number space (SKILL.md v0.4.284 — the scope follows --tracker).
+
+    ``surfaces`` (#455) is the ``{issue: {paths}}`` map from
+    :func:`issue_surfaces`: when present, a commit anchors an issue only if its
+    changed files intersect that issue's NAMED surface. Omitted -- or an issue
+    absent from the map -- ⇒ no identity leg, the pre-#455 behaviour.
+    """
     if mock_landed is not None:
         return {int(n) for n in mock_landed}
 
-    fmt = ("%H%x1f%s%x1f"
+    # `--name-only` carries each commit's changed files on the SAME pass that
+    # already reads the trailers: one `git log`, never a per-commit subprocess.
+    # `%x1e` OPENS every record so the field line and its file list travel as
+    # one unit -- a bare `--format` + `--name-only` emits the files AFTER the
+    # record boundary and would attribute them to the wrong commit.
+    fmt = ("%x1e%H%x1f%s%x1f"
            "%(trailers:key=Issue-Ref,valueonly,separator=%x2C)%x1f"
            "%(trailers:key=Session-Id,valueonly,separator=%x2C)")
     rc, out, err = run_cmd(
-        ["git", "log", "origin/main", "--no-merges", f"--format={fmt}"],
+        ["git", "log", "origin/main", "--no-merges", f"--format={fmt}",
+         "--name-only"],
         cwd=repo_path, timeout=60)
     if rc != 0:
         print(f"WARN: cannot read origin/main for landed-work detection "
@@ -732,13 +817,30 @@ def fetch_landed_issues(repo_path, mock_landed=None):
         return set()
 
     landed = set()
-    for line in out.splitlines():
-        parts = line.split("\x1f")
+    for record in out.split("\x1e"):
+        lines = record.strip("\n").splitlines()
+        if not lines:
+            continue
+        parts = lines[0].split("\x1f")
         if len(parts) < 4:
             continue
         subj, iref, sess = parts[1], parts[2], parts[3]
         if not sess.strip():
             continue            # upstream space — a different number namespace
+        files = [ln.strip() for ln in lines[1:] if ln.strip()]
+
+        def _anchors(num):
+            """#455 identity leg: does this commit touch the issue's surface?"""
+            if not surfaces:
+                return True
+            try:
+                tokens = surfaces.get(int(num))
+            except (TypeError, ValueError):
+                return True
+            if not tokens:
+                return True     # issue names no path — fail open
+            return any(_file_on_surface(f, tokens) for f in files)
+
         for value in iref.split(","):
             value = value.strip()
             if not value:
@@ -751,9 +853,10 @@ def fetch_landed_issues(repo_path, mock_landed=None):
             if "/" in value and not value.startswith(TRACKER_SLUG + "#"):
                 continue
             for num in _ISSUE_REF_VALUE_RE.findall(value):
-                landed.add(int(num))
+                if _anchors(num):
+                    landed.add(int(num))
         m = re.search(r"\(#([0-9]+)\)\s*$", subj.strip())
-        if m:
+        if m and _anchors(m.group(1)):
             landed.add(int(m.group(1)))
     return landed
 
@@ -1729,7 +1832,11 @@ def cmd_auto(args):
     if args.allow_landed:
         landed = set()
     else:
-        landed = fetch_landed_issues(args.repo) | ledger_landed_issues(ledger_data)
+        # #455: the identity leg needs each issue's NAMED surface, read from the
+        # fetched issue list -- the same pass that supplies the candidates.
+        landed = (fetch_landed_issues(args.repo,
+                                      surfaces=issue_surfaces(open_issues))
+                  | ledger_landed_issues(ledger_data))
 
     # #337 dedup — every run previously started from scratch, so an issue wired
     # to a lane but not yet acked was wired to a SECOND lane.
@@ -1978,7 +2085,12 @@ def cmd_targeted(args):
     if args.allow_landed:
         landed = set()
     else:
-        landed = fetch_landed_issues(args.repo) | ledger_landed_issues(ledger_data)
+        # #455: same identity leg on the targeted path -- the surface comes from
+        # the fetched open list plus the resolved target itself.
+        landed = (fetch_landed_issues(
+                      args.repo,
+                      surfaces=issue_surfaces((open_issues or []) + [target_issue]))
+                  | ledger_landed_issues(ledger_data))
     recent = {} if args.redispatch else recent_dispatches(ledger_data)
     arm_events, arm_ok = evaluate_landed_and_dedup_arms(target_issue, landed, recent)
     if not arm_ok:
@@ -2998,6 +3110,102 @@ def run_selftest():
             TRACKER_SLUG = _saved_armA_slug
     finally:
         shutil.rmtree(_armA_repo, ignore_errors=True)
+
+    # Test 12b2: #455 -- the landed arm's IDENTITY leg. A commit anchors an
+    #   issue only when it touches a path that issue NAMES (read from the issue
+    #   text, never from the anchoring commits -- that would be circular).
+    #   MUTATION KILL: make `_anchors()` return True unconditionally and the
+    #   "NOT landed" legs below (441, 820) flip to landed.
+    #  (a) the surface parser itself.
+    assert_eq("#455 surface: paths named in title+body are extracted",
+              issue_surface({"title": "fix(tools): x", "number": 1,
+                             "body": "see tools/state/oc-ledger and the "
+                                     "src/a2a/ listener"}),
+              {"tools/state/oc-ledger", "src/a2a"})
+    assert_eq("#455 surface: an issue naming no repo path is EMPTY (fail-open)",
+              issue_surface({"title": "prose only", "number": 2,
+                             "body": "no path here at all"}),
+              set())
+    assert_eq("#455 surface: a URL tail is not read as a path",
+              issue_surface({"title": "t", "number": 3,
+                             "body": "see https://example.com/issues/441 for it"}),
+              set())
+    assert_eq("#455 surface: an issue with no number is skipped, not fatal",
+              issue_surfaces([{"title": "x", "body": "tools/oc-ledger"}]),
+              {})
+    #  (b) the leg against a real repo.
+    _surf_repo = tempfile.mkdtemp()
+    try:
+        def _sg(*a):
+            return subprocess.run(["git", "-C", _surf_repo, *a],
+                                  capture_output=True, text=True, check=True)
+
+        _sg("init", "-q")
+        _sg("config", "user.email", "selftest@example.com")
+        _sg("config", "user.name", "selftest")
+        _sg("config", "commit.gpgsign", "false")
+
+        def _smk(msg, path, ref):
+            full = os.path.join(_surf_repo, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "a") as _fh:
+                _fh.write(msg + "\n")
+            _sg("add", path)
+            _sg("commit", "-q", "--no-gpg-sign", "-m", msg,
+                "--trailer", "Session-Id: 99999999-9999-9999-9999-999999999999",
+                "--trailer", "Issue-Ref: #%d" % ref)
+
+        # (1) RECEIPT commit: names #441, touches ONLY the runtime artifact.
+        _smk("chore: battery receipt (#441)", "tools/tests/battery-last.json", 441)
+        # (2) WORK commit: names #700, touches the named surface.
+        _smk("fix: work on ledger (#700)", "tools/state/oc-ledger", 700)
+        # (3) Directory token: names #810, touches a file UNDER src/a2a.
+        _smk("fix: a2a listener (#810)", "src/a2a/listener.rs", 810)
+        # (4) Off-surface: names #820 (also src/a2a), touches src/other/x.rs.
+        _smk("fix: elsewhere (#820)", "src/other/x.rs", 820)
+        # (5) Reorg: names #830, issue names the OLD path tools/oc-ledger.
+        _smk("fix: ledger moved (#830)", "tools/state/oc-ledger", 830)
+        # (6) Fail-open: names #840, the issue names NO path.
+        _smk("fix: no surface (#840)", "tools/other/thing", 840)
+
+        _sg("update-ref", "refs/remotes/origin/main", "HEAD")
+
+        _surf = issue_surfaces([
+            {"number": 441, "title": "fix(tools): oc-ledger",
+             "body": "the fix lives in tools/state/oc-ledger"},
+            {"number": 700, "title": "fix(tools): oc-ledger",
+             "body": "the fix lives in tools/state/oc-ledger"},
+            {"number": 810, "title": "fix(a2a): listener",
+             "body": "the surface is src/a2a/"},
+            {"number": 820, "title": "fix(a2a): listener",
+             "body": "the surface is src/a2a/"},
+            {"number": 830, "title": "fix(tools): oc-ledger",
+             "body": "the fix lives in tools/oc-ledger"},
+            {"number": 840, "title": "fix: prose only",
+             "body": "no path is named by this issue"},
+        ])
+        _landed = fetch_landed_issues(_surf_repo, surfaces=_surf)
+        assert_true("#455 ACCEPTANCE: a receipt-only commit does NOT land its issue (#441)",
+                    441 not in _landed)
+        assert_true("#455 ACCEPTANCE: a commit on the named surface lands it (#700)",
+                    700 in _landed)
+        assert_true("#455 a directory token matches a file under it (#810)",
+                    810 in _landed)
+        assert_true("#455 a commit off the named surface does NOT land (#820)",
+                    820 not in _landed)
+        assert_true("#455 the reorg basename leg matches the old path (#830)",
+                    830 in _landed)
+        assert_true("#455 FAIL-OPEN: an issue naming no path still lands (#840)",
+                    840 in _landed)
+        # The SAME fixture with no surfaces map is the pre-#455 behaviour: every
+        # named issue lands, so the leg can only ever REMOVE a landing.
+        _landed_ns = fetch_landed_issues(_surf_repo)
+        assert_true("#455 CONTROL: without the surface map the receipt commit lands (#441)",
+                    441 in _landed_ns)
+        assert_true("#455 CONTROL: without the surface map the off-surface commit lands (#820)",
+                    820 in _landed_ns)
+    finally:
+        shutil.rmtree(_surf_repo, ignore_errors=True)
 
     # Test 12c: #370 -- the TARGETED path runs the SAME eligibility arms.
     #   Pre-fix, cmd_targeted consulted NEITHER the landed arm nor the dedup arm
