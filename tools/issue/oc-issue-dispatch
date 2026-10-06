@@ -514,7 +514,7 @@ OPEN_ISSUES_LIMIT = 1000
 
 #: The JSON fields every issue read requests. ONE literal, so the LIST fetch and
 #: the SINGLE-ISSUE fetch cannot drift into different shapes (#483).
-ISSUE_JSON_FIELDS = "number,title,labels,body,stateReason,state"
+ISSUE_JSON_FIELDS = "number,title,labels,body,stateReason,state,updatedAt"
 
 
 def _env_mock_issues():
@@ -1817,6 +1817,31 @@ def is_reopened(issue):
     return str(issue.get("stateReason") or "").upper() == "REOPENED"
 
 
+def reopen_unhandled(iss, recent):
+    """#24 — has this issue CHANGED since our last dispatch of it?
+
+    `stateReason=REOPENED` is a deliberate act and must defeat the landed and dedup
+    arms — but only while it is UNHANDLED. The marker persists on the issue forever,
+    so an override with no expiry releases the issue on every run for the rest of its
+    life. Measured live 2026-10-06: #324 was reopened 18 days earlier
+    (`updatedAt` 2026-09-18T05:25:36Z) and dispatched TODAY, yet the next `--auto`
+    still released it — a duplicate-storm vector reached from the opposite side of
+    #337, which the dedup guard cannot see because the override runs ahead of it.
+
+    A reopen is handled once we dispatch the issue AFTER the last change on it, so
+    this is True when there is no prior dispatch, or the issue's `updatedAt` is NEWER
+    than our dispatch row's timestamp. A missing `updatedAt` is treated as UNHANDLED:
+    fail-safe, it preserves the pre-#24 behaviour and never silently suppresses a
+    legitimate reopen.
+    """
+    entry = recent.get(iss.get("number"))
+    if entry is None:
+        return True
+    updated = _parse_ledger_ts(iss.get("updatedAt"))
+    if updated is None:
+        return True
+    return updated > entry[1]
+
 def evaluate_issue_arms(iss, landed, recent):
     """Arm decision for ONE issue — the single-issue core of the eligibility seam.
 
@@ -1852,10 +1877,14 @@ def evaluate_landed_and_dedup_arms(iss, landed, recent):
     a ledger landing row) and `recent` records only OUR OWN past dispatch, whereas a
     reopen is a DELIBERATE act that contradicts them. The override is part of THIS
     function, not of either caller, so the targeted path cannot lose it.
+
+    #24 — the override EXPIRES: it applies only while the reopen is UNHANDLED (see
+    reopen_unhandled above). An unbounded override is a duplicate-storm vector of its
+    own, reached from the opposite side of #337.
     """
     events = []
     num = iss.get("number")
-    reopened = is_reopened(iss)
+    reopened = is_reopened(iss) and reopen_unhandled(iss, recent)
     if num in landed and not reopened:
         return [("landed", iss, None)], False
     if num in landed and reopened:
@@ -3672,6 +3701,69 @@ def run_selftest():
               _r_counts["landed_override"] + _r_counts["dedup_override"],
               len(_r_overrides))
 
+    # Test 13: #24 -- the reopen override EXPIRES. A reopen is a DELIBERATE act, but
+    # the marker persists on the issue forever, so an override with no expiry releases
+    # the issue on EVERY run for the rest of its life. Measured live 2026-10-06: #324
+    # was reopened 18 days earlier (`updatedAt` 2026-09-18T05:25:36Z) and dispatched
+    # TODAY, yet the next --auto run still released it -- a duplicate-storm vector
+    # reached from the opposite side of #337, which the dedup guard cannot see because
+    # the override runs AHEAD of it.
+    _handled_iss = _iss(324, "REOPENED")
+    _handled_iss["updatedAt"] = (_now_utc - datetime.timedelta(days=18)).isoformat()
+    _handled_recent = {324: ("aff7ff41", _now_utc)}
+    assert_true("#24 reopen_unhandled is FALSE once our dispatch is newer than the "
+                "reopen (the #324 live case)",
+                reopen_unhandled(_handled_iss, _handled_recent) is False)
+    _h_events, _h_ok = evaluate_landed_and_dedup_arms(
+        _handled_iss, {324}, _handled_recent)
+    assert_true("#24 MUTATION-KILL: a REOPENED landed issue we have ALREADY dispatched "
+                "since is NOT released -- the pre-#24 code returned dispatchable=True "
+                "here on every run forever",
+                _h_ok is False
+                and [k for k, _, _ in _h_events] == ["landed"]
+                and [arm for _, _, arm in _h_events] == [None])
+
+    # The POSITIVE control for the leg above: the SAME reopened issue, with our
+    # dispatch PREDATING the reopen, must still be released -- the expiry narrows the
+    # override, it never removes it.
+    _fresh_iss = _iss(324, "REOPENED")
+    _fresh_iss["updatedAt"] = (_now_utc - datetime.timedelta(hours=1)).isoformat()
+    _stale_recent = {324: ("aff7ff41",
+                           (_now_utc - datetime.timedelta(days=18)))}
+    assert_true("#24 reopen_unhandled is TRUE when the issue changed AFTER our last "
+                "dispatch",
+                reopen_unhandled(_fresh_iss, _stale_recent) is True)
+    _f_events, _f_ok = evaluate_landed_and_dedup_arms(
+        _fresh_iss, {324}, _stale_recent)
+    assert_true("#24 POSITIVE: a reopen NEWER than our dispatch still defeats BOTH "
+                "arms (#324 released, both override events emitted)",
+                _f_ok is True
+                and [k for k, _, _ in _f_events] == ["reopened", "reopened"]
+                and sorted(arm for _, _, arm in _f_events) == ["dedup", "landed"])
+
+    # A missing `updatedAt` is UNHANDLED: fail-safe, it preserves the pre-#24
+    # behaviour and never silently suppresses a legitimate reopen. This leg kills the
+    # tempting inverse (treat a missing instant as "handled"), which would swallow
+    # every reopen on a tracker whose payload omits the field.
+    assert_true("#24 a missing updatedAt keeps the override (fail-safe)",
+                reopen_unhandled(_iss(324, "REOPENED"), _handled_recent) is True
+                and evaluate_landed_and_dedup_arms(
+                    _iss(324, "REOPENED"), {324}, _handled_recent)[1] is True)
+    assert_true("#24 a reopen with NO prior dispatch is unhandled (nothing has acted "
+                "on it)",
+                reopen_unhandled(_iss(324, "REOPENED"), {}) is True)
+    # NEGATIVE CONTROL for the whole predicate: a NEWER `updatedAt` on an issue that
+    # is NOT reopened must not release it -- `is_reopened` still gates the override, so
+    # the expiry narrows the override and never widens it.
+    _completed_iss = _iss(400, "COMPLETED")
+    _completed_iss["updatedAt"] = (_now_utc - datetime.timedelta(hours=1)).isoformat()
+    assert_true("#24 a non-reopened issue is NOT released by a newer updatedAt "
+                "(is_reopened still gates the override)",
+                is_reopened(_completed_iss) is False
+                and evaluate_landed_and_dedup_arms(
+                    _completed_iss, {400},
+                    {400: ("abc12345", _now_utc)})[1] is False)
+
     # Test 13: #S -- a dispatch recorded as UNVERIFIED still defeats the dedup arm.
     # This is the regression test for the reported defect: a false "Delivery FAILED"
     # skipped the ledger stamp, so recent_dispatches() could not see the dispatch and
@@ -3984,7 +4076,8 @@ def run_selftest():
     #      shape (#483): number/title/labels/body are the fields the claim gate
     #      and the affinity scoring consume.
     assert_eq("#483 both reads request ONE shared JSON field list",
-              ISSUE_JSON_FIELDS, "number,title,labels,body,stateReason,state")
+              ISSUE_JSON_FIELDS,
+              "number,title,labels,body,stateReason,state,updatedAt")
     del os.environ["OC_DISPATCH_MOCK_ISSUES"]
     shutil.rmtree(_f483, ignore_errors=True)
 
