@@ -4,8 +4,8 @@
 # (v0.4.58, Duty-6 lens C #2: automates the 2026-08-26 clippy-wall
 # misattribution lesson — a RED gate is NOT automatically the PR's fault).
 #
-# Usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo <slug|path>] [--gh <cmd>]
-#        oc-pr-fault-scope --ref <branch-or-sha> --run <run-id> [--repo <path>] [--base <ref>]
+# Usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo <slug>] [--gh-repo <slug>] [--gh <cmd>]
+#        oc-pr-fault-scope --ref <branch-or-sha> --run <run-id> [--repo <path>] [--gh-repo <slug>] [--base <ref>]
 #   Pulls the changed files (the PR diff, or — for fork lanes with no PR —
 #   `git diff --name-only <base>...<ref>` when --ref is given) and the failed
 #   run's failing files (parsed from `gh run view --log-failed` rust-style
@@ -29,14 +29,15 @@ trap 'oc_log_finish $?' EXIT
 die() { echo "oc-pr-fault-scope: $2" >&2; exit "$1"; }
 
 cmd_scope() {
-  local pr="" ref="" base="" run="" repo="${OC_REPO:-leshchenko1979/opencrabs}" gh="${GH_BIN:-gh}"
+  local pr="" ref="" base="" run="" repo="${OC_REPO:-leshchenko1979/opencrabs}" gh_repo="" _gh_url="" gh="${GH_BIN:-gh}"
   while [ $# -gt 0 ]; do case "$1" in
     --run) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --run needs a value" >&2; exit 2; }; run=""$2""; shift 2 ;;
     --repo) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --repo needs a value" >&2; exit 2; }; repo=""$2""; shift 2 ;;
+    --gh-repo) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --gh-repo needs a value" >&2; exit 2; }; gh_repo=""$2""; shift 2 ;;
     --gh) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --gh needs a value" >&2; exit 2; }; gh=""$2""; shift 2 ;;
     --ref)  [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --ref needs a value" >&2; exit 2; }; ref="$2"; shift 2 ;;
     --base) [ $# -ge 2 ] || { echo "oc-pr-fault-scope: --base needs a value" >&2; exit 2; }; base="$2"; shift 2 ;;
-    -h|--help) echo "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh cmd]"; echo "       oc-pr-fault-scope --ref <branch-or-sha> --run <run-id> [--repo path] [--base <ref>]"; echo "Exit: 0 IN-SCOPE / 1 BASE-FAULT / 2 usage / 3 gh failure"; exit 0 ;;  # C-#3: help=0
+    -h|--help) echo "usage: oc-pr-fault-scope <pr#> --run <run-id> [--repo slug] [--gh-repo slug] [--gh cmd]"; echo "       oc-pr-fault-scope --ref <branch-or-sha> --run <run-id> [--repo path] [--gh-repo slug] [--base <ref>]"; echo "Exit: 0 IN-SCOPE / 1 BASE-FAULT / 2 usage / 3 gh failure"; exit 0 ;;  # C-#3: help=0
     --*) die 2 "unknown flag '$1'" ;;
     *) if [ -z "$pr" ]; then pr="$1"; fi; shift ;;
   esac; done
@@ -51,7 +52,10 @@ cmd_scope() {
     # PR-only input made this tool unreachable on the very flow it was built for.
     # --ref derives the changed files with `git diff` instead; --repo must be a
     # local PATH here (a slug cannot be diffed).
-    [ -d "$repo/.git" ] || die 2 "--ref needs --repo <local-path> (got '$repo')"
+    # Defect 2 (#25): a git WORKTREE's .git is a FILE, so `-d` rejected the
+    # exact checkout fork lanes work in (tools/git/oc-wt). Ask git itself.
+    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 \
+      || die 2 "--ref needs --repo <local-path> (got '$repo')"
     base="${base:-origin/main}"
     pr_files="$(git -C "$repo" diff --name-only "${base}...${ref}" 2>/dev/null)" \
       || die 3 "git diff ${base}...${ref} failed in $repo (unresolvable base/ref?)"
@@ -62,9 +66,24 @@ cmd_scope() {
     [ -n "$pr_files" ] || die 3 "no changed files for PR #$pr (is it merged/closed?)"
     label="PR #$pr"
   fi
+  # Defect 1 (#25): gh needs a SLUG. In --ref mode --repo is the LOCAL PATH used
+  # for `git diff`, so it can never be handed to gh. Derive the slug from the
+  # checkout's own origin; --gh-repo wins; OC_REPO is the last resort. PR mode's
+  # --repo IS a slug, so it is used as-is.
+  if [ -z "$gh_repo" ]; then
+    if [ -n "$ref" ]; then
+      _gh_url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+      case "$_gh_url" in
+        *github.com[:/]*) gh_repo="${_gh_url#*github.com}"; gh_repo="${gh_repo#[:/]}"; gh_repo="${gh_repo%.git}" ;;
+      esac
+      gh_repo="${gh_repo:-${OC_REPO:-leshchenko1979/opencrabs}}"
+    else
+      gh_repo="$repo"
+    fi
+  fi
   # failing files from the run's failed-step log
   local run_log fail_files
-  run_log="$("$gh" run view "$run" --repo "$repo" --log-failed 2>/dev/null)" || die 3 "gh run view --log-failed failed for run $run"
+  run_log="$("$gh" run view "$run" --repo "$gh_repo" --log-failed 2>/dev/null)" || die 3 "gh run view --log-failed failed for run $run"
   # Defect 2 (#308): the naive regex over-matched. It captured cargo registry
   # checkouts (`src/index.crates.io-…`, `src/github.com-…`) and the bare crate
   # roots `src/lib.rs` / `src/main.rs`, which appear in generic error context.
@@ -184,6 +203,33 @@ cmd_selftest() {
   # --ref with a slug --repo must refuse (a slug cannot be diffed)
   bash "$ME" --ref feature --base main --run 1000 --repo leshchenko1979/opencrabs --gh "$T/gh-ref.sh" >/dev/null 2>&1
   chk "#308 --ref with a slug --repo -> 2 (usage)" 2 $?
+  # ---- #25 Defect 1: --ref must hand gh a SLUG, not the local path ---------
+  # The #308 shims ignored --repo entirely, so a local path reaching gh was
+  # invisible. This shim RECORDS the --repo it receives; the legs assert it is a
+  # slug. Before the fix, --ref passed the checkout path and the real gh rc 3'd.
+  git -C "$T/repo" remote add origin https://github.com/leshchenko1979/opencrabs.git
+  printf '#!/bin/sh\nprev=""; for a in "$@"; do if [ "$prev" = "--repo" ]; then echo "$a" > "%s/gh-repo-seen"; fi; prev="$a"; done\ncase " $* " in *" run view "*) printf "error\\n --> src/a.rs:1:1\\n" ;; *) exit 1 ;; esac\n' "$T" > "$T/gh-slug.sh"
+  chmod +x "$T/gh-slug.sh"
+  rm -f "$T/gh-repo-seen"
+  bash "$ME" --ref feature --base main --run 1000 --repo "$T/repo" --gh "$T/gh-slug.sh" >/dev/null 2>&1
+  chk "#25 --ref still IN-SCOPE with a slug-aware gh" 0 $?
+  SEEN="$(cat "$T/gh-repo-seen" 2>/dev/null || echo ABSENT)"
+  [ "$SEEN" = "leshchenko1979/opencrabs" ] \
+    && ok "#25 --ref hands gh the SLUG derived from origin" \
+    || bad "#25 --ref handed gh '$SEEN' (want leshchenko1979/opencrabs)"
+  rm -f "$T/gh-repo-seen"
+  bash "$ME" --ref feature --base main --run 1000 --repo "$T/repo" --gh-repo acme/widget --gh "$T/gh-slug.sh" >/dev/null 2>&1
+  [ "$(cat "$T/gh-repo-seen" 2>/dev/null)" = "acme/widget" ] \
+    && ok "#25 --gh-repo overrides the derived slug" \
+    || bad "#25 --gh-repo ignored (got '$(cat "$T/gh-repo-seen" 2>/dev/null)')"
+  # ---- #25 Defect 2: a git WORKTREE's .git is a FILE, and must be accepted --
+  # tools/git/oc-wt hands lanes exactly this shape; the old [ -d ] guard refused
+  # it (rc 2) and sent the lane to a non-worktree checkout, where Defect 1 bit.
+  git -C "$T/repo" worktree add -q "$T/wt" -b wtbranch >/dev/null 2>&1
+  [ -f "$T/wt/.git" ] && ok "#25 worktree fixture has a .git FILE" \
+    || bad "#25 worktree fixture .git is not a file (leg would be vacuous)"
+  bash "$ME" --ref wtbranch --base main --run 1000 --repo "$T/wt" --gh "$T/gh-ref.sh" >/dev/null 2>&1
+  chk "#25 --ref accepts a git worktree (.git is a file)" 0 $?
   # A BASE-FAULT with no resolvable base must DISCLOSE that it was not recorded
   # rather than fail silently.
   rm -rf "$T/state" "$T/repo"
