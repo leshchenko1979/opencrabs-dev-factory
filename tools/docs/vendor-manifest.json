@@ -1,56 +1,67 @@
 {
-  "_": "Vendored-file manifest for oc-vendor-drift (issue #700). Each entry names a file this repo carries a copy of, the upstream revision it was flattened from, and the ONLY differences permitted. A delta entry matches OUR form via `match` and THEIR form via `match_upstream` (defaulting to `match`), because a delta line must be droppable from both sides or the comparison shifts. Anything else is drift and fails the guard.",
-  "upstream_repo": "/root/agent-factories",
-  "vendor": [
+ "_": "Vendored-file manifest for oc-vendor-drift (issue #700). Each entry names a file this repo carries a copy of, the upstream revision it was flattened from, and the ONLY differences permitted. A delta entry matches OUR form via `match` and THEIR form via `match_upstream` (defaulting to `match`), because a delta line must be droppable from both sides or the comparison shifts. Anything else is drift and fails the guard.",
+ "upstream_repo": "/root/agent-factories",
+ "vendor": [
+  {
+   "local": "tools/state/oc-questions",
+   "upstream_path": "TEMPLATE/tools/questions",
+   "ref": "7ead63d12f8f6d8a31796320115722e1d4df5796",
+   "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-06 at origin/main 7ead63d (which carries #762 — `resolve_lane` prefers a `topic_edited` rename row over the stale creation-time `topic_name`, and the selftest covers it); before that 2026-10-05 at origin/main 657a7cb; the content last changed upstream at 657a7cb (#736 — the `--help` synopsis now names the sanctioned recommendation form `[--recommended <0-based-index|LABEL|LETTER>]` on BOTH `ask` and `amend`; the resolver was already correct and is untouched) and before that at a484af7 (#709 — `--schema` is DERIVED from FLAG_SPEC, the ONE flag table the handlers themselves parse with, so a consumer reads the contract instead of keeping a second copy that drifts; every cmd_* now parses via flag_spec(<verb>), behaviour-identical by construction) and this copy carries it byte-for-byte after the seven declared deltas. Two of the seven (the routing-default comment and the close-reason string) are now UPSTREAM-IDENTICAL — upstream adopted them since the old ref — so they match on both sides and stay declared no-ops, kept so the comparison stays symmetric.",
+   "delta": [
     {
-      "local": "tools/state/oc-questions",
-      "upstream_path": "TEMPLATE/tools/questions",
-      "ref": "657a7cb95400f2e61929ae2c6b99b181ab89a75c",
-      "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-05 at origin/main 657a7cb; the content last changed upstream at 657a7cb (#736 — the `--help` synopsis now names the sanctioned recommendation form `[--recommended <0-based-index|LABEL|LETTER>]` on BOTH `ask` and `amend`; the resolver was already correct and is untouched) and before that at a484af7 (#709 — `--schema` is DERIVED from FLAG_SPEC, the ONE flag table the handlers themselves parse with, so a consumer reads the contract instead of keeping a second copy that drifts; every cmd_* now parses via flag_spec(<verb>), behaviour-identical by construction) and this copy carries it byte-for-byte after the seven declared deltas. Two of the seven (the routing-default comment and the close-reason string) are now UPSTREAM-IDENTICAL — upstream adopted them since the old ref — so they match on both sides and stay declared no-ops, kept so the comparison stays symmetric.",
-      "delta": [
-        {
-          "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
-          "match_upstream": "^PROG\\ =\\ \"questions\"$",
-          "why": "Deployment name: derives from the invoked program so the unified-log 'tool' field and every die() remedy name the command that actually exists here. Upstream ask: the same one line."
-        },
-        {
-          "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ PROG\\ \\+\\ \"\\-render\\.mjs\"\\)$",
-          "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"questions\\-render\\.mjs\"\\)$",
-          "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
-        },
-        {
-          "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
-          "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
-          "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
-        },
-        {
-          "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ \\(os\\.environ\\.get\\(\"OC_ACTOR\"\\)\\ or\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\"\\)\\ or\\ \"unknown\"\\),$",
-          "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\",\\ \"unknown\"\\),$",
-          "why": "Fleet actor contract (#749): tools/lib/oc-log.sh resolves the log actor as OC_ACTOR first, falling back to OPENCRABS_SESSION_ID -- and the owner rule of 2026-08-30 requires every oc-* invocation to set OC_ACTOR. This copy read the session id ALONE, so every such caller was logged as actor=\"unknown\" and could not be traced to a lane. Upstream ask: the same one line."
-        },
-        {
-          "match": "^(?:\\#\\ fork\\.\\ Overridable\\ per\\ factory;\\ the\\ default\\ is\\ THIS\\ factory's\\ own\\ tracker|\\#\\ \\(two\\-stream\\ routing,\\ SKILL\\.md\\ v0\\.4\\.284,\\ owner\\ order\\ 2026\\-10\\-03\\)\\.)$",
-          "match_upstream": "^(?:\\#\\ fork\\.\\ Overridable\\ per\\ factory;\\ the\\ default\\ is\\ THIS\\ factory's\\ own\\ tracker|\\#\\ \\(two\\-stream\\ routing,\\ SKILL\\.md\\ v0\\.4\\.284,\\ owner\\ order\\ 2026\\-10\\-03\\)\\.)$",
-          "why": "Routing default comment: two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03) makes the FACTORY tracker the default for factory questions, so the 'derived against the fork' rationale no longer describes this deployment's default. UPSTREAM ASK: TEMPLATE/tools/questions should carry this comment (and the default below) itself; until then it is a declared deployment delta."
-        },
-        {
-          "match": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\\-dev\\-factory\"$",
-          "match_upstream": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\"$",
-          "why": "The C6 mechanical-closure probe's default tracker. The historical fork leshchenko1979/opencrabs is READ-ONLY for new issues (law v0.4.284), so probing it for a factory question's work unit answers about a repo that unit is no longer filed on -- a confident, WRONG 'still open'. Defaults to the factory tracker; OC_QUESTIONS_TRACKER still overrides. UPSTREAM ASK: flip the same default in TEMPLATE/tools/questions."
-        },
-        {
-          "match": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
-          "match_upstream": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
-          "why": "Close REASON: it hardcoded the word 'fork' while the probe now asks the factory tracker, so the message a lane reads would name the wrong repo. Interpolating the constant makes the reason state its own scope -- '<slug>#N is CLOSED' (rule: a number travels with its predicate and scope). UPSTREAM ASK: same fix in TEMPLATE/tools/questions."
-        }
-      ]
+     "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
+     "match_upstream": "^PROG\\ =\\ \"questions\"$",
+     "why": "Deployment name: derives from the invoked program so the unified-log 'tool' field and every die() remedy name the command that actually exists here. Upstream ask: the same one line."
     },
     {
-      "local": "tools/state/oc-questions-render.mjs",
-      "upstream_path": "TEMPLATE/tools/questions-render.mjs",
-      "ref": "ece0f4e8c8c3efa11e2c50eb009f6181d62f6e61",
-      "why": "The json-render catalog the register renders its page through. Byte-identical: no deployment naming is embedded in it. Re-flattened 2026-10-04 at origin/main ece0f4e (unchanged upstream since c43178d).",
-      "delta": []
+     "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ PROG\\ \\+\\ \"\\-render\\.mjs\"\\)$",
+     "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"questions\\-render\\.mjs\"\\)$",
+     "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
+    },
+    {
+     "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+     "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+     "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
+    },
+    {
+     "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ \\(os\\.environ\\.get\\(\"OC_ACTOR\"\\)\\ or\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\"\\)\\ or\\ \"unknown\"\\),$",
+     "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\",\\ \"unknown\"\\),$",
+     "why": "Fleet actor contract (#749): tools/lib/oc-log.sh resolves the log actor as OC_ACTOR first, falling back to OPENCRABS_SESSION_ID -- and the owner rule of 2026-08-30 requires every oc-* invocation to set OC_ACTOR. This copy read the session id ALONE, so every such caller was logged as actor=\"unknown\" and could not be traced to a lane. Upstream ask: the same one line."
+    },
+    {
+     "match": "^(?:\\#\\ fork\\.\\ Overridable\\ per\\ factory;\\ the\\ default\\ is\\ THIS\\ factory's\\ own\\ tracker|\\#\\ \\(two\\-stream\\ routing,\\ SKILL\\.md\\ v0\\.4\\.284,\\ owner\\ order\\ 2026\\-10\\-03\\)\\.)$",
+     "match_upstream": "^(?:\\#\\ fork\\.\\ Overridable\\ per\\ factory;\\ the\\ default\\ is\\ THIS\\ factory's\\ own\\ tracker|\\#\\ \\(two\\-stream\\ routing,\\ SKILL\\.md\\ v0\\.4\\.284,\\ owner\\ order\\ 2026\\-10\\-03\\)\\.)$",
+     "why": "Routing default comment: two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03) makes the FACTORY tracker the default for factory questions, so the 'derived against the fork' rationale no longer describes this deployment's default. UPSTREAM ASK: TEMPLATE/tools/questions should carry this comment (and the default below) itself; until then it is a declared deployment delta."
+    },
+    {
+     "match": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\\-dev\\-factory\"$",
+     "match_upstream": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\"$",
+     "why": "The C6 mechanical-closure probe's default tracker. The historical fork leshchenko1979/opencrabs is READ-ONLY for new issues (law v0.4.284), so probing it for a factory question's work unit answers about a repo that unit is no longer filed on -- a confident, WRONG 'still open'. Defaults to the factory tracker; OC_QUESTIONS_TRACKER still overrides. UPSTREAM ASK: flip the same default in TEMPLATE/tools/questions."
+    },
+    {
+     "match": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
+     "match_upstream": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
+     "why": "Close REASON: it hardcoded the word 'fork' while the probe now asks the factory tracker, so the message a lane reads would name the wrong repo. Interpolating the constant makes the reason state its own scope -- '<slug>#N is CLOSED' (rule: a number travels with its predicate and scope). UPSTREAM ASK: same fix in TEMPLATE/tools/questions."
     }
-  ]
+   ]
+  },
+  {
+   "local": "tools/state/oc-questions-render.mjs",
+   "upstream_path": "TEMPLATE/tools/questions-render.mjs",
+   "ref": "7ead63d12f8f6d8a31796320115722e1d4df5796",
+   "why": "The json-render catalog the register renders its page through. Re-flattened 2026-10-06 at origin/main 7ead63d; the only upstream movement since ece0f4e is commit 6bc92ae (fix(template): no shipped file depends on the absent `oc-*` toolchain, #85), which genericised the two header comment lines so upstream names its own `questions` / `tools/questions`. Those names are WRONG for this fleet -- the copy here really is `tools/state/oc-questions-render.mjs`, invoked by `tools/state/oc-questions` -- so both lines are declared deltas, same class as the register's deployment-name deltas. Otherwise byte-identical.",
+   "delta": [
+    {
+     "match": "^// oc\\-questions\\-render\\.mjs — the Open Questions page renderer \\(#547\\)\\.$",
+     "match_upstream": "^// questions\\-render\\.mjs — the Open Questions page renderer \\(#547\\)\\.$",
+     "why": "Self-identification header: must name the file that exists here. Upstream names its own TEMPLATE file."
+    },
+    {
+     "match": "^// VERSIONED SOURCE\\. tools/state/oc\\-questions copies this file into the build directory$",
+     "match_upstream": "^// VERSIONED SOURCE\\. tools/questions copies this file into the build directory$",
+     "why": "Names the invoker: ours is tools/state/oc-questions, upstream's is tools/questions. A genericised name here would mislead."
+    }
+   ]
+  }
+ ]
 }
