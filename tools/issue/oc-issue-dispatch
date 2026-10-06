@@ -693,6 +693,20 @@ ROSTER_TIMEOUT_SECS = _env_positive_int("OC_DISPATCH_ROSTER_TIMEOUT", 120)
 #: Overridable (#451) for the same reason as NOTIFY_TIMEOUT_SECS.
 RECEIPT_GRACE_SECS = _env_positive_int("OC_DISPATCH_RECEIPT_GRACE", 30)
 
+#: How long an `IN FLIGHT` row is believed. The row is stamped BEFORE the send
+#: blocks and settled after it returns, so its natural lifetime is ONE send
+#: budget: notify_timeout + RECEIPT_GRACE_SECS. This tool STRUCTURALLY outlives
+#: its caller (see NOTIFY_TIMEOUT_SECS), so an outer `timeout` can kill the run
+#: mid-send and no settle row ever lands -- measured 2026-10-06, #471: an
+#: `IN FLIGHT` row with no successor. `recent_dispatches` used to skip EVERY
+#: in-flight row, so that trace was invisible to dedup for the whole 7-day
+#: window and the next `--auto` re-wired the issue to a SECOND lane -- the exact
+#: vector #337 exists to stop. Past this ceiling the row is the trace of a DEAD
+#: run and is read as a settled (unverified) dispatch. The 2x margin absorbs
+#: env overrides and clock skew.
+INFLIGHT_LIVE_SECS = _env_positive_int(
+    "OC_DISPATCH_INFLIGHT_LIVE", 2 * (NOTIFY_TIMEOUT_SECS + RECEIPT_GRACE_SECS))
+
 #: Journal lines kept while scanning for a receipt. The journal is append-only
 #: and reaches megabytes, so it is streamed through a bounded deque rather than
 #: slurped (host rule: stream, never read() a whole file into a list).
@@ -953,19 +967,27 @@ def recent_dispatches(ledger_data, window_days=DISPATCH_WINDOW_DAYS):
     dispatchable again.
     """
     rows = oc_claims.parse_events(ledger_data.get("events", []))
-    cutoff = (datetime.datetime.now(datetime.timezone.utc)
-              - datetime.timedelta(days=window_days))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(days=window_days)
+    live_cutoff = now - datetime.timedelta(seconds=INFLIGHT_LIVE_SECS)
     out = {}
     for row in rows:
-        # An attempt that has STARTED is not an attempt that has SETTLED: the
-        # in-flight row exists so an operator can see a running dispatch, and
-        # it must not suppress a retry (see INFLIGHT_ROW_RE).
+        ts = _parse_ledger_ts(row["t"])
         if INFLIGHT_ROW_RE.search(row["what"]):
-            continue
+            # An attempt that has STARTED is not an attempt that has SETTLED:
+            # while a send may still be running, the row must not suppress a
+            # retry (see INFLIGHT_ROW_RE). That is true only while the send CAN
+            # still be running. This tool structurally outlives its caller, so
+            # an outer `timeout` kills it mid-send and the settle row never
+            # lands -- measured 2026-10-06, #471. Past the send-budget ceiling
+            # such a row is the trace of a DEAD run: fall through so it
+            # suppresses the re-send like any other dispatch we made (a send
+            # that may have landed is recorded, never omitted).
+            if ts is None or ts >= live_cutoff:
+                continue
         m = DISPATCH_ROW_RE.search(row["what"])
         if not m:
             continue
-        ts = _parse_ledger_ts(row["t"])
         if ts is None or ts < cutoff:
             continue
         issue = int(m.group(1))
@@ -3244,6 +3266,39 @@ def run_selftest():
     assert_true("#337 a dispatch with no timestamp is not memory (#304)", 304 not in _recent_fx)
     assert_eq("#337 the remembered lane is the 8-char prefix the writer records",
               _recent_fx[301][0], "11111111")
+
+    # Test 11b (#471): an `IN FLIGHT` row is memory ONLY while the send can still
+    # be running. The tool structurally outlives its caller, so an outer `timeout`
+    # kills it mid-send and the settle row never lands -- the row then stands
+    # forever and, because the reader skipped EVERY in-flight row, the dispatch
+    # was invisible to dedup for the whole 7-day window and the next `--auto`
+    # re-wired the issue to a SECOND lane (measured live: #471, IN FLIGHT at
+    # 15:16:24Z with no successor). Past the send-budget ceiling the row is a
+    # DEAD run's trace and must suppress the re-send. MUTATION KILL: restore the
+    # unconditional `continue` and 11b-2 reddens; drop the age test and 11b-1
+    # reddens (a live send must stay retryable).
+    _live_ts = (_now_utc - datetime.timedelta(seconds=5)).isoformat()
+    _dead_ts = (_now_utc
+                - datetime.timedelta(seconds=INFLIGHT_LIVE_SECS + 60)).isoformat()
+    _inflight_fixture = {
+        "events": [
+            {"kind": "note", "by": "toolsmith 1234", "t": _live_ts,
+             "what": "Triage dispatch issue #401 to editor aaaa1111 "
+                     "\u2014 IN FLIGHT (send started, budget 150s)"},
+            {"kind": "note", "by": "toolsmith 1234", "t": _dead_ts,
+             "what": "Triage dispatch issue #402 to editor bbbb2222 "
+                     "\u2014 IN FLIGHT (send started, budget 150s)"},
+        ]
+    }
+    _inflight_fx = recent_dispatches(_inflight_fixture)
+    assert_true("#471 a LIVE in-flight row does NOT suppress a retry (#401)",
+                401 not in _inflight_fx)
+    assert_true("#471 a DEAD in-flight row DOES suppress the re-send (#402)",
+                402 in _inflight_fx)
+    assert_eq("#471 the dead row's lane is still read from the same row",
+              _inflight_fx.get(402, ("", None))[0], "bbbb2222")
+    assert_true("#471 the ceiling is a send budget, never a fixed literal",
+                INFLIGHT_LIVE_SECS >= NOTIFY_TIMEOUT_SECS + RECEIPT_GRACE_SECS)
 
     # Test 12: #337 arm A -- fork-space scoping, probed against a REAL git repo.
     # origin/main is a fork branch that ALSO carries upstream's history, and
