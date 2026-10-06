@@ -430,7 +430,10 @@ def get_prs(upstream_repo, mock_prs_file=None):
     cmd = [
         'gh', 'pr', 'list', '--repo', upstream_repo,
         '--state', 'all', '--limit', '150',
-        '--json', 'number,title,state,headRefName,mergedAt,body'
+        # `files` feeds the #416 IDENTITY leg: a title's `(#N)` or a head branch
+        # is an ATTRIBUTION, and the cited PR's own changed files must intersect
+        # the issue's surface before a MERGED/IN_FLIGHT inference may refuse.
+        '--json', 'number,title,state,headRefName,mergedAt,body,files'
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
@@ -442,6 +445,8 @@ def get_issue_live_state(issue_num, fork_repo='leshchenko1979/opencrabs', mock_f
     # upstream PRs and branch names, and either can name an issue that was later
     # REOPENED -- so the live state is the authority, never the inference. A
     # REOPENED issue means the merged work did not actually land it.
+    # #416: `title`/`body` ride along so the SAME read supplies the issue's own
+    # surface for the identity leg -- one fork-issue read, two consumers.
     # Returns None when the state cannot be read: absence of evidence is not a
     # REOPENED verdict, so the caller keeps the refusal.
     if mock_file and os.path.exists(mock_file):
@@ -454,7 +459,7 @@ def get_issue_live_state(issue_num, fork_repo='leshchenko1979/opencrabs', mock_f
         return dict(rec) if isinstance(rec, dict) else None
     res = subprocess.run(
         ['gh', 'issue', 'view', str(issue_num), '--repo', fork_repo,
-         '--json', 'state,stateReason'],
+         '--json', 'state,stateReason,title,body'],
         capture_output=True, text=True)
     if res.returncode != 0:
         return None
@@ -597,6 +602,11 @@ def parse_issue_map(prs):
             'title': title,
             'head': head,
             'merged_at': merged_at,
+            # #416: the cited PR's own changed files, the F of the identity leg
+            # `F ∩ issue-surface`. Absent from a fixture (or from an older mock)
+            # this stays empty and the leg FAILS OPEN -- it can only ever REMOVE
+            # a refusal, never invent one.
+            'files': p.get('files') or [],
             'issues': sorted(list(issues))
         }
         pr_entries.append(entry)
@@ -1986,14 +1996,33 @@ if action == 'check':
         # the inference is stale -- the merged PR did not actually land it -- so
         # the refusal is overridden and the remaining gates decide.
         reopened = False
-        if target_iss is not None and st == 'MERGED':
+        live = None
+        if target_iss is not None:
+            # ONE fork-issue read supplies BOTH the #415 live state and the #416
+            # surface. A fixture (or an unreadable issue) without title/body
+            # yields an empty surface, which fails OPEN -- see the leg below.
             live = get_issue_live_state(target_iss, mock_file=mock_issue_state)
+        if target_iss is not None and st == 'MERGED':
             reopened = bool(live) and str(live.get('stateReason') or '').upper() == 'REOPENED'
             if reopened:
                 print(f'NOTE: Target {target} infers MERGED upstream in PR #{num}, but fork issue {target_iss} reads REOPENED -- merge refusal overridden')
-        if st == 'MERGED' and not reopened:
+        # #416 IDENTITY LEG. A title's trailing `(#N)` and a head branch are
+        # ATTRIBUTIONS, not identity (triage.md §Close identity guard, v0.4.216).
+        # The cited PR's changed files must INTERSECT the fork issue's OWN
+        # surface -- the repo paths its title+body name -- before the
+        # MERGED/IN_FLIGHT inference may refuse. Measured: PR 1557 (files under
+        # src/brain/ + src/config/) was read as issue 199 (surface src/a2a/), an
+        # EMPTY intersection, and the refusal could never expire because its
+        # evidence is a squash commit permanent on adolfousier/main. Tri-state:
+        # None (no files, or no surface) KEEPS the refusal -- absence of evidence
+        # must never turn a refusal into an approval.
+        ident = oc_claims.identity_leg_passes(
+            match.get('files'), oc_claims.issue_surface(live) if live else set())
+        if ident is False:
+            print(f'NOTE: Target {target} is cited by PR #{num} but that PR\'s changed files do not intersect the issue\'s own surface -- the MERGED/IN_FLIGHT refusal is WITHDRAWN (#416)')
+        if st == 'MERGED' and not reopened and ident is not False:
             refuse(f'REFUSED: Target {target} is already MERGED upstream in PR #{num}: {ti}')
-        elif st == 'OPEN':
+        elif st == 'OPEN' and ident is not False:
             refuse(f'REFUSED: Target {target} is currently IN_FLIGHT upstream in PR #{num}: {ti}')
         elif st == 'CLOSED':
             closed_match = match
@@ -3874,7 +3903,8 @@ cmd_selftest() {
     "state": "OPEN",
     "headRefName": "leshchenko1979/feat/cron-session-target",
     "mergedAt": null,
-    "body": "Resolves leshchenko1979/opencrabs#144"
+    "body": "Resolves leshchenko1979/opencrabs#144",
+    "files": [{"path": "src/cron/mod.rs"}]
   },
   {
     "number": 1470,
@@ -3882,7 +3912,26 @@ cmd_selftest() {
     "state": "MERGED",
     "headRefName": "leshchenko1979/fix/collapsed-table-reflow",
     "mergedAt": "2026-09-09T21:07:38Z",
-    "body": "Fixes leshchenko1979/opencrabs#132"
+    "body": "Fixes leshchenko1979/opencrabs#132",
+    "files": [{"path": "src/channels/telegram/rich/mod.rs"}]
+  },
+  {
+    "number": 1557,
+    "title": "fix(loop-guard): exempt paginated arguments from repetitive/near-match loop detection (#1901)",
+    "state": "MERGED",
+    "headRefName": "leshchenko1979/fix/1901-pagination-loop-detection",
+    "mergedAt": "2026-09-19T00:00:00Z",
+    "body": "Fixes leshchenko1979/opencrabs#1901",
+    "files": [{"path": "src/brain/agent/service/helpers.rs"}, {"path": "src/config/profile.rs"}]
+  },
+  {
+    "number": 1558,
+    "title": "fix(cron): reschedule missed jobs (#1902)",
+    "state": "MERGED",
+    "headRefName": "leshchenko1979/fix/1902-cron-missed",
+    "mergedAt": "2026-09-19T00:00:00Z",
+    "body": "Fixes leshchenko1979/opencrabs#1902",
+    "files": [{"path": "src/cron/reschedule.rs"}]
   },
   {
     "number": 1456,
@@ -4127,6 +4176,38 @@ EOF
 {
   "132": {"state": "OPEN", "stateReason": "REOPENED"},
   "144": {"state": "OPEN", "stateReason": null}
+}
+EOF
+
+  # #416 IDENTITY LEG fixtures. The measured shape: PR 1557 cites fork issue
+  # 1901 (head branch + body), but its changed files are under src/brain/ and
+  # src/config/ while the issue's own surface is src/a2a/ -- an EMPTY
+  # intersection, so the MERGED refusal must be WITHDRAWN. Issue 1902 names NO
+  # path at all, which is the FAIL-OPEN control: an unanswerable identity
+  # question KEEPS the refusal.
+  local mock_issue_state_416="$selftest_tmp/mock_issue_state_416.json"
+  cat << 'EOF' > "$mock_issue_state_416"
+{
+  "1901": {"state": "OPEN", "stateReason": null,
+           "title": "fix(a2a): the gateway listener is load-coupled to the agent runtime",
+           "body": "The listener under src/a2a/handler/notify.rs must not hold the runtime."},
+  "1902": {"state": "OPEN", "stateReason": null,
+           "title": "fix(cron): reschedule missed jobs",
+           "body": "A job whose schedule was skipped while the daemon was down."}
+}
+EOF
+  # POSITIVE CONTROL for the leg above: the SAME PR and issue, but the issue's
+  # body now NAMES a file the PR actually changed, so the intersection is
+  # non-empty and the MERGED refusal must stand.
+  local mock_issue_state_416_match="$selftest_tmp/mock_issue_state_416_match.json"
+  cat << 'EOF' > "$mock_issue_state_416_match"
+{
+  "1901": {"state": "OPEN", "stateReason": null,
+           "title": "fix(loop-guard): exempt paginated arguments",
+           "body": "Touches src/brain/agent/service/helpers.rs to widen the exemption."},
+  "1902": {"state": "OPEN", "stateReason": null,
+           "title": "fix(cron): reschedule missed jobs",
+           "body": "A job whose schedule was skipped while the daemon was down."}
 }
 EOF
 
@@ -4386,6 +4467,56 @@ EOF
     ok "reopened live state: REOPENED target overrides the MERGED refusal (and proceeds to remaining gates)"
   else
     echo "  bad  - reopened target 132 expected the override note and NO MERGED refusal, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3e. IDENTITY LEG (#416). PR 1557 cites fork issue 1901 via its head branch
+  #     AND its body, but its changed files sit under src/brain/ + src/config/
+  #     while issue 1901's own surface is src/a2a/ -- an EMPTY intersection. A
+  #     title/branch reference is an ATTRIBUTION, not identity (triage.md
+  #     §Close identity guard, v0.4.216), so the MERGED refusal is WITHDRAWN and
+  #     the target proceeds to the remaining gates (no mock commit carries
+  #     #1901, so it lands ELIGIBLE). This is the measured shape that motivated
+  #     the issue: PR 1557's squash commit is permanent on adolfousier/main, so
+  #     the false refusal could never expire.
+  #     MUTATION KILL: neuter oc_claims.identity_leg_passes (make it always
+  #     return None) and this leg goes RED -- 1901 refuses MERGED again -- while
+  #     the positive control below stays GREEN.
+  rc=0
+  out="$(OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state_416" run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "1901" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "WITHDRAWN (#416)" && ! oc_has "$out" "already MERGED upstream"; then
+    ok "#416 identity leg: empty file∩surface intersection WITHDRAWS the MERGED refusal"
+  else
+    echo "  bad  - #416 expected the WITHDRAWN note and no MERGED refusal, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3f. IDENTITY LEG POSITIVE CONTROL (#416). Same PR, same issue -- but issue
+  #     1901's body now NAMES src/brain/agent/service/helpers.rs, a file the PR
+  #     actually changed. The intersection is non-empty, so the leg must NOT
+  #     withdraw and the MERGED refusal must STAND. Without this leg, a broken
+  #     identity predicate that always returned False would pass 3e.
+  rc=0
+  out="$(OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state_416_match" run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "1901" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "already MERGED upstream in PR #1557"; then
+    ok "#416 identity leg control: a NON-empty intersection keeps the MERGED refusal"
+  else
+    echo "  bad  - #416 control expected rc=1 MERGED refusal for 1901, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3g. IDENTITY LEG FAIL-OPEN CONTROL (#416). PR 1558 cites fork issue 1902,
+  #     whose title+body name NO repo path at all. The identity question is then
+  #     UNANSWERABLE, and an unanswerable question must never turn a refusal
+  #     into an approval -- so the MERGED refusal is KEPT.
+  #     MUTATION KILL: make identity_leg_passes treat an empty surface as a
+  #     withdrawal (return False instead of None) and this leg goes RED.
+  rc=0
+  out="$(OC_HARVEST_MOCK_ISSUE_STATE="$mock_issue_state_416" run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "1902" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "already MERGED upstream in PR #1558"; then
+    ok "#416 identity leg fail-open: an issue naming NO path keeps the MERGED refusal"
+  else
+    echo "  bad  - #416 fail-open expected rc=1 MERGED refusal for 1902, got rc=$rc ($out)"
     return 1
   fi
 

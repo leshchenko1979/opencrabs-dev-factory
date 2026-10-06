@@ -486,35 +486,49 @@ def get_fork_issue_hierarchy(issue_num, repo_path=None, mock_hierarchy=None):
     except Exception:
         return None
 
-def fork_issue_is_reopened(issue_num, mock_file=None):
-    # #415: the target fork issue's OWN stateReason. A harvest inference is drawn
-    # from upstream PRs and branch names, and either can name an issue that was
-    # later REOPENED -- so the live state is the authority, never the inference.
-    # stateReason is present only for CLOSED issues in the gh issue schema, so on
-    # an OPEN issue it is the marker that the issue was closed and later reopened.
-    # Absent, unreadable, or any other value means NOT reopened: absence of
-    # evidence must never turn a refusal into an approval.
+def fork_issue_live(issue_num, mock_file=None):
+    # #415/#416: the target fork issue's OWN record -- ONE read, TWO consumers.
+    # stateReason feeds the REOPENED override (#415): a harvest inference is
+    # drawn from upstream PRs and branch names, and either can name an issue
+    # that was later REOPENED, so the live state is the authority, never the
+    # inference. title+body feed the #416 identity leg's surface. Absent,
+    # unreadable, or a fixture without title/body means the surface is EMPTY and
+    # the leg fails OPEN: absence of evidence must never turn a refusal into an
+    # approval.
     if mock_file is None:
         mock_file = os.environ.get('OC_HARVEST_MOCK_ISSUE_STATE')
     if mock_file:
         if not os.path.exists(mock_file):
-            return False
+            return None
         try:
             with open(mock_file) as f:
                 loaded = json.load(f)
         except Exception:
-            return False
+            return None
         rec = loaded.get(str(issue_num)) or loaded.get(issue_num)
-        if not isinstance(rec, dict):
-            return False
-        return str(rec.get('stateReason') or '').upper() == 'REOPENED'
-    rc, out, _ = run_cmd(['gh', 'issue', 'view', str(issue_num), '--repo', 'leshchenko1979/opencrabs', '--json', 'state,stateReason'])
+        return dict(rec) if isinstance(rec, dict) else None
+    rc, out, _ = run_cmd(['gh', 'issue', 'view', str(issue_num), '--repo', 'leshchenko1979/opencrabs',
+                          '--json', 'state,stateReason,title,body'])
     if rc != 0 or not out.strip():
-        return False
+        return None
     try:
-        return str(json.loads(out).get('stateReason') or '').upper() == 'REOPENED'
+        rec = json.loads(out)
+        return rec if isinstance(rec, dict) else None
     except Exception:
+        return None
+
+def fork_issue_is_reopened(issue_num, mock_file=None, record=None):
+    # #415: a reopen is a DELIBERATE act that contradicts a merge/landed
+    # INFERENCE, so it wins. stateReason is present only for CLOSED issues in the
+    # gh issue schema, so on an OPEN issue it is the marker that the issue was
+    # closed and later reopened. Absent, unreadable, or any other value means NOT
+    # reopened: absence of evidence must never turn a refusal into an approval.
+    # A caller-supplied pre-read of the issue (for the #416 surface) may be passed
+    # as record, so it does not pay a second gh call.
+    rec = record if record is not None else fork_issue_live(issue_num, mock_file=mock_file)
+    if not rec:
         return False
+    return str(rec.get('stateReason') or '').upper() == 'REOPENED'
 
 def is_issue_harvested_upstream(issue_num, upstream_repo, repo_path, base_ref, swaps=None, mock_prs=None):
     # 1. Check if upstream PR exists
@@ -524,7 +538,19 @@ def is_issue_harvested_upstream(issue_num, upstream_repo, repo_path, base_ref, s
         # issue reads REOPENED the merge did not land it, so this leg must not
         # answer True. The live state is read only on the hit path -- the miss
         # path already returns False and a call there buys nothing.
-        if not fork_issue_is_reopened(issue_num):
+        #
+        # #416 IDENTITY LEG. A title's trailing (#N) and a head branch are
+        # ATTRIBUTIONS, not identity (triage.md §Close identity guard, v0.4.216).
+        # The citing PR's changed files must INTERSECT the fork issue's OWN
+        # surface before this leg may answer HARVESTED -- the same guard Gate 2
+        # applies to the direct refusal, applied here where the inference is
+        # consumed for a PARENT/BLOCKER. Tri-state: None (no files, or no
+        # surface) KEEPS the inference -- absence of evidence must never clear a
+        # hold.
+        _live = fork_issue_live(issue_num)
+        _ident = oc_claims.identity_leg_passes(
+            pr.get('files'), oc_claims.issue_surface(_live) if _live else set())
+        if _ident is not False and not fork_issue_is_reopened(issue_num, record=_live):
             return True
     
     # 2. Check if base_ref already carries a commit whose Issue-Ref trailer
@@ -632,7 +658,7 @@ def check_upstream_pr(issue_num, upstream_repo, mock_prs=None):
     if mock_prs is not None:
         prs = mock_prs
     else:
-        cmd = ['gh', 'pr', 'list', '--repo', upstream_repo, '--state', 'all', '--limit', '150', '--json', 'number,title,state,headRefName,mergedAt,body']
+        cmd = ['gh', 'pr', 'list', '--repo', upstream_repo, '--state', 'all', '--limit', '150', '--json', 'number,title,state,headRefName,mergedAt,body,files']
         rc, out, _ = run_cmd(cmd)
         if rc != 0:
             return None
@@ -817,7 +843,26 @@ def vet_candidate(candidate_arg, repo_path, base_ref, upstream_repo, mock_prs=No
             # falls through to the remaining gates. An OPEN PR is an in-flight
             # harvest and still refuses: nothing was merged, so nothing can have
             # been reopened over.
-            if not (pr_st == 'MERGED' and fork_issue_is_reopened(issue_num)):
+            _live = fork_issue_live(issue_num)
+            _reopened = bool(_live) and str(_live.get('stateReason') or '').upper() == 'REOPENED'
+            # #416 IDENTITY LEG. A title's trailing (#N) and a head branch are
+            # ATTRIBUTIONS, not identity (triage.md §Close identity guard,
+            # v0.4.216). The citing PR's changed files must INTERSECT the fork
+            # issue's OWN surface before this gate may refuse. Measured: PR 1557
+            # (files under src/brain/ + src/config/) was read as issue 199
+            # (surface src/a2a/) -- an EMPTY intersection, and the refusal could
+            # never expire, because its evidence is a squash commit permanent on
+            # adolfousier/main. Tri-state: None (no files, or no surface) KEEPS
+            # the refusal -- absence of evidence must never turn a refusal into
+            # an approval.
+            _ident = oc_claims.identity_leg_passes(
+                pr.get('files'), oc_claims.issue_surface(_live) if _live else set())
+            if _ident is False:
+                sys.stderr.write(
+                    f'NOTE: Issue #{issue_num} is cited by upstream PR #{pr_num} but that '
+                    f'PR\'s changed files do not intersect the issue\'s own surface -- the '
+                    f'ALREADY_MERGED_UPSTREAM_PR refusal is WITHDRAWN (#416)\n')
+            if _ident is not False and not (pr_st == 'MERGED' and _reopened):
                 return {
                     'status': 'REJECTED',
                     'verdict': f'ALREADY_MERGED_UPSTREAM_PR: Issue #{issue_num} covered by upstream PR #{pr_num} ({pr_st})',
@@ -2158,6 +2203,80 @@ EOF
     echo "  ok 8k - #415: negative control -- a COMPLETED fork issue still refuses -> exit 0"
   else
     echo "  bad 8k - #415: COMPLETED fork issue #199 expected HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # 8p-8r. #416 IDENTITY LEG. The same class of corrupted attribution that made
+  # oc-harvest-census refuse permanently reaches this predicate too: a head
+  # branch or a body line naming fork issue #N is an ATTRIBUTION, not identity,
+  # and here the inference is consumed to HOLD a parent/blocker. The citing PR's
+  # changed files must INTERSECT the issue's own surface. Tri-state: an
+  # unanswerable question (no files, or no surface) KEEPS the inference.
+  local mock_ident_prs="$st_dir/mock_ident_prs.json"
+  cat << 'EOF' > "$mock_ident_prs"
+[
+  {
+    "number": 1557,
+    "state": "MERGED",
+    "title": "fix(loop-guard): exempt paginated arguments (#199)",
+    "headRefName": "leshchenko1979/fix/199-pagination-loop-detection",
+    "body": "Closes leshchenko1979/opencrabs#199",
+    "files": [{"path": "src/brain/agent/service/helpers.rs"}, {"path": "src/config/profile.rs"}]
+  },
+  {
+    "number": 1558,
+    "state": "MERGED",
+    "title": "fix(cron): reschedule missed jobs (#198)",
+    "headRefName": "leshchenko1979/fix/198-cron-missed",
+    "body": "Closes leshchenko1979/opencrabs#198",
+    "files": [{"path": "src/cron/reschedule.rs"}]
+  }
+]
+EOF
+  # 199's surface is src/a2a/ -- disjoint from PR 1557's files; 198 names no path
+  # at all (the fail-open control); and the MATCH fixture gives 199 a body that
+  # names a file 1557 really changed (the positive control).
+  local mock_ident_state="$st_dir/mock_ident_state.json"
+  cat << 'EOF' > "$mock_ident_state"
+{
+  "199": {"state": "OPEN", "stateReason": null,
+          "title": "fix(a2a): the gateway listener is load-coupled to the agent runtime",
+          "body": "The listener under src/a2a/handler/notify.rs must not hold the runtime."},
+  "198": {"state": "OPEN", "stateReason": null,
+          "title": "fix(cron): reschedule missed jobs",
+          "body": "A job whose schedule was skipped while the daemon was down."}
+}
+EOF
+  local mock_ident_state_match="$st_dir/mock_ident_state_match.json"
+  cat << 'EOF' > "$mock_ident_state_match"
+{
+  "199": {"state": "OPEN", "stateReason": null,
+          "title": "fix(loop-guard): exempt paginated arguments",
+          "body": "Touches src/brain/agent/service/helpers.rs to widen the exemption."}
+}
+EOF
+
+  out="$(run_engine "test-harvested" "199" "$mock_ident_prs" "$mock_ident_state")"
+  if [ "$out" = "NOT_HARVESTED" ]; then
+    echo "  ok 8p - #416: an empty file∩surface intersection WITHDRAWS the harvested inference"
+  else
+    echo "  bad 8p - #416: fork issue #199 expected NOT_HARVESTED, got ($out)"
+    return 1
+  fi
+
+  out="$(run_engine "test-harvested" "199" "$mock_ident_prs" "$mock_ident_state_match")"
+  if [ "$out" = "HARVESTED" ]; then
+    echo "  ok 8q - #416 control: a NON-empty intersection keeps the harvested inference"
+  else
+    echo "  bad 8q - #416: fork issue #199 expected HARVESTED, got ($out)"
+    return 1
+  fi
+
+  out="$(run_engine "test-harvested" "198" "$mock_ident_prs" "$mock_ident_state")"
+  if [ "$out" = "HARVESTED" ]; then
+    echo "  ok 8r - #416 fail-open: an issue naming NO path keeps the harvested inference"
+  else
+    echo "  bad 8r - #416: fork issue #198 expected HARVESTED, got ($out)"
     return 1
   fi
 

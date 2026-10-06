@@ -1046,3 +1046,105 @@ def manual_record_claim(record, target):
     return ("Target %s is manually recorded with NO PR number recorded%s -- the record is "
             "incomplete, or a not-upstreamable marker stored in the pr field without a status"
             % (target, tail))
+
+
+# ---------------------------------------------------------------------------
+# #416 / #455 -- the IDENTITY leg for a merge/landed INFERENCE.
+#
+# A trailer, a title's `(#N)`, or a branch name is an ATTRIBUTION, never an
+# identity (triage.md §Close identity guard, v0.4.216). Three tools consume that
+# class of signal, two of them to REFUSE real work:
+#
+#   * oc-harvest-census   `check` -- a MERGED inference drawn from the PR list
+#   * oc-harvest-dispatch `vet`   -- `check_upstream_pr` MERGED
+#   * oc-issue-dispatch   LANDED  -- a trailer on a commit (#455)
+#
+# and a corrupted attribution there refuses PERMANENTLY, because the evidence is
+# a commit that sits on adolfousier/main forever. Measured (#416, PR 1557): a PR
+# titled `... (#199)` on head `fix/199-pagination-loop-detection` whose changed
+# files are under src/brain/ + src/config/ was read as fork issue 199, whose
+# surface is src/a2a/ -- an EMPTY intersection, and the refusal could not expire.
+#
+# The leg: the cited artifact's changed files must INTERSECT the issue's own
+# surface before the inference may refuse. ONE home, so the consumers cannot
+# drift -- the lesson this module's own docstring records.
+# ---------------------------------------------------------------------------
+
+# A repo-relative path named anywhere in an issue's title+body. Anchored to the
+# repo's own top-level trees and to a boundary that is not a path character, so
+# a URL tail (`.../issues/441`) or a prose word does not read as a path. A
+# surface is a SET of tokens: `src/a2a` covers a file under it, and an exact
+# path matches itself.
+_ISSUE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])"
+    r"((?:tools|src|skills|docs|tests|scripts)/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*)")
+
+
+def issue_surface(issue_or_text):
+    """The repo-relative paths an issue NAMES (its own title+body).
+
+    Accepts an issue DICT (``title``/``body``) or raw text. Returns a set of
+    path tokens; an issue that names no path returns the EMPTY set, which the
+    callers treat as FAIL-OPEN -- the identity leg can only ever REMOVE a
+    refusal, never invent one.
+    """
+    if isinstance(issue_or_text, dict):
+        text = "%s\n%s" % (issue_or_text.get("title") or "",
+                           issue_or_text.get("body") or "")
+    else:
+        text = str(issue_or_text or "")
+    return set(_ISSUE_PATH_RE.findall(text))
+
+
+def file_on_surface(path, tokens):
+    """Does one changed file fall under one of `tokens`?
+
+    Three arms, because a surface token is written by a human and the path is
+    written by git:
+      * exact -- `src/a2a/handler/notify.rs` == the token;
+      * directory prefix -- the token `src/a2a` covers a file under it;
+      * basename -- reorg-robust: an issue naming `tools/oc-ledger` still
+        matches the file's current home `tools/state/oc-ledger`.
+    """
+    if not path or not tokens:
+        return False
+    p = str(path).strip()
+    if not p:
+        return False
+    for t in tokens:
+        if not t:
+            continue
+        if p == t or p.startswith(t + "/"):
+            return True
+        if p.rsplit("/", 1)[-1] == t.rsplit("/", 1)[-1]:
+            return True
+    return False
+
+
+def files_hit_surface(files, tokens):
+    """True if ANY changed file falls on the surface.
+
+    `files` may hold plain path strings or `gh pr list --json files` dicts
+    (``{"path": ...}``); both are accepted so the caller need not normalise.
+    """
+    if not files or not tokens:
+        return False
+    for f in files:
+        path = f.get("path") if isinstance(f, dict) else f
+        if file_on_surface(path, tokens):
+            return True
+    return False
+
+
+def identity_leg_passes(files, tokens):
+    """Tri-state identity verdict for a merge/landed inference.
+
+    True when the cited artifact's files INTERSECT the surface; False when both
+    sides are known and the intersection is EMPTY (the attribution is corrupt);
+    None when the question cannot be answered (no files, or no surface). Callers
+    KEEP the refusal on None -- absence of evidence must never turn a refusal
+    into an approval.
+    """
+    if not files or not tokens:
+        return None
+    return files_hit_surface(files, tokens)
