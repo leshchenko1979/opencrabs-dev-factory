@@ -559,39 +559,69 @@ def claim_is_closed(rows, idx, actor, iss):
     return False
 
 
-def open_claims(events, target_issue=None):
-    """Every still-OPEN claim row, as dicts (``idx``/``n``/``by``/``t``/``what``/``tokens``).
+def _open_rows(events, kind, target_issue=None):
+    """Shared engine for :func:`open_claims` and :func:`open_holds` (#312).
 
-    ``target_issue`` restricts the scan to one issue number (int or str).
-    A claim whose ``what`` carries no issue reference is skipped: every
-    consumer keys on the reference, so such a row is a dead letter (and is
-    refused at write time since the #19 / dead-letter residual).
+    ONE loop, so the closure semantics cannot drift between a claim and a hold:
+    both are reservations, both are released by the SAME predicate
+    (:func:`claim_is_closed` — a later CLOSING_KINDS row for the issue).
+
+    ``target_issue`` restricts the scan to one issue number (int or str). A row
+    whose ``what`` carries no issue reference is skipped: every consumer keys on
+    the reference, so such a row is a dead letter (and is refused at write time
+    since the #19 / dead-letter residual).
 
     The row's targets are :func:`primary_issue_tokens` (or its structured
-    ``issues`` field) — NOT every reference in the note. A claim that merely
-    MENTIONS another issue in prose does not claim it (#329), which is what
+    ``issues`` field) — NOT every reference in the note. A row that merely
+    MENTIONS another issue in prose does not reserve it (#329), which is what
     produced 13 phantom open claims and a false dispatch refusal.
     """
     rows = parse_events(events)
     target = int(target_issue) if target_issue is not None else None
     out = []
-    for idx, claim in enumerate(rows):
-        if claim["kind"] != "claim" or not claim["targets"]:
+    for idx, row in enumerate(rows):
+        if row["kind"] != kind or not row["targets"]:
             continue
-        if target is not None and target not in claim["targets"]:
+        if target is not None and target not in row["targets"]:
             continue
-        check = [target] if target is not None else sorted(claim["targets"])
-        unclosed = [t for t in check if not claim_is_closed(rows, idx, claim["by"], t)]
+        check = [target] if target is not None else sorted(row["targets"])
+        unclosed = [t for t in check if not claim_is_closed(rows, idx, row["by"], t)]
         if unclosed:
             out.append({
                 "idx": idx,
-                "n": claim["n"],
-                "by": claim["by"],
-                "t": claim["t"],
-                "what": claim["what"],
+                "n": row["n"],
+                "by": row["by"],
+                "t": row["t"],
+                "what": row["what"],
                 "tokens": unclosed,
             })
     return out
+
+def open_claims(events, target_issue=None):
+    """Every still-OPEN claim row, as dicts (``idx``/``n``/``by``/``t``/``what``/``tokens``).
+
+    A CLAIM is a lane's assertion that it is IMPLEMENTING the issue. For the
+    other reservation — a lane that FILED an issue and parked it without
+    implementing it — see :func:`open_holds`.
+    """
+    return _open_rows(events, "claim", target_issue)
+
+def open_holds(events, target_issue=None):
+    """Every still-OPEN hold row (kind ``hold``), the same shape as :func:`open_claims`.
+
+    A HOLD is a reservation that is NOT a claim: a lane that FILED an issue and
+    parked it (owner design gate, idea box) is not implementing it, so it holds
+    no claim row — correctly — and before #312 the dispatcher could not see the
+    reservation at all. It re-dispatched an issue its filer still held (#286:
+    dispatched twice ~3.5 h apart, then claimed by the SECOND target).
+
+    Stamp one with ``oc-ledger stamp hold "<what>" --by "<lane>"`` (the kind is
+    in oc-ledger's v1.3 vocabulary). Release is the claim predicate's: a later
+    CLOSING_KINDS row for the issue — ``unclaim`` / ``close`` / ``done`` /
+    ``confirm`` / ``reject`` — closes it. A later plain ``claim`` does NOT
+    release it, which is harmless: the claim itself already reserves the issue.
+    """
+    return _open_rows(events, "hold", target_issue)
 
 # ---------------------------------------------------------------------------
 # CLAIM FOOTPRINT (#307) — which FILES an issue's work touches

@@ -182,7 +182,14 @@ SELFTEST=0
 # 4 of the 5 closers were UNSTAMPABLE (`stamp close #N` died rc 2), and the
 # fifth (confirm) wrote to a store cmd_claims never read. A gate that never
 # closes gets ignored: #150 and #191 both shipped and both still read OPEN.
-KINDS=" ruling idea idea-verdict design-feedback design-locked review-battery incident lesson note ack roster-enroll roster-retire claim confirm close done unclaim reject swap-result notify-fanout shipchain proposal "
+# D-3 (#312, toolsmith 2026-10-06): `hold` joined the vocabulary. A lane that
+# FILES an issue and parks it (owner design gate, idea box) is not implementing
+# it, so it correctly holds no `claim` row — and the dispatcher, which derived
+# eligibility from claims alone, could not see the reservation at all: #286 was
+# dispatched twice ~3.5 h apart and claimed by the SECOND target. A `hold` is
+# the reservation that is not a claim; oc_claims.open_holds reads it, and
+# oc-issue-dispatch now treats an open hold as claimed.
+KINDS=" ruling idea idea-verdict design-feedback design-locked review-battery incident lesson note ack roster-enroll roster-retire claim hold confirm close done unclaim reject swap-result notify-fanout shipchain proposal "
 
 # Two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03): the fleet
 # files issues on THREE trackers, so an issue number is probed against all of
@@ -880,7 +887,7 @@ cmd_stamp() {
   [ -n "$by" ] || by="$(derive_by)"
   kind="${kind//_/-}"   # C-#7 (v0.4.77): underscore input normalizes to enum hyphen form
   [ "$kind" = "skill-bump" ] && die 2 "stamp: kind skill-bump is sync-only — use: oc-ledger sync --version <v>"
-  case "$KINDS" in *" $kind "*) ;; *) die 2 "stamp: unknown kind '$kind' (v1.2 vocabulary — see header)" ;; esac
+  case "$KINDS" in *" $kind "*) ;; *) die 2 "stamp: unknown kind '$kind' (v1.3 vocabulary — see header)" ;; esac
   case "$what" in --*) die 2 "stamp: what looks like a lost flag (\"$what\") — pass text with --what explicitly (glitched-argv class, ledger n=1361/n=1372)" ;; esac
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
   # #320: an explicit --by bypasses derive_by entirely, so a hand-assembled

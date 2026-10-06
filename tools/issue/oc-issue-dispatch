@@ -427,22 +427,23 @@ def run_cmd(cmd, cwd=None, env=None, timeout=60):
 
 def extract_claimed_issues(ledger_data):
     """
-    Issue numbers with a still-OPEN claim in workers-ledger.json.
+    Issue numbers with a still-OPEN reservation in workers-ledger.json.
 
-    Delegates to the canonical predicate (tools/lib/oc_claims.py, #329). The
-    previous inline copy differed from it in TWO ways, both of which made this
-    gate refuse work that no lane holds:
+    TWO reservation kinds, both read through their ONE canonical predicate
+    (tools/lib/oc_claims.py):
 
-      * it scanned the WHOLE `what` for references, so an issue merely MENTIONED
-        in a claim note read as claimed (#329's 13 phantoms);
-      * it returned EVERY claim row ever written, never applying the closure
-        predicate — so an issue whose claim had long since been closed stayed
-        "claimed" and was never dispatchable again.
+      * a `claim` row — a lane that is IMPLEMENTING the issue (#329);
+      * a `hold` row — a lane that FILED the issue and parked it without
+        implementing it (#312). Such a lane correctly holds no claim row, and
+        before #312 it was invisible here, so the issue read as free: #286 was
+        dispatched twice ~3.5 h apart and claimed by the SECOND target while
+        its filer still held it in the owner design gate.
 
     Read-only; no ledger mutation.
     """
-    return {tok for claim in oc_claims.open_claims(ledger_data.get("events", []))
-            for tok in claim["tokens"]}
+    events = ledger_data.get("events", [])
+    reserved = oc_claims.open_claims(events) + oc_claims.open_holds(events)
+    return {tok for row in reserved for tok in row["tokens"]}
 
 
 CLAIM_GATE_PATTERNS = [
@@ -2337,6 +2338,20 @@ def run_selftest():
             {"kind": "claim", "by": "editor 77777777", "what": "CLAIM #111 — held"},
             {"kind": "unclaim", "by": "triage 88888888",
              "what": "UNCLAIM #999 — stood down in favour of editor lane 77777777"},
+            # #312: a HOLD is a reservation that is not a claim. The filer parked
+            # the issue and is not implementing it, so it holds no claim row --
+            # and before #312 the dispatcher could not see it at all.
+            {"kind": "hold", "by": "editor 99999999",
+             "what": "HOLD #112 — filed, parked in the owner design gate"},
+            # ...and a hold is RELEASED by the same closing predicate as a claim.
+            {"kind": "hold", "by": "editor 99999999",
+             "what": "HOLD #113 — filed, parked pending owner"},
+            {"kind": "unclaim", "by": "editor 99999999",
+             "what": "UNCLAIM #113 — design gate dropped, resumable"},
+            # Negative control: a bare prose mention in a non-reserving kind
+            # must not hold anything (#329's phantom class, on the hold side).
+            {"kind": "note", "by": "triage",
+             "what": "noted that #114 is still parked"},
         ]
     }
     claimed = extract_claimed_issues(mock_ledger)
@@ -2351,6 +2366,12 @@ def run_selftest():
     assert_true("#329: genuine dual claim keeps both", 108 in claimed and 109 in claimed)
     assert_true("#329: closed claim releases its issue (#110)", 110 not in claimed)
     assert_true("#305: foreign prose mention does not release (#111)", 111 in claimed)
+    # #312: the hold legs. A `hold` row is a reservation by a lane that FILED
+    # the issue and parked it in the owner design gate -- correctly without a
+    # claim row, which is exactly why it used to read as free.
+    assert_true("#312: a hold reserves its issue (#112)", 112 in claimed)
+    assert_true("#312: a released hold releases its issue (#113)", 113 not in claimed)
+    assert_true("#312: prose in a non-reserving kind holds nothing (#114)", 114 not in claimed)
 
     # Test 3: Topic affinity scoring
     issue_tg = {"number": 169, "title": "telegram_send re-poisons topic memory", "body": "stale-topic eviction"}
