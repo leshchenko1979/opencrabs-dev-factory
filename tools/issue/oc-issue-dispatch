@@ -316,7 +316,7 @@ ROLE_DOMAINS = {
 
 
 def check_journal_receipt(target_uuid, start_epoch, journal_path=None, poll_grace_secs=0,
-                          send_budget_secs=0):
+                          send_budget_secs=0, sender_label=None, notify_id=None):
     """
     Verify if a delivery receipt for target_uuid exists in session-notify.journal
     since start_epoch. Supports a polling grace window for slow async daemon writes.
@@ -327,11 +327,39 @@ def check_journal_receipt(target_uuid, start_epoch, journal_path=None, poll_grac
     unrelated delay rather than covering the remainder of the send's own budget.
     A budget already spent yields exactly one pass, so a run that was SIGTERM'd
     far past its budget does not block here.
+
+    #472 -- MESSAGE IDENTITY, not just (target, window). Returns a TRI-STATE
+    string rather than a bare bool, because "a delivery reached this lane in the
+    window" and "OUR delivery reached this lane" are different claims, and only
+    the second settles a dispatch:
+
+      "identity"  a row matched AND carried this send's own identity --
+                  `caller=a2a:<sender_label>`, or `detail` holding
+                  `notify_id=<notify_id>` (or the deferred form
+                  `notification id <notify_id>`)
+      "fallback"  a row matched on (target, window) ALONE: no identity was
+                  supplied, so the claim is weaker and the caller must not read
+                  it as an unqualified success (see classify_notify_rc)
+      None        no match
+
+    When an identity IS supplied, a (target, window) row that does not carry it
+    is NOT a match -- that is precisely the #472 defect (Triage 41ca47a9,
+    2026-09-21: #433's settle at 06:45:46.069Z fell inside #466's window, so
+    #466 was stamped sent although no envelope for it ever landed).
+
+    Why the sender label carries the identity on this tool's leg: the journal's
+    `caller` field is `a2a:<label>` and the label is caller-controlled
+    free-form, so a per-SEND label is an identifier no other send can produce.
+    The CLI/A2A leg does NOT write the minted notify_id into `detail` for a
+    delivered row (measured: 0 of 2333 `caller=a2a:` rows carry `notify_id=`),
+    so `detail`-borne identity is unusable from here without a Rust change.
     """
     if not journal_path:
         journal_path = os.path.expanduser("~/.opencrabs/profiles/ops/logs/session-notify.journal")
         if not os.path.exists(journal_path):
             journal_path = os.path.expanduser("~/.opencrabs/logs/session-notify.journal")
+
+    _want_caller = "a2a:" + sender_label if sender_label else None
 
     if send_budget_secs > 0:
         deadline = start_epoch + send_budget_secs
@@ -354,16 +382,29 @@ def check_journal_receipt(target_uuid, start_epoch, journal_path=None, poll_grac
                         if t_val == target_uuid and o_val in ("delivered", "injected", "redirected", "queued") and e_val == "0":
                             try:
                                 dt = datetime.datetime.fromisoformat(ts_str)
-                                if dt.timestamp() >= start_epoch - 5:
-                                    return True
                             except Exception:
                                 continue
+                            if dt.timestamp() < start_epoch - 5:
+                                continue
+                            c_val = caller.split("=", 1)[1] if "=" in caller else caller
+                            detail = "\t".join(parts[5:])
+                            if _want_caller and c_val == _want_caller:
+                                return "identity"
+                            if notify_id and (f"notify_id={notify_id}" in detail
+                                              or f"notification id {notify_id}" in detail):
+                                return "identity"
+                            if _want_caller or notify_id:
+                                # The row is (target, window) but NOT ours -- the
+                                # #472 false positive. Keep scanning: a later row
+                                # may still be this send's own.
+                                continue
+                            return "fallback"
             except Exception:
                 pass
         if time.time() >= deadline:
             break
         time.sleep(2)
-    return False
+    return None
 
 
 def run_cmd(cmd, cwd=None, env=None, timeout=60):
@@ -1560,6 +1601,18 @@ def classify_notify_rc(receipt_seen, rc):
     Returns 0 when a journal receipt settles it as delivered, 3 when the send
     provably did NOT happen, or RC_UNVERIFIED when the transport is ambiguous.
 
+    `receipt_seen` is the TRI-STATE from check_journal_receipt (#472):
+      "identity" -- matched on this send's OWN identity: a full success.
+      "fallback" -- matched on (target, window) alone, with no identity to
+                    confirm it. It is EVIDENCE, not proof: the row could belong
+                    to a neighbouring send to the same lane (#433's settle once
+                    settled #466 that way). Deliberately NOT an unqualified
+                    success -- returning 0 here would hand the defect back.
+                    Unreachable from dispatch_to_lane, which always supplies a
+                    sender label; it exists so a future caller that omits one
+                    cannot silently regain the hole.
+      falsy      -- no match.
+
     Non-delivery is the SPECIAL case, not the default -- the allowlist below
     holds exactly ONE code, because only rc 2 positively asserts "nothing sent,
     nothing created". Every other non-zero rc is ambiguous about delivery:
@@ -1577,7 +1630,7 @@ def classify_notify_rc(receipt_seen, rc):
     The bias is deliberate: a duplicate dispatch is silent and hard to detect,
     while a 7-day suppression is visible and recoverable.
     """
-    if receipt_seen:
+    if receipt_seen == "identity":
         return 0
     if rc == 2:
         return 3
@@ -1624,8 +1677,19 @@ def dispatch_to_lane(target_uuid, envelope, issue_num, dry_run=False, ledger_pat
     # indistinguishable from "never ran" (HQ report 2026-09-25). Best-effort --
     # a stamp fault must never abort a dispatch that is about to go out.
     _stamp_inflight(issue_num, target_uuid, notify_timeout + RECEIPT_GRACE_SECS)
+    # #472: a per-SEND sender label. The journal records it as
+    # `caller=a2a:<label>` and the label is caller-controlled free-form, so this
+    # send's row carries an identity no other send can produce -- which is what
+    # lets the receipt check below demand OUR delivery rather than accept any
+    # delivery to this lane inside the window.
+    # OC_DISPATCH_SEND_LABEL pins it for a fixture (the same env-seam pattern as
+    # OC_DEPLOY_FETCH / OC_SWAP_INFLIGHT_LISTER); unset, every send is unique.
+    send_label = (os.environ.get("OC_DISPATCH_SEND_LABEL")
+                  or f"oc-issue-dispatch/#{issue_num}-{os.urandom(4).hex()}")
+    send_env = dict(os.environ, OC_NOTIFY_SENDER=send_label)
     if os.path.exists(notify_script):
-        rc, out, err = run_cmd([notify_script, target_uuid, envelope, title], timeout=notify_timeout)
+        rc, out, err = run_cmd([notify_script, target_uuid, envelope, title],
+                               timeout=notify_timeout, env=send_env)
         label = "lib/oc-notify.sh"
     else:
         # Direct CLI fallback if lib/oc-notify.sh missing. The subcommand is
@@ -1636,6 +1700,7 @@ def dispatch_to_lane(target_uuid, envelope, issue_num, dry_run=False, ledger_pat
         if not os.path.exists(notify_bin):
             notify_bin = "/usr/local/bin/opencrabs"
         cmd = [notify_bin, "session", "notify", "--profile", "ops", "--mode", "turn-end",
+               "--sender", send_label,
                "--title", title, "--text", envelope, target_uuid]
         rc, out, err = run_cmd(cmd, timeout=notify_timeout)
         label = "session notify"
@@ -1649,14 +1714,25 @@ def dispatch_to_lane(target_uuid, envelope, issue_num, dry_run=False, ledger_pat
                   f"polling for a receipt for another {RECEIPT_GRACE_SECS}s "
                   f"(window {grace}s) before calling the send unverified.",
                   file=sys.stderr)
-        receipt_seen = check_journal_receipt(target_uuid, t0, send_budget_secs=grace)
+        receipt_seen = check_journal_receipt(target_uuid, t0, send_budget_secs=grace,
+                                             sender_label=send_label)
         verdict = classify_notify_rc(receipt_seen, rc)
         if verdict == 0:
             rc = 0
         elif verdict == RC_UNVERIFIED:
-            print(f"WARN: {label} failed (rc={rc}) and no receipt for "
-                  f"{target_uuid[:8]} is in session-notify.journal yet -- the send "
-                  f"may still land.", file=sys.stderr)
+            if receipt_seen == "fallback":
+                # A delivery reached the lane in the window but carries no
+                # identity for THIS send (#472): weaker than proof, so the
+                # dispatch stays UNVERIFIED rather than being stamped sent.
+                print(f"WARN: {label} failed (rc={rc}); a delivery to "
+                      f"{target_uuid[:8]} IS in session-notify.journal inside the window, "
+                      f"but it carries no identity for this send "
+                      f"(no caller=a2a:{send_label}) -- recording the dispatch as "
+                      f"UNVERIFIED, not delivered (#472).", file=sys.stderr)
+            else:
+                print(f"WARN: {label} failed (rc={rc}) and no receipt for "
+                      f"{target_uuid[:8]} is in session-notify.journal yet -- the send "
+                      f"may still land.", file=sys.stderr)
             _stamp_dispatch(issue_num, target_uuid, unverified=True, rc=rc)
             return RC_UNVERIFIED
         else:
@@ -3452,8 +3528,10 @@ def run_selftest():
     # Test 16: #S -- the notify-rc classifier is a PURE predicate, so its
     # allowlist is asserted directly instead of through a scratch transport.
     # This is the hermetic half of the /tmp negative control's ARM 4 / ARM 5.
+    # #472: the receipt argument is now the TRI-STATE, so "a receipt settles it"
+    # must be spelled with the value that MEANS our own delivery arrived.
     assert_eq("#S classify_notify_rc: a receipt settles it as delivered",
-              classify_notify_rc(True, 124), 0)
+              classify_notify_rc("identity", 124), 0)
     assert_eq("#S classify_notify_rc: rc 2 is the ONE proven non-delivery",
               classify_notify_rc(False, 2), 3)
     assert_eq("#S classify_notify_rc: rc 124 (timeout) is UNVERIFIED",
@@ -3464,11 +3542,116 @@ def run_selftest():
               classify_notify_rc(False, -9), RC_UNVERIFIED)
     assert_eq("#S classify_notify_rc: rc 1 is ambiguous, so UNVERIFIED",
               classify_notify_rc(False, 1), RC_UNVERIFIED)
+    # #472: a (target, window)-only match is EVIDENCE, never proof. It must NOT
+    # settle a dispatch as delivered -- that is the whole defect.
+    assert_eq("#472 classify_notify_rc: a fallback (no identity) match is NOT a delivery",
+              classify_notify_rc("fallback", 124), RC_UNVERIFIED)
+    assert_eq("#472 classify_notify_rc: a fallback match still is not a NON-delivery",
+              classify_notify_rc("fallback", 2), 3)
     # Set equality, not a count: rc 2 is the ONLY code in the tested population
     # that may leave the dispatch UNRECORDED (so a retry is correct).
     assert_eq("#S classify_notify_rc: rc 2 is the ONLY non-delivery verdict",
               sorted(c for c in (2, 4, 124, 1, -9, 137)
                      if classify_notify_rc(False, c) == 3), [2])
+
+    # Test 18 (#472): the journal receipt carries MESSAGE IDENTITY, not just
+    # (target, window). Hermetic: temp journal, relative offsets, no clock bomb.
+    # MUTATION KILL: replace the identity gate in check_journal_receipt with
+    # `if False: continue; return "identity"` (the pre-#472 semantics) and the
+    # three "neighbour" legs below go red while every "our own" leg stays green.
+    with tempfile.TemporaryDirectory() as _jd472:
+        _jp472 = os.path.join(_jd472, "session-notify.journal")
+        _now472 = time.time()
+        _ts472 = datetime.datetime.fromtimestamp(_now472 - 1, datetime.timezone.utc).isoformat()
+        _lane = "0a0a1b1b"
+        _mine = "oc-issue-dispatch/#472-deadbeef"
+        _neighbour = "oc-issue-dispatch/#471-cafebabe"
+        _nid = "11111111-2222-3333-4444-555555555555"
+        with open(_jp472, "w", encoding="utf-8") as _jf472:
+            # A NEIGHBOUR's delivery to the SAME lane, inside the window: this is
+            # the #472 false positive (Triage 41ca47a9, 2026-09-21).
+            _jf472.write(f"{_ts472}\tcaller=a2a:{_neighbour}\ttarget={_lane}\toutcome=delivered\texit=0\n")
+        assert_eq("#472 a neighbour's delivery to the SAME lane is NOT our receipt",
+                  check_journal_receipt(_lane, _now472 - 5, _jp472, sender_label=_mine), None)
+        assert_eq("#472 ...but it IS that neighbour's own receipt",
+                  check_journal_receipt(_lane, _now472 - 5, _jp472, sender_label=_neighbour), "identity")
+        # The legacy caller, which supplies no identity, still gets the weak
+        # (target, window) answer -- labelled as the fallback it is.
+        assert_eq("#472 no identity supplied -> the (target,window) match is a FALLBACK",
+                  check_journal_receipt(_lane, _now472 - 5, _jp472), "fallback")
+        with open(_jp472, "a", encoding="utf-8") as _jf472:
+            _jf472.write(f"{_ts472}\tcaller=a2a:{_mine}\ttarget={_lane}\toutcome=delivered\texit=0\n")
+            _jf472.write(f"{_ts472}\tcaller=a2a:cli\ttarget=0c0c1d1d\toutcome=delivered\texit=0\tdetail=notify_id={_nid}\n")
+        assert_eq("#472 our own caller settles it as IDENTITY",
+                  check_journal_receipt(_lane, _now472 - 5, _jp472, sender_label=_mine), "identity")
+        # The detail-borne form: the in-process tool leg writes notify_id, and a
+        # caller that supplies one is matched on it even with no label.
+        assert_eq("#472 a detail=notify_id match is IDENTITY (the in-process leg)",
+                  check_journal_receipt("0c0c1d1d", _now472 - 5, _jp472, notify_id=_nid), "identity")
+        assert_eq("#472 a DIFFERENT notify_id is not a match",
+                  check_journal_receipt("0c0c1d1d", _now472 - 5, _jp472,
+                                        notify_id="99999999-9999-9999-9999-999999999999"), None)
+        # Tri-state, spelled out: exactly three outcomes, and the two truthy ones
+        # are DISTINCT strings (a bare truthiness test would collapse them).
+        assert_true("#472 the receipt verdict is TRI-STATE, not a bool",
+                    {"identity", "fallback", None} ==
+                    {check_journal_receipt(_lane, _now472 - 5, _jp472, sender_label=_mine),
+                     check_journal_receipt(_lane, _now472 - 5, _jp472),
+                     check_journal_receipt("ffff0000", _now472 - 5, _jp472)})
+
+    # Test 18b (#472): END TO END through dispatch_to_lane. The identity leg has
+    # to be on the REAL send path, not only in the predicate, or a neighbour's row
+    # still settles the dispatch. Scratch TOOL_DIR + scratch HOME, notify stubbed
+    # to the defect's rc 124.
+    _saved_tool_dir_472 = TOOL_DIR
+    _saved_home_472 = os.environ.get("HOME")
+    _scratch472 = tempfile.mkdtemp(prefix="oc472-")
+    try:
+        os.makedirs(os.path.join(_scratch472, "tools", "lib"), exist_ok=True)
+        os.makedirs(os.path.join(_scratch472, "tools", "state"), exist_ok=True)
+        _stub_notify = os.path.join(_scratch472, "tools", "lib", "oc-notify.sh")
+        with open(_stub_notify, "w") as _f:
+            _f.write("#!/bin/sh\nexit 124\n")
+        os.chmod(_stub_notify, 0o755)
+        _stamp_log = os.path.join(_scratch472, "rows.txt")
+        _stub_ledger = os.path.join(_scratch472, "tools", "state", "oc-ledger")
+        with open(_stub_ledger, "w") as _f:
+            _f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "' + _stamp_log + '"\n')
+        os.chmod(_stub_ledger, 0o755)
+        TOOL_DIR = os.path.join(_scratch472, "tools")
+        os.environ["HOME"] = _scratch472
+        _journal472 = os.path.join(_scratch472, ".opencrabs", "profiles", "ops",
+                                   "logs", "session-notify.journal")
+        os.makedirs(os.path.dirname(_journal472), exist_ok=True)
+        _lane472 = "0e0e1f1f"
+        _ts472b = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with open(_journal472, "w", encoding="utf-8") as _f:
+            _f.write(f"{_ts472b}\tcaller=a2a:oc-issue-dispatch/#471-neighbour\t"
+                     f"target={_lane472}\toutcome=delivered\texit=0\n")
+        os.environ["OC_DISPATCH_SEND_LABEL"] = "oc-issue-dispatch/#472-ownsend"
+        _saved_grace = RECEIPT_GRACE_SECS
+        globals()["RECEIPT_GRACE_SECS"] = 0
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                # notify_timeout=0 -> the stub is killed instantly (rc 124, the
+                # defect's premise) and the receipt budget is 0, so the poll makes
+                # exactly one pass instead of sleeping out a 120s window.
+                _rc472 = dispatch_to_lane(_lane472, "envelope", 472, notify_timeout=0)
+        finally:
+            globals()["RECEIPT_GRACE_SECS"] = _saved_grace
+            os.environ.pop("OC_DISPATCH_SEND_LABEL", None)
+        assert_eq("#472 E2E: a neighbour's row does NOT settle the dispatch (UNVERIFIED)",
+                  _rc472, RC_UNVERIFIED)
+        _rows472 = open(_stamp_log).read() if os.path.exists(_stamp_log) else ""
+        assert_true("#472 E2E: the dispatch IS recorded, so a re-send is suppressed",
+                    "receipt unverified" in _rows472)
+    finally:
+        TOOL_DIR = _saved_tool_dir_472
+        if _saved_home_472 is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = _saved_home_472
+        shutil.rmtree(_scratch472, ignore_errors=True)
 
     # Test 16b (#576 follow-up): the pre-send IN FLIGHT note must be SETTLED on
     # the one path that writes no dispatch record (rc=2, the proven

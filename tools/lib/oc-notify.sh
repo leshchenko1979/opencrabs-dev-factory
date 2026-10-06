@@ -17,6 +17,13 @@
 #   OC_NOTIFY_BIN      notify binary path (default: $NOTIFY_BIN, then
 #                      /usr/local/bin/opencrabs, then PATH lookup)
 #   OC_NOTIFY_PROFILE  --profile value (default ops)
+#   OC_NOTIFY_SENDER   per-SEND sender label (default: the caller's own $3).
+#                      The journal records it as `caller=a2a:<label>`, and the
+#                      label is caller-controlled free-form, so a caller needing
+#                      per-message journal identity sets it (#472). Setting it
+#                      also DISABLES this file's (target,window) journal
+#                      fallback: the caller then owns the stricter, identity-
+#                      keyed check, keeping that predicate in ONE home.
 
 oc_notify_resolve_bin() { # -> echoes binary path, rc 1 if unresolvable
   local b="${OC_NOTIFY_BIN:-${NOTIFY_BIN:-}}"
@@ -28,6 +35,11 @@ oc_notify_resolve_bin() { # -> echoes binary path, rc 1 if unresolvable
 oc_notify_session() { # $1=bin $2=profile $3=sender $4=uuid $5=title $6=text
   # -> 0 delivered / rc passthrough of the session-notify contract
   local bin="$1" profile="$2" sender="$3" uuid="$4" title="$5" text="$6"
+  # #472: a caller needing per-SEND journal identity supplies its own sender
+  # label; the journal's `caller=a2a:<label>` is caller-controlled free-form, so
+  # the receipt predicate can then match THIS send and not a neighbour's.
+  # Unset ⇒ every existing caller keeps today's behaviour exactly.
+  [ -n "${OC_NOTIFY_SENDER:-}" ] && sender="$OC_NOTIFY_SENDER"
   local nrc=0 rrc=0 t_start
   t_start="$(date +%s)"
   # #466: the CLI leg needs a budget of its OWN. Without one a hung
@@ -94,7 +106,11 @@ except Exception:
 
   # Final verification: if CLI or caller timed out or reported failure, check session-notify.journal
   # to see if the notify actually landed (prevents false negative rc=124 on slow CLI returns).
-  if [ "$nrc" -ne 0 ] && [ "$nrc" -ne 2 ] && [ "$nrc" -ne 3 ]; then
+  # #472: when the caller supplied OC_NOTIFY_SENDER it owns the receipt check
+  # (identity-keyed, in oc-issue-dispatch); this (target,window) predicate is
+  # then skipped so the two do not drift apart. Standalone CLI use (no sender
+  # override) keeps the fallback below unchanged.
+  if [ -z "${OC_NOTIFY_SENDER:-}" ] && [ "$nrc" -ne 0 ] && [ "$nrc" -ne 2 ] && [ "$nrc" -ne 3 ]; then
     local j_rc=1
     python3 -c "
 import sys, os, datetime

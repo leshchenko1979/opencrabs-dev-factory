@@ -24,6 +24,14 @@ ARMS
   ARM 3  post-fix, receipt already present -> rc 0 + stamp, NOT "unverified"
   ARM 4  post-fix, rc 2 (no_route)         -> rc 3 + NO stamp   <-- the allowlist
   ARM 5  post-fix, rc 4 (catch-all, #418)  -> rc 6 + stamp      <-- #433
+  ARM 6  post-fix, rc124, a NEIGHBOUR's delivery to the SAME lane
+                                           -> rc 6 + stamp      <-- #472
+             The pre-#472 predicate matched on (target, window) alone, so ANY
+             row for that lane inside the window settled THIS send. ARM 6 seeds
+             a row with a DIFFERENT sender label and the same target, and must
+             read rc 6 -- the same rc as the empty journal. Its discriminator is
+             ARM 3, which seeds OUR label and must read rc 0; if both read the
+             same, the identity leg is inert and the control says so.
 
 THE PRE-FIX BASELINE (why it comes from git, not from this tree)
   ARM 2 needs the revision BEFORE the #462 fix. A committed control cannot
@@ -131,23 +139,35 @@ def materialize_baseline():
 
 
 def shim_grace(mod):
-    """Force the receipt poll's grace/budget to 0, preserving the real logic."""
+    """Force the receipt poll's grace/budget to 0, preserving the real logic.
+
+    #472 added `sender_label` / `notify_id` to the real signature. The shim
+    zeroes ONLY the poll window and FORWARDS the identity kwargs, so the real
+    identity classification runs -- which is the whole point of ARM 3 vs ARM 6.
+    A shim that swallowed them would make every arm read "no identity" and
+    silently pass ARM 6 for the wrong reason.
+    """
     orig = mod.check_journal_receipt
     nparams = len(inspect.signature(orig).parameters)
 
     def shim(target, start, journal_path=None, poll_grace_secs=0,
-             send_budget_secs=0):
+             send_budget_secs=0, **kw):
         args = [target, start, journal_path, 0]
         if nparams >= 5:
             args.append(0)
-        return orig(*args)
+        return orig(*args, **kw)
 
     mod.check_journal_receipt = shim
     return nparams
 
 
-def seed_journal_line(journal_path, target, ts=None):
-    """Write ONE receipt line in the journal's own field layout."""
+def seed_journal_line(journal_path, target, ts=None, caller=None):
+    """Write ONE receipt line in the journal's own field layout.
+
+    `caller` sets the row's `caller=` field -- the per-send identity leg (#472).
+    Omitted, the live template's own caller is kept (a row that is NOT this
+    send's), which is exactly the false-positive shape the new arm exercises.
+    """
     if ts is None:
         ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
     # Copy the live line's layout when it is readable, so the fixture cannot
@@ -166,6 +186,8 @@ def seed_journal_line(journal_path, target, ts=None):
                     "outcome=delivered", "exit=0"]
     row = list(template)
     row[0] = ts
+    if caller:
+        row[1] = "caller=" + caller
     row[2] = "target=" + target
     row[3] = "outcome=delivered"
     row[4] = "exit=0"
@@ -174,8 +196,15 @@ def seed_journal_line(journal_path, target, ts=None):
         fh.write("\t".join(row) + "\n")
 
 
-def run_arm(label, tool_src, seed_receipt, stub_rc=124):
-    """One arm in its own scratch HOME + scratch tools/ dir."""
+def run_arm(label, tool_src, seed_receipt, stub_rc=124, seed_caller=None,
+            send_label=None):
+    """One arm in its own scratch HOME + scratch tools/ dir.
+
+    `send_label` pins the send's own identity (OC_DISPATCH_SEND_LABEL, #472) so a
+    fixture row can be seeded with the exact `caller=a2a:<label>` the send will
+    match on; `seed_caller` overrides the seeded row's caller independently, which
+    is how ARM 6 materialises a neighbour's delivery to the SAME lane.
+    """
     scratch = tempfile.mkdtemp(prefix="oid-neg-")
     tools = os.path.join(scratch, "tools")
     os.makedirs(os.path.join(tools, "lib"), exist_ok=True)
@@ -217,11 +246,15 @@ def run_arm(label, tool_src, seed_receipt, stub_rc=124):
                            "logs", "session-notify.journal")
 
     os.environ["HOME"] = scratch
+    if send_label:
+        os.environ["OC_DISPATCH_SEND_LABEL"] = send_label
+    else:
+        os.environ.pop("OC_DISPATCH_SEND_LABEL", None)
     mod = load(os.path.join(tools, "oc-issue-dispatch"))
     shim_grace(mod)
 
     if seed_receipt:
-        seed_journal_line(journal, TARGET)
+        seed_journal_line(journal, TARGET, caller=seed_caller)
 
     rc = mod.dispatch_to_lane(TARGET, ENVELOPE, ISSUE)
 
@@ -229,6 +262,7 @@ def run_arm(label, tool_src, seed_receipt, stub_rc=124):
     if os.path.exists(stamp_log):
         with open(stamp_log) as fh:
             rows = [r.rstrip("\n") for r in fh if r.strip()]
+    os.environ.pop("OC_DISPATCH_SEND_LABEL", None)
     shutil.rmtree(scratch, ignore_errors=True)
     return rc, rows
 
@@ -308,8 +342,13 @@ else:
     print("        input it FAILS on, so this run is INCONCLUSIVE, not PASS.")
 
 # --- ARM 3: post-fix, receipt already present -----------------------------
-print("\n[ARM 3] post-fix | rc124 | receipt PRESENT -> expect rc 0 + verified stamp")
-rc3, rows3 = run_arm("arm3", TOOL_POST, seed_receipt=True)
+# #472: the receipt must be OUR OWN send's. The label is pinned and the fixture
+# row carries exactly that caller, so this arm still asserts "our receipt landed
+# -> rc 0 + a verified stamp" rather than merely "something reached the lane".
+ARM3_LABEL = "oc-issue-dispatch/#999-arm3dead"
+print("\n[ARM 3] post-fix | rc124 | receipt PRESENT (our identity) -> expect rc 0 + verified stamp")
+rc3, rows3 = run_arm("arm3", TOOL_POST, seed_receipt=True,
+                     send_label=ARM3_LABEL, seed_caller="a2a:" + ARM3_LABEL)
 inf3, rec3 = split_rows(rows3)
 check("arm3 rc is 0 (receipt confirmed)", rc3 == 0, "got %r" % (rc3,))
 check("arm3 DID stamp the dispatch", len(rec3) == 1, "%d record(s)" % len(rec3))
@@ -339,6 +378,29 @@ check("arm5 DID stamp the dispatch", len(rec5) == 1, "%d record(s)" % len(rec5))
 if rec5:
     check("arm5 stamp says the receipt is unverified",
           "receipt unverified" in rec5[0], rec5[0][:120])
+
+# --- ARM 6: post-fix, a NEIGHBOUR's delivery to the same lane (#472) -------
+# The defect itself: another send's row for the SAME target inside the window
+# used to settle this dispatch as delivered. Triage 41ca47a9, 2026-09-21: #433's
+# settle at 06:45:46.069Z fell inside #466's window, so #466 was stamped sent
+# although no envelope for it ever landed. Post-fix the row is EVIDENCE, not
+# proof -> rc 6 + an unverified stamp, and the 7-day dedup still suppresses a
+# re-send. THIS ARM IS THE DISCRIMINATING LEG for #472: neutering the identity
+# check makes it read rc 0 and go red, and nothing else.
+ARM6_LABEL = "oc-issue-dispatch/#998-arm6dead"
+print("\n[ARM 6] post-fix | rc124 | neighbour's delivery to SAME lane -> expect rc 6 + unverified stamp")
+rc6, rows6 = run_arm("arm6", TOOL_POST, seed_receipt=True,
+                     send_label=ARM6_LABEL, seed_caller="a2a:oc-issue-dispatch/#997-someoneelse")
+inf6, rec6 = split_rows(rows6)
+check("arm6 rc is RC_UNVERIFIED (6) -- a neighbour's row is not our receipt (#472)",
+      rc6 == 6, "got %r" % (rc6,))
+check("arm6 DID stamp the dispatch (a re-send is suppressed, not repeated)",
+      len(rec6) == 1, "%d record(s)" % len(rec6))
+if rec6:
+    check("arm6 stamp says the receipt is unverified",
+          "receipt unverified" in rec6[0], rec6[0][:120])
+check("CONTROL DISCRIMINATES (#472): our receipt (arm3) != neighbour's (arm6)",
+      rc3 == 0 and rc6 == 6, "arm3=%r arm6=%r" % (rc3, rc6))
 
 # --- the predicate is rc-2-SPECIFIC, not "any non-zero" -------------------
 check("PREDICATE: rc2 / rc124 / rc4 are classified DIFFERENTLY",

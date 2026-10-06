@@ -2424,6 +2424,75 @@ grep -q '^a2a$' "$NFMARK" 2>/dev/null \
   || bad "hung CLI returned rc='$NFRC', want 124 (0/2/3 would read as a delivery outcome)"
 rm -rf "$NFSTUB"
 
+# ---- 73b. lib/oc-notify.sh per-send sender + single receipt home (#472) ----
+# Defect: the (target, window) journal fallback below is TARGET-scoped, so any
+# delivery to the same lane inside the window could settle a send that never
+# landed (Triage 41ca47a9, 2026-09-21: #433's row settled #466). The caller
+# (oc-issue-dispatch) now supplies a per-SEND sender label and owns the stricter,
+# identity-keyed receipt check; this lib must (a) forward that label to the CLI
+# as --sender and (b) stand its own weaker predicate DOWN when it is set, so the
+# two predicates do not drift.
+#
+# The leg discriminates on the INVOCATION, not on rc, and that is deliberate:
+# measured 2026-10-06, the fallback below is INERT -- `local j_rc=1` plus
+# `python3 ... || j_rc=$?` leaves j_rc at 1 when the check SUCCEEDS, so a
+# matching journal row still returns the transport's rc (a direct probe of the
+# embedded python exits 0; the function returns 4). Asserting rc here would
+# therefore assert a bug, and would discriminate nothing (both arms read 4).
+# So: run the same transport failure twice, differing ONLY in the override, and
+# require the journal check to be REACHED in the legacy arm and SKIPPED in the
+# override arm.
+section "lib/oc-notify.sh per-send sender (#472)"
+S472="$(mktemp -d)"; M472="$S472/mark"
+cat > "$S472/bin" <<'S472BINEOF'
+#!/bin/sh
+echo "argv=$*" >> "$MARK"
+exit 4
+S472BINEOF
+chmod +x "$S472/bin"
+# The A2A fallback and the journal check are BOTH `python3 -c`; record which one
+# ran. The journal branch exits 1 (no match) so both arms keep the transport's
+# rc 4 and the MARK is the only difference. Delimiter QUOTED: nothing here is
+# expanded at write time, and an unquoted heredoc into a `python3`-named file is
+# the exact shape the battery's shell-quoting guard (§ARM-B) flags.
+cat > "$S472/python3" <<'S472PYEOF'
+#!/bin/sh
+case "$*" in
+  *session-notify.journal*) echo "journal" >> "$MARK"; exit 1 ;;
+  *) echo "a2a" >> "$MARK"; exit 4 ;;
+esac
+S472PYEOF
+chmod +x "$S472/python3"
+H472="$S472/home"; mkdir -p "$H472/.opencrabs/profiles/ops/logs"
+S472RUN='
+  export MARK PATH="$S472:$PATH" HOME="$H472" OC_NOTIFY_CLI_TIMEOUT=2
+  [ -n "$SEND" ] && export OC_NOTIFY_SENDER="$SEND"
+  . "$TOOLS_DIR/lib/oc-notify.sh"
+  oc_notify_session "$S472/bin" ops test-runner 00000000-0000-4000-8000-000000000000 t x >/dev/null 2>&1
+  printf "rc=%s" "$?"
+'
+: > "$M472"
+S472RC_A="$(MARK="$M472" S472="$S472" H472="$H472" TOOLS_DIR="$TOOLS_DIR" \
+  SEND="oc-issue-dispatch/#472-abc" timeout 20 bash -c "$S472RUN" 2>&1)"
+S472_A="$(cat "$M472" 2>/dev/null)"
+: > "$M472"
+S472RC_B="$(MARK="$M472" S472="$S472" H472="$H472" TOOLS_DIR="$TOOLS_DIR" \
+  SEND="" timeout 20 bash -c "$S472RUN" 2>&1)"
+S472_B="$(cat "$M472" 2>/dev/null)"
+printf '%s' "$S472_A" | grep -q -- '--sender oc-issue-dispatch/#472-abc' \
+  && ok "OC_NOTIFY_SENDER reaches the CLI as --sender (#472)" \
+  || bad "OC_NOTIFY_SENDER did NOT reach the CLI: mark='$S472_A'"
+printf '%s' "$S472_B" | grep -q '^journal$' \
+  && ok "without an override the (target,window) journal check is REACHED (#472 control)" \
+  || bad "legacy arm never reached the journal check: mark='$S472_B'"
+printf '%s' "$S472_A" | grep -q '^journal$' \
+  && bad "sender override set but the weak fallback STILL ran: mark='$S472_A'" \
+  || ok "with a sender override the weak fallback is SKIPPED (#472)"
+[ "${S472RC_A#rc=}" = "4" ] && [ "${S472RC_B#rc=}" = "4" ] \
+  && ok "transport rc passes through unchanged in both arms (#472)" \
+  || bad "rc drifted: override='$S472RC_A' legacy='$S472RC_B' want 4/4"
+rm -rf "$S472"
+
 # ---- 74. oc-issue-dispatch survives SIGKILL with evidence (#451) -------------
 # Defect: a dispatch killed by an outer `timeout` left a 0-BYTE stdout, so the
 # run read as a silent hang "with no output and no side effect" even though it
