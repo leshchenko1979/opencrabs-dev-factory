@@ -1,5 +1,13 @@
 # Changelog — opencrabs-dev
 
+## v0.4.288 — the re-record the step-12 clause prescribes is not executable by the register's own writer (2026-10-06)
+
+**What the harvest lane measured.** The step-12 clause (`upstream-merge-runbook.md`, landed `04933052`) prescribes that the flagged re-record *"carries each row's `reason` / `branches` / `condition` / `prerequisite` forward, never a bare status flip"*. The register's own writer cannot do it: `oc-harvest-census record` REPLACES the whole row and carries forward only a **fixed seven-field tuple** (`status`, `reason`, `issue`, `issues`, `branches`, `revert`, `verified_at`; `tools/harvest/oc-harvest-census:3389`), and its flag surface carries no `--condition` / `--prerequisite` / `--dispatch` (`:101`). Those three fields are therefore **DROPPED** by the upsert.
+
+**What changed.** The step-12 clause gains the writer limitation as an explicit disclosure, so the clause is not read as executable-by-tool when it is not; the instrument defect is routed to Toolsmith. **Recorded as performed:** units **635 / 556 / 580** re-recorded to `status: conditionally-upstreamable` by direct edit — `condition` / `prerequisite` / `dispatch` preserved, `class` / `status_unchanged_reason` dropped as redundant — state commit `30744fef0`, ledger n=14845; 556 / 580 disposition **RE-DECLARE** (premise (a) SURFACE moved: #1941's spacing floor landed upstream, upstream now carries 2/15 and 11/14 product declarations; the remainder is still fork-only and `#1927` still gates it). Register now: 74 rows — **56 filed / 12 not-upstreamable / 6 conditionally-upstreamable**; `class` and `status_unchanged_reason` at **zero** rows.
+
+**Scope.** Law text + version only — `tools/**` unchanged (the writer's fixed tuple is a Toolsmith follow-up). `oc-lint-laws` clean.
+
 ## v0.4.287 — the fork-only walk's coverage is keyed on `status` alone: a `class` field is invisible, and the conditional concept has lived in two shapes (2026-10-06)
 
 **What the first real run measured.** The #761 step-3 leg (`oc-harvest-census walk`) ran against the live register for the first time — the walk's own `rc=1`, over **15** OPEN `not-upstreamable` rows: **2 CHANGED** (units 556, 580), **13** UNVERIFIED/UNCOVERED, **0 VERIFIED**. It also exposed a register-hygiene split the law had never named: the walked set is `oc_claims.manual_record_status(r) == not-upstreamable`, an **equality on `status` alone**, so units **635 / 556 / 580** — which express "conditionally upstreamable" through a **hand-added `class` field** while `status` stays `not-upstreamable` — were walked **as plain fork-only rows**, while units **676 / 757 / 763** (the sanctioned `status: conditionally-upstreamable`, token `ba8982cc`, #13) were **skipped** entirely.
