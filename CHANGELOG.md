@@ -1,5 +1,13 @@
 # Changelog — opencrabs-dev
 
+## v0.4.286 — C1's ADDRESSING half gets its own measured instance (lane 2fae1230, 2026-10-06)
+
+**What was measured.** C1 (`fleet-directives.md` §C1) has always been explicit about both halves of the claim-closure predicate — the closing KIND *and* the ADDRESS — but its only worked instance (the #299 `note`-vs-`unclaim` case, v0.4.202) demonstrates the KIND half alone. Two `done` rows on 2026-10-06 were written the natural post-merge way, prefixing the BRANCH name: `fix/343-harvest-sweep-union-leg landed f0122176 …` (n=14800) and `fix/301-squash-identity landed e5b2c668 …` (n=14803). Each named its issue only inside the slug, so neither addressed it; both claims stayed OPEN on CLOSED issues whose work had genuinely landed, and both lanes believed the release had taken. `sweep-closed-claims --dry-run` caught both and released at n=14805 (#301) / n=14806 (#343).
+
+**What changed.** One instance bullet added to C1 beside the #299 instance, naming the form: **write the ref FIRST — `oc-ledger stamp done "#N — landed <sha> …"`**. The kind and the content were both right in the failing rows; only the address was missing, which is why the section needed the second half visible as an instance and not merely as a predicate.
+
+**Scope.** Law text only — the predicate itself (`tools/lib/oc_claims.py`) is unchanged, and `oc-lint-laws` is clean. Raised by editor lane 2fae1230, which correctly drafted, reverted, and handed the text to HQ rather than editing it (durable record: ledger `lesson` n=14807).
+
 ## v0.4.285 — the creation gate has THREE legs: origin, assignee, native link (owner order 2026-10-05, origin opencrabs/opencrabs#1932)
 
 **Owner order 2026-10-05 10:19Z** (channel `OC Dev`), verbatim: *"First: https://github.com/opencrabs/opencrabs/issues/1932 — It was not linked to the parent issue and not assigned to Adolfo. Fix the laws so that this is done correctly next time"*.
