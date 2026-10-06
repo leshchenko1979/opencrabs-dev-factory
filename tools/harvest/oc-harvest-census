@@ -450,22 +450,48 @@ def get_commit_deploy_ts(commit_sha, repo_path, swaps, mock_deployed_ts=None, st
                 ts = smoke_ts
     return ts
 
+def _pr_list_limit():
+    """The `gh pr list` window. `gh pr list` returns the NEWEST N PRs, so this
+    is a MOVING window, not a filter: a landing older than it is invisible to
+    every leg below, and the gate then reads the unit as ELIGIBLE (#19).
+    Env-overridable so the saturation guard below is testable hermetically."""
+    try:
+        return max(1, int(os.environ.get('OC_HARVEST_PR_LIMIT', '1000')))
+    except ValueError:
+        return 1000
+
 def get_prs(upstream_repo, mock_prs_file=None):
+    limit = _pr_list_limit()
     if mock_prs_file and os.path.exists(mock_prs_file):
         with open(mock_prs_file) as f:
-            return json.load(f)
-    cmd = [
-        'gh', 'pr', 'list', '--repo', upstream_repo,
-        '--state', 'all', '--limit', '150',
-        # `files` feeds the #416 IDENTITY leg: a title's `(#N)` or a head branch
-        # is an ATTRIBUTION, and the cited PR's own changed files must intersect
-        # the issue's surface before a MERGED/IN_FLIGHT inference may refuse.
-        '--json', 'number,title,state,headRefName,mergedAt,body,files'
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise RuntimeError(f'gh pr list failed: {res.stderr.strip()}')
-    return json.loads(res.stdout)
+            rows = json.load(f)
+    else:
+        cmd = [
+            'gh', 'pr', 'list', '--repo', upstream_repo,
+            '--state', 'all', '--limit', str(limit),
+            # `files` feeds the #416 IDENTITY leg: a title's `(#N)` or a head branch
+            # is an ATTRIBUTION, and the cited PR's own changed files must intersect
+            # the issue's surface before a MERGED/IN_FLIGHT inference may refuse.
+            '--json', 'number,title,state,headRefName,mergedAt,body,files'
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise RuntimeError(f'gh pr list failed: {res.stderr.strip()}')
+        rows = json.loads(res.stdout)
+    # #19 FAIL-CLOSED SATURATION GUARD: a window that came back FULL may be
+    # TRUNCATED, and a truncated window cannot prove a PR is ABSENT -- so an
+    # ELIGIBLE verdict drawn from it would be a false allow (the duplicate-PR
+    # risk). Refuse with a named remedy instead. Measured 2026-10-06: the fixed
+    # 150 window covered only PRs 1589..1956 of 381, hiding PR #1556 -> issue
+    # #133, which then read ELIGIBLE rc=0.
+    if len(rows) >= limit:
+        raise RuntimeError(
+            'gh pr list returned %d row(s), the full requested window of %d -- the '
+            'window may be TRUNCATED, so a PR outside it cannot be read as absent. '
+            'REMEDY: raise OC_HARVEST_PR_LIMIT above the upstream PR count '
+            '(currently ~381). Refusing rather than returning a possibly-false '
+            'ELIGIBLE (#19).' % (len(rows), limit))
+    return rows
 
 def get_issue_live_state(issue_num, fork_repo='leshchenko1979/opencrabs', mock_file=None):
     # #415: the target's OWN state on the fork. A merge inference is drawn from

@@ -686,15 +686,38 @@ def check_fork_path_provenance(path, repo_path):
         return intro_sha, intro_iss, intro_subj
     return None, None, None
 
+def _pr_list_limit():
+    # #19: the `gh pr list` window. `gh pr list` returns the NEWEST N PRs, so
+    # this is a MOVING window, not a filter -- a landing older than it is
+    # invisible to every leg here. Env-overridable so the saturation guard below
+    # is testable hermetically.
+    try:
+        return max(1, int(os.environ.get('OC_HARVEST_PR_LIMIT', '1000')))
+    except ValueError:
+        return 1000
+
 def check_upstream_pr(issue_num, upstream_repo, mock_prs=None, states=('MERGED', 'OPEN')):
     if mock_prs is not None:
         prs = mock_prs
     else:
-        cmd = ['gh', 'pr', 'list', '--repo', upstream_repo, '--state', 'all', '--limit', '150', '--json', 'number,title,state,headRefName,mergedAt,body,files']
+        limit = _pr_list_limit()
+        cmd = ['gh', 'pr', 'list', '--repo', upstream_repo, '--state', 'all', '--limit', str(limit), '--json', 'number,title,state,headRefName,mergedAt,body,files']
         rc, out, _ = run_cmd(cmd)
         if rc != 0:
             return None
         prs = json.loads(out)
+        # #19 FAIL-CLOSED SATURATION GUARD: a FULL window may be TRUNCATED, so a
+        # PR outside it cannot be read as absent. Returning None here is the
+        # CONSERVATIVE direction -- the caller reads it as NOT_HARVESTED and the
+        # unit is HELD, never offered for rework (see is_issue_harvested_upstream).
+        if len(prs) >= limit:
+            sys.stderr.write(
+                'oc-harvest-dispatch: gh pr list returned %d row(s), the full window '
+                'of %d -- it may be TRUNCATED, so a PR outside it is not evidence of '
+                'absence. Reading as NOT_HARVESTED (conservative). REMEDY: raise '
+                'OC_HARVEST_PR_LIMIT above the upstream PR count (#19).\n'
+                % (len(prs), limit))
+            return None
     for p in prs:
         # #301: CLOSED is not skipped by default any more -- a hand-applied
         # landing (squash / rebase / cherry-pick) leaves the PR CLOSED with
