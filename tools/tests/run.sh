@@ -3069,21 +3069,20 @@ import os, re, sys
 # interpolating line re-surfaces it for re-review. Keep this SHORT -- passing the
 # value via sys.argv (the oc-harvest-census form) is the real fix, not an entry.
 _SITE_ALLOW = {
-    ('tools/state/oc-health', "with open('$ROTATION_FILE') as f:"),
-    ('tools/state/oc-health', "path = '$ROTATION_FILE'"),
-    ('tools/state/oc-health', "data['current_class'] = '$CURRENT_ROTATION_CLASS'"),
-    ('tools/state/oc-health', "data['next_class'] = '$NEXT_ROTATION_CLASS'"),
-    ('tools/state/oc-health', "data['cycle_count'] = $CYCLE_COUNT"),
-    ('tools/state/oc-health', "hist['$CURRENT_ROTATION_CLASS'] = {"),
-    ('tools/state/oc-health', "'findings': $FINDINGS,"),
-    ('tools/state/oc-health', "'reaped': $REAPED"),
-    ('tools/ship/oc-deploy', "pats = [l.strip() for l in open('$OC_DEV_STATE/.gitignore') if l.strip() and not l.startswith('#')]"),
-    # The value below is written with \x22 escapes on purpose: the scanner reads
-    # THIS source, so a literal `python3 -c` followed by a double quote here would
-    # be reported as a real site in run.sh (#327). Python resolves \x22 to '"'.
+    # The ONE interpolation site that SURVIVES the #327 conversion. Every other
+    # class (a) site now passes its values as argv, so this list is deliberately a
+    # single entry -- an allowlist that grows is the smell the issue named, and
+    # passing via sys.argv is the real fix, not an entry.
+    #
+    # Here the PROGRAM itself arrives in a shell variable, fully quoted ("$_PY"),
+    # so no unquoted expansion can reach the Python source; `exec` makes it the
+    # whole invocation. The body is 4 characters, so there is no room for a stray
+    # quote to hide in.
+    #
+    # The line is written with \x22 escapes on purpose: the scanner reads THIS
+    # source, so a literal `python3 -c` followed by a double quote here would be
+    # reported as a real site in run.sh (#327). Python resolves \x22 to '"'.
     ('tools/lib/oc_sqlite', 'exec python3 -c \x22$_PY\x22 \x22$_DB\x22 \x22$_SQL\x22'),
-    ('tools/issue/oc-issue-create', "import sys; sys.path.insert(0,'$OC_TOOLS_DIR/lib')"),
-    ('tools/issue/oc-issue-create', "d = open('$R/f.txt').read() or ''"),
 }
 
 def _norm(p):
@@ -3219,11 +3218,12 @@ case "$SQ_DOL" in *ARM-D*) ok "shell-quoting: an unescaped \$ in a -c body is SE
 SQ_DSAFE="$(python3 "$SQD/scan.py" "$SQD/dollar-safe.sh" 2>&1)"
 [ -z "$SQ_DSAFE" ] && ok "shell-quoting: a regex end-anchor \$ stays green (control)" \
   || bad "shell-quoting: the \$ control fired on an inert anchor: $SQ_DSAFE"
-# The allowlist is keyed on (path, LINE CONTENT), never on the path alone: the same
-# path carrying a DIFFERENT interpolating line must still fire, else the list would
-# whitelist a whole file rather than the four reviewed sites inside it.
-mkdir -p "$SQD/tools/state"
-printf 'python3 -c "\npath = %sROTATION_FILE\n"\n' "$SQ_DL" > "$SQD/tools/state/oc-health"
+# The allowlist is keyed on (path, LINE CONTENT), never on the path alone. This
+# fixture sits at the ALLOWLISTED path (tools/lib/oc_sqlite) but carries a DIFFERENT
+# interpolating line, so it must still fire: otherwise the list would whitelist a
+# whole file rather than the one reviewed line inside it.
+mkdir -p "$SQD/tools/lib"
+printf 'python3 -c "\nfoo = %sSOMETHING_ELSE\n"\n' "$SQ_DL" > "$SQD/tools/lib/oc_sqlite"
 SQ_ALLOWNEG="$(python3 "$SQD/scan.py" "$SQD/tools" 2>&1)"
 case "$SQ_ALLOWNEG" in *ARM-D*) ok "shell-quoting: the \$ allowlist is LINE-keyed, not path-keyed (control)" ;;
   *) bad "shell-quoting: the allowlist whitelisted a whole file: $SQ_ALLOWNEG" ;; esac

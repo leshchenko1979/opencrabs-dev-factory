@@ -60,7 +60,8 @@ oc_notify_session() { # $1=bin $2=profile $3=sender $4=uuid $5=title $6=text
   # Fallback to direct daemon A2A JSON-RPC if CLI resolution or CLI invocation failed
   if [ "$nrc" -ne 0 ] && [ "$nrc" -ne 2 ] && [ "$nrc" -ne 3 ]; then
     local a2a_rc=0
-    python3 -c "
+    python3 - <<'OCPY' "$bin" "$profile" "$sender" "$uuid" "$title" "$text" 2>/dev/null || a2a_rc=$?
+
 import sys, json, os, urllib.request
 try:
     try:
@@ -99,7 +100,7 @@ try:
             sys.exit(4)
 except Exception:
     sys.exit(4)
-" "$bin" "$profile" "$sender" "$uuid" "$title" "$text" 2>/dev/null || a2a_rc=$?
+OCPY
     if [ "$a2a_rc" -eq 0 ] || [ "$a2a_rc" -eq 2 ] || [ "$a2a_rc" -eq 3 ]; then
       nrc=$a2a_rc
     fi

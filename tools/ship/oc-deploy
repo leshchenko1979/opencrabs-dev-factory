@@ -2357,11 +2357,12 @@ EOS
   esac
   # 18b. the state repo's own ignore rule must actually match the new name.
   if [ -f "${OC_DEV_STATE:-/nonexistent}/.gitignore" ]; then
-    if python3 -c "
+    if python3 - "${OC_DEV_STATE:-/nonexistent}" <<'OCPY' 2>/dev/null; then pass=$((pass+1))
+
 import fnmatch, sys
-pats = [l.strip() for l in open('$OC_DEV_STATE/.gitignore') if l.strip() and not l.startswith('#')]
+pats = [l.strip() for l in open(sys.argv[1] + '/.gitignore') if l.strip() and not l.startswith('#')]
 sys.exit(0 if any(fnmatch.fnmatch('fanout.4242.lock', p) for p in pats) else 1)
-" 2>/dev/null; then pass=$((pass+1))
+OCPY
     else fail=$((fail+1)); echo "SELFTEST FAIL: state repo .gitignore does not ignore fanout.<run>.lock"; fi
   else
     pass=$((pass+1))   # state repo absent in this environment; the suffix arm above stands

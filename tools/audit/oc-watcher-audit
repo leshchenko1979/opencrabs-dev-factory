@@ -377,7 +377,8 @@ JSON
   # Fail-open guard: an unreadable conclusion must NOT suppress. An API fault
   # may never silently swallow a real recovery.
   local fo_verdict
-  fo_verdict="$(python3 -c "
+  fo_verdict="$(python3 - "$SELF" 2>/dev/null <<'OCPY'
+
 import re,sys
 src = open(sys.argv[1]).read()
 # The slice MUST carry _TERMINAL_NULLS: extracting the function alone raises
@@ -395,7 +396,8 @@ if f('completed',None): bad.append('none')
 if f('completed','action_required'): bad.append('action_required')
 if not f('completed','success'): bad.append('NOT-TERMINAL:success')
 print('BAD:' + ','.join(bad) if bad else 'OK')
-" "$SELF" 2>/dev/null)"
+OCPY
+)"
   assert_eq "is_terminal_run fails OPEN on unknown/null/action_required" "OK" "$fo_verdict"
 
   # Verify tracking file exists and contains task key

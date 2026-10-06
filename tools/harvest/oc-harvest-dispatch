@@ -85,7 +85,8 @@ EOF
 # Document with # comments; quote strings with ''' or single quotes.
 # oc-harvest-census feeds the same engine via a <<'OCPY' heredoc and is immune.
 run_engine() {
-  python3 -c "
+  python3 - "$@" <<'OCPY'
+
 import sys, os, json, re, subprocess, argparse, time, datetime, glob
 
 # The claim-CLOSURE, claim-TARGET and claim-FOOTPRINT predicates are NOT local
@@ -730,13 +731,11 @@ def check_upstream_pr(issue_num, upstream_repo, mock_prs=None, states=('MERGED',
         head = p.get('headRefName', '') or ''
         title = p.get('title', '') or ''
 
-        if re.search(rf'leshchenko1979/opencrabs(?:/issues/|#){issue_num}\b', body) or \
-           re.search(rf'leshchenko1979/opencrabs(?:/issues/|#){issue_num}\b', title):
+        if re.search(rf'leshchenko1979/opencrabs(?:/issues/|#){issue_num}\b', body) or            re.search(rf'leshchenko1979/opencrabs(?:/issues/|#){issue_num}\b', title):
             return p
         if re.search(rf'Original issue:\s*(?:https?://[^\s]+/)?(?:issues/|#)?{issue_num}\b', body, re.IGNORECASE):
             return p
-        if re.search(rf'(?:^|/)(?:fix|feat|up|harvest)[/-]{issue_num}(?:-|$)', head) or \
-           re.search(rf'/{issue_num}(?:-|$)', head):
+        if re.search(rf'(?:^|/)(?:fix|feat|up|harvest)[/-]{issue_num}(?:-|$)', head) or            re.search(rf'/{issue_num}(?:-|$)', head):
             return p
         # #415: a bare trailing PR reference is PR-NUMBER space, never the fork
         # issue space. GitHub appends the PR number to a squashed subject, so an
@@ -1434,7 +1433,7 @@ elif action == 'dispatch':
             if parent and isinstance(parent, dict) and parent.get('number'):
                 p_num = parent.get('number')
                 p_pr = check_upstream_pr(p_num, upstream_repo)
-                p_ref = f'PR #{p_pr.get(\"number\")}' if p_pr else f'parent issue #{p_num}'
+                p_ref = f'PR #{p_pr.get("number")}' if p_pr else f'parent issue #{p_num}'
                 dep_notice_lines.append(f'> ⚠️ **Dependency Notice**: Depends on unmerged upstream {p_ref}. Please merge first, or review/release together in a single batch.')
             blocked_by = hier.get('blockedBy')
             b_nodes = blocked_by.get('nodes', []) if isinstance(blocked_by, dict) else (blocked_by if isinstance(blocked_by, list) else [])
@@ -1442,7 +1441,7 @@ elif action == 'dispatch':
                 b_num = b.get('number') if isinstance(b, dict) else b
                 if b_num:
                     b_pr = check_upstream_pr(b_num, upstream_repo)
-                    b_ref = f'PR #{b_pr.get(\"number\")}' if b_pr else f'blocker issue #{b_num}'
+                    b_ref = f'PR #{b_pr.get("number")}' if b_pr else f'blocker issue #{b_num}'
                     dep_notice_lines.append(f'> ⚠️ **Dependency Notice**: Blocked by unmerged upstream {b_ref}. Please merge first, or review/release together in a single batch.')
 
     dep_section = ('\nPR Dependency Header (inject into PR description):\n' + '\n'.join(dep_notice_lines) + '\n') if dep_notice_lines else ''
@@ -1521,7 +1520,8 @@ Target Branch: {branch_name}
     write_lane_cursor(ledger_file, w_uuid)
     print(f'SUCCESS: Harvest package dispatched to editor {w_uuid}.')
     sys.exit(0)
-" "$@"
+OCPY
+
 }
 
 # --- Subcommand Handlers ---

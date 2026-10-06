@@ -382,13 +382,15 @@ JSN
   fi
   # and the ENGINE's own regexes behave: HUNK_RE is compiled with re.M.
   local eng
-  eng="$(python3 -c "
-import sys; sys.path.insert(0,'$OC_TOOLS_DIR/lib')
+  eng="$(python3 - "$OC_TOOLS_DIR" "$R" <<'OCPY' 2>/dev/null
+
+import sys; sys.path.insert(0, sys.argv[1] + '/lib')
 import oc_parent_propose as pp, re
-d = open('$R/f.txt').read() or ''
+d = open(sys.argv[2] + '/f.txt').read() or ''
 diff = 'x\n@@ -1,2 +1,2 @@\n-a\n+b\n'
 print(len(pp.HUNK_RE.findall(diff)))
-" 2>/dev/null)"
+OCPY
+)"
   if [ "${eng:-0}" -eq 1 ]; then echo "  ok   - engine HUNK_RE is compiled with re.M (finds 1 hunk)";
   else echo "  FAIL - engine HUNK_RE found ${eng:-0} hunks (want 1)"; fails=$((fails+1)); fi
 

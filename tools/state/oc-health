@@ -105,10 +105,11 @@ if [ "$SHOW_STATUS" = "1" ]; then
       cat "$ROTATION_FILE"
     else
       echo "=== Health Rotation State ==="
-      python3 -c "
+      python3 - "$ROTATION_FILE" <<'OCPY'
+
 import json, sys
 try:
-    with open('$ROTATION_FILE') as f:
+    with open(sys.argv[1]) as f:
         d = json.load(f)
     print('Current Class  :', d.get('current_class', 'unknown'))
     print('Next Class     :', d.get('next_class', 'unknown'))
@@ -116,10 +117,10 @@ try:
     print('Cycle Count    :', d.get('cycle_count', 0))
     print('History        :')
     for k, v in d.get('history', {}).items():
-        print(f'  - {k:<16}: last_run={v.get(\"last_run\",\"never\")} findings={v.get(\"findings\",0)} reaped={v.get(\"reaped\",0)}')
+        print(f'  - {k:<16}: last_run={v.get("last_run","never")} findings={v.get("findings",0)} reaped={v.get("reaped",0)}')
 except Exception as e:
     print('Error parsing rotation file:', e)
-"
+OCPY
     fi
     exit 0
   else
@@ -1252,9 +1253,10 @@ fi
 # Record Rotation State
 # =============================================================================
 if [ "$DO_ALL" = "0" ] && [ "$TARGET_CLASS" != "all" ] && [ -n "$CURRENT_ROTATION_CLASS" ]; then
-  python3 -c "
-import json, os, datetime
-path = '$ROTATION_FILE'
+  python3 - "$ROTATION_FILE" "$CURRENT_ROTATION_CLASS" "$NEXT_ROTATION_CLASS" "$CYCLE_COUNT" "$FINDINGS" "$REAPED" <<'OCPY' 2>/dev/null || true
+
+import json, os, sys, datetime
+path = sys.argv[1]
 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 data = {}
 if os.path.exists(path):
@@ -1265,19 +1267,19 @@ if os.path.exists(path):
         data = {}
 
 data['version'] = 1
-data['current_class'] = '$CURRENT_ROTATION_CLASS'
-data['next_class'] = '$NEXT_ROTATION_CLASS'
+data['current_class'] = sys.argv[2]
+data['next_class'] = sys.argv[3]
 data['last_rotated_at'] = now
-data['cycle_count'] = $CYCLE_COUNT
+data['cycle_count'] = int(sys.argv[4])
 hist = data.setdefault('history', {})
-hist['$CURRENT_ROTATION_CLASS'] = {
+hist[sys.argv[2]] = {
     'last_run': now,
-    'findings': $FINDINGS,
-    'reaped': $REAPED
+    'findings': int(sys.argv[5]),
+    'reaped': int(sys.argv[6])
 }
 with open(path, 'w') as f:
     json.dump(data, f, indent=2)
-" 2>/dev/null || true
+OCPY
 fi
 
 # =============================================================================
