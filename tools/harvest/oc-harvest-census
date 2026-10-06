@@ -237,27 +237,54 @@ def swap_suffix_start_cached(repo_path, swaps):
         _SWAP_LINEAGE_CACHE[key] = _swap_suffix_start(repo_path, swaps)
     return _SWAP_LINEAGE_CACHE[key]
 
+def _patch_ids_streaming(producer_cmd):
+    """#363: STREAM a patch producer into `git patch-id --stable`.
+
+    The pre-#363 shape captured BOTH sides in RAM -- the whole `git log -p`
+    text as ONE Python string (26.6 MB on this repo, 61.7 MB on the binary
+    fork) and then the patch-id output on top of it. On a 961 MiB host that is
+    a swap trigger. A pipe holds neither: the producer is throttled by the
+    consumer, so the peak is a pipe buffer, not a history.
+    """
+    prod = subprocess.Popen(producer_cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    pid = subprocess.Popen(['git', 'patch-id', '--stable'],
+                           stdin=prod.stdout, stdout=subprocess.PIPE, text=True)
+    prod.stdout.close()  # the consumer owns the read end now; ours is surplus
+    try:
+        for line in pid.stdout:
+            parts = line.split()
+            if len(parts) >= 2:
+                yield parts[0], parts[1]
+    finally:
+        # The twin walk RETURNS the moment it holds the target, abandoning this
+        # generator. Close the consumer so the producer takes EPIPE and exits,
+        # then reap both -- otherwise a full scan leaks a git pair per range.
+        pid.stdout.close()
+        pid.wait()
+        prod.wait()
+
 def get_patch_id(commit, repo_path):
-    res = subprocess.run(['git', '-C', repo_path, 'show', commit], capture_output=True, text=True)
-    if res.returncode != 0:
-        return None
-    p = subprocess.run(['git', 'patch-id', '--stable'], input=res.stdout, text=True, capture_output=True)
-    if p.returncode == 0 and p.stdout:
-        return p.stdout.strip().split()[0]
+    for pid, _sha in _patch_ids_streaming(['git', '-C', repo_path, 'show', commit]):
+        return pid
     return None
 
 def range_patch_ids(repo_path, base_sha, tip_sha):
-    rng = f'{base_sha}..{tip_sha}' if base_sha else tip_sha
-    res = subprocess.run(['git', '-C', repo_path, 'log', '-p', '--no-merges',
-                          '--format=commit %H', rng], capture_output=True, text=True)
-    if res.returncode != 0 or not res.stdout:
-        return
-    pid = subprocess.run(['git', 'patch-id', '--stable'], input=res.stdout,
-                         capture_output=True, text=True)
-    for line in pid.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            yield parts[0], parts[1]
+    cmd = ['git', '-C', repo_path, 'log', '-p', '--no-merges', '--format=commit %H']
+    if base_sha:
+        cmd.append(f'{base_sha}..{tip_sha}')
+    else:
+        # #363: with no base the old range collapsed to the bare tip, which git
+        # reads as THE WHOLE HISTORY reachable from it -- 61.7 MB of patch text
+        # and a 211 MB git peak on the binary fork, walked once per full twin
+        # scan. What that bought was the coarsest attribution there is: EVERY
+        # pre-first-swap patch-id -> the OLDEST swap ts, and an earlier anchor
+        # only ever shortens the remaining soak -- the permissive direction.
+        # Bound it to the swap's OWN commit: that change IS attributable to
+        # swaps[0]; anything older belongs to no swap this journal can name, and
+        # leaving it unresolved (-> REFUSE) is the conservative direction.
+        cmd += ['--max-count', '1', tip_sha]
+    yield from _patch_ids_streaming(cmd)
 
 def twin_deploy_ts(commit_sha, repo_path, swaps, before_idx):
     if before_idx <= 0:
@@ -4643,6 +4670,120 @@ C405EOF
     ok "#413 site 2: an UNRESOLVABLE dependent anchor refuses under its own class, no false age"
   else
     echo "  bad  - #413 site 2 expected rc=1 DEPENDENT_SOAK_ANCHOR_UNRESOLVED and no 'age: 0.0h', got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 3b-LG. #363: the FIRST twin range must be BOUNDED. Pre-#363 a swap with no
+  #        predecessor produced `git log -p <tip>` -- the WHOLE history reachable
+  #        from that commit, materialised as ONE Python string (61.7 MB of patch
+  #        text / 211 MB git peak on the binary fork, 26.6 MB on this repo, on a
+  #        961 MiB host), walked once per full twin scan. The bound is
+  #        `--max-count 1 <tip>`: the swap's OWN commit IS attributable to that
+  #        swap; anything older is attributable to no swap this journal can name,
+  #        so it stays unresolved and the target REFUSES. One-directional failure
+  #        by construction -- an unresolved anchor can only ever REFUSE
+  #        (SOAK_ANCHOR_UNRESOLVED), never false-APPROVE -- so the bound cannot
+  #        make a verdict more permissive.
+  #        (The issue's other suggestion -- anchor the range at the repo ROOT --
+  #        is a fake fix: on linear history root..tip == tip. Measured on the
+  #        binary fork it saves ~1 MB of 61 MB.)
+  #
+  #        FIXTURE: a REAL repo -- empty root E, M0 adding root.txt, an ABANDONED
+  #        branch adding x.txt (A, never an ancestor of main's tip), then two
+  #        candidate commits whose patch-ids are IDENTICAL to A's and to M0's
+  #        (patch-id is content-addressed, so a rebased/cherry-picked twin matches
+  #        its original). TWO swap rows, or the twin walk never runs at all.
+  #          CA, twin of A  (inside the journaled range) -> anchor resolves, and
+  #             with the first swap 19 days old the target is SOAKED -> ELIGIBLE
+  #          CB, twin of M0 (pre-swap history)         -> no anchor  -> REFUSED
+  #        MUTATION KILL (CB): drop the bound -- `cmd.append(tip_sha)` in place of
+  #        `cmd += ['--max-count', '1', tip_sha]` -- and the old whole-history range
+  #        puts M0's patch-id back into the walk, CB resolves to the first swap ts,
+  #        and this leg sees ELIGIBLE.
+  #        MUTATION KILL (CA): make the base-less leg yield nothing (`return`) and
+  #        the twin arm loses the anchor entirely -- CA sees SOAK_ANCHOR_UNRESOLVED.
+  #        The MEMORY property is not argv-observable (a capture and a pipe run the
+  #        same command), so the streaming half is guarded on SHAPE at the end.
+  local fx363="$selftest_tmp/fx363" sE sM0 sA sCA sCB sB2 region363
+  mkdir -p "$fx363"
+  g363() { git -c init.defaultBranch=main -C "$fx363" "$@"; }
+  g363 init -q >/dev/null 2>&1
+  g363 config user.email selftest@localhost >/dev/null 2>&1
+  g363 config user.name selftest >/dev/null 2>&1
+  g363 config commit.gpgsign false >/dev/null 2>&1
+  g363 commit -q --allow-empty -m "root (empty)" >/dev/null 2>&1
+  sE="$(g363 rev-parse HEAD)"
+  printf 'R\n' > "$fx363/root.txt"; g363 add root.txt >/dev/null 2>&1
+  g363 commit -qm "M0 adds root.txt" >/dev/null 2>&1
+  sM0="$(g363 rev-parse HEAD)"
+  g363 checkout -q -b abandoned >/dev/null 2>&1
+  printf 'X\n' > "$fx363/x.txt"; g363 add x.txt >/dev/null 2>&1
+  g363 commit -qm "abandoned: A" >/dev/null 2>&1
+  sA="$(g363 rev-parse HEAD)"
+  g363 checkout -q main >/dev/null 2>&1
+  # CB must sit where root.txt is ABSENT, or its patch would not equal M0's.
+  g363 checkout -q -b cand_b "$sE" >/dev/null 2>&1
+  printf 'R\n' > "$fx363/root.txt"; g363 add root.txt >/dev/null 2>&1
+  g363 commit -qm "candidate: Cb" >/dev/null 2>&1
+  sCB="$(g363 rev-parse HEAD)"
+  g363 checkout -q main >/dev/null 2>&1
+  printf 'b1\n' > "$fx363/b1.txt"; g363 add b1.txt >/dev/null 2>&1
+  g363 commit -qm b1 >/dev/null 2>&1
+  printf 'b2\n' > "$fx363/b2.txt"; g363 add b2.txt >/dev/null 2>&1
+  g363 commit -qm b2 >/dev/null 2>&1
+  sB2="$(g363 rev-parse HEAD)"
+  # CA only has to EXIST for `git show`, so it can live on main past the swaps.
+  printf 'X\n' > "$fx363/x.txt"; g363 add x.txt >/dev/null 2>&1
+  g363 commit -qm "candidate: Ca" >/dev/null 2>&1
+  sCA="$(g363 rev-parse HEAD)"
+  mkdir -p "$fx363/oc-deploy/journal"
+  printf '{"step":"auto-swap","sha":"%s","ts":"2026-09-01T00:00:00Z"}\n' "$sA" \
+    > "$fx363/oc-deploy/journal/swap-001.jsonl"
+  printf '{"step":"auto-swap","sha":"%s","ts":"2026-09-10T00:00:00Z"}\n' "$sB2" \
+    > "$fx363/oc-deploy/journal/swap-002.jsonl"
+  printf '{"manual_records": []}\n' > "$fx363/mock_reg.json"
+  # The shared mock issue-state carries no 363 entry; without one the target
+  # itself is unresolvable and every leg below would refuse for the wrong reason.
+  printf '{"363": {"state": "OPEN", "stateReason": null}}\n' \
+    > "$selftest_tmp/mock_issue_state_363.json"
+  printf '[{"sha": "%s", "short_sha": "%s", "subject": "feat(x): cand (#363)", "trailer": "leshchenko1979/opencrabs#363", "commit_ts": 1789000000, "files": ["x.txt"]}]\n' \
+    "$sCA" "${sCA:0:7}" > "$selftest_tmp/c363_ca.json"
+  printf '[{"sha": "%s", "short_sha": "%s", "subject": "feat(x): cand (#363)", "trailer": "leshchenko1979/opencrabs#363", "commit_ts": 1789000000, "files": ["root.txt"]}]\n' \
+    "$sCB" "${sCB:0:7}" > "$selftest_tmp/c363_cb.json"
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_COMMITS="$selftest_tmp/c363_ca.json" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$selftest_tmp/mock_issue_state_363.json" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$fx363" "$fx363/mock_reg.json" "363" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE"; then
+    ok "#363: a twin INSIDE the journaled swap range still resolves the anchor -> ELIGIBLE"
+  else
+    echo "  bad  - #363 expected ELIGIBLE for the journaled twin, got rc=$rc ($out)"
+    return 1
+  fi
+  rc=0
+  out="$(OC_HARVEST_NOW_TS=1790003600 OC_HARVEST_MOCK_COMMITS="$selftest_tmp/c363_cb.json" \
+    OC_HARVEST_MOCK_ISSUE_STATE="$selftest_tmp/mock_issue_state_363.json" \
+    OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$fx363" "$fx363/mock_reg.json" "363" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "SOAK_ANCHOR_UNRESOLVED"; then
+    ok "#363: a twin OLDER than the first journaled swap gets NO anchor -> REFUSED (the bound)"
+  else
+    echo "  bad  - #363 expected rc=1 SOAK_ANCHOR_UNRESOLVED for the pre-swap twin, got rc=$rc ($out)"
+    return 1
+  fi
+  # SHAPE guard for the STREAMING half. The pre-#363 defect was
+  # `subprocess.run(..., capture_output=True)` + `input=res.stdout` -- the whole
+  # `git log -p` text as ONE Python string, which is what put a 61.7 MB range in
+  # RAM. POSITIVE CONTROL: the pre-fix source carried `input=res.stdout` in this
+  # very region (read from git HEAD, 2026-10-06); the guard reddens on it.
+  region363="$(sed -n '/^def _patch_ids_streaming/,/^def twin_deploy_ts/p' "${BASH_SOURCE[0]:-$0}")"
+  if [ -n "$region363" ] && ! grep -qE 'capture_output|input=' <<< "$region363"; then
+    ok "#363: the patch-id path STREAMS (Popen pipe) -- no capture in the producer/consumer region"
+  else
+    echo "  bad  - #363 the patch-id region still CAPTURES its input (or could not be read)"
     return 1
   fi
 
