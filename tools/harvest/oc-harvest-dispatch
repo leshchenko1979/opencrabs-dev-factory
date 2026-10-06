@@ -530,6 +530,21 @@ def fork_issue_is_reopened(issue_num, mock_file=None, record=None):
         return False
     return str(rec.get('stateReason') or '').upper() == 'REOPENED'
 
+def _local_squash_shas(repo_path, base_ref):
+    # {pr_number: sha} for upstream commits carrying a SQUASH/MERGE signature.
+    # ONE home for the arm set (#301): oc_claims.squash_signature owns the two
+    # commit-shape arms so this tool and oc-harvest-census cannot drift. Read
+    # from the LOCAL upstream ref -- no network.
+    # NOTE: no triple-quoted docstring here -- the engine body lives inside a
+    # DOUBLE-QUOTED shell string and a triple quote ENDS it (the 2026-09-18
+    # truncation). Comments only, and no backticks.
+    ref = base_ref or 'adolfousier/main'
+    r = run_cmd(['git', '-C', repo_path, 'log', '--format=%H%x1f%s%x1f%P', ref])
+    if not r or r[0] != 0:
+        return {}
+    return oc_claims.squash_signature((r[1] or '').splitlines())
+
+
 def is_issue_harvested_upstream(issue_num, upstream_repo, repo_path, base_ref, swaps=None, mock_prs=None):
     # 1. Check if upstream PR exists
     pr = check_upstream_pr(issue_num, upstream_repo, mock_prs=mock_prs)
@@ -552,7 +567,24 @@ def is_issue_harvested_upstream(issue_num, upstream_repo, repo_path, base_ref, s
             pr.get('files'), oc_claims.issue_surface(_live) if _live else set())
         if _ident is not False and not fork_issue_is_reopened(issue_num, record=_live):
             return True
-    
+
+    # 1b. #301: a CLOSED PR whose work is ALREADY UPSTREAM is a hand-applied
+    # landing, not a rejection. check_upstream_pr skips CLOSED by default, so
+    # this is the ONLY route by which such a PR can clear the gate -- and
+    # without it the unit is re-proposed and a DUPLICATE PR gets filed. Same
+    # two guards as the MERGED leg above (#415 REOPENED, #416 identity), because
+    # the inference is drawn from the same attributions.
+    _pr_closed = check_upstream_pr(issue_num, upstream_repo, mock_prs=mock_prs,
+                                   states=('MERGED', 'OPEN', 'CLOSED'))
+    if _pr_closed and _pr_closed.get('state') == 'CLOSED':
+        _sha = _local_squash_shas(repo_path, base_ref).get(int(_pr_closed.get('number') or 0))
+        if _sha:
+            _live_c = fork_issue_live(issue_num)
+            _ident_c = oc_claims.identity_leg_passes(
+                _pr_closed.get('files'), oc_claims.issue_surface(_live_c) if _live_c else set())
+            if _ident_c is not False and not fork_issue_is_reopened(issue_num, record=_live_c):
+                return True
+
     # 2. Check if base_ref already carries a commit whose Issue-Ref trailer
     #    anchors this FORK issue. ANCHORED (machine-written trailer only) and
     #    SLUG-QUALIFIED: on upstream a bare '#N' names an UPSTREAM issue/PR, a
@@ -654,7 +686,7 @@ def check_fork_path_provenance(path, repo_path):
         return intro_sha, intro_iss, intro_subj
     return None, None, None
 
-def check_upstream_pr(issue_num, upstream_repo, mock_prs=None):
+def check_upstream_pr(issue_num, upstream_repo, mock_prs=None, states=('MERGED', 'OPEN')):
     if mock_prs is not None:
         prs = mock_prs
     else:
@@ -664,7 +696,12 @@ def check_upstream_pr(issue_num, upstream_repo, mock_prs=None):
             return None
         prs = json.loads(out)
     for p in prs:
-        if p.get('state') not in ['MERGED', 'OPEN']:
+        # #301: CLOSED is not skipped by default any more -- a hand-applied
+        # landing (squash / rebase / cherry-pick) leaves the PR CLOSED with
+        # mergedAt null, and skipping it is what minted the DUPLICATE PR. The
+        # caller widens states and applies the local-squash leg; the default
+        # keeps the old behaviour for every other caller.
+        if p.get('state') not in states:
             continue
         body = p.get('body', '') or ''
         head = p.get('headRefName', '') or ''
@@ -2306,6 +2343,73 @@ EOF
     echo "  ok 8r - #416 fail-open: an issue naming NO path keeps the harvested inference"
   else
     echo "  bad 8r - #416: fork issue #198 expected HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # 8s-8t. #301: a CLOSED PR whose work was HAND-APPLIED upstream (squash /
+  # rebase / cherry-pick) is not a rejection. GitHub records mergedAt only for a
+  # merge-button landing, so such a PR reads CLOSED with mergedAt null; before
+  # #301 leg 1b did not exist, the unit was re-proposed, and the rework was a
+  # DUPLICATE upstream PR. The PR mock is the ONLY route in (check_upstream_pr
+  # skips CLOSED by default), so 8s proves the widened `states=` AND the local
+  # squash-signature lookup together, and 8t proves the signature is what
+  # decides -- without it a leg 1b that answered True for every CLOSED PR would
+  # pass 8s.
+  local squash_repo="$st_dir/squash_repo"
+  mkdir -p "$squash_repo"
+  git -C "$squash_repo" init -q -b main
+  git -C "$squash_repo" config user.email "test@example.com"
+  git -C "$squash_repo" config user.name "Test Runner"
+  echo "base" > "$squash_repo/base.txt"
+  git -C "$squash_repo" add .
+  git -C "$squash_repo" commit -q -m "base commit"
+  git -C "$squash_repo" branch adolfousier/main
+  git -C "$squash_repo" checkout -q adolfousier/main
+  echo "landed" > "$squash_repo/landed.txt"
+  git -C "$squash_repo" add .
+  git -C "$squash_repo" commit -q -m "fix(hand): applied by hand (#1441)"
+  git -C "$squash_repo" checkout -q main
+  local mock_squash_prs="$st_dir/mock_squash_prs.json"
+  cat << 'EOF' > "$mock_squash_prs"
+[
+  {
+    "number": 1441,
+    "state": "CLOSED",
+    "title": "fix(hand): applied by hand",
+    "headRefName": "port/1441-hand",
+    "mergedAt": null,
+    "body": "Fixes leshchenko1979/opencrabs#1441"
+  }
+]
+EOF
+  local mock_squash_state="$st_dir/mock_squash_state.json"
+  printf '{}\n' > "$mock_squash_state"
+
+  out="$(run_engine "test-harvested" "1441" "$mock_squash_prs" "$mock_squash_state" "$squash_repo" "adolfousier/main")"
+  if [ "$out" = "HARVESTED" ]; then
+    echo "  ok 8s - #301: a CLOSED PR whose squash commit IS local reads HARVESTED (no duplicate PR)"
+  else
+    echo "  bad 8s - #301: hand-applied CLOSED PR #1441 expected HARVESTED, got ($out)"
+    return 1
+  fi
+
+  # The negative control needs its OWN repo: `refspace` is built further down
+  # (the #356 block), and reaching for it here would be an unbound variable.
+  local squash_repo_empty="$st_dir/squash_repo_empty"
+  mkdir -p "$squash_repo_empty"
+  git -C "$squash_repo_empty" init -q -b main
+  git -C "$squash_repo_empty" config user.email "test@example.com"
+  git -C "$squash_repo_empty" config user.name "Test Runner"
+  echo "base" > "$squash_repo_empty/base.txt"
+  git -C "$squash_repo_empty" add .
+  git -C "$squash_repo_empty" commit -q -m "base commit"
+  git -C "$squash_repo_empty" branch adolfousier/main
+
+  out="$(run_engine "test-harvested" "1441" "$mock_squash_prs" "$mock_squash_state" "$squash_repo_empty" "adolfousier/main")"
+  if [ "$out" = "NOT_HARVESTED" ]; then
+    echo "  ok 8t - #301 negative control: a CLOSED PR with NO local squash commit stays NOT_HARVESTED"
+  else
+    echo "  bad 8t - #301: CLOSED PR #1441 with no local squash expected NOT_HARVESTED, got ($out)"
     return 1
   fi
 

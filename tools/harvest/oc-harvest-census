@@ -495,6 +495,13 @@ def get_issue_live_state(issue_num, fork_repo='leshchenko1979/opencrabs', mock_f
     except Exception:
         return None
 
+def upstream_ref(repo_path):
+    """The ref the upstream-commit arms read. ONE home (#301): the squash map
+    and the CLOSED-PR ancestry leg must resolve the SAME ref, or they classify
+    against different histories."""
+    cmd = ['git', '-C', repo_path, 'rev-parse', '--verify', 'adolfousier/main']
+    return 'adolfousier/main' if subprocess.run(cmd, capture_output=True).returncode == 0 else 'HEAD'
+
 def get_squashed_upstream_prs(repo_path, mock_squashed_file=None):
     if mock_squashed_file and os.path.exists(mock_squashed_file):
         try:
@@ -505,29 +512,26 @@ def get_squashed_upstream_prs(repo_path, mock_squashed_file=None):
             return {}
     if not os.path.isdir(repo_path):
         return {}
-    cmd = ['git', '-C', repo_path, 'rev-parse', '--verify', 'adolfousier/main']
-    ref = 'adolfousier/main' if subprocess.run(cmd, capture_output=True).returncode == 0 else 'HEAD'
-    cmd = [
-        'git', '-C', repo_path, 'log', '-n', '1000',
-        '--format=%H%x1f%h%x1f%s%x1f%b%x1e', ref
-    ]
+    ref = upstream_ref(repo_path)
+    # #301: FULL history, and the arms read the COMMIT SHAPE -- a single-parent
+    # subject ending `(#N)` (a squash) or `Merge PR #N` (a merge-button landing)
+    # -- never a commit BODY. A maintainer who applies the work by hand writes
+    # no body at all, so the old body-only arm matched 0 of the 13 CLOSED
+    # registry PRs (measured 2026-10-06) while the shape arms matched 3, and
+    # `-n 1000` against 4991 upstream commits silently hid the older landings
+    # this leg exists to find (census `clusters` trap (c): never page silently).
+    # The full subject+parents pass is 778 KB here (bodies would be 4.0 MB).
+    cmd = ['git', '-C', repo_path, 'log', '--format=%H%x1f%s%x1f%P', ref]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         return {}
     squashed = {}
-    for r in res.stdout.split('\x1e'):
-        if not r.strip(): continue
-        parts = r.split('\x1f')
-        if len(parts) < 4: continue
-        full_sha, short_sha, subj, body = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3]
-        for m in re.finditer(r'(?:Squashed from PR|Closes)\s+#(\d+)', body, re.IGNORECASE):
-            pr_num = int(m.group(1))
-            if pr_num not in squashed:
-                squashed[pr_num] = {
-                    'sha': full_sha,
-                    'short_sha': short_sha,
-                    'subject': subj
-                }
+    for pr_num, sha in oc_claims.squash_signature(res.stdout.splitlines()).items():
+        squashed[pr_num] = {
+            'sha': sha,
+            'short_sha': sha[:12],
+            'subject': '',
+        }
     return squashed
 
 def get_ahead_commits(repo_path, mock_commits_file=None):
@@ -2052,7 +2056,44 @@ if action == 'check':
         elif st == 'OPEN' and ident is not False:
             refuse(f'REFUSED: Target {target} is currently IN_FLIGHT upstream in PR #{num}: {ti}')
         elif st == 'CLOSED':
-            closed_match = match
+            # #301: a CLOSED PR is NOT a rejection. GitHub records `mergedAt`
+            # only for a merge-button landing, so a maintainer who applies the
+            # work by hand (squash / rebase / cherry-pick) leaves the PR CLOSED
+            # with mergedAt null -- and reading that as "rejected" re-offers
+            # work that is ALREADY upstream. The rework is the duplicate PR.
+            # The SIGNATURE route is the promotion above (`squash_signature`
+            # over the upstream commits); a CLOSED PR whose number it yields is
+            # already MERGED by the time this branch is reached, so it never
+            # arrives here. This branch is the RESIDUAL: a CLOSED PR the
+            # signature did not account for, classified from the ancestry of
+            # its own head ref WHERE THAT REF IS LOCAL. Tri-state: `present`
+            # refuses, `absent` is the ONLY route to ELIGIBLE_REWORK, and
+            # UNCLASSIFIABLE refuses loudly with a named remedy -- absence of
+            # evidence must never become an approval (#416, and the #301 defect
+            # itself: the unclassifiable case fell straight through to the
+            # allow).
+            _head_ref = match.get('head') or ''
+            _uref = upstream_ref(repo_path)
+            _readable = False
+            _ancestor = False
+            if _head_ref:
+                _r = subprocess.run(
+                    ['git', '-C', repo_path, 'rev-parse', '--verify', '-q',
+                     'refs/remotes/origin/%s^{commit}' % _head_ref],
+                    capture_output=True, text=True)
+                _rc_sha = (_r.stdout or '').strip()
+                if _r.returncode == 0 and _rc_sha:
+                    _readable = True
+                    _ancestor = check_ancestor(_rc_sha, _uref, repo_path)
+            _verdict = oc_claims.classify_closed_pr_landing(_readable, _ancestor)
+            if _verdict == 'present':
+                refuse('REFUSED: Target %s had PR #%s CLOSED without a merge, but that PR\'s own head commit is an ANCESTOR of %s -- its work is ALREADY UPSTREAM, so rework would file a duplicate PR (#301)'
+                       % (target, num, _uref))
+            elif _verdict is None:
+                refuse('REFUSED: Target %s had PR #%s CLOSED without a merge and its landing CANNOT BE CLASSIFIED (head ref %r is not local, and no upstream commit carries its squash signature) -- REMEDY: fetch the PR head, or re-run after a registry refresh; an unclassifiable CLOSED PR must never be read as reworkable (#301)'
+                       % (target, num, _head_ref))
+            else:
+                closed_match = match
     
     manual = []
     if os.path.exists(registry_file):
@@ -5029,13 +5070,68 @@ PROSEEOF
     return 1
   fi
 
-  # 4. Check on CLOSED issue (#111) -> exits 0 ELIGIBLE_REWORK
+  # 4. #301 — CLOSED-PR LANDING CLASSIFICATION, three arms. GitHub records
+  #    `mergedAt` only for a merge-button landing, so a hand-applied PR (squash /
+  #    rebase / cherry-pick) reads CLOSED with mergedAt null. Before #301 that
+  #    shape fell straight through to ELIGIBLE_REWORK -- an ALLOW -- and the
+  #    rework was a DUPLICATE upstream PR. The SIGNATURE route (a CLOSED PR whose
+  #    number `squash_signature` yields, promoted to MERGED before any verdict)
+  #    is leg 12 below; these three arms cover the RESIDUAL, classified from the
+  #    ancestry of the PR's own head ref where that ref is LOCAL.
+  #
+  # 4a. head ref NOT local -> UNCLASSIFIABLE -> REFUSED with a named remedy.
+  #     This is the DEFECT CONTROL: this exact shape returned rc 0 before #301.
   rc=0
   out="$(run_engine "check" "mock/repo" "$selftest_tmp" "$mock_reg" "111" 2>&1)" || rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE_REWORK"; then
-    ok "check closed unit -> ELIGIBLE_REWORK exit 0"
+  if [ "$rc" -eq 1 ] && oc_has "$out" "CANNOT BE CLASSIFIED" && oc_has "$out" "REMEDY:"; then
+    ok "#301: a CLOSED PR whose head ref is not local REFUSES as unclassifiable (never ELIGIBLE_REWORK)"
   else
-    echo "  bad  - check closed unit expected rc=0, got rc=$rc ($out)"
+    echo "  bad  - #301 unclassifiable CLOSED PR expected rc=1 with a REMEDY, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 4b/4c share ONE real repo, passed as argv[3] (repo_path -- argv[2] is the
+  #     UPSTREAM repo, which the mock PR list short-circuits). HEAD carries the
+  #     base commit and the PR's head ref is published at
+  #     refs/remotes/origin/port/111-notify-queue, the ref the census resolves.
+  #     `upstream_ref` finds no `adolfousier/main` there and falls back to HEAD,
+  #     which IS the base under test.
+  local cl_repo="$selftest_tmp/closed_repo"
+  rm -rf "$cl_repo"; mkdir -p "$cl_repo"
+  git -C "$cl_repo" init -q 2>/dev/null
+  git -C "$cl_repo" config user.email selftest@local
+  git -C "$cl_repo" config user.name selftest
+  printf 'base\n' > "$cl_repo/base.txt"
+  git -C "$cl_repo" add -A 2>/dev/null
+  git -C "$cl_repo" commit -q -m "base" 2>/dev/null
+  local cl_base cl_orphan
+  cl_base="$(git -C "$cl_repo" rev-parse HEAD)"
+  # an ORPHAN commit: same tree, NO parent -> unreachable from HEAD, so
+  # `merge-base --is-ancestor` is false and the work is genuinely not upstream.
+  cl_orphan="$(git -C "$cl_repo" commit-tree -m "port/111-notify-queue" "$(git -C "$cl_repo" rev-parse 'HEAD^{tree}')")"
+  git -C "$cl_repo" update-ref refs/remotes/origin/port/111-notify-queue "$cl_orphan"
+
+  # 4b. POSITIVE CONTROL for 4a: the head ref IS readable and is NOT an ancestor
+  #     -> the work is genuinely absent -> rework stays legitimate (rc 0).
+  #     Without this arm a predicate that refused EVERY CLOSED PR passes 4a.
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$cl_repo" "$mock_reg" "111" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE_REWORK"; then
+    ok "#301: a CLOSED PR whose head commit is LOCAL and NOT an ancestor stays ELIGIBLE_REWORK (rc 0)"
+  else
+    echo "  bad  - #301 absent-landing CLOSED PR expected rc=0 ELIGIBLE_REWORK, got rc=$rc ($out)"
+    return 1
+  fi
+
+  # 4c. the 'present' arm: the SAME repo, head ref repointed at the base commit
+  #     -> an ancestor of HEAD -> the work IS upstream -> REFUSED.
+  git -C "$cl_repo" update-ref refs/remotes/origin/port/111-notify-queue "$cl_base"
+  rc=0
+  out="$(run_engine "check" "mock/repo" "$cl_repo" "$mock_reg" "111" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "ALREADY UPSTREAM"; then
+    ok "#301: a CLOSED PR whose head commit IS an ancestor of the upstream ref REFUSES (already upstream)"
+  else
+    echo "  bad  - #301 present-landing CLOSED PR expected rc=1 ALREADY UPSTREAM, got rc=$rc ($out)"
     return 1
   fi
 

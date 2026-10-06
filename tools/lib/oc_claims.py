@@ -1178,3 +1178,80 @@ def identity_leg_passes(files, tokens):
     if not files or not tokens:
         return None
     return files_hit_surface(files, tokens)
+
+
+# ---------------------------------------------------------------------------
+# #301: a squash-landed upstream PR reads CLOSED, not MERGED
+# ---------------------------------------------------------------------------
+# GitHub records `mergedAt` only when the merge went through the web UI's merge
+# button. A maintainer who applies the work BY HAND -- squash, rebase, or a
+# plain cherry-pick -- leaves the PR CLOSED with mergedAt null, and the harvest
+# tooling read that as "rejected" and offered the unit for rework. The work was
+# already upstream; the rework IS the duplicate PR.
+#
+# The signature is read from the upstream COMMIT, never from a commit body: the
+# body is written by whoever squashed and is absent on a plain cherry-pick.
+# Measured on adolfousier/main, 2026-10-06, over the 13 registry units whose
+# PRs are CLOSED: the body arm matched 0, the subject arm 3, and the
+# subject + merge-title + ancestor union 7 (5 residual objects are not local,
+# so they classify as unreadable -> REFUSED, never allowed).
+#
+# TWO consumers, one predicate each, no overlap:
+#   * the SIGNATURE arms (`squash_signature`) -- the census uses them to
+#     PROMOTE a CLOSED PR to MERGED before any verdict; the dispatcher uses them
+#     to read a hand-applied landing as already-harvested.
+#   * the ANCESTRY arm (`classify_closed_pr_landing`) -- the census's residual
+#     verdict for a CLOSED PR the signature did not account for.
+
+_SQUASH_SUBJECT_RE = re.compile(r'\(#(\d{1,6})(?:\s[^)]*)?\)\s*$')
+_MERGE_TITLE_RE = re.compile(r'^Merge PR #(\d{1,6})\b')
+
+
+def squash_signature(log_lines):
+    """{pr_number: sha} from a `git log` pass whose format LEADS with
+    `%H%x1f%s%x1f%P` (sha, subject, parents); trailing fields are ignored.
+
+    TWO arms, both keyed on the upstream COMMIT SHAPE:
+      * a SQUASH is a SINGLE-PARENT commit whose subject ends `(#N)` -- the
+        number GitHub appends to a squashed subject;
+      * a merge-button landing is a subject of the form `Merge PR #N`.
+    A multi-parent commit is excluded from the subject arm: on a merge commit
+    `(#N)` names the PR of the merge itself and says nothing about what it
+    carries, so the arm would mint a false attribution (#416).
+    """
+    out = {}
+    for line in log_lines:
+        parts = line.rstrip('\n').split('\x1f')
+        if len(parts) < 3:
+            continue
+        sha, subj, parents = parts[0].strip(), parts[1], parts[2].split()
+        if not sha or len(parents) != 1:
+            continue
+        m = _SQUASH_SUBJECT_RE.search(subj) or _MERGE_TITLE_RE.match(subj)
+        if m:
+            out.setdefault(int(m.group(1)), sha)
+    return out
+
+
+def classify_closed_pr_landing(commits_readable, ancestor_hit):
+    """Tri-state landing verdict for a CLOSED upstream PR whose SIGNATURE was
+    NOT found upstream. The signature route is `squash_signature` and it is
+    consumed SEPARATELY: a CLOSED PR whose number that function yields is
+    promoted to MERGED by the census before any verdict is taken, so such a PR
+    never reaches this predicate (selftest leg 12 is its control).
+
+    'present' -- the PR's own head commit is an ANCESTOR of the upstream ref,
+                 so its work is upstream: the caller must REFUSE the rework.
+    'absent'  -- the head commit was readable and is NOT an ancestor, so the
+                 work is genuinely not there and rework is legitimate.
+    None      -- UNCLASSIFIABLE: the head commit could not be read, so nothing
+                 settles it. Absence of evidence must never become an approval
+                 (#416), so the caller REFUSES with a NAMED REMEDY rather than
+                 defaulting to the allow -- which is exactly the #301 defect:
+                 an unclassifiable CLOSED PR fell through to ELIGIBLE_REWORK.
+    """
+    if ancestor_hit:
+        return 'present'
+    if not commits_readable:
+        return None
+    return 'absent'
