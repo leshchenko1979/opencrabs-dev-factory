@@ -595,6 +595,36 @@ swap_inflight_units() { # $1 = sha8 ; one live `oc-swap-<sha8>-*.service` name p
   printf '%s\n' "$LIST" | grep -E "^oc-swap-${SHA8}-" || true
 }
 
+# ------------------------------------------------- #704 fork-main tip read ---
+# Resolve the fork-main tip from the DEDICATED ref this tool's own fetch writes
+# (`+refs/heads/main:refs/oc-deploy/main`), and only fall back to FETCH_HEAD.
+# FETCH_HEAD is ONE shared, mutable file per repository, rewritten by EVERY
+# `git fetch` in that repo — oc-prchecks fetches ci/quick-build-linux, harvest
+# lanes fetch adolfousier/upstream — so a concurrent fetch landing in the ~2 s
+# window between our fetch and this read silently substituted another remote's
+# tip. Measured 2026-09-29 08:33Z (chain oc-ship-702-082945, sha 2a39b676): the
+# tip read was upstream main, the auto-rebase replayed `upstream..sha` onto the
+# wrong base, and four files the commit never touched conflicted. Exit 5 was the
+# GOOD outcome — had the replay completed, upstream-derived history would have
+# been pushed to fork main. `refs/oc-deploy/main` is written ONLY by this tool.
+resolve_main_tip() {
+  # `--verify -q`: a bare `rev-parse <unknown>` ECHOES the argument to stdout
+  # (and the `||` fallback then appends its own line), so the old form could
+  # return a TWO-LINE tip. Verify-quiet prints nothing on failure.
+  git rev-parse --verify -q refs/oc-deploy/main 2>/dev/null \
+    || git rev-parse --verify -q FETCH_HEAD 2>/dev/null
+}
+
+remote_main_tip() { # $1=remote ; the remote's OWN declaration of fork main
+  git ls-remote "$1" refs/heads/main 2>/dev/null | awk 'NR==1{print $1}'
+}
+
+tip_is_fork_main() { # $1=tip $2=remote ; 0 iff tip == the remote's declared fork main
+  local RM
+  RM="$(remote_main_tip "$2")"
+  [ -n "$RM" ] && [ "$1" = "$RM" ]
+}
+
 # ------------------------------------------------------- journal (S2 spec) --
 JF=""; SEQ=0
 journal_init() { # $1 = short label
@@ -936,6 +966,65 @@ STUB
     "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-nonff-autorebase-rc" $rc 0
   check_has "ship-nonff-autorebase-msg" "$out" "auto-rebased"
+
+  # 5d-f. #704: the fork-main tip is read from refs/oc-deploy/main — the DEDICATED
+  #   ref this tool's own fetch writes — NEVER from FETCH_HEAD, which is ONE shared
+  #   mutable file per repo that ANY concurrent fetch rewrites (oc-prchecks fetches
+  #   ci/quick-build-linux, harvest lanes fetch upstream). Measured 2026-09-29
+  #   08:33Z, chain oc-ship-702-082945: FETCH_HEAD held ci/quick-build-linux, the
+  #   tip read was upstream main, and a clean FF was auto-rebased onto the wrong
+  #   base (four files the commit never touched conflicted; rc 5 was the GOOD
+  #   outcome — a completed replay would have pushed upstream history to fork main).
+  git init -q --bare -b main "$T/r704.git"
+  git init -q -b main "$T/r704"
+  git -C "$T/r704" config user.email t@t; git -C "$T/r704" config user.name t
+  echo a > "$T/r704/a"; git -C "$T/r704" add a; git -C "$T/r704" commit -qm a
+  echo b > "$T/r704/b"; git -C "$T/r704" add b; git -C "$T/r704" commit -qm b
+  echo c > "$T/r704/c"; git -C "$T/r704" add c; git -C "$T/r704" commit -qm c
+  TIP_C="$(git -C "$T/r704" rev-parse HEAD)"; TIP_B="$(git -C "$T/r704" rev-parse HEAD~1)"
+  git -C "$T/r704" push -q "$T/r704.git" HEAD:refs/heads/main          # remote main = TIP_C
+  # a divergent, NON-ancestor tip (criterion b's foreign tip)
+  git -C "$T/r704" checkout -q -b diverged "$TIP_B"
+  echo d > "$T/r704/d"; git -C "$T/r704" add d; git -C "$T/r704" commit -qm d
+  TIP_D="$(git -C "$T/r704" rev-parse HEAD)"
+  git -C "$T/r704" checkout -q main
+  git -C "$T/r704" fetch -q "$T/r704.git" "+$TIP_D:refs/heads/diverged" 2>/dev/null || true
+  # (c) the resolved tip is the dedicated ref, NOT the clobbered FETCH_HEAD
+  git -C "$T/r704" update-ref refs/oc-deploy/main "$TIP_C"
+  git -C "$T/r704" fetch -q "$T/r704.git" "+$TIP_B:refs/heads/clobber1" 2>/dev/null || true   # FETCH_HEAD = TIP_B
+  RESOLVED="$(cd "$T/r704" && resolve_main_tip)"
+  [ "$RESOLVED" = "$TIP_C" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #704 resolve_main_tip read FETCH_HEAD ($RESOLVED), not refs/oc-deploy/main ($TIP_C)"; }
+  # positive control: the fixture really did clobber FETCH_HEAD (else the leg is vacuous)
+  [ "$(git -C "$T/r704" rev-parse FETCH_HEAD)" = "$TIP_B" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #704 fixture did not clobber FETCH_HEAD"; }
+  # fallback: with the dedicated ref absent, FETCH_HEAD is still used
+  git -C "$T/r704" update-ref -d refs/oc-deploy/main
+  [ "$(cd "$T/r704" && resolve_main_tip)" = "$TIP_B" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #704 resolve_main_tip did not fall back to FETCH_HEAD"; }
+  # containment predicate — the REMOTE's own declaration is the authority
+  ( cd "$T/r704" && tip_is_fork_main "$TIP_C" "$T/r704.git" ) && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #704 tip_is_fork_main rejected the remote's own main"; }
+  ( cd "$T/r704" && tip_is_fork_main "$TIP_D" "$T/r704.git" ) && { fail=$((fail+1)); echo "SELFTEST FAIL: #704 tip_is_fork_main accepted a foreign tip"; } || pass=$((pass+1))
+  # (a) with FETCH_HEAD clobbered by a foreign fetch, a clean-FF ship reports FF ok
+  #     and does NOT rebase. The fetch is FROZEN (OC_DEPLOY_FETCH stub) to reproduce
+  #     the post-fetch/pre-read race deterministically: a live fetch would rewrite
+  #     FETCH_HEAD and the window cannot be won on purpose from a test.
+  git -C "$T/r704" update-ref refs/oc-deploy/main "$TIP_C"
+  git -C "$T/r704" fetch -q "$T/r704.git" "+$TIP_B:refs/heads/clobber2" 2>/dev/null || true   # FETCH_HEAD = TIP_B
+  out="$(cd "$T/r704" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/r704.git" \
+    OC_DEPLOY_FETCH=/bin/true OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$TIP_C" 2>&1)"; rc=$?
+  check_rc "704-ffok-under-clobber-rc" $rc 0
+  check_has "704-tip-from-ref" "$out" "fork main tip = $TIP_C"
+  check_has "704-ffok-under-clobber-msg" "$out" "FF ok"
+  grep -q "auto-rebase" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: #704 rebased under a clobbered FETCH_HEAD"; } || pass=$((pass+1))
+  # (b) refs/oc-deploy/main AND FETCH_HEAD both at a NON-ancestor -> resolution-class
+  #     refusal BEFORE git rebase (without the containment leg this reached
+  #     rebase-needed, i.e. the tool would have started a rebase onto a foreign tip)
+  git -C "$T/r704" update-ref refs/oc-deploy/main "$TIP_D"
+  out="$(cd "$T/r704" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/r704.git" \
+    OC_DEPLOY_FETCH=/bin/true OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$TIP_C" 2>&1)"; rc=$?
+  check_rc "704-foreign-tip-refused-rc" $rc 2
+  check_has "704-foreign-tip-gate-token" "$out" "OC_DEPLOY_GATE=tip-not-fork-main"
+  grep -q "auto-rebase\|rebase-needed" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: #704 reached the rebase path with a foreign tip"; } || pass=$((pass+1))
 
   # 6. ship execute end-to-end: restore FF remote, fake gh + stub validate
   git -C "$T/repo" checkout -q -B main "$SHA2"
@@ -3459,12 +3548,26 @@ case "$MODE" in
     git cat-file -e "$SHA^{commit}" 2>/dev/null \
       || die 1 "sha not found in this repo (phantom?): $SHA — pass --sha <real commit sha>"
     plan "ship sha=$SHA features=$FEATURES stage=$(stage) execute=$EXECUTE"
-    git fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
-      || git fetch -q "$REMOTE" main \
+    # #704: the tip is resolved from refs/oc-deploy/main — the DEDICATED ref
+    # THIS fetch writes — never from FETCH_HEAD first (a shared mutable file any
+    # concurrent fetch in this repo rewrites; see resolve_main_tip). OC_DEPLOY_FETCH
+    # exists so the selftest can freeze the post-fetch/pre-read state: the race is
+    # between these two lines and no live test can win it deterministically.
+    FETCH_BIN="${OC_DEPLOY_FETCH:-git}"
+    "$FETCH_BIN" fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
+      || "$FETCH_BIN" fetch -q "$REMOTE" main \
       || { shadow_log ship "$SHA" "$FEATURES" "fetch-fail"; die 2 "OC_DEPLOY_GATE=fetch-fail: cannot fetch fork main from $REMOTE"; }
-    MAIN_TIP="$(git rev-parse FETCH_HEAD 2>/dev/null || git rev-parse refs/oc-deploy/main 2>/dev/null)" \
+    MAIN_TIP="$(resolve_main_tip)" \
       || die 2 "cannot resolve fork main tip"
     plan "fork main tip = $MAIN_TIP"
+    # #704 containment: a tip that is not fork main is a RESOLUTION failure, not a
+    # conflict to resolve — refuse here, before the FF test and before any rebase.
+    # The expectation is the REMOTE's own declaration (an independent declaration,
+    # never the local ref we just wrote). The `watch` ALERT stays report-only: a
+    # correct-but-not-yet-deployed tip is the NORMAL state at ship time, so gating
+    # on coverage would refuse every legitimate ship.
+    tip_is_fork_main "$MAIN_TIP" "$REMOTE" \
+      || { shadow_log ship "$SHA" "$FEATURES" "tip-not-fork-main"; die 2 "OC_DEPLOY_GATE=tip-not-fork-main: resolved tip $MAIN_TIP != $REMOTE refs/heads/main ($(remote_main_tip "$REMOTE" || echo unreadable)) — refusing to ship onto a foreign tip (concurrent-fetch race, #704)"; }
     watch_precheck "$MAIN_TIP"
     if git merge-base --is-ancestor "$MAIN_TIP" "$SHA" 2>/dev/null; then
       plan "FF ok: main is ancestor of sha — push would fast-forward"
@@ -3551,9 +3654,14 @@ case "$MODE" in
         if [ "$PUSH_ATTEMPT" -eq 1 ]; then
           echo "oc-deploy: push failed (concurrent update) — fetching latest main and retrying auto-rebase in 3s..." >&2
           sleep 3
-          git fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
-            || git fetch -q "$REMOTE" main 2>/dev/null || true
-          MAIN_TIP="$(git rev-parse FETCH_HEAD 2>/dev/null || git rev-parse refs/oc-deploy/main 2>/dev/null)" || break
+          FETCH_BIN="${OC_DEPLOY_FETCH:-git}"
+          "$FETCH_BIN" fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
+            || "$FETCH_BIN" fetch -q "$REMOTE" main 2>/dev/null || true
+          MAIN_TIP="$(resolve_main_tip)" || break
+          # #704: same containment as the primary path — never rebase onto a tip
+          # that is not fork main (the remote's own declaration, not our local ref).
+          tip_is_fork_main "$MAIN_TIP" "$REMOTE" \
+            || { shadow_log ship "$SHA" "$FEATURES" "tip-not-fork-main"; die 2 "OC_DEPLOY_GATE=tip-not-fork-main: retry resolved tip $MAIN_TIP != $REMOTE refs/heads/main ($(remote_main_tip "$REMOTE" || echo unreadable)) — refusing to rebase onto a foreign tip (concurrent-fetch race, #704)"; }
           if ! git merge-base --is-ancestor "$MAIN_TIP" "$SHA" 2>/dev/null; then
             PRE_REBASE_REF="$(git symbolic-ref --short -q HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null)"
             set +e
