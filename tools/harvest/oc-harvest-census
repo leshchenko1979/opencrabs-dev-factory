@@ -24,13 +24,18 @@
 #   record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
 #          [--status filed|not-upstreamable|conditionally-upstreamable] [--reason <text>]
 #          [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
+#          [--prerequisite <ref>] [--condition <text>] [--dispatch <lane>]
 #          [--state-file <path>]
 #       Records/updates a manual_records row (upsert keyed on UNIT, #761).
 #       --pr is required only for the default 'filed' status; a
 #       'not-upstreamable' or 'conditionally-upstreamable' row names none
 #       (#564). --branches, --revert and --verified-at are OPTIONAL
 #       annotations on a not-upstreamable row and are carried forward on a
-#       re-record.
+#       re-record. --prerequisite, --condition and --dispatch are the
+#       CONDITIONAL row's own fields (#20): the walk re-verifies a
+#       `conditionally-upstreamable` row on its named --prerequisite's live
+#       issue/PR state, so a conditional row written without one is UNCOVERED
+#       and cannot be re-verified at all.
 #   purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
 #                                    REFUSED (rc 2) unless --dry-run: REMOVAL
 #                                    IS FORBIDDEN (harvest.md, #707)
@@ -520,6 +525,74 @@ def get_issue_live_state(issue_num, fork_repo='leshchenko1979/opencrabs', mock_f
         return json.loads(res.stdout)
     except Exception:
         return None
+
+# ---- #20: the CONDITIONAL row's prerequisite ---------------------------------
+# A `conditionally-upstreamable` row's `condition` is a PREREQUISITE-CHAIN state
+# -- has the named prerequisite landed? -- and NOT a portability claim, so it is
+# an ISSUE/PR-STATE question, never a SURFACE question. Measured 2026-10-06:
+# the SURFACE premise already reads CHANGED on units 556/580 while both remain
+# gated, so a surface diff reports "matured" on a row that is still not portable
+# and would false-alarm the widened leg. Hence a separate reader.
+_PREREQ_QUALIFIED_RE = re.compile(r'(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)')
+_PREREQ_BARE_RE = re.compile(r'(?<![A-Za-z0-9_#/-])#(\d+)')
+
+def prerequisite_refs(record, default_repo='opencrabs/opencrabs'):
+    """The prerequisite refs a CONDITIONAL row names, as `owner/repo#N`.
+
+    `prerequisite` is the structured field and is read FIRST; `condition` is
+    free prose and is the fallback (the law's own wording: conditional rows
+    "carry `prerequisite` / `condition`"). A BARE `#N` -- no owner/repo -- is
+    qualified with `default_repo`, since a prerequisite is by construction
+    upstream-side. Order is preserved and de-duplicated.
+    """
+    out, seen = [], set()
+    for _src in (record.get('prerequisite'), record.get('condition')):
+        if not _src:
+            continue
+        _text = str(_src)
+        _found = [('%s#%s' % (m.group(1), m.group(2))) for m in _PREREQ_QUALIFIED_RE.finditer(_text)]
+        if not _found:
+            _found = ['%s#%s' % (default_repo, m.group(1)) for m in _PREREQ_BARE_RE.finditer(_text)]
+        for _ref in _found:
+            if _ref not in seen:
+                seen.add(_ref)
+                out.append(_ref)
+    return out
+
+def get_prerequisite_state(ref, mock_file=None):
+    """The live state of ONE prerequisite ref (`owner/repo#N`), or None.
+
+    `gh api repos/<repo>/issues/<n>` is used rather than `gh issue view` /
+    `gh pr view` because a PR and an issue share one number space: the single
+    endpoint answers for both and its `pull_request` key names which it is.
+    Returns None when the state cannot be read -- absence of evidence is not a
+    "landed" verdict, so the caller reports UNVERIFIED rather than a clean bill.
+    """
+    _m = re.match(r'^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$', str(ref or '').strip())
+    if not _m:
+        return None
+    repo, num = _m.group(1), _m.group(2)
+    if mock_file and os.path.exists(mock_file):
+        try:
+            with open(mock_file) as f:
+                loaded = json.load(f)
+        except Exception:
+            return None
+        rec = loaded.get('%s#%s' % (repo, num))
+        return dict(rec) if isinstance(rec, dict) else None
+    res = subprocess.run(
+        ['gh', 'api', 'repos/%s/issues/%s' % (repo, num)],
+        capture_output=True, text=True)
+    if res.returncode != 0:
+        return None
+    try:
+        _d = json.loads(res.stdout)
+    except Exception:
+        return None
+    return {'state': str(_d.get('state') or '').lower(),
+            'state_reason': _d.get('state_reason'),
+            'kind': 'pr' if _d.get('pull_request') else 'issue',
+            'title': _d.get('title') or ''}
 
 def upstream_ref(repo_path):
     """The ref the upstream-commit arms read. ONE home (#301): the squash map
@@ -1816,6 +1889,10 @@ mock_ledger = os.environ.get('OC_HARVEST_MOCK_LEDGER')
 mock_squashed = os.environ.get('OC_HARVEST_MOCK_SQUASHED')
 # #415: fixture override for the target's own fork-side state (state/stateReason).
 mock_issue_state = os.environ.get('OC_HARVEST_MOCK_ISSUE_STATE')
+# #20: fixture override for a CONDITIONAL row's named prerequisite, keyed by
+# `owner/repo#N`. The prerequisite lives on ANOTHER repo than the fork, so the
+# fork-side mock above cannot serve it -- a separate map, read by the same shape.
+mock_prereq = os.environ.get('OC_HARVEST_MOCK_PREREQ')
 
 try:
     prs = get_prs(upstream_repo, mock_prs)
@@ -2948,9 +3025,20 @@ elif action == 'walk':
     with open(registry_file) as f:
         wdata = json.load(f)
     wrecords = wdata.get('manual_records', []) or []
+    # #20: the walked set is widened to BOTH arms, and they are kept APART. The
+    # two answer different questions -- a `not-upstreamable` row is re-verified
+    # against the SURFACE / BRANCH / REASON premises, while a
+    # `conditionally-upstreamable` row is re-verified against its named
+    # PREREQUISITE's live state -- and the premises do NOT transfer: a surface
+    # diff reads CHANGED on a row that is still gated (measured 2026-10-06 on
+    # units 556/580), so running the surface premises over a conditional row
+    # would false-alarm. Law: upstream-merge-runbook.md step 12, v0.4.289.
     open_rows = [r for r in wrecords
                  if isinstance(r, dict)
                  and oc_claims.manual_record_status(r) == oc_claims.MANUAL_STATUS_NOT_UPSTREAMABLE]
+    cond_rows = [r for r in wrecords
+                 if isinstance(r, dict)
+                 and oc_claims.manual_record_status(r) == oc_claims.MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE]
 
     wcommits = get_ahead_commits(repo_path, mock_commits)
     wby_issue = build_commits_by_issue(wcommits)
@@ -3121,11 +3209,77 @@ elif action == 'walk':
             verified.append(entry)
             r['verified_at'] = walk_stamp
 
+    # ---- #20: the CONDITIONAL arm -----------------------------------------
+    # A `conditionally-upstreamable` row's `condition` is a PREREQUISITE-CHAIN
+    # state, so this arm reads the named prerequisite's OWN live issue/PR state
+    # and NEVER a surface diff (the reader's header carries the measurement).
+    # A prerequisite that has LANDED is the invisible event this arm exists to
+    # catch: the row's condition has moved and a LANE owes it a re-declaration.
+    for r in cond_rows:
+        _refs = prerequisite_refs(r)
+        prem = {}
+        if not _refs:
+            prem['p'] = ('UNCOVERED',
+                         'row names no parseable prerequisite ref in `prerequisite`/`condition` '
+                         '-- premise (p) cannot be verified at all (declaration gap, not a change)')
+        else:
+            _landed, _gating, _unread, _parts = [], [], [], []
+            for _ref in _refs:
+                _st = get_prerequisite_state(_ref, mock_prereq)
+                if not _st:
+                    _unread.append(_ref)
+                    _parts.append('%s: state UNREADABLE' % _ref)
+                    continue
+                _state = str(_st.get('state') or '').lower()
+                _kind = _st.get('kind') or 'issue'
+                if _state == 'closed':
+                    _landed.append(_ref)
+                    _parts.append('%s (%s): CLOSED -- prerequisite LANDED' % (_ref, _kind))
+                elif _state == 'open':
+                    _gating.append(_ref)
+                    _parts.append('%s (%s): OPEN -- still gating' % (_ref, _kind))
+                else:
+                    _unread.append(_ref)
+                    _parts.append('%s (%s): state=%r not interpretable' % (_ref, _kind, _state))
+            _detail = ' | '.join(_parts)
+            if _landed:
+                # ANY landed prerequisite surfaces the row. A met SUB-condition
+                # does not make the row portable (the remaining gates may still
+                # hold), so the detail names every ref and its state -- the lane
+                # decides re-declare / re-scope, and the row's own `condition`
+                # may need re-wording to lead with what still gates.
+                prem['p'] = ('CHANGED', 'prerequisite LANDED: ' + _detail)
+            elif _unread:
+                prem['p'] = ('UNVERIFIED', 'no readable prerequisite state: ' + _detail)
+            else:
+                prem['p'] = ('HOLDS', 'every named prerequisite still OPEN: ' + _detail)
+
+        entry = {'unit': str(r.get('unit')), 'issue': r.get('issue'), 'pr': r.get('pr'),
+                 'reason': str(r.get('reason') or ''),
+                 'conditional': True,
+                 'premises': {k: {'verdict': v[0], 'detail': v[1]} for k, v in sorted(prem.items())}}
+        moved = [k for k, v in sorted(prem.items()) if v[0] == 'CHANGED']
+        unsolved = [k for k, v in sorted(prem.items()) if v[0] == 'UNVERIFIED']
+        missing = [k for k, v in sorted(prem.items()) if v[0] == 'UNCOVERED']
+        if moved:
+            entry['moved'] = moved
+            changed.append(entry)
+        elif unsolved or missing:
+            if unsolved:
+                entry['unverified'] = unsolved
+            if missing:
+                entry['uncovered'] = missing
+            uncov.append(entry)
+        else:
+            verified.append(entry)
+            r['verified_at'] = walk_stamp
+
     if not no_write and verified:
         with open(registry_file, 'w') as f:
             json.dump(wdata, f, indent=2)
 
-    wsummary = {'open_rows': len(open_rows), 'changed': len(changed),
+    wsummary = {'open_rows': len(open_rows), 'conditional_rows': len(cond_rows),
+                'changed': len(changed),
                 'unverified_or_uncovered': len(uncov), 'verified': len(verified),
                 'stamp': walk_stamp, 'wrote': bool(not no_write and verified)}
 
@@ -3138,11 +3292,16 @@ elif action == 'walk':
               % ('dry run; verified_at stamped' if not no_write else 'READ-ONLY (--no-write)'))
         print('registry: %s' % registry_file)
         print('base: %s   OPEN `not-upstreamable` rows: %d' % (walk_base, len(open_rows)))
+        if cond_rows:
+            print('      + %d `conditionally-upstreamable` row(s) (#20) -- re-verified on their '
+                  'named PREREQUISITE\'s live state, never a surface diff' % len(cond_rows))
         print('')
         print('CHANGED -- premise moved (%d)' % len(changed))
         for e in changed:
-            print('  - unit=%s issue=%s pr=%s  premise(s) moved: %s'
-                  % (e['unit'], e['issue'], e['pr'], ', '.join(e['moved'])))
+            print('  - unit=%s issue=%s pr=%s%s  premise(s) moved: %s'
+                  % (e['unit'], e['issue'], e['pr'],
+                     ' [conditional]' if e.get('conditional') else '',
+                     ', '.join(e['moved'])))
             for _k in sorted(e['premises']):
                 if e['premises'][_k]['verdict'] == 'CHANGED':
                     print('      (%s) %s' % (_k, e['premises'][_k]['detail']))
@@ -3163,13 +3322,17 @@ elif action == 'walk':
         print('VERIFIED -- all premises held (%d)%s'
               % (len(verified), '' if no_write else ' -- verified_at=%s' % walk_stamp))
         for e in verified:
-            print('  - unit=%s issue=%s' % (e['unit'], e['issue']))
+            print('  - unit=%s issue=%s%s' % (e['unit'], e['issue'],
+                                              ' [conditional]' if e.get('conditional') else ''))
             for _k in sorted(e['premises']):
                 print('      (%s) %s' % (_k, e['premises'][_k]['detail']))
         print('')
         print('summary: %d OPEN row(s) -- %d CHANGED, %d UNVERIFIED/UNCOVERED, %d VERIFIED%s'
-              % (len(open_rows), len(changed), len(uncov), len(verified),
+              % (len(open_rows) + len(cond_rows), len(changed), len(uncov), len(verified),
                  '' if no_write else ' (stamped %s)' % walk_stamp))
+        print('         population: %d terminal (`not-upstreamable`) + %d conditional '
+              '(`conditionally-upstreamable`, #20)'
+              % (len(open_rows), len(cond_rows)))
         print('         no row deleted: REMOVAL IS FORBIDDEN (harvest.md Phase 7c) -- a reported row is a FINDING, not a deletion.')
 
     sys.exit(1 if changed else 0)
@@ -3297,6 +3460,7 @@ cmd_check() {
 cmd_record() {
   local unit="" pr="" issue="" issues_str="" status="" reason=""
   local branches="" revert="" verified_at=""
+  local prerequisite="" condition="" dispatch=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --unit) [ $# -ge 2 ] || { echo "oc-harvest-census: --unit needs a value" >&2; usage; }; unit="$2"; shift 2 ;;
@@ -3309,6 +3473,9 @@ cmd_record() {
       --branches) [ $# -ge 2 ] || { echo "oc-harvest-census: --branches needs a value" >&2; usage; }; branches="$2"; shift 2 ;;
       --revert) [ $# -ge 2 ] || { echo "oc-harvest-census: --revert needs a value" >&2; usage; }; revert="$2"; shift 2 ;;
       --verified-at) [ $# -ge 2 ] || { echo "oc-harvest-census: --verified-at needs a value" >&2; usage; }; verified_at="$2"; shift 2 ;;
+      --prerequisite) [ $# -ge 2 ] || { echo "oc-harvest-census: --prerequisite needs a value" >&2; usage; }; prerequisite="$2"; shift 2 ;;
+      --condition) [ $# -ge 2 ] || { echo "oc-harvest-census: --condition needs a value" >&2; usage; }; condition="$2"; shift 2 ;;
+      --dispatch) [ $# -ge 2 ] || { echo "oc-harvest-census: --dispatch needs a value" >&2; usage; }; dispatch="$2"; shift 2 ;;
       --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       *) usage ;;
@@ -3334,6 +3501,7 @@ cmd_record() {
 import sys, json, os, datetime, re
 reg_file, unit, pr, issue, issues_str = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 status, reason, branches, revert, verified_at = sys.argv[6], sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10]
+prerequisite, condition, dispatch = sys.argv[11], sys.argv[12], sys.argv[13]
 with open(reg_file) as f:
     data = json.load(f)
 records = data.setdefault("manual_records", [])
@@ -3369,6 +3537,17 @@ if revert:
     record_entry["revert"] = revert
 if verified_at:
     record_entry["verified_at"] = verified_at
+# #20: the CONDITIONAL-arm fields. The writer could already CARRY these
+# (the carry-forward walks every prior-row key) but never AUTHOR them, so a
+# conditional-row condition could only be set by a direct edit -- the same
+# bypass class the tuple defect forced a lane into. Absent unless supplied, so
+# the pre-existing rows keep their exact shape.
+if prerequisite:
+    record_entry["prerequisite"] = prerequisite
+if condition:
+    record_entry["condition"] = condition
+if dispatch:
+    record_entry["dispatch"] = dispatch
 # #761/#733: the row IDENTITY is the UNIT -- never (unit, pr, issue).
 # oc_claims.manual_record_matches() matches a target on unit OR issue, so
 # `unit` is the only identity anything downstream consumes; the old
@@ -3418,7 +3597,7 @@ _what = ("NOT UPSTREAMABLE" if record_entry.get("status") == "not-upstreamable"
                else ("PR #%s" % record_entry["pr"] if int(record_entry.get("pr") or 0) else "NO PR recorded")))
 _final_issues = record_entry.get("issues", [])
 print(f"{verb} Unit {unit} -> {_what} (issues: {_final_issues}) in {reg_file}")
-' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason" "$branches" "$revert" "$verified_at"
+' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason" "$branches" "$revert" "$verified_at" "$prerequisite" "$condition" "$dispatch"
   else
     echo "Recorded Unit $unit -> PR #$pr (registry uninitialized)"
   fi
@@ -4284,6 +4463,19 @@ EOF
 {
   "132": {"state": "OPEN", "stateReason": "REOPENED"},
   "144": {"state": "OPEN", "stateReason": null}
+}
+EOF
+
+  # #20 PREREQUISITE fixture: the live state of a CONDITIONAL row's named
+  # prerequisite, keyed `owner/repo#N`. `1927` is the still-gating prerequisite
+  # the law measured on 556/580; `1941` is the slice-1 PR that CLOSED AS LANDED
+  # on 676/757 (cherry-picked, `mergedAt: null`) -- the exact pair whose landing
+  # nothing surfaced until a lane read the rows by hand.
+  local mock_prereq="$selftest_tmp/mock_prereq.json"
+  cat << 'EOF' > "$mock_prereq"
+{
+  "opencrabs/opencrabs#1927": {"state": "open", "kind": "issue", "title": "slice 2 engine port"},
+  "opencrabs/opencrabs#1941": {"state": "closed", "kind": "pr", "title": "slice 1 spacing floor"}
 }
 EOF
 
@@ -6992,6 +7184,155 @@ WREGEOF
     ok "#761-3 walk: no OPEN not-upstreamable rows -> rc 0, nothing to report"
   else
     echo "  bad  - #761-3 walk empty-registry; got rc=$w_e_rc ($w_out)"
+    return 1
+  fi
+
+  # ============ #20: the CONDITIONAL arm of the walk =====================
+  # A `conditionally-upstreamable` row is re-verified on its NAMED
+  # PREREQUISITE's live state -- never a surface diff. The fixture pairs the
+  # exact two refs the law measured: #1927 still gating (556/580) and #1941
+  # closed-as-landed (676/757), the landing nothing surfaced until a lane read
+  # the rows by hand.
+  local wreg_cond="$selftest_tmp/walk_reg_cond.json"
+  cat << 'WCONDEOF' > "$wreg_cond"
+{"manual_records": [
+  {"unit": "cond-landed", "pr": 0, "issue": 9001, "issues": [9001],
+   "status": "conditionally-upstreamable",
+   "prerequisite": "opencrabs/opencrabs#1941",
+   "condition": "portable once opencrabs/opencrabs#1941 lands"},
+  {"unit": "cond-gating", "pr": 0, "issue": 9002, "issues": [9002],
+   "status": "conditionally-upstreamable",
+   "prerequisite": "opencrabs/opencrabs#1927",
+   "condition": "portable once opencrabs/opencrabs#1927 lands"},
+  {"unit": "cond-noref", "pr": 0, "issue": 9003, "issues": [9003],
+   "status": "conditionally-upstreamable",
+   "condition": "portable once the engine port lands"},
+  {"unit": "cond-surface-diff", "pr": 0, "issue": 982, "issues": [982],
+   "status": "conditionally-upstreamable",
+   "branches": ["feat/walk-ok"],
+   "prerequisite": "opencrabs/opencrabs#1927",
+   "condition": "gated on opencrabs/opencrabs#1927"}
+]}
+WCONDEOF
+
+  local wc_out="" wc_rc=0
+  wc_out="$(OC_HARVEST_MOCK_PRS="$mock_prs" OC_HARVEST_MOCK_PREREQ="$mock_prereq" \
+    run_engine "walk" "mock/repo" "$wrepo" "$wreg_cond" "" "" "" 2>&1)" || wc_rc=$?
+  local wc_changed wc_uncov wc_verified
+  wc_changed="$(printf '%s\n' "$wc_out" | awk '/^CHANGED --/{f=1;next} /^UNVERIFIED \/ UNCOVERED/{f=0} f')"
+  wc_uncov="$(printf '%s\n' "$wc_out" | awk '/^UNVERIFIED \/ UNCOVERED/{f=1;next} /^VERIFIED --/{f=0} f')"
+  wc_verified="$(printf '%s\n' "$wc_out" | awk '/^VERIFIED --/{f=1;next} /^summary:/{f=0} f')"
+
+  # (7) A LANDED prerequisite SURFACES the conditional row -- the invisible
+  #     event the widened leg exists to catch.
+  if [ "$wc_rc" -eq 1 ] && oc_has "$wc_changed" "unit=cond-landed" \
+     && oc_has "$wc_changed" "premise(s) moved: p" \
+     && oc_has "$wc_changed" "[conditional]" \
+     && oc_has "$wc_changed" "opencrabs/opencrabs#1941 (pr): CLOSED -- prerequisite LANDED"; then
+    ok "#20 walk: a CONDITIONAL row whose named prerequisite LANDED is surfaced (premise p)"
+  else
+    echo "  bad  - #20 landed-prerequisite row not surfaced; got rc=$wc_rc ($wc_out)"
+    return 1
+  fi
+
+  # (8) A still-OPEN prerequisite leaves the row VERIFIED (the condition has
+  #     not cleared; nothing is owed).
+  if ! oc_has "$wc_changed" "unit=cond-gating" && oc_has "$wc_verified" "unit=cond-gating" \
+     && oc_has "$wc_verified" "every named prerequisite still OPEN"; then
+    ok "#20 walk: a still-OPEN prerequisite leaves the conditional row VERIFIED"
+  else
+    echo "  bad  - #20 gating row must stay VERIFIED; got ($wc_out)"
+    return 1
+  fi
+
+  # (9) DISCRIMINATING CONTROL: this row's issue (982) is the one whose
+  #     declaration ARRIVED upstream -- its SURFACE premise reads CHANGED (that
+  #     is what surfaces `walk-stale` in leg (1)) -- while its prerequisite is
+  #     still OPEN. It must stay VERIFIED. If the arm read a surface diff
+  #     instead of the prerequisite, this leg reddens: measured on units 556/580
+  #     the surface premise reads CHANGED while both remain gated, so a surface
+  #     diff would false-alarm exactly here.
+  if ! oc_has "$wc_changed" "unit=cond-surface-diff" && oc_has "$wc_verified" "unit=cond-surface-diff"; then
+    ok "#20 walk: the conditional arm reads the PREREQUISITE, never a surface diff (surface-CHANGED row stays VERIFIED)"
+  else
+    echo "  bad  - #20 conditional arm leaked a surface diff; got ($wc_out)"
+    return 1
+  fi
+
+  # (10) A conditional row naming NO parseable prerequisite is UNCOVERED --
+  #      a declaration gap, never a silent pass and never stamped.
+  if oc_has "$wc_uncov" "unit=cond-noref" \
+     && oc_has "$wc_uncov" "no parseable prerequisite ref" \
+     && ! oc_has "$wc_changed" "unit=cond-noref"; then
+    ok "#20 walk: a conditional row naming no parseable prerequisite is UNCOVERED, never a silent pass"
+  else
+    echo "  bad  - #20 noref row must be UNCOVERED; got ($wc_out)"
+    return 1
+  fi
+
+  # (11) The terminal arm is UNCHANGED by the widening: this registry carries no
+  #      `not-upstreamable` row at all, and the population line says so -- the
+  #      widened leg must not reclassify the arms or lose the terminal one.
+  if oc_has "$wc_out" "OPEN \`not-upstreamable\` rows: 0" \
+     && oc_has "$wc_out" "4 \`conditionally-upstreamable\` row(s)" \
+     && oc_has "$wc_out" "population: 0 terminal (\`not-upstreamable\`) + 4 conditional"; then
+    ok "#20 walk: the two populations stay APART -- widening adds the conditional arm, never merges it"
+  else
+    echo "  bad  - #20 population split; got ($wc_out)"
+    return 1
+  fi
+
+  # (12) #20 AUTHORING: `record` must be able to WRITE the conditional fields,
+  #      not merely carry them. Before this the writer could only CARRY
+  #      `prerequisite`/`condition`/`dispatch` (the carry-forward walks every
+  #      prior-row key) and had no flag to set them, so a conditional row's
+  #      condition was authorable ONLY by a direct edit of the registry -- the
+  #      same bypass class the tuple defect forced a lane into (measured
+  #      2026-10-06: Harvest restored 676/757's lost `prerequisite` by hand).
+  local wreg_auth="$selftest_tmp/walk_reg_auth.json"
+  printf '{"manual_records": []}\n' > "$wreg_auth"
+  local wa_rc=0
+  bash "$0" record --unit "auth-cond" --status conditionally-upstreamable \
+      --prerequisite "opencrabs/opencrabs#1927" \
+      --condition "portable once the engine port lands" \
+      --dispatch "harvest" --issue "9004" --state-file "$wreg_auth" >/dev/null 2>&1 || wa_rc=$?
+  if [ "$wa_rc" -eq 0 ] && python3 -c '
+import json, sys
+rows = [r for r in json.load(open(sys.argv[1]))["manual_records"] if r.get("unit") == "auth-cond"]
+sys.exit(0 if (len(rows) == 1
+               and rows[0].get("prerequisite") == "opencrabs/opencrabs#1927"
+               and rows[0].get("condition") == "portable once the engine port lands"
+               and rows[0].get("dispatch") == "harvest"
+               and rows[0].get("status") == "conditionally-upstreamable") else 1)
+' "$wreg_auth"; then
+    ok "#20 record: --prerequisite/--condition/--dispatch AUTHOR the conditional fields (no direct edit needed)"
+  else
+    echo "  bad  - #20 record flags did not author the conditional fields; rc=$wa_rc"
+    return 1
+  fi
+
+  # (13) #20 AUDIT: a conditional row missing its canonical condition keys is
+  #      reported by the walk itself as UNCOVERED -- the cheap detector for the
+  #      class that fails silently. 676/757 sat with a `condition` that NAMED
+  #      #1927 while the STRUCTURED `prerequisite` field was absent, so nothing
+  #      could key on it. Here a row carries the structured field but no
+  #      parseable ref anywhere, and the walk says so by name.
+  local wreg_miss="$selftest_tmp/walk_reg_miss.json"
+  cat << 'WMISSEOF' > "$wreg_miss"
+{"manual_records": [
+  {"unit": "cond-missing-keys", "pr": 0, "issue": 9005, "issues": [9005],
+   "status": "conditionally-upstreamable",
+   "condition": "portable once the engine port lands"}
+]}
+WMISSEOF
+  local wm_out="" wm_rc=0
+  wm_out="$(OC_HARVEST_MOCK_PRS="$mock_prs" OC_HARVEST_MOCK_PREREQ="$mock_prereq" \
+    run_engine "walk" "mock/repo" "$wrepo" "$wreg_miss" "" "" "" 2>&1)" || wm_rc=$?
+  if [ "$wm_rc" -eq 0 ] && oc_has "$wm_out" "unit=cond-missing-keys" \
+     && oc_has "$wm_out" "no parseable prerequisite ref"; then
+    ok "#20 walk: a conditional row with no canonical condition keys is NAMED (not silently clean)"
+  else
+    echo "  bad  - #20 audit leg missed a keyless conditional row; got rc=$wm_rc ($wm_out)"
     return 1
   fi
 
