@@ -3386,9 +3386,23 @@ for i, existing in enumerate(records):
         # shape as the old "write-only, dumps a two-key dict, erases
         # manual_records" defect. Carry the prior values forward for EVERY
         # field this call did not supply, uniformly.
-        for _fld in ("status", "reason", "issue", "issues", "branches", "revert", "verified_at"):
-            if record_entry.get(_fld) in (None, "", [], {}) and existing.get(_fld) not in (None, "", [], {}):
-                record_entry[_fld] = existing[_fld]
+        #
+        # "EVERY" means every key the PRIOR ROW carries, so the loop walks
+        # `existing` itself. A hand-kept tuple is a SECOND inventory of the
+        # schema, and it drifts the moment a field is added: the re-record then
+        # silently drops it, which is the exact defect this block exists to
+        # prevent (measured 2026-10-06: unit 635 came back carrying 8 of its 13
+        # keys, because the tuple named 7 fields plus `pr`).
+        for _fld, _prev in existing.items():
+            if _fld == "unit":
+                continue          # identity: record_entry["unit"] is the key matched on
+            _cur = record_entry.get(_fld)
+            _cur_empty = (_cur in (None, "", [], {})
+                          or (isinstance(_cur, int) and not isinstance(_cur, bool) and _cur == 0))
+            if _cur_empty and _prev not in (None, "", [], {}):
+                record_entry[_fld] = _prev
+        # `pr` additionally reaches here as the STRING "0" from the CLI, which is
+        # falsy to int() but not to the tuple test above, so it keeps its own arm.
         if not int(record_entry.get("pr") or 0) and existing.get("pr"):
             record_entry["pr"] = existing["pr"]
         records[i] = record_entry
@@ -5321,6 +5335,43 @@ sys.exit(0 if (len(rows) == 1
     ok "#761 branches/revert/verified_at round-trip through a re-record"
   else
     echo "  bad  - #761 expected the three not-upstreamable fields carried forward on a re-record"
+    return 1
+  fi
+
+  # 9f-2. The carry-forward must walk the PRIOR ROW's keys, not a hand-kept
+  #       tuple. The tuple it replaced named 7 fields plus `pr`, so any field
+  #       OUTSIDE it -- `condition`, `prerequisite`, `dispatch`, `slice2`,
+  #       `recorded_at`, all of which the live registry carries -- was dropped
+  #       on a re-record (measured 2026-10-06: unit 635 came back with 8 of its
+  #       13 keys). The extra keys are injected straight into the registry on
+  #       purpose: that is the honest shape, a field some OTHER writer set.
+  #       This leg FAILS against the fixed tuple and passes against the walk,
+  #       which is what makes it a regression test rather than a restatement.
+  bash "$0" record --unit "carry-all-unit" --pr 0 --issue "999993" --state-file "$nu_reg" >/dev/null 2>&1 || true
+  python3 -c '
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+for r in d.get("manual_records", []):
+    if r.get("unit") == "carry-all-unit":
+        r["condition"] = "GATED-ON-UPSTREAM"
+        r["dispatch"] = "lane-x"
+        r["prerequisite"] = "upstream 1510"
+json.dump(d, open(p, "w"), indent=2)
+' "$nu_reg"
+  bash "$0" record --unit "carry-all-unit" --pr 0 --state-file "$nu_reg" >/dev/null 2>&1 || true
+  if python3 -c '
+import json, sys
+recs = json.load(open(sys.argv[1]))["manual_records"]
+rows = [r for r in recs if r.get("unit") == "carry-all-unit"]
+sys.exit(0 if (len(rows) == 1
+               and rows[0].get("condition") == "GATED-ON-UPSTREAM"
+               and rows[0].get("dispatch") == "lane-x"
+               and rows[0].get("prerequisite") == "upstream 1510") else 1)
+' "$nu_reg"; then
+    ok "#564 the carry-forward covers EVERY key of the prior row, not a fixed tuple"
+  else
+    echo "  bad  - a re-record dropped a field the tuple never named (condition/dispatch/prerequisite)"
     return 1
   fi
 
