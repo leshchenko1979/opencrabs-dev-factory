@@ -9,7 +9,12 @@ Usage:
   oc-issue-dispatch --help
 
 --auto eligibility filters (each bypassable, see the flags below):
-  claim-gated/parked  an issue carrying claim-gate markers
+  claim-gated/parked  an issue carrying claim-gate markers -- including the FIXTURE
+                      family (labels `test-fixture` / `no-dispatch`, #21): an issue
+                      that exists to exercise tooling, not work to be done. Fixture-ness
+                      is read from the LABEL, never from body shape -- a terse body is a
+                      legitimate shape for real work. A bare `fixture` label is NOT a
+                      gate: it is ambiguous with issues ABOUT test fixtures.
   LANDED (#337)       the fix already shipped -- a fork-space commit on
                       origin/main references it, OR the ledger holds a
                       done/close row targeting it.  --allow-landed bypasses.
@@ -456,12 +461,27 @@ CLAIM_GATE_PATTERNS = [
     r"requires? owner approval before claim",
 ]
 
+#: The DECLARED markers that gate an issue out of autonomous dispatch. A label is a
+#: declaration made ON the issue itself, by a human, on a STABLE surface -- which is
+#: why the fixture family lives HERE and not in CLAIM_GATE_PATTERNS (#21). A fixture
+#: is an issue that exists to exercise tooling, not work to be done; the convention
+#: is that such an issue CARRIES the label. The tool never infers fixture-ness from
+#: a terse body (`test`, `-`): body shape is not a declaration, and a short body is a
+#: legitimate shape for real work -- inferring it would be a guess dressed as a guard.
+#:
+#: The names are chosen to be UNAMBIGUOUS. A bare `fixture` is deliberately NOT in
+#: the set: this repo has a real `tools/tests/` surface, so an issue ABOUT test
+#: fixtures would legitimately carry such a label, and gating it would be a false
+#: positive on live work. `no-dispatch` is the general marker; `test-fixture` the
+#: domain-specific one.
 CLAIM_GATE_LABELS = {
     "idea-box",
     "parked",
     "hold",
     "on-hold",
     "needs-approval",
+    "test-fixture",
+    "no-dispatch",
 }
 
 
@@ -2822,6 +2842,53 @@ def run_selftest():
     assert_true("Issue with 'no claim without fresh approval' is gated", gated_1)
     assert_true("Issue with label 'parked' is gated", gated_2)
     assert_true("Normal issue is not gated (negative control)", not ungated)
+
+    # Test 6a-2: the FIXTURE family (#21). A fixture is declared by its LABEL, on a
+    # STABLE surface -- never inferred from a terse body. #711 (body: "test") and
+    # #712 (body: "-") were both planned for dispatch as real work because the
+    # gate had no declaration to key on and no arm read the body's SHAPE; adding a
+    # shape rule would have been a guess, so the marker is the label instead.
+    issue_test_fixture = {
+        "number": 712,
+        "title": "test issue 2",
+        "body": "-",
+        "labels": [{"name": "test-fixture"}]
+    }
+    issue_no_dispatch = {
+        "number": 713,
+        "title": "test issue 3",
+        "body": "plain",
+        "labels": [{"name": "no-dispatch"}]
+    }
+    # NEGATIVE CONTROL 1 (body shape): #711's exact body, NO label. If a future
+    # change teaches the gate to read body SHAPE, this leg reddens -- which is
+    # the point, because that change would be the guess this fix refused to make.
+    issue_terse_unlabelled = {
+        "number": 999,
+        "title": "short body but real work",
+        "body": "test",
+        "labels": []
+    }
+    # NEGATIVE CONTROL 2 (ambiguous name): a bare `fixture` label is NOT a gate --
+    # this repo HAS a tools/tests/ surface, so an issue ABOUT test fixtures could
+    # legitimately carry it. Gating that name would block live work.
+    issue_bare_fixture = {
+        "number": 998,
+        "title": "test(fixtures): add a fixture for the walk",
+        "body": "Real work on the fixtures.",
+        "labels": [{"name": "fixture"}]
+    }
+    gated_tf, r_tf = check_issue_claim_gate(issue_test_fixture)
+    gated_nd, r_nd = check_issue_claim_gate(issue_no_dispatch)
+    terse_gated, r_terse = check_issue_claim_gate(issue_terse_unlabelled)
+    bare_gated, r_bare = check_issue_claim_gate(issue_bare_fixture)
+
+    assert_true("Issue with label 'test-fixture' is gated (#21)", gated_tf)
+    assert_true("Issue with label 'no-dispatch' is gated (#21)", gated_nd)
+    assert_true("A terse body with NO label is NOT gated -- shape is not a declaration (#21)",
+                not terse_gated)
+    assert_true("A bare 'fixture' label is NOT a gate -- ambiguous with work ABOUT fixtures (#21)",
+                not bare_gated)
 
     # Test 6b: Lane busy detection with open claims
     lane_with_claims = {
