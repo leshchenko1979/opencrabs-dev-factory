@@ -687,7 +687,7 @@ def check_fork_path_provenance(path, repo_path):
     return None, None, None
 
 def _pr_list_limit():
-    # #19: the `gh pr list` window. `gh pr list` returns the NEWEST N PRs, so
+    # #19: the gh pr list window. gh pr list returns the NEWEST N PRs, so
     # this is a MOVING window, not a filter -- a landing older than it is
     # invisible to every leg here. Env-overridable so the saturation guard below
     # is testable hermetically.
