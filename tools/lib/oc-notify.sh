@@ -20,10 +20,12 @@
 #   OC_NOTIFY_SENDER   per-SEND sender label (default: the caller's own $3).
 #                      The journal records it as `caller=a2a:<label>`, and the
 #                      label is caller-controlled free-form, so a caller needing
-#                      per-message journal identity sets it (#472). Setting it
-#                      also DISABLES this file's (target,window) journal
-#                      fallback: the caller then owns the stricter, identity-
-#                      keyed check, keeping that predicate in ONE home.
+#                      per-message journal identity sets it (#472). The receipt
+#                      check itself lives in the CALLER (identity-keyed, e.g.
+#                      oc-issue-dispatch). This file no longer inspects the
+#                      journal at all: #18 deleted its (target,window) fallback
+#                      as INERT dead code, so the transport's rc is reported
+#                      honestly and the caller decides what it means.
 
 oc_notify_resolve_bin() { # -> echoes binary path, rc 1 if unresolvable
   local b="${OC_NOTIFY_BIN:-${NOTIFY_BIN:-}}"
@@ -40,8 +42,7 @@ oc_notify_session() { # $1=bin $2=profile $3=sender $4=uuid $5=title $6=text
   # the receipt predicate can then match THIS send and not a neighbour's.
   # Unset ⇒ every existing caller keeps today's behaviour exactly.
   [ -n "${OC_NOTIFY_SENDER:-}" ] && sender="$OC_NOTIFY_SENDER"
-  local nrc=0 rrc=0 t_start
-  t_start="$(date +%s)"
+  local nrc=0 rrc=0
   # #466: the CLI leg needs a budget of its OWN. Without one a hung
   # `session notify` blocks this function forever, and the A2A fallback below
   # is only reached on a NON-zero rc -- so the fallback exists for exactly the
@@ -104,45 +105,21 @@ except Exception:
     fi
   fi
 
-  # Final verification: if CLI or caller timed out or reported failure, check session-notify.journal
-  # to see if the notify actually landed (prevents false negative rc=124 on slow CLI returns).
-  # #472: when the caller supplied OC_NOTIFY_SENDER it owns the receipt check
-  # (identity-keyed, in oc-issue-dispatch); this (target,window) predicate is
-  # then skipped so the two do not drift apart. Standalone CLI use (no sender
-  # override) keeps the fallback below unchanged.
-  if [ -z "${OC_NOTIFY_SENDER:-}" ] && [ "$nrc" -ne 0 ] && [ "$nrc" -ne 2 ] && [ "$nrc" -ne 3 ]; then
-    local j_rc=1
-    python3 -c "
-import sys, os, datetime
-try:
-    target = sys.argv[1]
-    t0 = float(sys.argv[2])
-    profile = sys.argv[3]
-    jp = os.path.expanduser('~/.opencrabs/profiles/' + profile + '/logs/session-notify.journal')
-    if not os.path.exists(jp):
-        jp = os.path.expanduser('~/.opencrabs/logs/session-notify.journal')
-    if os.path.exists(jp):
-        with open(jp, 'r', encoding='utf-8', errors='replace') as f:
-            lines = f.readlines()
-        for line in reversed(lines[-50:]):
-            parts = line.strip().split('\t')
-            if len(parts) >= 5:
-                ts_str, caller, tgt, outcome, exit_str = parts[:5]
-                t_val = tgt.split('=', 1)[1] if '=' in tgt else tgt
-                o_val = outcome.split('=', 1)[1] if '=' in outcome else outcome
-                e_val = exit_str.split('=', 1)[1] if '=' in exit_str else exit_str
-                if t_val == target and o_val in ('delivered', 'injected', 'redirected', 'queued') and e_val == '0':
-                    dt = datetime.datetime.fromisoformat(ts_str)
-                    if dt.timestamp() >= t0 - 5:
-                        sys.exit(0)
-except Exception:
-    pass
-sys.exit(1)
-" "$uuid" "$t_start" "$profile" 2>/dev/null || j_rc=$?
-    if [ "$j_rc" -eq 0 ]; then
-      nrc=0
-    fi
-  fi
+  # (#18) The (target,window) journal fallback that lived here was DELETED, not
+  # repaired -- measured 2026-10-06, it was INERT by construction: the embedded
+  # python's exit status was captured with `||`, which fires ONLY on failure, so
+  # the variable kept its initial 1 on the SUCCESS path and a matching journal
+  # row still returned the transport's rc (probe: the embedded python exits 0 on
+  # a matching row; this function returned 4).
+  #
+  # The naive one-line repair is the DANGEROUS one: it would put a
+  # (target,window)-only predicate back in service, so ANY delivery to the same
+  # lane inside the window settles a send that never landed -- the exact
+  # message-blind defect removed from oc-issue-dispatch by #472. This lib is the
+  # single owner of the wake contract and the receipt check is the dispatcher's
+  # (identity-keyed, `caller=a2a:<per-send label>`); a dead leg that READS as
+  # live is worse than no leg, so the lib now reports the transport's rc
+  # honestly and the caller decides what that rc means.
   return "$nrc"
 }
 
