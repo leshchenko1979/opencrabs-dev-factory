@@ -1,5 +1,15 @@
 # Changelog — opencrabs-dev
 
+## v0.4.290 — the compactor never receives the retention set, and nothing enforces it (2026-10-06)
+
+**The tell.** A lane's compaction emitted `active_skills: [opencrabs-dev/harvest.md]` / `discard_skills: [opencrabs-dev]`, and the next turn's `bash` on a path matching `opencrabs-dev` was refused by the skill gate — one turn lost. The lane asked whether §10 needed sharpening for the compactor, or whether this was a harness defect to route.
+
+**Ruling: harness-side, and §10's own premise was false.** Read at source: the compactor's call carries a fixed system prompt (`compaction_system_prompt()`, `src/brain/agent/service/context.rs:927`) plus the Manifest Rules block (`:1330-1352`), which carries **no retention list**; the §10 law lives in `context.system_brain` (the #219 reinjection, `tool_loop.rs:1392-1414`), which the compaction call does not send. §10 is therefore addressed to an audience that never receives it — sharpening it alone cannot fix anything. The canonical section's claim that the compactor "honors manifest guidance … without binary modifications" is corrected in place, with the measured counter-instance and the mechanism. Nothing enforces the set: `warn_on_summary_invariants` checks that the fence EXISTS, never its content, and `shed_order` protects only the last remaining entry.
+
+**Filed upstream:** [opencrabs/opencrabs#1960](https://github.com/opencrabs/opencrabs/issues/1960) — parent #219, assigned `adolfousier`.
+
+**Changed:** `fleet-directives.md` §Post-compaction skill reload & context manifest curation (claim corrected in place); `SKILL.md` §Hard rules (pointer caveat).
+
 ## v0.4.289 — a conditional row's `condition` is a prerequisite-chain state, not a portability claim (2026-10-06)
 
 **What the harvest lane asked.** Units 676 / 757 were recorded `conditionally-upstreamable` naming `#1941` as the condition. `#1941` closed as landed; the census's `check` still REFUSES both. The lane read that as a disagreement between the register's "the change is upstream" judgment and the census's mechanical portability read, and asked for a ruling.

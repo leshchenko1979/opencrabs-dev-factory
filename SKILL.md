@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.289
+version: 0.4.290
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -394,7 +394,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
   roles (Editor/HQ/Triage/Toolsmith/Harvest/Reviewer lenses), gate colors (GREEN/RED with run
   receipt), phases, tool names. No ad-hoc synonyms; a NEW concept is proposed via the poll format
   and named on owner word. Reviewer A (REDUNDANCY + ONTOLOGY) enforces this lens-side.
-- **Context Manifest Curation (Compaction Section 10, owner order 2026-09-17):** when context compaction occurs, the compactor MUST explicitly retain `opencrabs-dev`, `opencrabs-dev/fleet-directives.md`, and the active role file (`opencrabs-dev/editor.md`, `opencrabs-dev/hq.md`, `opencrabs-dev/triage.md`, `opencrabs-dev/toolsmith.md`, or `opencrabs-dev/harvest.md`) in `active_skills`. Only non-active role files are placed in `discard_skills`. Essential tools (`session_notify`, `session_search`, `bash`, `read_file`, `telegram_send`) must stay pre-activated. Canonical: `fleet-directives.md §Post-compaction skill reload & context manifest curation`.
+- **Context Manifest Curation (Compaction Section 10, owner order 2026-09-17):** when context compaction occurs, the compactor MUST explicitly retain `opencrabs-dev`, `opencrabs-dev/fleet-directives.md`, and the active role file (`opencrabs-dev/editor.md`, `opencrabs-dev/hq.md`, `opencrabs-dev/triage.md`, `opencrabs-dev/toolsmith.md`, or `opencrabs-dev/harvest.md`) in `active_skills`. Only non-active role files are placed in `discard_skills`. Essential tools (`session_notify`, `session_search`, `bash`, `read_file`, `telegram_send`) must stay pre-activated. Canonical: `fleet-directives.md §Post-compaction skill reload & context manifest curation`. **The retention above is INTENT, not a guarantee: the compactor's own prompt carries no retention list and no pipeline layer enforces one (measured 2026-10-06) — see the canonical section and [opencrabs/opencrabs#1960](https://github.com/opencrabs/opencrabs/issues/1960).**
 - ONLY HQ edits skill files: `SKILL.md` · `editor.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·
   `review-lenses.md` · `fleet-directives.md` · `upstream-merge-runbook.md` · `war-stories.md` ·
   `s2-swap-journal-spec.md` · `README.md` · `CHANGELOG.md` · `session-notify.md` · `environment.md` · `tools/docs/*.md` — including all worker lanes AND
