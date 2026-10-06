@@ -13,6 +13,13 @@
 # Legs:  (T) trailer sweep — every commit in base..branch carries Session-Id
 #        (P) patch-id — each --port-of sha has a patch-id match on the branch
 #        (E) empty-diff — branch vs base diff must be non-empty
+#        (U) upstream-void — every modified/deleted path exists in base
+#        (S) source-union (#343) — every line the --port-of source set ADDED
+#            (and did not REMOVE) is present in the branch's result tree. This
+#            is the ONLY leg that reads the source commits, so it is the only
+#            one that can see a squash/rebase that silently dropped a hunk.
+#            With no --port-of there is nothing to compare against, and the
+#            sweep refuses to certify clean (pre-#343 it printed CLEAN anyway).
 # =============================================================================
 set -u
 set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
@@ -166,6 +173,58 @@ selftest() {
   { [ "$rc" = 1 ] && grep -qF 'upstream-void' <<< "$out"; } \
     && passed=$((passed+1)) || echo "  FAIL leg-U rc=$rc out='$out'" >&2
 
+  # ---- Leg S / #343: source-union containment ------------------------------
+  # The incident (2026-09-18, editor lane 2fbfb2f8): a #233 bundle SQUASHED
+  # from four commits silently dropped a hunk, and this tool answered
+  # SWEEP: CLEAN both before and after the hunk was restored. Every pre-#343
+  # leg read only the branch's own state, so none of them could see the loss.
+  # These legs pin BOTH halves: an INTACT squash must stay clean (the union leg
+  # must not cry wolf on the branch shape it exists to serve), and a squash
+  # that dropped a line must be a FINDING that NAMES the line.
+  git -C "$d" checkout -q -b src "$b"
+  printf 'alpha\nbeta\n' > "$d/s.txt"; git -C "$d" add s.txt
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m s1
+  s1="$(git -C "$d" rev-parse HEAD)"
+  printf 'gamma\n' > "$d/t.txt"; git -C "$d" add t.txt
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m s2
+  s2="$(git -C "$d" rev-parse HEAD)"
+
+  git -C "$d" checkout -q -b sqok "$b"
+  git -C "$d" -c user.email=t@t -c user.name=t cherry-pick "$s1" "$s2" >/dev/null 2>&1
+  git -C "$d" reset -q --soft "$b"
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "squash intact" --trailer "Session-Id: sqok"
+  total=$((total+1))
+  out="$("$self" sqok --repo "$d" --base "$b" --port-of "$s1,$s2" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 0 ] && grep -qF "$(printf 'source-union\tOK')" <<< "$out" && grep -qF 'MATCH (union' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL #343 intact-squash rc=$rc out='$out'" >&2
+
+  git -C "$d" checkout -q -b sqbad "$b"
+  git -C "$d" -c user.email=t@t -c user.name=t cherry-pick "$s1" "$s2" >/dev/null 2>&1
+  printf 'alpha\n' > "$d/s.txt"; git -C "$d" add s.txt
+  git -C "$d" reset -q --soft "$b"
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "squash dropped a line" --trailer "Session-Id: sqbad"
+  total=$((total+1))
+  out="$("$self" sqbad --repo "$d" --base "$b" --port-of "$s1,$s2" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF "$(printf 'source-union\tFINDING')" <<< "$out" && grep -qF 'beta' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL #343 dropped-hunk rc=$rc out='$out'" >&2
+
+  # a source path the result does not carry AT ALL (the whole hunk lost)
+  git -C "$d" checkout -q -b sqgone "$b"
+  git -C "$d" -c user.email=t@t -c user.name=t cherry-pick "$s1" >/dev/null 2>&1
+  git -C "$d" reset -q --soft "$b"
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "squash lost a file" --trailer "Session-Id: sqgone"
+  total=$((total+1))
+  out="$("$self" sqgone --repo "$d" --base "$b" --port-of "$s1,$s2" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF "$(printf 'source-union\tFINDING')" <<< "$out" && grep -qF 'ABSENT' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL #343 lost-file rc=$rc out='$out'" >&2
+
+  # the EXACT incident shape: a squash branch swept with no --port-of. Pre-#343
+  # this printed "SWEEP: CLEAN" rc=0 having compared the branch against nothing.
+  total=$((total+1))
+  out="$("$self" sqbad --repo "$d" --base "$b" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'no --port-of' <<< "$out" && ! grep -qF 'SWEEP: CLEAN' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL #343 no-port-of rc=$rc out='$out'" >&2
+
   rm -rf "$d" "$sd" "$td" 2>/dev/null
   echo "selftest OK: $passed/$total legs"
   [ "$passed" = "$total" ]
@@ -229,6 +288,85 @@ if [ -n "$BRANCH_DIFF_FILES" ]; then
   done <<< "$BRANCH_DIFF_FILES"
 fi
 
+# Leg S — source-union containment (#343)
+# Every other leg reads the BRANCH's own state, so a squash/rebase that
+# silently DROPPED a hunk produced the same verdict as an intact port
+# (measured 2026-09-18, editor lane 2fbfb2f8: a #233 bundle squashed from four
+# commits lost its adaptation of an upstream test, and this tool answered
+# SWEEP: CLEAN both BEFORE and AFTER the hunk was restored). This is the only
+# leg that reads the SOURCE commits.
+#
+# Predicate: for every path the source set touches, every line the source set
+# ADDED and never REMOVED must be present in the branch's result tree. A line
+# the source added and a LATER source commit removed is not owed by the result
+# (that is why the union is `added - removed`, not `added`).
+#
+# One-directional failure: a reformat (whitespace) of a ported line reports a
+# FINDING, which costs a look. A dropped line that no other leg can see costs
+# a corrupted upstream PR. Refusing to certify is the safe direction.
+UNION_OK=0
+if [ -z "$PORT" ]; then
+  echo -e "source-union\tFINDING: no --port-of — the branch content was never compared against its source commits (pass --port-of sha1,sha2)"
+  rc=1
+else
+  S_ROWS="$(mktemp)"; S_REQ="$(mktemp)"; S_PATHS="$(mktemp)"
+  S_UNRESOLVED=0
+  IFS=',' read -ra PCS_S <<< "$PORT"
+  for psha in "${PCS_S[@]}"; do
+    [ -n "$psha" ] || continue
+    git -C "$REPO" rev-parse --verify -q "$psha^{commit}" >/dev/null 2>&1 || { S_UNRESOLVED=$((S_UNRESOLVED+1)); continue; }
+    # Parse per-commit diffs. `h` gates on the first @@ so the ---/+++ FILE
+    # headers (which precede any hunk) are never mistaken for content, and a
+    # source line that itself begins with -- or ++ cannot be either.
+    git -C "$REPO" show "$psha" --format= -p 2>/dev/null | awk '
+      /^diff --git / { p=$NF; sub(/^b\//,"",p); h=0; next }
+      /^@@/         { h=1; next }
+      !h            { next }
+      /^\+/         { printf "A\037%s\037%s\n", p, substr($0,2); next }
+      /^-/          { printf "R\037%s\037%s\n", p, substr($0,2); next }
+    ' >> "$S_ROWS"
+  done
+  awk -F'\037' '
+    $1=="A" { a[$2 "\037" $3]=1; next }
+    $1=="R" { r[$2 "\037" $3]=1; next }
+    END { for (k in a) if (!(k in r)) print k }
+  ' "$S_ROWS" > "$S_REQ"
+  awk -F'\037' '{print $1}' "$S_REQ" | sort -u > "$S_PATHS"
+  S_MISS=0; S_PATHS_N=0
+  while IFS= read -r fpath; do
+    [ -n "$fpath" ] || continue
+    S_PATHS_N=$((S_PATHS_N+1))
+    if ! git -C "$REPO" cat-file -e "$BRANCH:$fpath" 2>/dev/null; then
+      n_req="$(awk -F'\037' -v p="$fpath" '$1==p' "$S_REQ" | wc -l)"
+      echo -e "source-union\tFINDING: $fpath is carried by the source set but ABSENT from $BRANCH ($n_req source line(s) unverifiable)"
+      rc=1; S_MISS=$((S_MISS+1)); continue
+    fi
+    content="$(git -C "$REPO" show "$BRANCH:$fpath" 2>/dev/null)"
+    n_req=0; n_missing=0; first=""
+    while IFS=$'\037' read -r rp rl; do
+      [ "$rp" = "$fpath" ] || continue
+      n_req=$((n_req+1))
+      if ! grep -qxF -- "$rl" <<< "$content"; then
+        n_missing=$((n_missing+1)); [ -n "$first" ] || first="$rl"
+      fi
+    done < "$S_REQ"
+    if [ "$n_missing" -gt 0 ]; then
+      echo -e "source-union\tFINDING: $fpath — $n_missing of $n_req source line(s) absent from $BRANCH (first: $(printf '%.100s' "$first"))"
+      rc=1; S_MISS=$((S_MISS+1))
+    fi
+  done < "$S_PATHS"
+  if [ "$S_UNRESOLVED" -gt 0 ]; then
+    echo -e "source-union\tFINDING: $S_UNRESOLVED source sha(s) unresolvable — content NOT compared"
+    rc=1
+  elif [ "$S_MISS" -eq 0 ] && [ "$S_PATHS_N" -gt 0 ]; then
+    echo -e "source-union\tOK ($S_PATHS_N path(s) of the source set fully present in $BRANCH)"
+    UNION_OK=1
+  elif [ "$S_MISS" -eq 0 ]; then
+    echo -e "source-union\tOK (source set carries no added line to verify)"
+  fi
+  rm -f "$S_ROWS" "$S_REQ" "$S_PATHS" 2>/dev/null
+fi
+
 # Leg P — patch-id verification of ported shas
 if [ -n "$PORT" ]; then
   # Per-commit patch-ids (lesson n=1543, template tools/harvest/oc-upstream-delta
@@ -245,6 +383,13 @@ if [ -n "$PORT" ]; then
     pid="$(git -C "$REPO" show "$psha" --format= -p 2>/dev/null | git patch-id --stable | cut -d' ' -f1)"
     if [ -z "$pid" ]; then echo -e "patch-id:$psha\tERROR: cannot compute patch-id (bad sha?)"; rc=1
     elif oc_has "$BRANCH_PIDS" "$pid"; then echo -e "patch-id:$psha\tMATCH on $BRANCH"
+    elif [ "$UNION_OK" = 1 ]; then
+      # #343: a SQUASH (or a rebase that resolved a conflict) rewrites the
+      # patch, so NO per-commit patch-id can survive it -- pre-#343 every
+      # squashed harvest read NO-MATCH and the tool was unusable on the very
+      # branches it was built for. Leg S proved the source set's content IS
+      # fully present, so the port is accounted for.
+      echo -e "patch-id:$psha\tMATCH (union: content present in $BRANCH via Leg S)"
     else echo -e "patch-id:$psha\tNO-MATCH on $BRANCH (not ported yet, or content drifted)"; rc=1; fi
   done
 fi

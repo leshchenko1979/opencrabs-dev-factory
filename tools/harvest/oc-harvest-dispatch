@@ -1350,6 +1350,12 @@ elif action == 'dispatch':
     raw_commits = v.get('commits', [commits_arg])
     ordered_commits = oc_claims.order_commits_parents_first(repo_path, raw_commits)
     commits_str = ' '.join(ordered_commits)
+    # #343: the sweep must be able to compare the RESULT against the source
+    # commits. The dispatcher holds them (they are what step 2 cherry-picks),
+    # so it must pass them on -- before #343 step 3 emitted a bare sweep, and
+    # the verifier then certified a tree it had never compared (the incident:
+    # a squashed #233 bundle silently dropped a hunk and still read CLEAN).
+    port_of_str = ','.join(ordered_commits)
 
     branch_name = f'leshchenko1979/fix/{slug}'
     
@@ -1418,7 +1424,7 @@ Target Branch: {branch_name}
 {dep_section}{adv_section}Commands:
   1. tools/git/oc-wt add up-{slug} {branch_name} --create --from {base_ref}
   2. git cherry-pick {commits_str}
-  3. tools/harvest/oc-harvest-sweep {branch_name} --base {base_ref}
+  3. tools/harvest/oc-harvest-sweep {branch_name} --base {base_ref} --port-of {port_of_str}
   4. git push origin {branch_name}
   5. tools/harvest/oc-prchecks {branch_name}
 {contract_line}'''
@@ -2025,7 +2031,30 @@ EOF
   fi
   unset OC_HARVEST_MOCK_DEPLOYED_TS
 
-  # 6a. MODE REGISTER: DEGRADED is fail-closed and HIGH-TRUST permits auto-ship.
+  # 6-S (#343). The work order must hand the verifier the SOURCE SET. Before
+  #      #343, step 3 emitted a bare `oc-harvest-sweep <branch> --base <ref>`,
+  #      and the sweep then certified a tree it had never compared -- which is
+  #      how a squashed #233 bundle that silently dropped a hunk still read
+  #      SWEEP: CLEAN. The dispatcher already holds the commits (step 2
+  #      cherry-picks them), so step 3 must pass them on. The separator matters:
+  #      `commits_str` is SPACE-joined for cherry-pick, while --port-of takes
+  #      COMMAS, so a naive reuse of commits_str would emit `--port-of sha1 sha2`
+  #      and the sweep would read only the first sha.
+  rc=0
+  export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
+  out="$(run_engine "dispatch" "83" "$commit_83 $commit_300" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "--port-of $commit_83,$commit_300"; then
+    echo "  ok 6-S - #343 the work order hands the sweep its source set (--port-of, comma-joined)"
+  else
+    echo "  bad 6-S - #343 step 3 must carry '--port-of <sha1>,<sha2>', got rc=$rc: $out"
+    return 1
+  fi
+  if oc_has "$out" "--port-of $commit_83 $commit_300"; then
+    echo "  bad 6-S-2 - #343 the source set is SPACE-joined; the sweep would read only the first sha: $out"
+    return 1
+  fi
+  echo "  ok 6-S-2 - #343 the source set is comma-joined, not space-joined"
+  unset OC_HARVEST_MOCK_DEPLOYED_TS
   local mode_ledger="$st_dir/ledger-mode.json"
   jq '.events += [{"n":99,"t":"2026-09-24T00:00:00Z","kind":"note","by":"hq","what":"MODE: HIGH-TRUST"}]' "$mock_ledger" > "$mode_ledger"
   export OC_LEDGER="$mode_ledger"
