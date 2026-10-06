@@ -133,7 +133,13 @@ oc_log_flood_guard() {
   [ -f "$logf" ] || return 0
   local cutoff n
   cutoff="$(($(date +%s) - 120))"
-  n="$(tail -n 300 "$logf" 2>/dev/null | jq -R -r \
+  # `-c` is LOAD-BEARING, not cosmetic (#770): the selector emits the matched ROW
+  # OBJECT, and jq PRETTY-PRINTS objects by default -- `-r` only affects STRINGS.
+  # So one matched row printed NINE lines (`{`, seven field lines, `}`) and the
+  # `wc -l` below counted LINES, not MATCHES: a population of ONE read as n=9 and
+  # the guard refused a lane whose single precondition failure had already been
+  # fixed. `-c` puts each object on one line so the count is a count of rows.
+  n="$(tail -n 300 "$logf" 2>/dev/null | jq -R -c \
     --arg tool "$OC_LOG_TOOL" --arg args "${OC_LOG_ARGS:0:500}" --argjson cutoff "$cutoff" \
     "$OC_LOG_JQ_TS"'fromjson? | select(.tool == $tool and .args == $args and ((.exit // 0) != 0))
     | select((ts_epoch) >= $cutoff)' 2>/dev/null | wc -l)"

@@ -706,6 +706,43 @@ for _fgf in Z '+00:00'; do
                      || bad "flood guard BLIND to the '$_fgf' form: rc=$_fgrc"
 done
 rm -rf "$_fgd"
+# ---- 00a6. flood guard counts MATCHES, not jq LINES (#770) ------------------
+# The selector emits the matched ROW OBJECT; jq PRETTY-PRINTS objects unless -c,
+# so `-r` (a STRING modifier) left ONE matched row printing NINE lines (`{`, 7
+# field lines, `}`) and the `wc -l` below counted LINES, not MATCHES. A
+# population of 1 read as n=9 >= 4 and the guard refused a lane whose single
+# precondition failure had already been fixed -- its banner's "already failed 9x"
+# sent the reader hunting a storm that did not exist. The #738 legs above could
+# not catch this: 4 real rows read 36 either way, so they pass with and without
+# the bug. The discriminating direction is the FALSE POSITIVE. Boundary pair
+# (3 rows -> rc 0, 4 rows -> rc 8) plus a leg that reads the guard's OWN banner
+# arithmetic, so the count is asserted through the guard's output rather than
+# re-derived from the expression under test. Pre-fix: 3 rows -> rc 8 (fails) and
+# the banner reads 36x.
+section "flood guard counts matches, not jq lines (#770)"
+_fgd2="$(mktemp -d)"; _fgl2="$_fgd2/tools.log"
+_fg_seed() { # $1 = prior identical failing rows ; writes the fixture
+  local i ts; ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  : > "$_fgl2"
+  i=1; while [ "$i" -le "$1" ]; do
+    printf '{"ts":"%sZ","tool":"oc-fg","actor":"x","args":"fg-same","exit":7,"secs":0.1,"extra":{}}\n' "$ts" >> "$_fgl2"
+    i=$((i+1))
+  done
+}
+_fg_drive() { # prints rc of the REAL guard against the current fixture
+  OC_TOOLS_LOG="$_fgl2" bash -c '. "$1/lib/oc-log.sh"; OC_LOG_TOOL=oc-fg; OC_LOG_ARGS=fg-same; oc_log_flood_guard' _ "$TOOLS_DIR" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+_fg_seed 3; _fg3="$(_fg_drive)"
+_fg_seed 4; _fg4="$(_fg_drive)"
+_fg_banner="$(OC_TOOLS_LOG="$_fgl2" bash -c '. "$1/lib/oc-log.sh"; OC_LOG_TOOL=oc-fg; OC_LOG_ARGS=fg-same; oc_log_flood_guard' _ "$TOOLS_DIR" 2>&1 >/dev/null | grep -o 'failed [0-9]*x' | head -1)"
+[ "$_fg3" = "0" ] && ok "flood guard: 3 prior rows -> rc 0 (below threshold)" \
+                  || bad "flood guard FALSE-POSITIVE: 3 prior rows -> rc $_fg3 (expected 0)"
+[ "$_fg4" = "8" ] && ok "flood guard: 4 prior rows -> rc 8 (real storm still caught)" \
+                  || bad "flood guard blind to a real storm: 4 prior rows -> rc $_fg4"
+[ "$_fg_banner" = "failed 4x" ] && ok "flood guard banner reports the ROW count (4x), not jq lines" \
+                                || bad "flood guard banner miscounts: '$_fg_banner' (expected 'failed 4x'; 36x = the pretty-print bug)"
+rm -rf "$_fgd2"
 # structural: no consumer keeps a ts read straight into fromdateiso8601.
 # Comment lines may QUOTE the naive form as documentation (this lib's own
 # OC_LOG_JQ_TS note does), so the detector reads CODE only -- a comment-stripped
