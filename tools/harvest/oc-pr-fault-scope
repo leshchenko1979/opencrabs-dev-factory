@@ -91,7 +91,29 @@ cmd_scope() {
   # IN-SCOPE tells the lane its change caused a base fault — the exact
   # misdiagnosis this tool exists to prevent. Drop registry/vendor checkouts and
   # the crate-root entry points from the failing-file set.
-  fail_files="$(printf '%s\n' "$run_log" \
+  # #26: the failed-JOB log spans EVERY step of the job, so a step that did NOT
+  # fail can still contribute file paths. `Check formatting` is
+  # `continue-on-error: true` (its conclusion reads `success`), yet its
+  # `Diff in <path>:<line>:` lines name the branch's OWN touched files -- so a
+  # genuine BASE-FAULT flipped to a false IN-SCOPE (run 37527739374:
+  # governor.rs / rich/api.rs / governor_internals_test.rs, every one in the PR's
+  # file list, against a break that was upstream main's own). Drop those lines --
+  # but ONLY when no formatting step is among the run's FAILED steps, so a real
+  # fmt failure (which IS the branch's fault) still reads IN-SCOPE. The failed
+  # step names come from `--json jobs` because `--log-failed`'s own step column
+  # reads `UNKNOWN STEP` on this runner and cannot be sliced.
+  _failed_steps="$("$gh" run view "$run" --repo "$gh_repo" --json jobs \
+    --jq '[.jobs[] | select(.conclusion=="failure") | .steps[]
+           | select(.conclusion=="failure") | .name] | join("\n")' 2>/dev/null)"
+  case "$_failed_steps" in
+    *[Ff]ormat*) _strip_fmt=0 ;;   # the fmt step itself failed: its diff claims the surface
+    *)           _strip_fmt=1 ;;   # fmt is soft-fail here: its diff lines are not failures
+  esac
+  _log_for_files="$run_log"
+  if [ "$_strip_fmt" = 1 ]; then
+    _log_for_files="$(printf '%s\n' "$run_log" | grep -vE 'Diff in [^ ]+:[0-9]+:' || true)"
+  fi
+  fail_files="$(printf '%s\n' "$_log_for_files" \
     | grep -oE '(src|crates|tests)/[A-Za-z0-9_/.-]+\.[A-Za-z0-9]+' \
     | grep -vE '(^|/)(index\.crates\.io|github\.com-)|/\.cargo/|/registry/|/vendor/|/node_modules/|^src/(lib|main)\.rs$' \
     | sort -u)"
@@ -230,6 +252,31 @@ cmd_selftest() {
     || bad "#25 worktree fixture .git is not a file (leg would be vacuous)"
   bash "$ME" --ref wtbranch --base main --run 1000 --repo "$T/wt" --gh "$T/gh-ref.sh" >/dev/null 2>&1
   chk "#25 --ref accepts a git worktree (.git is a file)" 0 $?
+  # ---- #26: a soft-fail fmt step's `Diff in` lines are NOT failures --------
+  # The failed-JOB log spans EVERY step, so `Check formatting` -- continue-on-error,
+  # conclusion `success` -- still contributes `Diff in <path>:` lines naming the
+  # branch's OWN touched files. On run 37527739374 those flipped a genuine
+  # BASE-FAULT (real failing test outside the PR) into a false IN-SCOPE. Two shims:
+  # (a) fmt did NOT fail -> its diff is dropped -> the real failing file survives
+  #     alone -> BASE-FAULT; (b) fmt DID fail -> its diff IS the branch's fault ->
+  #     IN-SCOPE. The failed-step names come from `--json jobs`, because
+  #     `--log-failed`'s own step column reads `UNKNOWN STEP` and cannot be sliced.
+  printf '#!/bin/sh\ncase " $* " in *" --json jobs "*) printf "Run tests\\n" ;; *" --log-failed "*) printf "Diff in /home/runner/work/opencrabs/opencrabs/src/brain/tools/pr_file.rs:120:\\nerror[E0308]: mismatched types\\n --> src/delivery/flow.rs:120:5\\n" ;; *" pr diff "*) printf "src/brain/tools/pr_file.rs\\n" ;; *) exit 1 ;; esac\n' > "$T/gh-fmtsoft.sh"
+  printf '#!/bin/sh\ncase " $* " in *" --json jobs "*) printf "Check formatting\\nRun tests\\n" ;; *" --log-failed "*) printf "Diff in /home/runner/work/opencrabs/opencrabs/src/brain/tools/pr_file.rs:120:\\nerror[E0308]: mismatched types\\n --> src/delivery/flow.rs:120:5\\n" ;; *" pr diff "*) printf "src/brain/tools/pr_file.rs\\n" ;; *) exit 1 ;; esac\n' > "$T/gh-fmthard.sh"
+  chmod +x "$T/gh-fmtsoft.sh" "$T/gh-fmthard.sh"
+  OUT_FS="$(bash "$ME" 42 --run 1000 --gh "$T/gh-fmtsoft.sh" 2>&1)"; RC_FS=$?
+  [ "$RC_FS" -eq 1 ] \
+    && ok "#26 soft-fail fmt step: its Diff lines are dropped -> BASE-FAULT (rc 1)" \
+    || bad "#26 soft-fail fmt step yielded rc=$RC_FS (want 1 BASE-FAULT)"
+  case "$OUT_FS" in *"src/brain/tools/pr_file.rs"*) bad "#26 soft-fail fmt file survived into the failing set" ;;
+    *"src/delivery/flow.rs"*) ok "#26 real failing file survives; soft-fail fmt file dropped" ;;
+    *) bad "#26 unexpected output: $OUT_FS" ;; esac
+  OUT_FH="$(bash "$ME" 42 --run 1000 --gh "$T/gh-fmthard.sh" 2>&1)"; RC_FH=$?
+  [ "$RC_FH" -eq 0 ] \
+    && ok "#26 fmt step DID fail: its Diff lines claim the surface -> IN-SCOPE (rc 0)" \
+    || bad "#26 fmt-step failure yielded rc=$RC_FH (want 0 IN-SCOPE)"
+  case "$OUT_FH" in *"src/brain/tools/pr_file.rs"*) ok "#26 fmt-failed diff file kept in the failing set" ;;
+    *) bad "#26 fmt-failed diff file dropped (leg vacuous): $OUT_FH" ;; esac
   # A BASE-FAULT with no resolvable base must DISCLOSE that it was not recorded
   # rather than fail silently.
   rm -rf "$T/state" "$T/repo"
