@@ -1319,17 +1319,74 @@ def _fleet_tool_names():
 
 _FLEET_TOOL_RE = re.compile(r"(?<![a-z0-9_-])oc-[a-z][a-z0-9-]*")
 
+# --- frame guards (#27): resolution ALONE is not a surface claim -------------
+# A body can NAME a live tool while talking about something else, and the bare
+# resolution test then hands the whole unit the factory tier. #605 gave
+# oc-issue-scope these frames; oc-issue-dispatch kept the bare test, so #530
+# (which names `oc-start` as the VICTIM of a false defect report) and #418 (which
+# names `oc-deploy fanout` as a CONSUMER of a contract) both claimed `tools`.
+# MIRRORED from tools/issue/oc-issue-scope:377-404 -- the measurements live there
+# (#387 analogy, #678 victim, #605 polarity) and are NOT re-derived here; the
+# CONSUMER frame is measured here (#418). Only the token a frame ATTACHES to is
+# suppressed, never a lookback window: a window is measurably wrong (oc-issue-scope
+# ANALOG_GAP records a fixture where it suppressed a real claim as well).
+_NEG = re.compile(r"(?i)\b(not|never|outside|excluding|rather than|instead of|without)\b")
+_NEG_WIN = 30
+_ANALOG = re.compile(r"(?i)\b(same\s+\w*\s*(?:defect\s+)?class\s+as|same\s+as|"
+                     r"analogous\s+to|compare\s+with|like\s+the\s+way)\b")
+_ANALOG_GAP = 8
+_VICTIM = re.compile(r"(?i)\b(?:false\s+defect|defect\s+report|falsely\s+attribut\w*"
+                     r"|filed\s+against|reported\s+(?:on|against)"
+                     r"|unrelated\s+to|blam(?:e|ed|ing)\s+(?:on|against))")
+_VICTIM_GAP = 14
+# #418: the tool is named as a CONSUMER of the thing under discussion -- "The
+# consumers of this contract are mechanical fan-out tooling (`oc-deploy fanout`,
+# #24)". Naming a downstream user is not claiming its surface.
+_CONSUMER = re.compile(r"(?i)\b(?:consumers?|callers?|downstream|"
+                       r"fan-?out\s+tooling|shells?\s+out\s+to)\b")
+_CONSUMER_GAP = 14
+
+
+def _fleet_frame_ends(low):
+    """End offsets of every frame that DEMOTES the token following it."""
+    return ([m.end() for m in _ANALOG.finditer(low)],
+            [m.end() for m in _VICTIM.finditer(low)],
+            [m.end() for m in _CONSUMER.finditer(low)])
+
+
+def _fleet_tok_gated(low, pos, analog, victim, consumer):
+    """True when the token at `pos` is NOT a surface claim (a frame attaches)."""
+    if _NEG.search(low[max(0, pos - _NEG_WIN):pos]):        # (a) POLARITY
+        return True
+    if any(0 <= pos - e <= _ANALOG_GAP for e in analog):    # (a2) ANALOGY
+        return True
+    if any(0 <= pos - e <= _VICTIM_GAP for e in victim):    # (a3) VICTIM
+        return True
+    return any(0 <= pos - e <= _CONSUMER_GAP for e in consumer)  # (a4) CONSUMER
+
+
 def _names_fleet_tool(text):
     """True when the text names a real `oc-*` script under tools/** (fork #641).
 
     Resolution is what separates a surface claim from a bare mention: a name that
     exists on disk claims the domain, a name that resolves NOWHERE (`oc-race`, a
-    scratch fixture) does not.
+    scratch fixture) does not. Resolution ALONE is not enough (#27): the name must
+    also not sit inside a frame that says it is something ELSE -- the VICTIM of a
+    defect report, an ANALOGY's sibling, a CONSUMER, or a NEGATED mention. A tool
+    named as the SUBJECT ("`oc-x` fails to ...") still claims: the gates fire only
+    on their own frames.
     """
     if not text:
         return False
     names = _fleet_tool_names()
-    return any(tok in names for tok in _FLEET_TOOL_RE.findall(text.lower()))
+    low = text.lower()
+    analog, victim, consumer = _fleet_frame_ends(low)
+    for m in _FLEET_TOOL_RE.finditer(low):
+        if _fleet_tok_gated(low, m.start(), analog, victim, consumer):
+            continue
+        if m.group(0) in names:
+            return True
+    return False
 
 def detect_issue_domains(issue):
     """Domains an issue touches: body surfaces, then the DECLARED prefix.
@@ -2806,6 +2863,53 @@ def run_selftest():
     assert_true("#605: naming a tools file still claims it (control)",
                 "tools" in detect_issue_domains(
                     {"title": "", "body": "the culprit is tools/issue/oc-issue-dispatch"}))
+
+    # #27: RESOLUTION is not a SURFACE CLAIM. _names_fleet_tool returned True for
+    # any oc-* name that resolves on disk, so a body that NAMES a live tool while
+    # talking about something else handed the issue the factory (tools) tier. Two
+    # live specimens: #530 names `oc-start` as the VICTIM of a false defect report
+    # ("false defect against oc-start") and won +70 -> 93; #418 names
+    # `oc-deploy fanout` as a CONSUMER of a contract ("The consumers of this
+    # contract are mechanical fan-out tooling (`oc-deploy fanout`, #24)"). Frames
+    # are MIRRORED from oc-issue-scope:377-404 (analogy #387, victim #678, negation
+    # #605); only the CONSUMER frame is new here (#418). Each negative leg is
+    # paired with a SUBJECT control, so a guard that simply stopped matching --
+    # losing every genuine claim -- cannot pass this block.
+    assert_true("#27 VICTIM (#530): a tool named as the victim of a false report "
+                "does not claim the domain",
+                "tools" not in detect_issue_domains(
+                    {"title": "", "body": "this is a false defect against oc-start, "
+                                          "which never touches the surface"}))
+    assert_true("#27 VICTIM control: the same tool as the SUBJECT still claims",
+                "tools" in detect_issue_domains(
+                    {"title": "", "body": "oc-start fails to create the worktree"}))
+    assert_true("#27 CONSUMER (#418): a tool named as a downstream consumer does "
+                "not claim the domain",
+                "tools" not in detect_issue_domains(
+                    {"title": "", "body": "The consumers of this contract are "
+                                          "mechanical fan-out tooling (oc-deploy fanout, #24)"}))
+    assert_true("#27 CONSUMER control: the same tool as the SUBJECT still claims",
+                "tools" in detect_issue_domains(
+                    {"title": "", "body": "oc-deploy fanout writes the wrong journal row"}))
+    assert_true("#27 ANALOGY: a tool named only as an analogy's sibling does not "
+                "claim the domain",
+                "tools" not in detect_issue_domains(
+                    {"title": "", "body": "the same defect class as oc-prchecks: the "
+                                          "verdict never wakes the caller"}))
+    assert_true("#27 ANALOGY control: the analogy's own subject still claims",
+                "tools" in detect_issue_domains(
+                    {"title": "", "body": "oc-prchecks self-detaches and strands the verdict"}))
+    assert_true("#27 NEGATION: a negated tool mention does not claim the domain",
+                "tools" not in detect_issue_domains(
+                    {"title": "", "body": "this is not oc-ledger work"}))
+    assert_true("#27 NEGATION control: an un-negated mention still claims",
+                "tools" in detect_issue_domains(
+                    {"title": "", "body": "oc-ledger writes a malformed roster row"}))
+    assert_true("#27 control: a genuine surface claim survives every guard",
+                "tools" in detect_issue_domains(
+                    {"title": "fix(tools): oc-issue-dispatch grants the tools domain "
+                              "for any resolved oc-* mention",
+                     "body": "the culprit is tools/issue/oc-issue-dispatch"}))
 
     # #615: a HYPHENATED feature name tokenises into components, which is correct
     # for 8 of the 9 lanes it affects (`push-to-session`->notify,
