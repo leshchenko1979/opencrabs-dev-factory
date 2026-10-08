@@ -15,10 +15,10 @@
 #                            [--upstream opencrabs/opencrabs] [--limit N(=20)]
 #   oc-issue-sweep --selftest
 #
-# Two-stream routing (SKILL.md v0.4.284, owner order 2026-10-03): the mandatory
-# duplicate sweep covers BOTH live trackers — FACTORY
-# (leshchenko1979/opencrabs-dev-factory) and UPSTREAM (opencrabs/opencrabs) —
-# plus the historical fork, which is READ-ONLY for new issues but still holds
+# Three-stream routing (SKILL.md; owner order 2026-10-03, RE-SCOPED 2026-10-08):
+# the mandatory duplicate sweep covers ALL THREE — FACTORY
+# (leshchenko1979/opencrabs-dev-factory), UPSTREAM (opencrabs/opencrabs) and the
+# FORK (leshchenko1979/opencrabs, the fork-only defect tracker), which also holds
 # the older issue corpus a duplicate may live in. A sweep that misses one
 # tracker cannot discharge the law's duplicate-sweep duty.
 #

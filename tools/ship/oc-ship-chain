@@ -1110,9 +1110,11 @@ printf 'oc-ship-chain: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE
 journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
 
 # ---- LEG2 tracker resolution (#11, factory) -------------------------------
-# The 2026-10-03 routing split the trackers: BINARY issues live on
-# opencrabs/opencrabs, FACTORY issues on leshchenko1979/opencrabs-dev-factory,
-# and the historical fork leshchenko1979/opencrabs is READ-ONLY. This leg used
+# The 2026-10-03 routing split the trackers, re-scoped 2026-10-08 14:59Z
+# (q69 -> option 0): BINARY issues live on opencrabs/opencrabs, FACTORY issues
+# on leshchenko1979/opencrabs-dev-factory, and the historical fork
+# leshchenko1979/opencrabs carries FORK-ONLY defects (a surface that exists
+# only in our fork) -- it is NOT a general issues home. This leg used
 # to pass oc-issue-log NO --repo at all, so oc-issue-log silently fell back to
 # ITS own default -- the fork. Two consequences, both measured on the real
 # chain CHAIN-725ad527-20261004T135217Z (issue #1916, sha 725ad527):

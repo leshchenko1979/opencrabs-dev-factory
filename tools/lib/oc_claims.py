@@ -276,7 +276,7 @@ _REF_RE = re.compile(r"(?:#[0-9]+|issue[ \t=#]*[0-9]+)", re.IGNORECASE)
 _DIGITS_RE = re.compile(r"[0-9]+")
 
 #: The repos that OWN this box's issue space — every tracker the fleet files on
-#: (two-stream routing, SKILL.md v0.4.284, owner order 2026-10-03). A reference
+#: (three-stream routing, SKILL.md; owner order 2026-10-03, re-scoped 2026-10-08). A reference
 #: qualified by a slug INSIDE this set is OUR space and anchors normally; a slug
 #: OUTSIDE it is foreign (third-party/upstream-other space) and must never fence
 #: an issue here (#379).
@@ -296,7 +296,7 @@ HOME_REPO_SLUGS = (
     "opencrabs/opencrabs",                   # BINARY tracker (upstream, canonical)
     "adolfousier/opencrabs",                 # BINARY tracker (legacy slug; redirects)
     "leshchenko1979/opencrabs-dev-factory",  # FACTORY tracker
-    "leshchenko1979/opencrabs",              # FORK (historical; PRs still land here)
+    "leshchenko1979/opencrabs",              # FORK (fork-only defect tracker; PRs land here)
 )
 
 #: The FORK slug specifically. On UPSTREAM (`adolfousier/main`) a bare `#N`

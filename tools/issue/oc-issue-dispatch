@@ -129,11 +129,12 @@ if not os.path.exists(DEFAULT_LEDGER):
     DEFAULT_LEDGER = os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")
 DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
 
-# ---- two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03) ----
+# ---- three-stream issue routing (SKILL.md; re-scoped 2026-10-08) -------------
 # BINARY issues live upstream (opencrabs/opencrabs); FACTORY issues (this
 # tools/** tree, CI, release automation, process) live on the dev-factory
-# tracker. The historical fork is READ-ONLY for NEW issues but still holds an
-# open corpus, so it stays selectable.
+# tracker; FORK-ONLY defects (surface exists ONLY in our fork) live on the fork.
+# The fork is not a general issues home, but it still holds an open corpus, so it
+# stays selectable.
 TRACKER_SLUGS = {
     "factory": "leshchenko1979/opencrabs-dev-factory",
     "binary":  "opencrabs/opencrabs",
@@ -4221,8 +4222,8 @@ def main():
     parser.add_argument("--tracker", choices=["factory", "binary", "fork"], default=DEFAULT_TRACKER,
                         help="Issue tracker to dispatch from (default: factory — the dev-factory repo "
                              "leshchenko1979/opencrabs-dev-factory; 'binary' = upstream opencrabs/opencrabs; "
-                             "'fork' = the historical leshchenko1979/opencrabs, read-only for NEW issues). "
-                             "Two-stream routing, SKILL.md v0.4.284")
+                             "'fork' = leshchenko1979/opencrabs, the FORK-ONLY defect tracker). "
+                             "Three-stream routing, SKILL.md (re-scoped 2026-10-08)")
     # NOT a slug: this --repo is the PATH to the opencrabs checkout (used as cwd
     # for git). The tracker SLUG is --tracker. Do not conflate the two.
     parser.add_argument("--repo", default=DEFAULT_REPO, help="Path to opencrabs repo checkout (a PATH, not a slug)")
