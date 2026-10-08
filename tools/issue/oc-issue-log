@@ -12,7 +12,9 @@
 # Exit:  0 posted / 2 usage / 3 gh-fail / 4 no repo at --repo-path
 #        0 is ALSO returned when the comment for this (issue, sha) already
 #        exists — see the idempotency note below; both callers treat it as
-#        success ("the mandatory note for this sha is on the issue").
+#        success ("the mandatory note for this sha is on the issue"). 0 is
+#        returned on a FOREIGN tracker with no open PR citing the issue too —
+#        the note is SKIPPED there (see the foreign-tracker guard below).
 #
 # IDEMPOTENT per (issue, sha) since issue #392, and per (issue, PATCH) since
 # issue #621. Before posting, the existing comments are read and searched for
@@ -25,6 +27,29 @@
 # than a missing note. This guard lives at the posting authority because the
 # tool has two callers (oc-ship-chain LEG2, oc-commit); a caller-side guard
 # would cover only one.
+#
+# FOREIGN-TRACKER GUARD (factory #30, Triage change request lane 530c29ec).
+# LEG2 passes the tracker that HOLDS the issue, so an issue on someone else's
+# board made this tool post the per-commit note THERE. Upstream CONTRIBUTING
+# sanctions a per-commit note as part of a PR; a note on an issue with NO PR is
+# churn on a maintainer's tracker, and the maintainer closed five of our issues
+# over it (opencrabs/opencrabs#1916 #1928 #1930 #1933 #1946 — "closing this
+# issues that keep getting updated every day or so, please push atomic PRs
+# instead"; #1930 took six notes in 77 min, #1916 six in 36 min).
+#
+# So the note is posted on a FOREIGN tracker ONLY when that repo holds an OPEN
+# PR citing the issue. OUR boards — the fork leshchenko1979/opencrabs and the
+# factory leshchenko1979/opencrabs-dev-factory — are unchanged. `--force`
+# bypasses this guard too, loudly (a search-based PR probe can miss a linked
+# PR, and the escape hatch must stay open).
+#
+# FAIL-CLOSED, polarity deliberately inverted from the idempotency guard above:
+# on our boards a duplicate is cosmetic while a MISSING mandated note is a
+# breach, so an unreadable comment read posts (fail-open). On a foreign board
+# the note's audience is the maintainer, who accepts it only as part of a PR,
+# and a spurious post is PUBLIC — the measured harm. An unreadable PR probe
+# cannot establish the precondition, so it SKIPS, and it reports a DISTINCT
+# token (`skip-pr-unknown`) so a broken instrument never reads as a clean zero.
 #
 # Body composition: git log -1 subject + trailers (Session-Id, Issue-Ref) +
 # --state text; written to a mktemp body file; no backticks, no substitutions.
@@ -99,6 +124,8 @@ while [ $# -gt 0 ]; do
       # A fake gh keeps all four legs hermetic: no network, no real comment.
       cat > "$d/fakegh" <<'FAKEGH'
 #!/usr/bin/env bash
+# record argv so a leg can assert WHICH gh verbs a given path reaches
+[ -n "${OC_FAKE_ARGV:-}" ] && printf '%s\n' "$*" >> "$OC_FAKE_ARGV"
 case "$1 $2" in
   "issue view")
     [ -n "${OC_FAKE_VIEW_BODY:-}" ] && printf '%s\n' "$OC_FAKE_VIEW_BODY"
@@ -106,6 +133,9 @@ case "$1 $2" in
   "issue comment")
     printf 'posted\n' >> "${OC_FAKE_SENTINEL:-/dev/null}"
     exit 0 ;;
+  "pr list")
+    [ -n "${OC_FAKE_PR_N:-}" ] && printf '%s\n' "$OC_FAKE_PR_N"
+    exit "${OC_FAKE_PR_RC:-0}" ;;
   *) exit 0 ;;
 esac
 FAKEGH
@@ -204,6 +234,48 @@ FAKEGH
       [ "$h_rc" = 0 ] || { echo "selftest: fail-closed expected rc 0, got $h_rc: $h_out" >&2; exit 1; }
       [ -f "$d/sentinel" ] || { echo "selftest: an UNRESOLVABLE cited sha was wrongly read as same" >&2; exit 1; }
       case "$h_out" in *"idem=posted"*) : ;; *) echo "selftest: fail-closed did not emit idem=posted: $h_out" >&2; exit 1 ;; esac
+      # ---- foreign-tracker guard legs (factory #30) --------------------------
+      # Same runner, but --repo names the tracker under test and the fake gh
+      # records its argv, so a leg can also assert WHICH gh verbs ran.
+      _il_run_repo() { local _r="$1"; shift; OC_TOOLS_NOLOG=1 OC_ISSUELOG_GH="$d/fakegh" \
+                    OC_FAKE_SENTINEL="$d/sentinel" OC_FAKE_ARGV="$d/argv" \
+                    bash "$_SELF" 1 "$s" --repo-path "$d" --repo "$_r" "$@"; }
+      # I. FOREIGN + no open PR -> SKIP, nothing posted. This is the leg the
+      #    whole guard exists for; it reddens if the guard is reverted.
+      rm -f "$d/sentinel"
+      i_out="$(OC_FAKE_PR_N=0 _il_run_repo opencrabs/opencrabs 2>&1)"; i_rc=$?
+      [ "$i_rc" = 0 ] || { echo "selftest: foreign no-PR skip expected rc 0, got $i_rc: $i_out" >&2; exit 1; }
+      [ ! -f "$d/sentinel" ] || { echo "selftest: foreign no-PR STILL posted a comment" >&2; exit 1; }
+      case "$i_out" in *"idem=skip-no-pr"*) : ;; *) echo "selftest: foreign no-PR did not emit idem=skip-no-pr: $i_out" >&2; exit 1 ;; esac
+      # J. NEGATIVE CONTROL: FOREIGN + an OPEN PR -> POST. Reddens if the guard
+      #    ever degrades to "skip on any foreign tracker".
+      rm -f "$d/sentinel"
+      j_out="$(OC_FAKE_PR_N=1 _il_run_repo opencrabs/opencrabs 2>&1)"; j_rc=$?
+      [ "$j_rc" = 0 ] || { echo "selftest: foreign with-PR expected rc 0, got $j_rc: $j_out" >&2; exit 1; }
+      [ -f "$d/sentinel" ] || { echo "selftest: foreign WITH an open PR did NOT post (over-eager guard)" >&2; exit 1; }
+      case "$j_out" in *"idem=posted"*) : ;; *) echo "selftest: foreign with-PR did not emit idem=posted: $j_out" >&2; exit 1 ;; esac
+      # K. FOREIGN + UNREADABLE probe -> FAIL CLOSED, and with a DISTINCT token:
+      #    a broken instrument must never read as "upstream has nothing for us".
+      rm -f "$d/sentinel"
+      k_out="$(OC_FAKE_PR_RC=1 _il_run_repo opencrabs/opencrabs 2>&1)"; k_rc=$?
+      [ "$k_rc" = 0 ] || { echo "selftest: foreign unreadable-probe expected rc 0, got $k_rc: $k_out" >&2; exit 1; }
+      [ ! -f "$d/sentinel" ] || { echo "selftest: unreadable probe STILL posted (must fail CLOSED)" >&2; exit 1; }
+      case "$k_out" in *"WARNING"*) : ;; *) echo "selftest: unreadable probe did not warn: $k_out" >&2; exit 1 ;; esac
+      case "$k_out" in *"idem=skip-pr-unknown"*) : ;; *) echo "selftest: unreadable probe did not emit idem=skip-pr-unknown: $k_out" >&2; exit 1 ;; esac
+      # L. SCOPE, anti-vacuity: OUR OWN boards must NOT reach the foreign guard
+      #    — the fork still posts, and it never probes `pr list`.
+      rm -f "$d/sentinel" "$d/argv"
+      OC_FAKE_VIEW_BODY="an unrelated existing comment" _il_run_repo leshchenko1979/opencrabs >/dev/null 2>&1
+      [ -f "$d/sentinel" ] || { echo "selftest: our-board path did not post" >&2; exit 1; }
+      if [ -f "$d/argv" ] && grep -q '^pr list' "$d/argv"; then
+        echo "selftest: OUR board probed 'pr list' — the foreign guard leaked into our own trackers" >&2; exit 1
+      fi
+      # M. --force stays the escape hatch: FOREIGN + no PR + --force -> POST.
+      rm -f "$d/sentinel"
+      m_out="$(OC_FAKE_PR_N=0 _il_run_repo opencrabs/opencrabs --force 2>&1)"; m_rc=$?
+      [ "$m_rc" = 0 ] || { echo "selftest: foreign --force expected rc 0, got $m_rc: $m_out" >&2; exit 1; }
+      [ -f "$d/sentinel" ] || { echo "selftest: --force did NOT bypass the foreign guard" >&2; exit 1; }
+      case "$m_out" in *"idem=forced"*) : ;; *) echo "selftest: foreign --force did not emit idem=forced: $m_out" >&2; exit 1 ;; esac
       echo "selftest OK"; exit 0 ;;
     -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) if [ -z "$ISSUE" ]; then ISSUE="$1"; elif [ -z "$SHA" ]; then SHA="$1"; else usage; fi; shift ;;
@@ -263,6 +335,37 @@ _idem_emit() {
   oc_log_extra idem "$IDEM"
   printf 'idem=%s\n' "$IDEM"
 }
+
+# ---- foreign-tracker guard (factory #30, Triage change request 530c29ec) ----
+# Our OWN boards: the fork (CI/PR host) and the factory. Anywhere else is
+# FOREIGN, where the per-commit note is welcome only as part of a PR. Polarity
+# is fail-CLOSED here — see the header block for the incident and the argument.
+_OURS=0
+case "$FORK" in
+  leshchenko1979/opencrabs|leshchenko1979/opencrabs-dev-factory) _OURS=1 ;;
+esac
+if [ "$FORCE" != "1" ] && [ "$_OURS" = "0" ]; then
+  _pr_n=""; _pr_ok=0
+  for _try in 1 2; do
+    if _pr_n="$("$GH_BIN" pr list --repo "$FORK" --state open --search "#$ISSUE" --json number --jq 'length' 2>/dev/null)"; then
+      _pr_ok=1; break
+    fi
+  done
+  if [ "$_pr_ok" != "1" ]; then
+    # A broken probe is NOT a clean zero (hard rule 7): distinct token, loud.
+    rm -f "$BODY"
+    echo "oc-issue-log: WARNING — could not read open PRs on FOREIGN tracker $FORK#$ISSUE; SKIPPING the per-commit note (fail-closed: a note with no PR is churn on a maintainer's board; use --force to post anyway)" >&2
+    echo "skipped: $FORK#$ISSUE — PR probe unreadable, no note posted (fail-closed)"
+    _idem_emit skip-pr-unknown
+    exit 0
+  fi
+  if [ "${_pr_n:-0}" = "0" ]; then
+    rm -f "$BODY"
+    echo "skipped: $FORK#$ISSUE is a FOREIGN tracker with no OPEN PR citing it — the per-commit note is posted only as part of a PR (use --force to post anyway)"
+    _idem_emit skip-no-pr
+    exit 0
+  fi
+fi
 
 if [ "$FORCE" = "1" ]; then
   echo "oc-issue-log: --force given — posting without the idempotency check" >&2
