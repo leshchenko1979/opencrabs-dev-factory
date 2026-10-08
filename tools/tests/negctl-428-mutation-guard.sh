@@ -78,7 +78,7 @@ grep -q '^selftest OK$' "$base_out" \
 # requires to redden. Assert the leg labels are present in the tool source — a
 # mutant can only redden a leg that exists, and a renamed leg would otherwise
 # silently disable this whole guard.
-for leg in '#428-negated-rc0' '#428-negated-class' '#428-negated-names-shape' '#428-genuine-class'; do
+for leg in '#428-negated-rc0' '#428-negated-class' '#428-negated-names-shape' '#428-genuine-class' '#29-crossline-class'; do
   if grep -q "$leg " "$SRC/$COMMIT_REL"; then
     ok "baseline carries leg '$leg'"
   else
@@ -120,6 +120,17 @@ MUTATIONS = {
     "warning_made_blocking": [
         ("if printf '%s' \"$win\" | grep -Eqi \"$NEG_RE\"; then",
          "if printf '%s' \"$win\" | grep -Eqi \"$NEG_RE\"; then\n        exit 3  # MUTANT"),
+    ],
+    # #29: revert the WHOLE-BODY scan to a LINE-BOUND one — the whitespace run
+    # before #N is narrowed to [[:blank:]] (space/tab only), so a keyword that
+    # ends a line can no longer reach a reference on a LATER line, while every
+    # one-line shape still matches. Leg 8d must redden; 8a/8c are one-line and
+    # stay green, which is what makes 8d discriminating rather than a re-test.
+    # The anchor is ASCII-only on purpose: this heredoc is fed to python3 on
+    # stdin, so a non-ASCII anchor is one encoding surprise from a silent no-op.
+    "crossline_scan_reverted": [
+        ("CLOSE_RE='(^|[^A-Za-z])((close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+)'",
+         "CLOSE_RE='(^|[^A-Za-z])((close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:blank:]]*#[0-9]+)'"),
     ],
 }
 if label not in MUTATIONS:
@@ -192,6 +203,7 @@ guard_one negation_dropped            "#428-negated-class"
 guard_one genuine_reported_as_negated "#428-genuine-class"
 guard_one shape_not_named             "#428-negated-names-shape"
 guard_one warning_made_blocking       "#428-negated-rc0"
+guard_one crossline_scan_reverted      "#29-crossline-class"
 
 echo
 if [ "$fails" -eq 0 ]; then

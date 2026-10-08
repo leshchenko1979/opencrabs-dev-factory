@@ -239,6 +239,23 @@ Part B alone does NOT fix #321." --no-comment --repo "$R" ) >/dev/null 2>"$E"
 This closes #321 for real." --no-comment --repo "$R" ) >/dev/null 2>"$E"
   [ $? -eq 0 ] || { echo "selftest: #428-genuine-rc0" >&2; exit 1; }
   grep -q 'class=genuine' "$E" || { echo "selftest: #428-genuine-class a bare close keyword must warn as genuine" >&2; exit 1; }
+  # 8d. (#29) the shape SPANS A NEWLINE — the closing keyword ends a line and the
+  #     reference sits on a LATER line (blank line + indent between). GitHub's
+  #     parser treats \s as spanning newlines, so this body really DOES close #26
+  #     when it lands (measured 2026-10-07: the battery receipt for #26+#27 closed
+  #     #26 11 s after the push). The per-line scan matched NEITHER half and
+  #     stayed silent; the whole-body scan must warn class=genuine. The one-line
+  #     legs above are the control that this leg is not a re-test of them: only a
+  #     body whose halves sit on DIFFERENT lines discriminates the per-line scan
+  #     from the whole-body one.
+  ( cd "$R" && echo k4 > k4 && git add k4 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "test(tools): battery receipt shape
+
+Full battery on the tree carrying both fixes:
+
+  #26  efc65842  oc-pr-fault-scope drops soft-fail fmt diff lines" --no-comment --repo "$R" ) >/dev/null 2>"$E"
+  [ $? -eq 0 ] || { echo "selftest: #29-crossline-rc0 the commit must still land (advisory, never a gate)" >&2; exit 1; }
+  grep -q 'class=genuine' "$E" || { echo "selftest: #29-crossline-class a keyword ending a line must warn on the ref on a later line" >&2; exit 1; }
+  grep -q "shape='fixes:" "$E" || { echo "selftest: #29-crossline-shape the warning must name the matched shape" >&2; exit 1; }
   # 9. (#501) the derived ref is cross-checked against the branch and subject.
   #    9a. DISAGREEMENT -> 3. Fixture branch names #777 while the derived claim
   #        is #149: the 2026-09-25 shape (work on #500 committed under #548
@@ -466,26 +483,41 @@ fi
 CLOSE_RE='(^|[^A-Za-z])((close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+)'
 NEG_RE='(^|[^A-Za-z])(not|never|cannot|without|nor|neither)([^A-Za-z]|$)'
 scan_close_keywords() { # $1 = the caller's -m bodies; warns on stderr, always returns 0
-  local body="$1" line ln=0 match shape prefix win start n i
+  # #29: the scan is WHOLE-BODY, not per-line. GitHub's parser treats \s as
+  # spanning newlines, so a closing keyword that ENDS a line closes a reference
+  # on a LATER line (measured 2026-10-07: a battery receipt's "carrying both
+  # fixes:" closed #26 11 s after the push — the per-line scan matched neither
+  # half and stayed silent). Detection therefore runs CLOSE_RE over the whole
+  # body; the CLASS (negated vs genuine) still reads the six words preceding the
+  # shape ON ITS OWN LINE, so the one-line classes are unchanged. ADVISORY only:
+  # warns on stderr, always returns 0 (the #428 disposition, shape 1).
+  local body="$1" rec off match shape prefix win start n i nl
   local -a toks=()
-  while IFS= read -r line; do
-    ln=$((ln + 1))
-    while IFS= read -r match; do
-      [ -n "$match" ] || continue
-      shape="${match#[^A-Za-z]}"          # drop the lookahead separator char
-      prefix="${line%%"$shape"*}"          # the words ahead of the shape
-      read -ra toks <<< "$prefix" || true
-      n=${#toks[@]}; start=$(( n > 6 ? n - 6 : 0 )); win=""
-      for ((i = start; i < n; i++)); do win="$win ${toks[i]}"; done
-      if printf '%s' "$win" | grep -Eqi "$NEG_RE"; then
-        printf 'warn: close-keyword(#428) class=negated line=%s shape=%s\n' "$ln" "'$shape'" >&2
-        printf "      the parser cannot read negation: this body may close %s when it lands on the default branch (measured 2026-09-19 — an ff-merge closed fork issue #321 11 s later, with no upstream PR). Non-blocking; the commit proceeds.\n" "$shape" >&2
-      else
-        printf 'warn: close-keyword(#428) class=genuine line=%s shape=%s\n' "$ln" "'$shape'" >&2
-        printf "      no negation scopes this shape: this body really DOES close %s when it reaches the default branch. Non-blocking; the commit proceeds.\n" "$shape" >&2
-      fi
-    done < <(printf '%s\n' "$line" | grep -Eoi "$CLOSE_RE" 2>/dev/null || true)
-  done <<< "$body"
+  # grep -z: NUL-delimited "offset:match" records. -b gives the byte offset of
+  # each match, which recovers both the 1-based line number and the match's own
+  # line — the two things the per-line scan got for free and this one derives.
+  # A match may itself contain a newline (that IS the #29 shape), so the record
+  # is split on the FIRST colon only: the offset is colon-free.
+  while IFS= read -r -d '' rec; do
+    [ -n "$rec" ] || continue
+    off="${rec%%:*}"; match="${rec#*:}"
+    case "$off" in ''|*[!0-9]*) continue ;; esac
+    shape="${match#[^A-Za-z]}"          # drop the lookahead separator char
+    prefix="${body:0:$off}"             # everything before the match
+    nl="${prefix//[!$'\n']/}"           # keep only the newlines
+    ln=$(( ${#nl} + 1 ))                # 1-based line of the shape
+    prefix="${prefix##*$'\n'}"          # the shape's own line, up to the match
+    read -ra toks <<< "$prefix" || true
+    n=${#toks[@]}; start=$(( n > 6 ? n - 6 : 0 )); win=""
+    for ((i = start; i < n; i++)); do win="$win ${toks[i]}"; done
+    if printf '%s' "$win" | grep -Eqi "$NEG_RE"; then
+      printf 'warn: close-keyword(#428) class=negated line=%s shape=%s\n' "$ln" "'$shape'" >&2
+      printf "      the parser cannot read negation: this body may close %s when it lands on the default branch (measured 2026-09-19 — an ff-merge closed fork issue #321 11 s later, with no upstream PR). Non-blocking; the commit proceeds.\n" "$shape" >&2
+    else
+      printf 'warn: close-keyword(#428) class=genuine line=%s shape=%s\n' "$ln" "'$shape'" >&2
+      printf "      no negation scopes this shape: this body really DOES close %s when it reaches the default branch. Non-blocking; the commit proceeds.\n" "$shape" >&2
+    fi
+  done < <(printf '%s' "$body" | grep -Ezo -b "$CLOSE_RE" 2>/dev/null || true)
   return 0
 }
 scan_close_keywords "$MBODY"
