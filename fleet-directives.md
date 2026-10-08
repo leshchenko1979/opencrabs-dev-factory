@@ -23,7 +23,7 @@
 
 **Roles & authority:** **Autonomous Priority Authority Law** · **Designated Domain Affinity & Topic Context Focus Law** · **Early Claim** · **Strict Atomicity & Zero Bundling** · **PR naming convention** · **External lanes**
 
-**Channels & messaging:** **Telegram surface — file delivery & own-feature probes** · **telegram_send addressing rule** · **Cross-lane message delivery discipline** · **Direct dispatch** · **Receiver-side dedupe of reload demands** · **Attribution guard** · **Unified Event Capture**
+**Channels & messaging:** **Telegram surface — own-feature probes** · **telegram_send addressing rule** · **Cross-lane message delivery discipline** · **Direct dispatch** · **Receiver-side dedupe of reload demands** · **Attribution guard** · **Unified Event Capture**
 
 **Ships & carriers:** **Upstream Coding & Testing Standards** · **LLM Ergonomics & Efficiency Law** · **Tool logging rule** · **CI-wait discipline & actor attribution** · **Swap-head signature for rebase/synthesis/merge-derived binaries** · **Issue provenance — blame, relations, rationale**
 
@@ -547,12 +547,10 @@ treated as unverified input, not as a receipt.
 When a lane sends HQ work that belongs to an executing lane — editor-lane fixes/rebases/carrier chains, Triage-lane intake verification, TOOLSMITH tool code — HQ REFUSES execution and tells the requesting lane to reroute to the owning lane (`session_notify` back to sender, one line: refused per HQ-no-execute law, reroute to <owning lane>). HQ executes ONLY: rulings, skill authoring (via the Triage intake channel), verdicts/gates with same-turn receipts, dispatch GOs, and its own duties (Duty 4/6, patrols, board reporting). If ownership is genuinely ambiguous, HQ rules on ownership (that IS HQ work), then reroutes.
 
 
-## Telegram surface — file delivery & own-feature probes (HQ ruling 2026-09-21)
+## Telegram surface — own-feature probes (HQ ruling 2026-09-21)
 
-- **The conflict was real as written.** `ops AGENTS.md §File delivery on Telegram` binds every session on the ops profile — a deliverable FILE cannot be carried by session text — and `SKILL.md §Telegram surface law` ("Editors NEVER invoke send/edit telegram tools ... not even into their own topic") binds the SAME actor with no carve-out. Leg-4 of the 4-leg smoke rubric compounds it: a live behavioural probe of a telegram-surface feature that only fires on a bot-initiated send needs the same forbidden tool.
-- **Ruling: the precedent EXTENDS to both remaining instances. NO editor carve-out** — the precedent's own words stand.
-  - **File delivery:** the lane hands the artifact path plus its caption to **HQ** by `session_notify` (`delivery.mode="turn-end"`) and has discharged the mandate; **HQ performs the `telegram_send`** (`send_document` / `send_photo`) into that lane's OWN topic, which is where the owner reads it.
+- **The conflict was real as written.** `SKILL.md §Telegram surface law` ("Editors NEVER invoke send/edit telegram tools ... not even into their own topic") binds every editor with no carve-out, while leg-4 of the 4-leg smoke rubric requires a live behavioural probe of a telegram-surface feature that only fires on a bot-initiated send — the same forbidden tool.
+- **Ruling: the precedent EXTENDS to the remaining instance. NO editor carve-out** — the precedent's own words stand.
   - **leg-4 probe:** the lane must FIRST establish the probe is not achievable through its own session text — an editor's ordinary reply already traverses the Telegram channel and renders in its own topic, so rendering-path features are probeable with no send tool at all. Where the feature only fires on a **bot-initiated** send, the lane states the exact probe (what to send, to which destination, what to observe) and **HQ executes it and returns the receipt**; the lane stamps the verdict citing HQ's receipt.
-  - **Option (c) is FALSE:** `ops AGENTS.md §File delivery on Telegram` binds editor lanes; the surface law does not displace it.
 - **The prohibition is UNCHANGED for everything else:** any destination other than the lane's own topic (other lanes' topics, forum General, the owner DM), any purpose other than the two above (chat, status pings, cross-lane messages), and the user-account tools `tg_send_message` / `tg_edit_message` / `tg_send_to_phone` — those last are categorically forbidden by the Telegram identity law, and this ruling touches nothing about them.
 - **Historical `oc-tg-audit` hits under the old law are a symptom of the defect, not lane indiscipline** — the shape of the ai-antispam 29-post incident. The tool's predicate is a bare tool-NAME match (`BANNED='telegram_send|tg_send_message|tg_edit_message|telegram_edit'`, `tools/audit/oc-tg-audit`, the `BANNED=` predicate) with no destination or purpose filter, so it cannot separate a compliant relay-request from a breach: **predicate refinement requested from the Toolsmith lane** (destination + purpose from the logged `args_tail`).

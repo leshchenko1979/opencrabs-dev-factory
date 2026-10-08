@@ -1,5 +1,15 @@
 # Changelog — opencrabs-dev
 
+## v0.4.291 — file-sending instructions removed from the law (2026-10-08)
+
+**Owner order, verbatim:** *"Remove the telegram file sending instructions from all laws. Both about editors and HQ."*
+
+**Why the law was wrong, not merely stale.** The clause at `TELEGRAM.md §File delivery on Telegram` mandated `telegram_send` (`send_document` / `send_photo`) because a file "cannot ride session text". Read at source, that premise is dead: the Telegram channel now folds a resolved local markdown link (and a remote link) into the attachment path and sends each resolved local file as its own document bubble — `src/channels/telegram/delivery.rs:168` and `:2083` (#1916). A local file link in session text therefore delivers with no send tool at all, which removes the entire reason the editor→HQ relay and the "HQ performs the `telegram_send`" clause existed.
+
+**What was removed.** The whole `## File delivery on Telegram` section in the ops `TELEGRAM.md` (its heading was retitled to `## Message body cap` for the section that followed); ops `AGENTS.md` hard rule 15 (*"Files on Telegram: a bare path is not delivery. Send with `telegram_send` before the closing text."*) — rules 16–23 renumbered 15–22, with the two live cross-references (`rule 21` → `rule 20`, `rules 1–7` unchanged) and the `SECURITY.md` ripple (`hard rule 21` → `hard rule 20`) fixed in the same pass; the trailing `telegram_send` sentence in `USER.md`; and, in this file, the `File delivery:` sub-bullet and the `Option (c) is FALSE` sub-bullet of the HQ ruling, whose section is retitled `## Telegram surface — own-feature probes (HQ ruling 2026-09-21)` and whose index entry drops `file delivery & `.
+
+**What was deliberately KEPT.** The Rollcall law (`fleet-directives.md` §Decision Rollcall) still forbids `telegram_send` / `send_document` / media *in a Rollcall post* — a distinct instruction about how decisions are presented, not about file delivery. The leg-4 bot-initiated-probe clause stays: a probe of a feature that only fires on a bot-initiated send is not a file-delivery instruction. `SKILL.md §Telegram surface law` (editors never invoke telegram tools for inter-role comms) is unaffected and stands. The `telegram_send` addressing rule and the host-outage escalation path are untouched.
+
 ## v0.4.290 — the compactor never receives the retention set, and nothing enforces it (2026-10-06)
 
 **The tell.** A lane's compaction emitted `active_skills: [opencrabs-dev/harvest.md]` / `discard_skills: [opencrabs-dev]`, and the next turn's `bash` on a path matching `opencrabs-dev` was refused by the skill gate — one turn lost. The lane asked whether §10 needed sharpening for the compactor, or whether this was a harness defect to route.
