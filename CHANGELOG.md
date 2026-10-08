@@ -1,5 +1,19 @@
 # Changelog — opencrabs-dev
 
+## v0.4.292 — upstream-filing law: the fork-filing collision fixed, and the per-commit note scoped (2026-10-08)
+
+**Catch-up from 0.4.284.** Seven doc-first entries stacked since the 2026-10-03 sync — v0.4.285 (the creation gate's three legs, [#1932](https://github.com/opencrabs/opencrabs/issues/1932)), v0.4.286 (C1's ADDRESSING half), v0.4.287 (the fork-only walk's coverage keys on `status` alone), v0.4.288 (step 12's re-record is not executable by the register's own writer), v0.4.289 (a conditional row's `condition` is a prerequisite-chain state), v0.4.290 (the compactor never receives the retention set, [#1960](https://github.com/opencrabs/opencrabs/issues/1960)), v0.4.291 (Telegram file-sending instructions removed from the law) — each shipped its text with **no skill-bump row**, so the registry read 0.4.284 while lanes acked 0.4.291 (`oc-ledger check-version` rc 1). Published here in one catch-up. The Toolsmith tool window since v0.4.291 also rides this sync (see Bundles).
+
+**Triage dispatch 2026-10-08** (`projects/upstream-filing-policy/files/upstream-filing-policy.md` rev.3) → two law items, HQ landed; a third parked.
+
+1. **LIVE LAW COLLISION FIXED — `fleet-directives.md:175`.** The Strict Atomicity block's mid-loop bullet read *"File a separate fork issue"* — a filing the owner's 2026-10-03 two-stream order forbids (`AGENTS.md:69`: the fork `leshchenko1979/opencrabs` is READ-ONLY for new issues). `:175` predated the 10-03 order and was never re-scoped: the routing moved a surface and this writer was not audited with it. Re-scoped in place to two-stream routing (binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process → `leshchenko1979/opencrabs-dev-factory`), with the correction and its origin recorded inline.
+
+2. **PER-COMMIT NOTE — SCOPE CLAUSE ADDED** (item 7's cross-reference, `fleet-directives.md`). The 2026-08-28 "one implementation comment per commit" order now binds **OUR boards only**; on a foreign tracker (`opencrabs/opencrabs`) the note posts only while an open PR exists in that repo. Rationale: his CONTRIBUTING sanctions per-commit notes in a PR context, but with no PR to anchor them they read as churn — **5 of our 8 recent upstream issues were closed for cadence**. The tool guard (`oc-ship-chain` LEG2 posts to whichever tracker holds the issue) is **routed to Toolsmith**.
+
+**PARKED — the fork re-scope (Triage item 3) is NOT landed.** It would amend the owner's own 2026-10-03 read-only order (fork = home for fork-only defects only), so it goes to the owner as an open question, not decided here.
+
+**Bundles** the Toolsmith window since v0.4.291: **`5f4f6236`**+**`1cd49468`**+**`da85d308`** (#29 — `oc-commit`'s close-keyword scan reads the whole body), **`68bc5baa`**+**`ee3d213d`**+**`a3c99f51`** (#28 — `oc-prchecks` returns the detached verdict to its caller), **`cfae8f11`**+**`e789856e`** (#27 — the tools domain gates on a surface claim), **`efc65842`** (#26 — `oc-pr-fault-scope` drops soft-fail fmt lines), **`4b4adf2c`**+**`31073aed`** (#25 — `--ref` slug + worktree), **`7f845e63`** (#23/#24), **`cd4ed4ed`** (#324 — the reopen override expires), **`ee4b1180`**+**`d44a577a`** (#471 — a stale IN FLIGHT row reads dead), **`59f8888d`**+**`db18892e`**+**`bb9fa9f1`**+**`daa12015`** (#21 — CAPACITY vs AFFINITY + the fixture family), **`bd652dd2`** (#20 — the walk re-verifies CONDITIONAL rows).
+
 ## v0.4.291 — file-sending instructions removed from the law (2026-10-08)
 
 **Owner order, verbatim:** *"Remove the telegram file sending instructions from all laws. Both about editors and HQ."*
