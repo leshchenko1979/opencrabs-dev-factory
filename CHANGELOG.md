@@ -17,6 +17,8 @@
 
 **Routed, not landed here (not HQ's surface).** **Toolsmith:** `tools/docs/TRACKER-ROUTING.md:13,56` (the convergent HIGH — still tells workers the fork is read-only), `RC-CONTRACT.md:52`, `oc-issue-sweep:21`, the census↔dispatch predicate divergence (E-HIGH-1), `oc-health` escaping (F-MED-1), a `oc-ledger mode` verb (J-2), and `oc-review-persist`'s brief-less whitelist keys + `--help` (I-5). **Owner/process:** the D-class reaps (`oc-health --reap` + owner word) and the tracked-unswept `.oc-prchecks-rc2` (#540).
 
+**Bundled commits (C8).** The catch-up range also carries two commits from the **Toolsmith** lane for [#31](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/31) — `26742c2f` (`oc-ledger sync` now refuses an empty `--why`, H-4 enforced) and `accab526` (its battery receipt, PASS 370/FAIL 0, 549s) — named here because the version record is the only place a bundled fix's ship date exists. This lane's own entry commit (`92bf5d1a`) carries `Session-Id` alone with no `Issue-Ref`, so the C8 self-commit skip excludes it; that exclusion is disclosed by the sync rather than left silent.
+
 **Scope:** law text only — `oc-lint-laws` clean, no tool change, no build.
 
 ## v0.4.294 — fork-residue sweep: the last two pre-10-03 fork-filing writers (Triage portfolio sweep, 2026-10-08)
