@@ -12,7 +12,123 @@
 
 **PARKED — the fork re-scope (Triage item 3) is NOT landed.** It would amend the owner's own 2026-10-03 read-only order (fork = home for fork-only defects only), so it goes to the owner as an open question, not decided here.
 
-**Bundles** the Toolsmith window since v0.4.291: **`5f4f6236`**+**`1cd49468`**+**`da85d308`** (#29 — `oc-commit`'s close-keyword scan reads the whole body), **`68bc5baa`**+**`ee3d213d`**+**`a3c99f51`** (#28 — `oc-prchecks` returns the detached verdict to its caller), **`cfae8f11`**+**`e789856e`** (#27 — the tools domain gates on a surface claim), **`efc65842`** (#26 — `oc-pr-fault-scope` drops soft-fail fmt lines), **`4b4adf2c`**+**`31073aed`** (#25 — `--ref` slug + worktree), **`7f845e63`** (#23/#24), **`cd4ed4ed`** (#324 — the reopen override expires), **`ee4b1180`**+**`d44a577a`** (#471 — a stale IN FLIGHT row reads dead), **`59f8888d`**+**`db18892e`**+**`bb9fa9f1`**+**`daa12015`** (#21 — CAPACITY vs AFFINITY + the fixture family), **`bd652dd2`** (#20 — the walk re-verifies CONDITIONAL rows).
+### Bundled commits (C8) — the catch-up range (0.4.284 → 0.4.292)
+
+**The newest Toolsmith window (since v0.4.291):** **`3c57eb48`**+**`b853687c`** (#30 — `oc-issue-log` skips the per-commit note on a FOREIGN tracker with no open PR; the tool half of item 2 above), **`5f4f6236`**+**`1cd49468`**+**`da85d308`** (#29 — `oc-commit`'s close-keyword scan reads the whole body), **`68bc5baa`**+**`ee3d213d`**+**`a3c99f51`** (#28 — `oc-prchecks` returns the detached verdict to its caller), **`cfae8f11`**+**`e789856e`** (#27 — the tools domain gates on a surface claim), **`efc65842`** (#26 — `oc-pr-fault-scope` drops soft-fail fmt lines), **`4b4adf2c`**+**`31073aed`** (#25 — `--ref` slug + worktree), **`7f845e63`** (#23/#24), **`cd4ed4ed`** (#324 — the reopen override expires), **`ee4b1180`** (#471 — a stale IN FLIGHT row reads dead), **`59f8888d`**+**`db18892e`**+**`bb9fa9f1`**+**`daa12015`** (#21 — CAPACITY vs AFFINITY + the fixture family), **`bd652dd2`** (#20 — the walk re-verifies CONDITIONAL rows).
+
+**The older Toolsmith windows in the same range** (each `fix(tools)` unit paired with its own battery-receipt commit), named here because a Toolsmith window ships no bump of its own — this catch-up is their only CHANGELOG record:
+- `d44a577a` fix(tools): oc_log_flood_guard counts jq LINES, not matches — **correction:** an earlier
+  revision of this entry filed this commit under **#471**; it carries **no issue ref**, and the #471 group is
+  `ee4b1180` alone. Recorded here so the sha keeps its name and the wrong grouping is not inherited.
+- `a6462df2` chore(tests): battery receipt for 093729a0 -- PASS 366 / FAIL 0
+- `093729a0` fix(harvest): the census re-record carries forward EVERY prior-row key (#761)
+- `71abf690` chore(tools): battery receipt PASS 366/0 for the #327 body conversion
+- `56c52af1` fix(tools): convert the python3 -c bodies to heredocs, removing the class (#327)
+- `7b194d9d` chore(tools): battery receipt PASS 366/0 for the #327 guard + the #762 re-pin
+- `30ce1196` fix(tools): guard the double-quoted python3 -c body class (#327)
+- `ba5a91c4` fix(tools): re-pin the vendored register at the template's #762 half (#762)
+- `90ad5ff9` fix(tools): resolve_lane prefers a topic_edited rename over a stale topic_name echo (#762)
+- `e5b2c668` fix(tools): restore the commit-body arm to squash_signature — a body-only squash landing no longer reads ELIGIBLE (#301)
+- `395fa711` chore(tools): battery receipt PASS 361/0 for d2376417
+- `d2376417` docs(tools): RC-CONTRACT registers the #301 squash-identity legs (#301)
+- `8dea34fb` chore(tools): battery receipt PASS 361/0 for cd01ff5d
+- `cd01ff5d` fix(tools): harvest tooling sees upstream squash landings — a CLOSED hand-applied PR is no longer offered for rework (#301)
+- `a4e78a06` chore(tools): battery receipt PASS 360/0 for f0122176
+- `f0122176` fix(tools): oc-harvest-sweep gains a source-union leg — a squash that dropped a hunk no longer reads CLEAN (#343)
+- `6a5325d9` chore(tools): battery receipt PASS 360/0 for ae40c897
+- `ae40c897` fix(tools): a design-gate HOLD is a reservation, not a vacancy (#312)
+- `04b713cd` chore(tools): battery receipt PASS 360/0 for 7006efe9
+- `7006efe9` fix(tools): delete the INERT (target,window) journal fallback from oc-notify.sh (#18)
+- `ec0bf806` chore(tools): battery receipt PASS 360/0 for e477a46d
+- `e477a46d` fix(tools): bound the twin scan and stream its patch-id path (#363)
+- `9beec247` chore(tools): battery receipt PASS 360/0 for the #472 receipt-identity fix
+- `fd8a6513` fix(tools): the dispatch receipt carries MESSAGE identity, not just (target, window) (#472)
+- `8f226b3c` chore(tools): battery receipt PASS 356/0 for 8280dc2e
+- `8280dc2e` fix(tools): harvest arms get an IDENTITY LEG on the MERGED/IN_FLIGHT inference (#416)
+- `54be64ff` chore(tools): battery receipt PASS 356/0 for 41b6e030
+- `41b6e030` fix(tools): the dispatch LANDED arm anchors a commit to its issue's NAMED surface (#455)
+- `fb7d5f12` chore(tools): battery receipt PASS 356/0 for ee7b6cca
+- `ee7b6cca` fix(tools): a RED gate names its failing step and prints the error line (#642)
+- `4a4faf34` chore(tools): battery receipt PASS 356/0 for 417f6ed2
+- `417f6ed2` fix(tools): resolve the fork-main tip from refs/oc-deploy/main, never the shared FETCH_HEAD (#704)
+- `4ab72d0d` chore(tools): battery receipt PASS 356/0 for 916e3669
+- `916e3669` fix(tools): oc-deploy's poll handoff gets an in-flight guard — no duplicate swap units (#729)
+- `dcd4674e` chore(tools): battery receipt PASS 356/0 for 03fe3805
+- `03fe3805` fix(tools): a FAILED roster read gets its own rc 10, not a false CAPACITY_EXHAUSTED (#706)
+- `91f8b890` chore(tools): battery receipt PASS 356/0 for 377239c5
+- `377239c5` fix(tools): the (tools) scope LABEL is confirm-only, so src/brain/tools/** issues stop accruing tools affinity (#641)
+- `243839b9` chore(tools): battery receipt PASS 356/0 for 67a0e024 (#551)
+- `67a0e024` fix(tools): oc-issue-dispatch reads the declared type(scope): prefix before the prose keyword fallback (#551)
+- `6999c694` chore(tools): battery receipt PASS 356/0 for 92396f17 (#621)
+- `92396f17` fix(tools): oc-issue-log's idempotency guard also matches on patch-id, so a content-identical rebase no longer duplicates the implementation comment (#621)
+- `44cc50af` chore(tools): battery receipt PASS 356/0 for dad629e9 (#590)
+- `dad629e9` fix(tools): oc-rebase-safety overlap derives the branch-side set for a rebased single-parent head (#590)
+- `f9d868f3` chore(tools): battery receipt PASS 356/0 for dafddcbb (#359)
+- `dafddcbb` fix(tools): oc-ledger check-version names the cause — fleet-level meta lag vs real lane drift (#359)
+- `236c25d8` chore(tools): battery receipt PASS 356/0 for 918db25f (#643)
+- `918db25f` fix(tools): oc-lint-laws reports wide-gap flags no tool owns (#643)
+- `2ba9b414` chore(tools): battery receipt PASS 356/0 for c7dd94ff (#736)
+- `c7dd94ff` fix(tools): oc-questions --help names the label/letter --recommended form (#736)
+- `54f0c4c2` chore(tools): battery receipt PASS 356/0 for 5dc638cb (#570)
+- `5dc638cb` fix(tools): oc-ledger atomic_jq names its cause; promote coerces a legacy string .notes (#570)
+- `44624191` chore(tools): battery receipt PASS 356/0 for 50671af2 (#709)
+- `50671af2` fix(tools): oc-questions publishes --schema; the bridge derives its argv from it (#709)
+- `bbdf5eb9` chore(tools): battery receipt PASS 351/0 for 57c7e1e0 (#15)
+- `57c7e1e0` fix(tools): carry-aware HELD_BASE_RED — a unit that carried the sweep is not refused (#15)
+- `62c31a77` chore(tools): battery receipt PASS 351/0 for d076fd76 (#17)
+- `d076fd76` fix(tools): exclude the generated sidecar class from the shell-quoting scan (#17)
+- `16e985a4` chore(tools): battery receipt PASS 349/0 for b1def71f (#356)
+- `b1def71f` fix(tools): anchor the upstream fork-ref scan to a slug-qualified trailer (#356)
+- `49fd930b` chore(tools): battery receipt PASS 349/0 for 3358ba31 (#16)
+- `3358ba31` fix(tools): exclude the generated sidecar class from the private-copy scan (#16)
+- `13cf71d1` chore(tools): battery receipt PASS 349/0 for 9fbbbd16 (#315, #525)
+- `9fbbbd16` fix(tools): journal every deleted branch tip, not only the last (#525)
+- `d923d94b` fix(tools): state the soak basis with the age so the number is attributable (#315)
+- `1a214b8a` chore(tools): battery receipt PASS 346/0 for 3097448e (#738)
+- `3097448e` fix(tools): the unified-log ts parser reads both Z and +00:00 forms (#738)
+- `2ef0d415` chore(tools): battery receipt PASS 336/0 for 2bfc276d (#310)
+- `2bfc276d` fix(tools): oc-issue-dispatch drops a dead class-filtered availability path (#310)
+- `33ac83d4` chore(tools): battery receipt PASS 334/0 for #91f72a99 (#308)
+- `91f72a99` fix(tools): oc-pr-fault-scope accepts --ref for PR-less fork lanes; drop registry/vendor paths from the failing-file parser (#308)
+- `f5cbad5d` chore(tools): battery receipt PASS 334/0 for #760
+- `fee6c127` fix(tools): retire two hand-rolled unified-log copies onto tools/lib/oc_log.py (#760)
+- `8e347444` test(tools): cover the oc-deploy status rc-1/rc-2 contract the #746 fix landed without legs
+- `864fe787` fix(tools): oc-smoke runs the lineage ancestry check itself when --lineage is omitted (#673)
+- `74da35c8` chore(tools): battery receipt PASS 329/0 for #671
+- `68051ef8` fix(tools): battery reachability guard runs the extractor instead of counting PRELUDE matches (#671)
+- `c45c6ad5` chore(tools): battery receipt PASS 327/0 for 5817058f
+- `5817058f` fix(tools): oc-ship-chain pre-checks SIGNATURE before LEG3 ff-merge (#755)
+- `9b365420` fix(tools): oc-commit normalises and validates the Session-Id actor (#754)
+- `cf18d774` chore(tools): battery receipt PASS 327/0 for b8f693a7
+- `b8f693a7` fix(tools): drop oc-waiter registry rows + stale consumer ref (#737)
+- `fbc9b678` fix(tools): delete the retired oc-waiter stub (#737)
+- `fd2edb46` chore(tools): battery receipt PASS 328/0 for 1fe809ea
+- `1fe809ea` fix(tools): oc-ship-chain reports an ORDER-gate fault as INFRA (#756)
+- `43fe7a15` chore(tools): battery receipt PASS 328/0 for a9da3137
+- `a9da3137` fix(tools): oc-ship-chain wakes the arming lane only for a real chain attempt (#14)
+- `f7d618bc` chore(tools): battery receipt PASS 328/0 (ts 2026-10-04T23:09:53Z, wall 317979ms)
+- `ba8982cc` fix(tools): oc-harvest-census distinguishes conditionally-upstreamable manual records (#13)
+- `c9cdb890` feat(tools): oc-deploy publishes the verified binary as fork release assets (#766)
+- `702acbaf` fix(tools): port the (factory, lane) registration gate to the vendored oc-questions
+- `f2113509` chore(tools): battery receipt PASS 328/0 (ts 2026-10-04T20:57:20Z, wall 322862ms)
+- `a715a185` fix(tools): LEG2 resolves the issue tracker instead of defaulting to the fork (#11)
+- `24bbcad2` chore(tools): absorb the upstream repo rename in tools/** + TRIAGE grant docs
+- `59b6d912` chore(tools): battery receipt PASS 328/0 (ts 2026-10-04T20:05:40Z, wall 342583ms)
+- `aa28b929` docs(tools): RC-CONTRACT row 33 carries the #12 clause — a declared PR keys the map; a prose mention does not
+- `8df39e62` chore(tools): battery receipt PASS 324/0 (ts 2026-10-04T17:41:42Z, wall 248559ms)
+- `cb8a36be` fix(tools): oc-harvest-census IN_FLIGHT leg keys a PR-body PROSE mention as an implementation (#12)
+- `1a46bfef` docs(tools): RC-CONTRACT row 33 carries the #10 clause — a doc-comment-only hunk resolves FORWARD
+- `ffc1eed1` chore(tools): battery receipt PASS 324/0 (ts 2026-10-04T15:27:51Z, wall 308339ms)
+- `8b0dc608` fix(tools): oc-harvest-census attributes a doc-comment-only hunk to the PRECEDING fn — a false "dropped at packaging" advisory (#10)
+- `1872c036` chore(tools): battery receipt PASS 324/0 (ts 2026-10-04T07:43:08Z, wall 246396ms)
+- `42e49536` fix(tools): oc-harvest-census reads an added `impl X` as an arrived declaration when upstream carries `struct X` — declaration KIND conflated (#6)
+- `c0bd5f13` docs(tools): the claim mechanism's assignment leg is best-effort, not assumable
+- `e91a1efc` chore(tools): battery receipt PASS 324/0 (ts 2026-10-04T02:10:48Z, wall 265160ms)
+- `4dcdee27` fix(tools): oc-harvest-census resolves a hunk to its enclosing CONTAINER, not the nearest fn
+- `3a646f80` runtime-artifacts sweep: battery receipt (324/0, wall 336s, jobs=4)
+- `6129c3a1` fix(tools): oc-prchecks rc 6 discriminates a JOB-TIMEOUT cancel from a concurrency supersede (#5)
+- `9f1cdbbf` runtime-artifacts sweep: battery receipt (324/0, wall 444s, jobs=4)
+- `85bade63` runtime-artifacts sweep: battery receipt (324/0, wall 325s, jobs=4)
 
 ## v0.4.291 — file-sending instructions removed from the law (2026-10-08)
 
