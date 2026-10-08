@@ -1,5 +1,18 @@
 # Changelog — opencrabs-dev
 
+## v0.4.294 — fork-residue sweep: the last two pre-10-03 fork-filing writers (Triage portfolio sweep, 2026-10-08)
+
+**Origin.** Triage, 2026-10-08, closing out the v0.4.293 fork re-scope: a portfolio-wide sweep for the *class* the two v0.4.292/293 fixes each found one at a time. Method — pattern `(file|open|create|raise|log|go directly to)…(fork issue|on the fork)` over the ACTIVE tree (`reviews/`, `archive/`, `war-stories.md`, `CHANGELOG.md` excluded), **positive-controlled against the exact pre-images of both prior sites** (`git show 83ce2bb2` / `08a2c0e0` each removed *"File a separate fork issue"*), so the instrument is proven able to see the class. Result: **2 remaining writers, both in `editor.md` — the one file never audited** for this class.
+
+**What landed (law only, `tools/**` untouched):**
+
+1. **`editor.md:80` — the Tool-QUIRK block.** *"Core daemon bugs go directly to GitHub fork issues."* (v0.4.133, 2026-09-10). A core daemon bug is a **BINARY** defect → upstream `opencrabs/opencrabs` post-10-03. Re-scoped to name the upstream tracker and reserve the fork for FORK-ONLY defects, pointing at the canonical routing row.
+2. **`editor.md:236` — the Phase-1 fallback writer.** *"If no issue fits, open ONE issue on the fork: `gh issue create -R leshchenko1979/opencrabs`"* (v0.4.191, 2026-09-16). This was the general fallback for an issue that fit no existing one — a blanket fork filing the 10-03 order forbade. Re-scoped to route by OWNED surface: binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process → `leshchenko1979/opencrabs-dev-factory`; a FORK-ONLY defect → `leshchenko1979/opencrabs`.
+
+**Why this is a sweep, not a third one-off.** The v0.4.292 collision and the v0.4.293 second instance were each found singly — a routing move (2026-10-03) left writers unaudited, and single finds keep surfacing more. Triage's sweep converted the search into a **class-keyed, positive-controlled** pass and named its clean set explicitly (`SKILL.md:4` role blurb, `triage.md` patrol rules, `harvest.md:293` closure formula, `fleet-directives.md:107,119` external-lanes licence, `upstream-merge-runbook.md:453,502`, `tools/docs/TRACKER-ROUTING.md`) — the class is now closed, with the negative evidence recorded rather than assumed.
+
+**Scope:** law text only — `oc-lint-laws` clean, no tool change, no fork issue filed.
+
 ## v0.4.293 — fork re-scope: the fork takes FORK-ONLY defects (owner order 2026-10-08) (2026-10-08)
 
 **The order.** Owner, 2026-10-08 14:59Z, answering open question `q69` (option 0): *"Approve the fork re-scope."* The 2026-10-03 two-stream order made the fork `leshchenko1979/opencrabs` READ-ONLY for new issues, which left a gap: a defect in code that exists ONLY in our fork fits neither stream. Upstream closed **#1918** and **#1938** NOT_PLANNED as stale because they cited fork-only symbols upstream cannot act on. The fork is now the home for **FORK-ONLY defects only**.
