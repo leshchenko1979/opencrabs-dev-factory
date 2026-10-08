@@ -1100,6 +1100,28 @@ FSS
     fi
   fi
 
+  # 21i. VERDICT RETURN (#28): the detach must RELAY the detached log to the
+  #      WRAPPER's own stdout and exit with the CHILD's rc. Legs 21a-21h pin the
+  #      escape itself; without 21i the escape relocated the verdict into a file
+  #      nothing read (#742) — a caller that CAPTURES the wait got only the two
+  #      notice lines and rc 0. A fake detach that writes a verdict line and exits
+  #      NON-ZERO pins BOTH halves: the caller's capture carries the verdict AND
+  #      the rc is the child's, not 0.
+  cat > "$D/fake-detach-verdict" <<'FDV'
+#!/usr/bin/env bash
+echo "FAKE-DETACH-VERDICT RED"
+exit 7
+FDV
+  chmod +x "$D/fake-detach-verdict"
+  rm -f "$D/detach-i.log" "$D/detach-i-out.txt"
+  DET_RC=0
+  OC_TOOLS_NOLOG=1 OC_DEPLOY_STATE_DIR="$D/state" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD="$D/fake-detach-verdict" \
+    OC_PRCHECKS_LOG="$D/detach-i.log" \
+    "$SELF" abc123 --wait 300 >"$D/detach-i-out.txt" 2>&1 || DET_RC=$?
+  [ "$DET_RC" -eq 7 ] && t_ok "21i detach: wrapper exits with the CHILD's rc (7, not 0)" || t_bad "21i detach: rc=$DET_RC (want the child's 7)"
+  grep -q "FAKE-DETACH-VERDICT RED" "$D/detach-i-out.txt" 2>/dev/null && t_ok "21i detach: verdict RELAYED to the caller's stdout" || t_bad "21i detach: verdict missing from the caller's capture (out=$(head -c 200 "$D/detach-i-out.txt" 2>/dev/null))"
+
   echo "selftest: $pass/$((pass+fail)) passed"
   [ "$fail" -eq 0 ]
 }
@@ -1237,7 +1259,38 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
   local dlog="${OC_PRCHECKS_LOG:-/tmp/oc-prchecks-detached-$$.log}"
   echo "$PROG: this CI wait is INSIDE ${OC_PRCHECKS_UNIT:-opencrabs-ops.service}'s cgroup — a daemon restart would SIGTERM it mid-wait with NO verdict (#727). Re-executing outside via: $cmd" >&2
   echo "$PROG: detached log: $dlog" >&2
-  OC_PRCHECKS_DETACHED=1 exec $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1
+  # #28: binding the re-exec's stdio to a FILE (above) kept the scope alive past
+  # the launching pipes, but left the CALLER holding only the two notice lines —
+  # the verdict landed in $dlog where nothing read it, so a daemon bg-task caller
+  # was woken with NO verdict (measured 2026-10-06, session cbdfde4a: bg run
+  # 57e369f9-4f4e-4a5b-819a-66e7b3156a0a, output_bytes 327, code 0, while
+  # /tmp/oc-prchecks-detached-2849867.log held the real "VERDICT CANCELLED" line).
+  # #742 named that byte-relocation; this is the return leg.
+  #
+  # The child runs in the BACKGROUND with the same stdio binding, so it still
+  # completes fully when the caller dies mid-gate — the property #727 exists to
+  # protect. The wrapper then WAITS for it and RELAYS the completed log to its own
+  # stdout, exiting with the CHILD's real rc.
+  #
+  # WHY NOT `exec $cmd … > >(tee -a "$dlog") 2>&1`: the process substitution's tee
+  # is a CHILD of the re-exec, so when the caller's stdout pipe dies mid-gate tee
+  # takes SIGPIPE and cascades it into the re-exec — rc 141, log truncated to its
+  # first line. That REINTRODUCES #727 for exactly the long waits it protects.
+  # Measured 2026-10-06 (/tmp/spike-28b.sh): exec+tee -> rc 141, log 1 line;
+  # background+relay -> rc 3 (the child's), log complete.
+  #
+  # `wait` is safe under a trapped TERM: a trap that RETURNS leaves the wait
+  # RESUMED (bash 4), so a SIGTERM mid-relay is deferred until the child exits and
+  # the true rc still leaves this function.
+  local _drc=0 _dchild=0
+  OC_PRCHECKS_DETACHED=1 $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1 &
+  _dchild=$!
+  wait "$_dchild" || _drc=$?
+  # RELAY — the child has exited, so the file is COMPLETE: no reader race even for
+  # an instant child. A broken caller pipe is tolerated (`|| :`): the gate already
+  # finished, and its rc is what the caller needs.
+  if [ -s "$dlog" ]; then cat "$dlog" 2>/dev/null || :; fi
+  exit "$_drc"
 }
 
 # The call site sits AFTER the parse loop and the wait-subcommand defaults (so
