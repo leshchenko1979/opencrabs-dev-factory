@@ -167,6 +167,7 @@ What STAYS at this factory, because it is process law about US and not about the
   reading nothing and reporting clean.
 - **Landing discipline: see §Duty 6 — ONE version batch, no design gate, no plan card, no owner
   approval; a fix whose owner is elsewhere is ROUTED and recorded as routed.**
+- **Checkable Completion Formula** (restored on-file, Duty-6 c28 G4 — the copy the 2026-09-27 carve moved to the unreachable meta-factory path left this duty with none): `DONE = every worker proposal for the cycle is read + each finding re-verified first-hand (an unreproduced finding is NOT a finding) + accepted findings landed in the Duty-6 version batch OR recorded as routed with their owner named + registry notes updated.`
 ## Duty 5 — Procedure rulings (decision 6)
 
 On protocol disputes — role boundaries, exception clauses, gate semantics —
@@ -217,6 +218,7 @@ What STAYS at this factory:
   Stated because a carve must not delete a live rule that has no mechanical carrier. (Tool half
   — a `validate` verb emitting `additionalProperties: false` on the cycle schema — ROUTED to
   Toolsmith, c27 J-1.)
+- **Checkable Completion Formula** (restored on-file, Duty-6 c28 G4 — the 2026-09-27 carve moved the contract to the unreachable meta-factory path and left this duty with none): `DONE = all catalog lenses A–J + brain-scrub dispatched and every report persisted under $OC_DEV_STATE/reviews/<cycle>/reports/ + oc-review-persist check-cycle returns rc 0 (a deliberately-skipped lens carries a waivers.log row, not a hole) + every load-bearing finding re-verified first-hand + accepted findings landed as ONE version batch + verdict table posted to owner topic 30220 + cadence reset stamped (oc-ledger stamp note "v<version> ACCEPTED").`
 ## Duty 7 — RETIRED (owner order 2026-09-14, v0.4.176)
 
 Duty 7 and the centralized Idea Box coordination queue are RETIRED; feedback routes directly to the

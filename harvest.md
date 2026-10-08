@@ -235,18 +235,13 @@ Rules:
   §Phase 7 Reference Rules below.
 - One feature = one PR; never bundle two features to save a PR.
 - **DEEP CORE ADVANCE HEADS-UP GATE (owner order 2026-09-17; paths corrected + executor assigned v0.4.204, HQ ruling 2026-09-18; config added to scope by owner order 2026-09-19):** If the PR touches **Deep Core** (runtime scheduler, compaction algorithms, provider routing/fallbacks, subagent orchestration, tool loop, configuration — loading, profile resolution, write guards, migrations — the PROSE scope is operative, paths are a reading aid: `src/cron/`, `src/brain/agent/service/tool_loop.rs`, `src/brain/agent/context.rs`, `src/brain/provider/`, `src/brain/tools/subagent/`, `src/config/`), post a concise 1-liner heads-up **as a comment on the upstream PR itself, by the filing lane** (it filed the PR, so it already holds the surface), before or simultaneously with opening it: `Core heads-up: <symptom> → proposed fix in <subsystem> (PR #<N>)` — nothing else; detail belongs in the PR body. **TELEGRAM VENUES RETIRED 2026-09-27 (owner relay + maintainer request):** the former `OC Dev` / `Opencrabs Dev Factory` group-post venues are WITHDRAWN — `OC Dev` carries the maintainer (`@adolfodev`) as a NON-OPERATOR member, which makes it member-visible under §Agent briefing law, and he has asked for feedback on GitHub only. With the venue on GitHub, §Telegram surface law no longer applies and the filing lane posts it directly. Surface integrations (Telegram channel handler, cards, formatting) remain under autonomous maintainer authority and ship with 4-leg smoke receipts without advance group chat posting. Canon: `harvest.md §Deep Core Advance Heads-Up Gate`.
-- **ATOMICITY & ZERO BUNDLING (owner order 2026-09-13; lane 1a63f103 proposal):** issues, PRs and commits are atomic —
-  one problem per issue, one logical change per commit, one issue per PR. **1 Intent = 1 Unit.**
-  Never mix features and bug fixes in the same issue, branch, or PR: a feature PR must carry exclusively
-  feature commits, and a bugfix PR must carry exclusively fix commits. If a defect is found while working
-  on a feature, file a separate issue on the tracker that OWNS it — per the routing table in `SKILL.md`
-  §Hard rules (binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process →
-  `leshchenko1979/opencrabs-dev-factory`; a FORK-ONLY defect → `leshchenko1979/opencrabs`) — and resolve it
-  in an isolated branch/PR, never bundle the fix
-  into the feature work. Every harvested commit carries an `Issue-Ref: #N` trailer matching EXACTLY the single
-  issue the PR claims; no commit without one, no PR claiming more than one. A PR
-  whose diff mixes fixed and unfixed concerns forces a binary status on a mixed bag
-  and mislabels both. Gate with `./tools/harvest/oc-prchecks <branch>` and atomicity check BEFORE closing the issue.
+- **ATOMICITY & ZERO BUNDLING:** the LAW — **1 Intent = 1 Unit**, never mix features and bug fixes in
+  one issue/branch/PR, and file a defect found mid-feature on the tracker that OWNS it (routing table:
+  `SKILL.md` §Hard rules) — is owned by `fleet-directives.md §Strict Atomicity & Zero Bundling`. **Read it
+  there; do not restate it here.** Harvest-local PROCEDURE only: every harvested commit carries an
+  `Issue-Ref: #N` trailer matching EXACTLY the single issue the PR claims; no commit without one, no PR
+  claiming more than one. A PR whose diff mixes fixed and unfixed concerns forces a binary status on a mixed
+  bag and mislabels both. Gate with `./tools/harvest/oc-prchecks <branch>` and the atomicity check BEFORE closing the issue.
 - **PR LIFECYCLE:** One PR = one atomic change; a bug found in review is fixed
   FORWARD on the same PR or the PR is closed — no draft limbo. A MERGED PR is
   closed forever: follow-up work = new branch + new PR, NEVER extend a merged

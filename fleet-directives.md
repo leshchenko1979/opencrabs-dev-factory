@@ -293,7 +293,7 @@ A1 governs **who acts**. This governs **who is acted upon**, and the two collaps
 
 | Kind | Verbs | Rule |
 |---|---|---|
-| **SELF** — the uuid is the caller's own | `oc-ledger ack` · `enroll` · `claim-ref` · `confirm` · `claim` · `oc-drift-check` | **derived from env**; the argument becomes optional, and when supplied it is **cross-checked** against `$OPENCRABS_SESSION_ID` and REFUSED on mismatch |
+| **SELF** — the uuid is the caller's own | `oc-ledger ack` · `enroll` · `claim-ref` · `confirm` · `claim` · `oc-drift-check` | **derived from env**; the argument becomes optional, and when supplied it is **cross-checked** against `$OPENCRABS_SESSION_ID` — a mismatch is **named as an advisory `note:` on stderr with rc 0**, NEVER a refusal (#657: a hard cross-check reddens 60 selftest legs, incl. `ack2-otheruuid-rc0`, because `ack`/`enroll` legitimately act on ANOTHER lane's uuid) |
 | **TARGET** — the uuid names another session | `oc-ledger retire` · `promote` · `oc-ping-proof` · `oc-tg-audit` · `oc-notify-fanout` recipients | **stays explicit** — there is no ambient answer, and defaulting one would silently act on the wrong lane |
 
 `oc-ledger claim` already spells this out as `[<uuid>]` (optional) — so the convention exists in the usage line and was never enforced in the body.
@@ -306,7 +306,7 @@ A1 governs **who acts**. This governs **who is acted upon**, and the two collaps
 
 The machinery is already in `oc-ledger` twice over (`:614`, `:1031` — `${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}`), so this is wiring, not invention. `cmd_ack` and its sibling verbs take `uuid="${1:-}"` and never consult it.
 
-**Refusal is the point.** Deriving silently and accepting a passed value would leave the wrong-uuid row possible; the cross-check is what converts a preference into a gate. A SELF verb that accepts any syntactically valid uuid is not fixed, only shorter.
+**A NAMED MISMATCH, NOT A REFUSAL (#657).** Deriving silently and accepting any passed value would leave the wrong-uuid row possible; naming the mismatch surfaces the accidental case (a lane stamping under a lane that is not its own) while keeping the deliberate roster-admin path (`ack`/`enroll` on ANOTHER lane's uuid) working — a hard cross-check reddens 60 selftest legs, including `ack2-otheruuid-rc0`. Same disposition as `--by` in #320: **warn, never refuse, when refusal would break legitimate use.**
 
 **Precedence — the environment variable WINS, and `OC_ACTOR` is an explicit override only (owner order 2026-09-26 23:20Z: *"OC_ACTOR is outdated"*).**
 

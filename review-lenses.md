@@ -15,12 +15,18 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
 #### FAMILY: DOCS — role files (wording / reading load / organization)
 
    - **Reviewer A — REDUNDANCY + ONTOLOGY:** same rule stated twice across
-     files; duplicated war stories; terms violating the SKILL.md test ontology
-     (SMOKE TEST / CODE TESTS / FEATURE-PRESENCE CHECK / EXECUTION SANITY
-     SIGNAL); undefined coinages; stale ref names — INCLUDING every cross-repo
+     files; duplicated war stories; terms violating the SKILL.md test ontology —
+     the **three kinds** (SMOKE TEST / CODE TESTS / FEATURE-PRESENCE CHECK)
+     **plus** the separate EXECUTION SANITY SIGNAL (three + one, NEVER
+     conflated; SKILL.md §Test ontology); undefined coinages; stale ref names — INCLUDING every cross-repo
      pointer (`hq.md` §Duty 4/6, `docs/instruments/*`): resolve each named
      path/verb against this tree and against its declared home before calling it
-     consistent (lens I-2.2 v0.4.116: A owns ref CONSISTENCY; B weighs refs only
+     consistent — for a meta-factory path (`docs/instruments/*`) the declared
+     home is `/root/agent-factories/`, and where that home is UNREACHABLE from
+     this tree (the normal case) say so and route it, never call it consistent
+     (I-2 c28: the order named no home and `docs/instruments/` does not exist
+     here, making the instruction unsatisfiable as written);
+     (lens I-2.2 v0.4.116: A owns ref CONSISTENCY; B weighs refs only
      as load-weight — first finder gets attribution); SEDIMENT — stale layers
      that survive because adding feels safe and removing feels risky
      (docs-lens vocabulary reference:
@@ -29,9 +35,11 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      gate/tool/artifact; (b) GLOSSARY CONFORMANCE — every load-bearing term
      in a rule must resolve in SKILL.md §Glossary or §Test ontology;
      (c) POST-MIGRATION PATH SWEEP — after any artifact/path migration grep
-     the ROOT literal of the OLD location (not the artifact name) across all
-     three skill files; (d) ENUMERATION CONSISTENCY — counts of lenses/tools/
-     gates/phases in prose must match their defining sections; (e) RETIRED
+     the ROOT literal of the OLD location (not the artifact name) across
+     **every `*.md` in this skill root** (a count-free phrase — a hard count
+     goes stale; I-1 c28: it read "three skill files" against 15 on disk);
+     (d) ENUMERATION CONSISTENCY — counts of lenses/tools/
+     gates/phases/**skill files** in prose must match their defining sections; (e) RETIRED
      CONCEPTS MARKED — any mention of a retired role/tool carries
      RETIRED + date, never present-tense; (f) LEADING-WORD COLLAPSE — prose
      restating one quality across a phrase list or spelling the same idea
@@ -180,11 +188,14 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      hand-built ritual artifacts that a proposal should replace. Findings
      cite the log rows they rest on. ADOPTION-COMPLIANCE CHECK (v0.4.120,
      owner-ordered): every C pass samples runtime `Detaching '...'` records
-     and flags ANY `gh run watch` / hand-rolled nohup CI poller spawn as a
-     law violation (one-watcher law, editor.md) — official surfaces are
+     and flags a `gh run watch` WITHOUT `--interval 30|60` (the forbidden 3s
+     default → `UNTHROTTLED_WATCH`, or an off-spec interval →
+     `OFF_SPEC_INTERVAL`) or any hand-rolled nohup/sleep CI poller spawn as a
+     law violation (fleet-directives.md §CI-wait discipline W1–W2; class list
+     `tools/docs/HEALTH-CLASSES.md`) — official surfaces are
      native detached execution (`background: true`) and one-shot `gh run view`
-     (for a blocking gate, `oc-prchecks --wait`); also flags
-     `oc-prchecks --wait` used as a verdict waiter (double-duty). Each
+     (for a verdict); `oc-prchecks --wait` is the sanctioned blocking gate, and
+     a SECOND `--wait` used as a verdict waiter is the double-duty flagged. Each
      violation names the session id from the log row. Boundary watch vs A/B: C's dimension is
      GAPS (what should be a command), not doc wording or weight.
      BOUNDARY vs J (v0.4.161): C's object is a PROCEDURE carrying a recurring

@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.294
+version: 0.4.295
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -110,7 +110,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/ship/oc-ship-audit [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
 | `./tools/audit/oc-tg-audit <uuid> [--date D] [--days N] [--log-dir P]` | Telegram surface-law evidence scan |
 | `./tools/state/oc-ledger sync` CHANGELOG gate | the sync refuses a bump whose CHANGELOG entry is missing (die 6) and WARNS on bundled commits the entry does not name. Full register: `tools/docs/RC-CONTRACT.md` |
-| `./tools/harvest/oc-harvest-census <scan|check|record|sync>` | pre-flight census & lifecycle registry for upstream PR harvests; use `check`/`scan` (they derive IN_FLIGHT from the live scan). Mechanics, rc: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-harvest-census <scan\|check\|record\|sync\|walk\|purge\|clusters>` | pre-flight census & lifecycle registry for upstream PR harvests; use `check`/`scan` (they derive IN_FLIGHT from the live scan). Mechanics, rc: `tools/docs/RC-CONTRACT.md` |
 | `./tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` \| `dispatch <issue> <commits> [--dry-run]` | dispatches automated harvest-to-upstream work order for eligible features |
 | `./tools/harvest/oc-harvest-sweep <pr-branch> [--base adolfousier/main] [--repo P] [--port-of sha1,sha2]` | pre-gate harvest verification (harvest Phase 7 sweep, mechanical legs); behavioral judgment stays human |
 | `./tools/state/oc-health [--class <name>|--all] [--rotate] [--status] [--json] [--reap] [--quiet] [--selftest]` | 8-class rotating fleet health & cleanliness sweep (owner order 2026-09-11); spec + per-check remediation in `tools/docs/HEALTH-CLASSES.md` & `tools/docs/HEALTH-CHECKS.md`. `--reap` applies SAFE remediations only; without it the tool is a pure read |
