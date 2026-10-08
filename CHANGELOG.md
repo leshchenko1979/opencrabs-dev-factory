@@ -19,6 +19,8 @@
 
 **Bundled commits (C8).** The catch-up range also carries two commits from the **Toolsmith** lane for [#31](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/31) — `26742c2f` (`oc-ledger sync` now refuses an empty `--why`, H-4 enforced) and `accab526` (its battery receipt, PASS 370/FAIL 0, 549s) — named here because the version record is the only place a bundled fix's ship date exists. This lane's own entry commit (`92bf5d1a`) carries `Session-Id` alone with no `Issue-Ref`, so the C8 self-commit skip excludes it; that exclusion is disclosed by the sync rather than left silent.
 
+**Post-sync follow-up (this cycle's completeness sweep).** Three confirmed findings were left neither landed nor routed when the batch closed — the sweep caught them, and the gap is recorded rather than absorbed. **B-8 LANDED:** `SKILL.md:97` pointed at `editor.md` §Ship, an anchor that does not exist (`grep -n '^#.*Ship' editor.md` → `347:## Phase 5 — Ship (oc-ship-chain)`); repointed. **B-11 HELD:** `SKILL.md:415` is a 1,308-char table cell (`awk 'NR==415{print length}'`), and its own suggested fix moves provenance and the discriminator into `tools/docs/TRACKER-ROUTING.md` — so it is held behind the B-1 fix on the Toolsmith's surface, not landed half-way. **B-3 ROUTED:** `tools/docs/RC-CONTRACT.md` measures 121 lines / **227,749 B**, with single table cells of 44 KB, 26 KB, 18 KB and 16 KB — the corpus's declared SOLE tool register cannot be read as a register; the Toolsmith's file to split.
+
 **Scope:** law text only — `oc-lint-laws` clean, no tool change, no build.
 
 ## v0.4.294 — fork-residue sweep: the last two pre-10-03 fork-filing writers (Triage portfolio sweep, 2026-10-08)
