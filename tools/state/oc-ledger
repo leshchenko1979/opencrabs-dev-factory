@@ -42,7 +42,7 @@
 #                                          reads as "no such event", the same
 #                                          phantom-verb class as `roster`).
 #                                          rc 1 = NO-MATCH verdict. Read-only.
-#   sync --version <v> [--why <text>] [--catch-up] [--allow-sweep]
+#   sync --version <v> --why <text> [--catch-up] [--allow-sweep]
 #                                          ONE atomic write: 3 version fields
 #                                          + skill-bump event; battery-receipt
 #                                          gate; skill-repo commit + tag; tail
@@ -54,7 +54,11 @@
 #                                          ahead of ledger meta — the dead zone
 #                                          (doc-first gate + +1-only step check
 #                                          admit no legal sequence otherwise);
-#                                          --why mandatory; downgrades refused;
+#                                          --why REQUIRED (H-4, factory #31): a
+#                                          provenance-free skill-bump row is
+#                                          refused rc 2 (the same family as the
+#                                          CHANGELOG-receipt gate above);
+#                                          downgrades refused;
 #                                          --allow-sweep (v0.4.157): absorb
 #                                          unrelated dirty paths into the bump
 #                                          commit. WITHOUT it the sync REFUSES
@@ -1246,7 +1250,7 @@ EOF
 }
 
 cmd_sync() {
-  case "${1:-}" in -h|--help) echo "usage: oc-ledger sync --version <v> [--why <text>] [--catch-up] [--allow-sweep]"; exit 0 ;; esac
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger sync --version <v> --why <text> [--catch-up] [--allow-sweep]"; exit 0 ;; esac
   local v="" why="" catchup=0 allow_sweep=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1257,7 +1261,7 @@ cmd_sync() {
       *) shift ;;
     esac
   done
-  [ -n "$v" ] || die 2 "usage: oc-ledger sync --version <v> [--why <text>] [--catch-up]"
+  [ -n "$v" ] || die 2 "usage: oc-ledger sync --version <v> --why <text> [--catch-up]"
   echo "$v" | grep -Eq '^0\.[0-9]+\.[0-9]+$' || die 6 "sync: version shape must be 0.N.N, got '$v'"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
   # battery gate: receipt must exist, be PASS, fail==0, fresh (<6h)
@@ -1343,6 +1347,25 @@ cmd_sync() {
     git_state_commit "ledger n=$n: skill-bump v$v via oc-ledger sync"
     return 0
   }
+  # H-4 provenance gate (factory #31, dispatched by Triage 530c29ec): a skill-bump
+  # row must never ship without its why-text. The CHANGELOG gate above protects the
+  # bump's RECEIPT; this protects the row's CONTENT. The tool's own header has always
+  # declared `--why mandatory` (:57) and upstream-merge-runbook.md:411 (H-4) makes it
+  # law, but the code required it only for --catch-up - so an empty --why shipped a
+  # provenance-free row ("v0.4.294 — ; battery receipt ts ...", n=15059).
+  # Placed AFTER the step-check block on purpose: five existing selftest legs run
+  # sync with no --why and expect rc 5/6 from OTHER gates, so the gate must not
+  # pre-empt them. The one SUCCESS-expecting leg (the cadence close-boundary
+  # probe, `sync --version 0.4.7`) was updated to pass --why — the contract now
+  # requires it, and without the flag that leg's bump is refused, cascading into
+  # cadence-counts-after-close and sync-catchup-event (both measured red on the
+  # first selftest run before the fixture was updated).
+  # Polarity is fail-CLOSED - the deliberate INVERSE of the oc-issue-log
+  # foreign-tracker guard (#30): that gated an OUTWARD comment whose absence is the
+  # breach (fail-open); this gates an INWARD append-only row, and a provenance-free
+  # row cannot be repaired in place. die leaves no partial state - it fires before
+  # _sync_locked touches the ledger - and the remedy is a re-run with --why.
+  [ -n "$why" ] || die 2 "sync: --why \"<provenance>\" is required — a skill-bump row must not ship without its why-text (H-4, factory #31)"
   # stray-guard (v0.4.157): a bump commit must never absorb another actor's work.
   # The v0.4.63 root-fix stages the FULL tree so a tag can never point at a tree
   # missing its payload (incident n=1405) - but `git add -A` also swept UNRELATED
@@ -1985,6 +2008,16 @@ PAYLOAD
   # C8 (v0.4.65): sync refuses a bump whose CHANGELOG entry is missing
   bash "$ME" sync --version 0.4.2 >/dev/null 2>&1; chk "sync-changelog-missing" 6 $?
   printf '\n## v0.4.2\nfixture receipt\n' >> "$T/skill/CHANGELOG.md"
+  # H-4 (factory #31): a skill-bump row must not ship without its why-text.
+  # Every OTHER gate is satisfied here (receipt present, SKILL.md=0.4.2, equal
+  # step) and no skill-bump event exists yet, so an empty --why is the ONLY thing
+  # that can refuse — and a mutant that drops the gate writes the row AND exits 0,
+  # reddening BOTH the rc leg and the no-event leg.
+  _ew_before="$(jq '[.events[] | select(.kind == "skill-bump")] | length' "$OC_LEDGER")"
+  bash "$ME" sync --version 0.4.2 >/dev/null 2>"$T/emptywhy.err"; chk "sync-empty-why-refused" 2 $?
+  _ew_after="$(jq '[.events[] | select(.kind == "skill-bump")] | length' "$OC_LEDGER")"
+  chk "sync-empty-why-no-event" "$_ew_before" "$_ew_after"
+  grep -q -- '--why' "$T/emptywhy.err" && ok || bad "sync-empty-why-names-the-flag"
   # 14-17: sync happy + git legs + re-sync
   SYNC_OUT="$(bash "$ME" sync --version 0.4.2 --why selftest 2>&1)"; chk "sync-happy" 0 $?
   case "$SYNC_OUT" in *"shadow-rotate:"*) ok ;; *) bad "sync-tail-rotate-line" ;; esac
@@ -2058,7 +2091,7 @@ PAYLOAD
   bash "$ME" cadence | grep -q "0/5 WAIT" && ok || bad "cadence-reset-on-cycle-close"
   sed -i 's/^version: .*/version: 0.4.7/' "$T/skill/SKILL.md"
   printf '\n## v0.4.7\nclose-boundary probe\n' >> "$T/skill/CHANGELOG.md"
-  bash "$ME" sync --version 0.4.7 >/dev/null 2>&1
+  bash "$ME" sync --version 0.4.7 --why cadence-close-probe >/dev/null 2>&1
   bash "$ME" cadence | grep -q "1/5 WAIT" && ok || bad "cadence-counts-after-close"
   # 22b: sync --catch-up (T2 verdict n=1695, HQ-approved 2026-09-06): the
   # shipped-ahead dead zone gains a legal path — multi-step FORWARD jump with
