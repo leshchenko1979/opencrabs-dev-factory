@@ -122,6 +122,16 @@ the canonical home** — forwarded by lane `1122b15e` and codified HERE. The ops
 section governs and the brain copy yields. Brain-file text is always-loaded but is never the
 dev-process authority — the skill is.
 
+## Fork-only issue stream — re-scope of the 2026-10-03 read-only order (owner order 2026-10-08 14:59Z) [LANE]
+
+**The order.** Owner, 2026-10-08 14:59Z, answering open question `q69` (option 0): *"Approve the fork re-scope."* The 2026-10-03 two-stream order made the fork `leshchenko1979/opencrabs` READ-ONLY for new issues, which left a gap: a defect in code that exists ONLY in our fork fits neither stream. Upstream closed #1918 and #1938 NOT_PLANNED as stale because they cited fork-only symbols upstream cannot act on. The fork is now re-scoped as the home for **FORK-ONLY defects only**.
+
+**The three streams.** Binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process → `leshchenko1979/opencrabs-dev-factory`; a FORK-ONLY defect → `leshchenko1979/opencrabs`. **EVERY OTHER new issue stays two-stream**, and the fork's historical portfolio stays read-only — the fork is not a general issues home. Operative table (canonical): `SKILL.md` §Hard rules — ISSUE ROUTING.
+
+**The discriminator.** The fork-only boundary register ([#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json` → `manual_records`, the `not-upstreamable` rows: **14 of 77 rows, read 2026-10-08**) and the census `FORK_ONLY_SURFACE` predicate (`tools/harvest/oc-harvest-census`). A defect is fork-only when its SURFACE exists only in the fork; a defect whose surface is upstream's is a BINARY issue regardless of where it is observed.
+
+**What this does NOT do.** It does not make the fork a general issues home and does not reopen the read-only rule for any other class. A fork-only defect filed there still follows Issue-first (duplicate sweep, assignment claim, `Issue-Ref` trailer), and §Contributor ownership is untouched — reporting a defect in someone else's feature/fix is still report-only.
+
 ## Contributor ownership — defects in others' features/fixes (owner order 2026-10-04) [LANE]
 
 Owner, verbatim: *"if we are about to file an upstream issue about a defect in a feature that was not implemented by us or in a fix that was not ours, we expect the owner of that fix/feature to fix it instead of fixing it ourselves unless I want to have an urgent fix on our fork only. This is to respect contributor ownership and to preserve their motivation and to foster their learning."*
@@ -173,7 +183,7 @@ Applies to upstream (opencrabs/opencrabs) AND fork PRs. New branches mirror the 
 
 **1 Intent = 1 Unit.** Features and bug fixes MUST NEVER be bundled into the same issue, branch, or PR.
 - Never mix `feat:` and `fix:` in one PR: a feature PR must carry exclusively feature commits, and a bugfix PR must carry exclusively fix commits.
-- If a bug is uncovered while working on a feature: do NOT fix it inline on the feature branch. File a separate issue on the tracker that OWNS it, per TWO-STREAM routing (binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process → `leshchenko1979/opencrabs-dev-factory`; the fork `leshchenko1979/opencrabs` is READ-ONLY for new issues — owner order 2026-10-03), claim it in a clean worktree/branch (or hand it to Triage), fix and smoke it independently, and land it atomically. **(Corrected 2026-10-08, HQ.)** This line read *"File a separate fork issue"* until today: it predated the 2026-10-03 two-stream order and instructed a filing that order forbids — the routing moved a surface and this writer was not audited with it (collision reported by Triage, `upstream-filing-policy.md` rev.3).
+- If a bug is uncovered while working on a feature: do NOT fix it inline on the feature branch. File a separate issue on the tracker that OWNS it, per the routing table in `SKILL.md` §Hard rules (binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process → `leshchenko1979/opencrabs-dev-factory`; a FORK-ONLY defect — surface exists only in our fork → `leshchenko1979/opencrabs`), claim it in a clean worktree/branch (or hand it to Triage), fix and smoke it independently, and land it atomically. **(Corrected 2026-10-08, HQ; re-scoped the same day.)** This line read *"File a separate fork issue"* until today: it predated the 2026-10-03 two-stream order and instructed a filing that order forbade — the routing moved a surface and this writer was not audited with it (collision reported by Triage, `upstream-filing-policy.md` rev.3). The 2026-10-08 owner re-scope (§Fork-only issue stream) restores exactly ONE fork filing — the fork-only defect — and no other.
 - Bundling a "convenient small fix" into an active feature PR forces binary review on a mixed diff, poisons git bisect, muddles changelogs, and breaches upstream PR atomicity rules. Gate: `./tools/harvest/oc-pr-atomicity <pr>` enforces issue and trailer boundaries. Canonical procedure: `harvest.md §Phase 7`.
 
 ## LLM Ergonomics & Efficiency Law (owner order 2026-09-13) [LANE]

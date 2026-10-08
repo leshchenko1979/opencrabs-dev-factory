@@ -1,5 +1,19 @@
 # Changelog — opencrabs-dev
 
+## v0.4.293 — fork re-scope: the fork takes FORK-ONLY defects (owner order 2026-10-08) (2026-10-08)
+
+**The order.** Owner, 2026-10-08 14:59Z, answering open question `q69` (option 0): *"Approve the fork re-scope."* The 2026-10-03 two-stream order made the fork `leshchenko1979/opencrabs` READ-ONLY for new issues, which left a gap: a defect in code that exists ONLY in our fork fits neither stream. Upstream closed **#1918** and **#1938** NOT_PLANNED as stale because they cited fork-only symbols upstream cannot act on. The fork is now the home for **FORK-ONLY defects only**.
+
+**What landed (law only, no tool change):**
+
+1. **`SKILL.md` §Hard rules — the routing row is canonical and now carries three streams.** Binary behaviour → `opencrabs/opencrabs`; factory tooling/CI/process → `leshchenko1979/opencrabs-dev-factory`; a FORK-ONLY defect → `leshchenko1979/opencrabs`. **Every other new issue stays two-stream**, and the fork's historical portfolio stays read-only. Discriminator: the fork-only boundary register ([#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json` → `manual_records`, the `not-upstreamable` rows) and the census `FORK_ONLY_SURFACE` predicate (`tools/harvest/oc-harvest-census`).
+2. **Register — a new owner-order section.** `fleet-directives.md` §Fork-only issue stream — re-scope of the 2026-10-03 read-only order records the order's provenance, the discriminator, and what it does NOT do (no general issues home; §Contributor ownership untouched).
+3. **The read-only claim is re-scoped at EVERY surface that carried it:** `SKILL.md` (metadata reference + the Issue-first bullet), `editor.md` (Scope), `harvest.md` (the offload order), `fleet-directives.md:176` (the Strict Atomicity bullet — corrected earlier today, re-scoped the same day), and the ops brain `AGENTS.md` (the Upstream-etiquette mention).
+
+**A SECOND instance of the same stale collision, found while authoring.** Triage's item 1 named only `fleet-directives.md:175`; **`harvest.md:242`** (the ATOMICITY & ZERO BUNDLING bullet) carried the identical stale *"file a separate fork issue"* instruction — the same defect shape, a writer not audited when the 2026-10-03 order moved the surface. Re-scoped to the routing table in the same turn.
+
+**Scope:** law text only — `tools/**` untouched, `oc-lint-laws` clean. No fork issue is filed by this change; it makes the class legal to file.
+
 ## v0.4.292 — upstream-filing law: the fork-filing collision fixed, and the per-commit note scoped (2026-10-08)
 
 **Catch-up from 0.4.284.** Seven doc-first entries stacked since the 2026-10-03 sync — v0.4.285 (the creation gate's three legs, [#1932](https://github.com/opencrabs/opencrabs/issues/1932)), v0.4.286 (C1's ADDRESSING half), v0.4.287 (the fork-only walk's coverage keys on `status` alone), v0.4.288 (step 12's re-record is not executable by the register's own writer), v0.4.289 (a conditional row's `condition` is a prerequisite-chain state), v0.4.290 (the compactor never receives the retention set, [#1960](https://github.com/opencrabs/opencrabs/issues/1960)), v0.4.291 (Telegram file-sending instructions removed from the law) — each shipped its text with **no skill-bump row**, so the registry read 0.4.284 while lanes acked 0.4.291 (`oc-ledger check-version` rc 1). Published here in one catch-up. The Toolsmith tool window since v0.4.291 also rides this sync (see Bundles).

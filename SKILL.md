@@ -15,14 +15,14 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.292
+version: 0.4.293
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
   references:
     - https://github.com/opencrabs/opencrabs (upstream — BINARY issues + PRs; the binary tracker since 2026-10-03)
     - https://github.com/leshchenko1979/opencrabs-dev-factory (dev-factory issues — tooling, CI, release automation, process)
-    - https://github.com/leshchenko1979/opencrabs (fork — push target + historical issue portfolio, READ-ONLY)
+    - https://github.com/leshchenko1979/opencrabs (fork — push target + FORK-ONLY defect tracker + historical issue portfolio)
   provenance:
     - "Release history and the current version live in CHANGELOG.md (git-tracked, newest-first). The v0.4.43 B6 rationale is in war-stories.md."
 ---
@@ -412,7 +412,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 
 | Rule | Applies to | Gate |
 |---|---|---|
-| **TWO-STREAM ISSUE ROUTING (owner order 2026-10-03 21:17Z — REVERSES the 2026-08-27 row below):** a **BINARY** issue (runtime behaviour, channels, providers, TUI, memory, tools) is filed on UPSTREAM `opencrabs/opencrabs` — the binary tracker; a **FACTORY** issue (tooling, CI, release automation, process) is filed on `leshchenko1979/opencrabs-dev-factory`. The historical portfolio `leshchenko1979/opencrabs` is **READ-ONLY** — no new issues. Mandatory duplicate sweep (open+closed, issues+PRs) BEFORE filing; core-surface changes carry `fix core` / `feat core` in the title | `opencrabs/opencrabs` (binary) · `leshchenko1979/opencrabs-dev-factory` (factory) | owner 2026-10-03 21:17Z |
+| **TWO-STREAM ISSUE ROUTING + FORK-ONLY STREAM (owner order 2026-10-03 21:17Z — REVERSES the 2026-08-27 row below; RE-SCOPED by owner 2026-10-08 14:59Z, q69 → option 0):** a **BINARY** issue (runtime behaviour, channels, providers, TUI, memory, tools) is filed on UPSTREAM `opencrabs/opencrabs` — the binary tracker; a **FACTORY** issue (tooling, CI, release automation, process) is filed on `leshchenko1979/opencrabs-dev-factory`; a **FORK-ONLY defect** — one whose surface exists ONLY in our fork, so neither tracker can act on it — is filed on the fork `leshchenko1979/opencrabs`. **EVERY OTHER new issue stays two-stream**, and the fork's historical portfolio stays read-only: the fork is not a general issues home. Discriminator: the fork-only boundary register ([#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json` → `manual_records`, the `not-upstreamable` rows) and the census `FORK_ONLY_SURFACE` predicate (`tools/harvest/oc-harvest-census`). Mandatory duplicate sweep (open+closed, issues+PRs) BEFORE filing; core-surface changes carry `fix core` / `feat core` in the title | `opencrabs/opencrabs` (binary) · `leshchenko1979/opencrabs-dev-factory` (factory) · `leshchenko1979/opencrabs` (fork-only) | owner 2026-10-03 21:17Z; re-scoped owner 2026-10-08 14:59Z |
 | PR body = detailed what/why. `Closes #N` is **VALID same-repo** (a binary issue on upstream, closed by its upstream PR) and **FORBIDDEN across trackers** (a factory/dev-factory issue has no upstream number space) — there the body ends `Original issue: <full URL>`, EXACTLY one | `opencrabs/opencrabs` PR bodies | owner 2026-10-03 (generalized upstream, PR opencrabs#1907) |
 | A binary issue upstream closes via `Closes #N` on its own PR; historical fork issues stay READ-ONLY, never re-filed | trackers | owner 2026-10-03 |
 | Claiming = **assignment on the tracker** (the PUBLIC claim signal, owner order 2026-10-03) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48). **THE ASSIGNMENT LEG IS ATTEMPTED AND VERIFIED, NEVER ASSUMED (HQ ruling 2026-10-04, revised the same day):** the account holds **TRIAGE on the BINARY tracker** (`opencrabs/opencrabs` — `pull:true, triage:true`, `push`/`maintain`/`admin` false; GRANTED 2026-10-04, verified live) and `admin` on the FACTORY tracker, so **assignment now WORKS on both**. The earlier pull-only reading was the PRE-GRANT state (two denials that day: #1916 n=14302, #1917 — both `ReplaceActorsForAssignable`); it is history, not current law. Sub-issue/parent links and labels also work at TRIAGE. Where the platform denies the assignment, RECORD the denial and let the `claim` row + `Issue-Ref` trailer BE the claim — a SILENT skip is a violation, because it is indistinguishable from a permission limit (two independent measurements 2026-10-04: #1916 n=14302, #1917 — both `ReplaceActorsForAssignable`). The permission ask is CLOSED: opencrabs-dev q57 was ANSWERED — GRANTED, 2026-10-04. NO tackling/status comments or labels; uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING chatter, not the design/implementation record | tracker assignment (attempted + verified) + ledger | owner 2026-10-03; TRIAGE grant + verified leg HQ 2026-10-04 |
@@ -465,10 +465,14 @@ links; development-time upstream contact is PR-comments only (supersedes the
   the SMOKE pass remains a required condition in BOTH modes, and owner approval
   is required under **DEGRADED MODE** and waived under **HIGH-TRUST MODE**
   (§Hard rules — CONSENT REGISTER / MODE REGISTER).
-- Issue-first, no exceptions (2026-08-25; routing revised 2026-10-03): a DISCOVERED problem
+- Issue-first, no exceptions (2026-08-25; routing revised 2026-10-03; fork-only stream added 2026-10-08): a DISCOVERED problem
   gets its issue FILED before any fix work starts — on the BINARY tracker
   `opencrabs/opencrabs` for a binary defect, on `leshchenko1979/opencrabs-dev-factory`
-  for a factory defect (tooling, CI, release automation, process). A mandatory duplicate
+  for a factory defect (tooling, CI, release automation, process), on the FORK
+  `leshchenko1979/opencrabs` for a FORK-ONLY defect (surface exists ONLY in our fork —
+  discriminator: the fork-only boundary register [#761](https://github.com/leshchenko1979/opencrabs/issues/761)
+  and the census `FORK_ONLY_SURFACE` predicate; the ISSUE ROUTING table above is canonical).
+  A mandatory duplicate
   sweep (open AND closed, issues AND PRs) precedes filing. Discoverer
   files it (symptom + evidence); fixer claims via the tracker ASSIGNMENT (the public claim
   signal since 2026-10-03) plus an `oc-ledger claim` row +
