@@ -13,13 +13,23 @@ Records WHAT each tool targets and WHY, so a later reader does not have to re-de
 | **FACTORY** | `leshchenko1979/opencrabs-dev-factory` | tooling, CI, release automation, process |
 | **UPSTREAM** | `opencrabs/opencrabs` | **PULL REQUESTS ONLY** — never an issue home (owner order 2026-10-09) |
 
-**The discriminator is RETIRED.** The 2026-10-08 fork-only stream and its
-discriminator (the boundary register
-[#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json`
-→ `manual_records`, the `not-upstreamable` rows — and the census `FORK_ONLY_SURFACE`
-predicate, `tools/harvest/oc-harvest-census`) no longer route anything: with EVERY
-binary issue on the fork there is nothing left to discriminate. The register survives,
-if at all, as an informational record.
+**Two different things were bundled on 2026-10-08, and only ONE of them is retired.**
+This paragraph is the single place their status is stated.
+
+**(a) The ISSUE-ROUTING discriminator — RETIRED.** The notion that the fork takes only
+`FORK-ONLY defects` no longer routes anything: the fork takes EVERY binary issue, so no
+such split exists. Nothing routes on a "is this defect fork-only?" test any more.
+
+**(b) The HARVEST machinery — SURVIVES UNCHANGED.** The boundary register
+([#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json`
+→ `manual_records`, the `not-upstreamable` rows, read by the worktree-teardown exemption
+in `editor.md`) and the census `FORK_ONLY_SURFACE` predicate
+(`tools/harvest/oc-harvest-census`) are **harvest-PORTABILITY law, not issue routing**:
+they decide whether a COMMIT can be ported upstream — a hunk whose body depends on a
+declaration absent upstream is REFUSED fail-closed, so the HARVEST lane never ports an
+unbuildable hunk — and the 2026-10-09 order leaves the harvest path untouched
+(*"the harvesting process will still open PRs at upstream repo"*). **No law text routes
+an issue on `FORK_ONLY_SURFACE` or on a `not-upstreamable` row.**
 
 **RENAME (2026-10-04):** upstream `adolfousier/opencrabs` was renamed to
 **`opencrabs/opencrabs`**. The NEW slug is canonical in every site below; the
