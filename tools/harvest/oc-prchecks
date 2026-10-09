@@ -28,7 +28,7 @@
 # dispatch+adopt and the newest run in window is always this lane's own.
 #
 # Usage:
-#   oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--no-log]
+#   oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--test-threads N] [--no-log]
 #   oc-prchecks --selftest          offline, gh-shim injected (zero network)
 #
 # Defaults: --repo leshchenko1979/opencrabs, --carrier ci/quick-build-linux,
@@ -45,6 +45,12 @@
 # in-flight run (owner GO 2026-09-17 22:59Z; closes run 35279942039). Branch
 # refs omit it: a moved PR-lane head genuinely invalidates the old verdict, so
 # supersede-on-cancel stays correct there.
+# `-f test_threads=N` when `--test-threads N` is passed AND the carrier yml
+# declares the input (the #1936 Stage 1 hang-capture mitigation, factory #33).
+# Unlike no_cancel (an internal optimisation the tool may legitimately skip),
+# this is a CALLER-REQUESTED input: a request the yml cannot honour is a LOUD
+# rc 4, never a silent drop — otherwise the gate would run WITHOUT the
+# mitigation while the caller believed it applied.
 #
 # Exit: 0 GREEN (terminal, run conclusion success, zero FAILED steps/jobs)
 #       2 usage / sha-shape / unknown ref / repo-path-no-origin
@@ -214,10 +220,12 @@ usage() { # [reason] — C-#1: prints WHY before the usage block. A repeat of th
   printf '%s %s %s\n' "$_now" "$_h" "$_cnt" > "$_cf" 2>/dev/null || :
   [ "$_cnt" -gt 1 ] && sleep $(( _cnt * 2 < 10 ? _cnt * 2 : 10 ))
   cat >&2 <<EOS
-Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--no-log]
+Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--no-log]
   resume <run-id>  re-attach to a run this lane WITNESSED (rc-5 stdout / journal extra.run_id);
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
                    skips shape gate / yml check / dispatch / lock / adoption, goes straight to watch+verdict
+  --test-threads N libtest --test-threads for the carrier Run tests step (#1936 Stage 1 mitigation);
+                   probed against the carrier yml; requested-but-undeclared is a LOUD rc 4
 Exit: 0 GREEN / 2 usage-or-shape-fork-lane / 3 RED / 4 dispatch-or-api-or-lock / 5 in-flight-timeout / 6 CANCELLED-superseded (P4) / 7 carrier-head-unresolvable / 8 AMBIGUOUS-same-ref-witness-unverifiable (fail-closed, dispatch refused, #115B)
 EOS
   exit 2
@@ -293,6 +301,24 @@ YEOF
           ;;
       esac
       ;;
+      yml_no_test_threads)
+      # factory #33: declares no_cancel but NOT test_threads -- the contract-fail
+      # fixture. A --test-threads request against THIS must die rc 4 with NO
+      # dispatch (a silent drop would run the gate without the mitigation).
+      cat <<'YEOF'
+name: PR-lane gates
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        type: string
+      no_cancel:
+        type: boolean
+concurrency:
+  group: prchecks-live
+  cancel-in-progress: \${{ !inputs.no_cancel }}
+YEOF
+      ;;
       *)
       cat <<'YEOF'
 name: PR-lane gates
@@ -303,6 +329,10 @@ on:
         type: string
       no_cancel:
         type: boolean
+      test_threads:
+        required: false
+        default: ""
+        type: string
 concurrency:
   group: prchecks-live
   cancel-in-progress: \${{ !inputs.no_cancel }}
@@ -913,6 +943,55 @@ do_selftest() {
   else t_bad "no_cancel race guard (rc=$ncl_rc tries=$ncl_tries hits=$ncl_hits out=$ncl_out)"; fi
   unset GHDISPATCH_LOG
 
+  # --test-threads N passthrough (factory #33, #1936 Stage 1 hang mitigation).
+  # The input is CALLER-REQUESTED, so the yml probe GATES it: declared -> the
+  # flag rides the dispatch; undeclared -> LOUD rc 4 with NO dispatch. The
+  # absence control proves the flag is not simply always sent.
+  TT_LOG="$D/gh-dispatch.log"
+  export GHDISPATCH_LOG="$TT_LOG"
+  tt_leg() { # $1=shim scenario, rest = tool argv -> rc in tt_rc, log in tt_hits, out in tt_out
+    : > "$TT_LOG"
+    mk_shim "$D/gh" "$1"; shift
+    tt_out="$(OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+      OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+      OC_TOOLS_NOLOG=1 "$SELF" "$@" 2>&1)" && tt_rc=0 || tt_rc=$?
+    tt_hits="$(cat "$TT_LOG" 2>/dev/null)"
+  }
+  # FAIL labels stay SINGLE-LINE and carry a stable per-leg token shared by t_ok
+  # and t_bad. A multi-line t_bad blob cannot be matched by the line-based
+  # mutation guard: measured on this change's first guard run, both aimed legs
+  # genuinely reddened (84/86) yet the guard reported them uncaught, because the
+  # label interpolated a multi-line $tt_out and the token and the FAIL marker
+  # landed on different lines of the SAME label.
+  tt_brief() { printf '%s' "$1" | tr '\n\t' '  ' | cut -c1-160; }
+  # (a) declared input + --test-threads 2 -> the flag rides the dispatch
+  tt_leg green "$SHA" --test-threads 2
+  if [ "$tt_rc" -eq 0 ] && case "$tt_hits" in *"test_threads=2"*) true ;; *) false ;; esac; then
+    t_ok "test_threads/dispatched: --test-threads 2 vs a yml declaring the input -> dispatch carries -f test_threads=2"
+  else t_bad "test_threads/dispatched: rc=$tt_rc hits=$(tt_brief "$tt_hits") out=$(tt_brief "$tt_out")"; fi
+  # (b) ABSENCE CONTROL: no --test-threads -> the log carries NO test_threads
+  tt_leg green "$SHA"
+  if [ "$tt_rc" -eq 0 ] && case "$tt_hits" in *test_threads*) false ;; *) true ;; esac; then
+    t_ok "test_threads/absent: no --test-threads -> dispatch carries NO test_threads (absence control)"
+  else t_bad "test_threads/absent: rc=$tt_rc hits=$(tt_brief "$tt_hits")"; fi
+  # (c) CONTRACT FAIL: yml declares NO test_threads -> rc 4, NO dispatch, loud
+  tt_leg yml_no_test_threads "$SHA" --test-threads 2
+  tt_dispatched=0
+  case "$tt_hits" in *"workflow run"*) tt_dispatched=1 ;; esac
+  if [ "$tt_rc" -eq 4 ] && [ "$tt_dispatched" -eq 0 ] \
+     && case "$tt_out" in *"declares no 'test_threads' input"*) true ;; *) false ;; esac; then
+    t_ok "test_threads/contract: yml WITHOUT the input -> rc 4, NO dispatch, stderr names the contract"
+  else t_bad "test_threads/contract: rc=$tt_rc dispatched=$tt_dispatched hits=$(tt_brief "$tt_hits") out=$(tt_brief "$tt_out")"; fi
+  # (d) SHAPE: a non-integer/empty value is a usage error (rc 2), never a pass
+  tt_shape_ok=1; tt_shape_rc=-1
+  for bad in abc -1 ""; do
+    OC_TOOLS_NOLOG=1 "$SELF" "$SHA" --test-threads "$bad" >/dev/null 2>&1 && tt_shape_rc=0 || tt_shape_rc=$?
+    [ "$tt_shape_rc" -eq 2 ] || tt_shape_ok=0
+  done
+  [ "$tt_shape_ok" -eq 1 ] && t_ok "test_threads/shape: non-integer/empty --test-threads -> rc 2 usage" \
+    || t_bad "test_threads/shape: last rc=$tt_shape_rc"
+  unset GHDISPATCH_LOG
+
   # ==========================================================================
   # #727: cgroup-safe detach contract (legs 21a-21h)
   #   opencrabs-ops.service runs KillMode=control-group, so a DIRECT
@@ -1127,10 +1206,12 @@ FDV
 }
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   cat <<'EOH'
-Usage: oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--no-log]
+Usage: oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--no-log]
   resume <run-id>  re-attach to a witnessed run (no dispatch, no adoption) — #74 H2
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
   --fast           fast gate (fmt + clippy only, skip tests on carrier)
+  --test-threads N libtest --test-threads for the carrier Run tests step (empty = libtest default);
+                   the #1936 Stage 1 mitigation. Fail-loud rc 4 if the carrier yml does not declare it.
 Exit: 0 GREEN / 2 usage-or-shape-fork-lane / 3 RED / 4 dispatch-or-api-or-lock / 5 in-flight-timeout / 6 CANCELLED-superseded (P4) / 7 carrier-head-unresolvable / 8 AMBIGUOUS-same-ref-witness-unverifiable (fail-closed, dispatch refused, #115B)
 EOH
   exit 0
@@ -1144,6 +1225,7 @@ FAULT_PR=""
 RESUME_MODE=0
 WAIT_SUBCOMMAND=0
 FAST_MODE=0
+TEST_THREADS=""
 # Immutable-input flag (owner GO 2026-09-17 22:59Z, incident run 35279942039):
 # a full 40-hex sha as the INPUT ref is an immutable cutover/gate ref — a
 # re-dispatch on it must NOT SIGTERM an in-flight run on the same sha, so the
@@ -1161,6 +1243,7 @@ while [ $# -gt 0 ]; do
     --carrier) shift; CARRIER="${1:-}"; [ -n "$CARRIER" ] || usage "--carrier needs a value" ;;
     --fault-scope) shift; FAULT_PR="${1:-}"; [ -n "$FAULT_PR" ] || usage "--fault-scope needs a PR number" ;;   # E5 (v0.4.78)
     --fast)    FAST_MODE=1 ;;
+    --test-threads) shift; TEST_THREADS="${1:-}"; case "$TEST_THREADS" in ''|*[!0-9]*) usage "--test-threads needs a non-negative integer (got '$TEST_THREADS')" ;; esac ;;
     --notify)  usage "--notify retired; run with background: true and chain 'cmd && tools/lib/oc-notify.sh <uuid> <msg>'" ;;
     --timeout) usage "--timeout retired; use --wait N for bounded watch or run with background: true" ;;
     --label)   usage "--label retired; it never reached the dispatch and was silently dropped (#741)" ;;
@@ -1400,6 +1483,9 @@ oc_log_extra "yml_check" "ok"
 YML_HAS_NO_CANCEL=0
 case "$YML_RAW" in *no_cancel*) YML_HAS_NO_CANCEL=1 ;; esac
 oc_log_extra "yml_no_cancel_input" "$YML_HAS_NO_CANCEL"
+YML_HAS_TEST_THREADS=0
+case "$YML_RAW" in *test_threads*) YML_HAS_TEST_THREADS=1 ;; esac
+oc_log_extra "yml_test_threads_input" "$YML_HAS_TEST_THREADS"
 
 # ---------- step 3: dispatch + adoption under the dispatch lock ---------------
 # The lock serializes dispatch->adoption across concurrent editor lanes: with
@@ -1489,6 +1575,22 @@ if [ "$REF_IS_SHA" -eq 1 ] && [ "$YML_HAS_NO_CANCEL" -eq 1 ]; then
   DISPATCH_ARGS+=(-f "no_cancel=true")
   NO_CANCEL_SENT=1
 fi
+# --test-threads N (factory #33, #1936 Stage 1 mitigation): a CALLER-REQUESTED
+# input, so the yml probe GATES it and a request the yml cannot honour is a
+# LOUD rc 4 — a silent drop would run the gate WITHOUT the mitigation while the
+# caller believed it applied. Placement is after the probe, lock held.
+TEST_THREADS_SENT=0
+if [ -n "$TEST_THREADS" ]; then
+  if [ "$YML_HAS_TEST_THREADS" -eq 1 ]; then
+    DISPATCH_ARGS+=(-f "test_threads=$TEST_THREADS")
+    TEST_THREADS_SENT=1
+  else
+    echo "$PROG: --test-threads $TEST_THREADS requested, but the carrier yml declares no 'test_threads' input (repo=$REPO carrier=$CARRIER) — refusing to dispatch WITHOUT the mitigation you asked for (the yml is the contract; a tool flag is not a workflow input)" >&2
+    oc_log_extra "test_threads" "requested-but-undeclared"
+    flock -u 8
+    exit 4
+  fi
+fi
 # stderr captured (stdout to /dev/null): the 422 body names the offending input,
 # which is the diagnostic a lane needs. `set -e` survival via explicit rc.
 set +e
@@ -1504,6 +1606,10 @@ if [ "$DISPATCH_RC" -ne 0 ] && [ "$NO_CANCEL_SENT" -eq 1 ]; then
   oc_log_extra "no_cancel_retry" "1"
   DISPATCH_ARGS=(-f "ref=$SHA")
   [ "$FAST_MODE" -eq 1 ] && DISPATCH_ARGS+=(-f "fast=true")
+  # factory #33: the retry drops only the no_cancel OPTIMISATION. --test-threads
+  # is caller-requested, so it is re-added; if the retry then 422s on it the
+  # dispatch fails LOUD (rc 4) rather than silently losing the mitigation.
+  [ -n "$TEST_THREADS" ] && DISPATCH_ARGS+=(-f "test_threads=$TEST_THREADS")
   NO_CANCEL_SENT=0
   set +e
   DISPATCH_ERR="$("$GH_BIN" workflow run pr-checks.yml --repo "$REPO" --ref "$CARRIER" "${DISPATCH_ARGS[@]}" 2>&1 >/dev/null)"
@@ -1518,6 +1624,8 @@ if [ "$DISPATCH_RC" -ne 0 ]; then
 fi
 oc_log_extra "dispatch" "ok"
 oc_log_extra "no_cancel_sent" "$NO_CANCEL_SENT"
+oc_log_extra "test_threads_sent" "$TEST_THREADS_SENT"
+[ -n "$TEST_THREADS" ] && oc_log_extra "test_threads" "$TEST_THREADS"
 oc_log_extra "dispatch_ts" "$DISPATCH_TS"
 
 RUN_ID=""
