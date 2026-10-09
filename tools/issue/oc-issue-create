@@ -148,9 +148,8 @@ done
 # override and WINS: a caller legitimately naming a third repo is not a mistake.
 case "$TRACKER" in
   factory|dev-factory|devfactory) TRACKER="factory"; REPO_SLUG="$FACTORY_REPO" ;;
-  binary|upstream)                TRACKER="binary";  REPO_SLUG="$UPSTREAM_SLUG" ;;
-  fork)                           TRACKER="fork";    REPO_SLUG="$FORK_REPO" ;;
-  *) echo "oc-issue-create: --tracker must be 'factory', 'binary' or 'fork' (got '$TRACKER')" >&2; usage ;;
+  binary|upstream|fork)           TRACKER="binary";  REPO_SLUG="$FORK_REPO" ;;
+  *) echo "oc-issue-create: --tracker must be 'factory' or 'binary' (got '$TRACKER')" >&2; usage ;;
 esac
 if [ -n "$REPO_OVERRIDE" ]; then REPO_SLUG="$REPO_OVERRIDE"; TRACKER="override"; fi
 
@@ -351,19 +350,19 @@ JSN
   hasnt "…and NOT to the fork"               "$T/o11" 'target=leshchenko1979/opencrabs$'
   bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --dry-run >"$T/o12" 2>&1
   chk "--tracker binary passes" 0 $?
-  has "…and targets upstream"                "$T/o12" 'tracker=binary target=opencrabs/opencrabs'
+  has "…and targets the FORK"                "$T/o12" 'tracker=binary target=leshchenko1979/opencrabs$'
   bash "$SELF" --title "feat(tools): routed" --body x --binary --dry-run >"$T/o13" 2>&1
-  has "…the --binary alias agrees"           "$T/o13" 'tracker=binary target=opencrabs/opencrabs'
+  has "…the --binary alias agrees"           "$T/o13" 'tracker=binary target=leshchenko1979/opencrabs$'
   # --tracker fork is the LEGACY alias of the binary stream (owner order
   # 2026-10-09): it must be REACHABLE and resolve to the fork slug, exactly as
   # `binary` does. The `$` anchor is DISCRIMINATING -- the factory slug has the
   # fork slug as a prefix.
   bash "$SELF" --title "feat(tools): routed" --body x --tracker fork --dry-run >"$T/o16" 2>&1
   chk "--tracker fork passes" 0 $?
-  has "…and targets the fork"                "$T/o16" 'tracker=fork target=leshchenko1979/opencrabs$'
+  has "…and the legacy alias resolves to binary" "$T/o16" 'tracker=binary target=leshchenko1979/opencrabs$'
   bash "$SELF" --title "feat(tools): routed" --body x --tracker nonsense --dry-run >"$T/o14" 2>&1
   chk "an unknown --tracker is a usage error" 2 $?
-  has "…and the error names all three streams" "$T/o14" "must be 'factory', 'binary' or 'fork'"
+  has "…and the error names both streams"    "$T/o14" "must be 'factory' or 'binary'"
   bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --repo acme/widgets --dry-run >"$T/o15" 2>&1
   chk "--repo + --tracker still pass" 0 $?
   has "…and --repo WINS over --tracker"      "$T/o15" 'target=acme/widgets'

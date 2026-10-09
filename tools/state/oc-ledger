@@ -195,11 +195,13 @@ SELFTEST=0
 # oc-issue-dispatch now treats an open hold as claimed.
 KINDS=" ruling idea idea-verdict design-feedback design-locked review-battery incident lesson note ack roster-enroll roster-retire claim hold confirm close done unclaim reject swap-result notify-fanout shipchain proposal "
 
-# Two-stream issue routing (SKILL.md v0.4.284, owner order 2026-10-03): the fleet
-# files issues on THREE trackers, so an issue number is probed against all of
-# them. BINARY, FACTORY, FORK. A bare `#N` is still fork space (that is the space
-# the ledger's own rows were written in before the split).
-HOME_REPOS=( opencrabs/opencrabs leshchenko1979/opencrabs-dev-factory leshchenko1979/opencrabs )
+# Two-stream issue routing (SKILL.md; owner order 2026-10-09 -- fork-first binary
+# issues): the fleet files issues on TWO live trackers, so an issue number is
+# probed against all home repos. BINARY = the FORK (leshchenko1979/opencrabs);
+# FACTORY = leshchenko1979/opencrabs-dev-factory; UPSTREAM (opencrabs/opencrabs)
+# takes no new issues but is probed for its legacy number space. A bare `#N` is
+# still fork space (that is the space the ledger's own rows were written in).
+HOME_REPOS=( leshchenko1979/opencrabs leshchenko1979/opencrabs-dev-factory opencrabs/opencrabs )
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 die() { echo "oc-ledger: $2" >&2; exit "$1"; }
@@ -4403,9 +4405,9 @@ if not open_claims:
 # and OPEN ON NONE; if ANY home repo has it open it stays OPEN, so the ambiguity
 # can only resolve toward "still open" -- the direction that never writes a
 # false unclaim.
-HOME_REPOS = ("opencrabs/opencrabs",
+HOME_REPOS = ("leshchenko1979/opencrabs",
               "leshchenko1979/opencrabs-dev-factory",
-              "leshchenko1979/opencrabs")
+              "opencrabs/opencrabs")
 
 def probe(state):
     out = {}

@@ -23,19 +23,21 @@
 # Usage: oc-issue-scope <N> [--json] [--repo <slug>] [--repo-path <dir>]
 #        oc-issue-scope --open [--json] [--repo <slug>] [--repo-path <dir>]
 #        oc-issue-scope --selftest
+#        --repo defaults to the FORK leshchenko1979/opencrabs (the BINARY tracker
+#        since 2026-10-09); pass --repo leshchenko1979/opencrabs-dev-factory for
+#        the factory population.
 # Exit:  0 classified (IN or OUT) / 1 UNPINNED (no resolvable surface claim)
 #        2 usage / 3 gh or git failed
 # Emits: bucket (IN|OUT|UNPINNED -- the surface FACT) AND priority (1|2|3 -- the
 #        ORDERING: 1 fix the factory, 2 fix the binary, 3 new features).
 #
 # TRACKER (two streams, SKILL.md; owner order 2026-10-03, SUPERSEDED by the owner
-# order 2026-10-09 -- fork-first binary issues): the DEFAULT repo is the FACTORY
-# tracker leshchenko1979/opencrabs-dev-factory, whose open-issue population is the
-# factory's own work units -- exactly what the factory-scoped patrol classifies. A
-# BINARY issue is classified by passing --repo leshchenko1979/opencrabs (the single
-# binary tracker since 2026-10-09). UPSTREAM opencrabs/opencrabs is PRs-only and
-# receives no issues; its legacy corpus is still classifiable by an explicit
-# --repo opencrabs/opencrabs.
+# order 2026-10-09 -- fork-first binary issues): the DEFAULT repo is the FORK
+# leshchenko1979/opencrabs -- the single BINARY tracker since 2026-10-09 and the
+# population the patrol triages. The FACTORY tracker
+# (leshchenko1979/opencrabs-dev-factory) is classified by passing --repo. UPSTREAM
+# opencrabs/opencrabs is PRs-only and receives no issues; its legacy corpus is
+# still classifiable by an explicit --repo opencrabs/opencrabs.
 #
 # THREE RULES, each measured before it was encoded:
 #
@@ -112,12 +114,13 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-scope" "$@"; else oc_log_finish() { :; }; oc_log_extra() { :; }; fi
 
 FACTORY_REPO="leshchenko1979/opencrabs-dev-factory"
+FORK_REPO="leshchenko1979/opencrabs"     # the BINARY tracker since 2026-10-09
 SRC_REPO_PATH="${OC_SRC_REPO:-/root/opencrabs}"
 SKILL_REPO_PATH="$(cd "$OC_TOOLS_DIR/.." && pwd)"
 
 usage() { sed -n '/^# Usage:/,/^# Exit:/p' "$0" | sed 's/^# \{0,1\}//'; }
 
-N=""; MODE="one"; JSON=0; REPO="$FACTORY_REPO"; RPATH=""
+N=""; MODE="one"; JSON=0; REPO="$FORK_REPO"; RPATH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --open) MODE="open"; shift ;;

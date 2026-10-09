@@ -137,8 +137,8 @@ DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
 # open legacy corpus, so it stays selectable.
 TRACKER_SLUGS = {
     "factory": "leshchenko1979/opencrabs-dev-factory",
-    "binary":  "opencrabs/opencrabs",
-    "fork":    "leshchenko1979/opencrabs",
+    "binary":  "leshchenko1979/opencrabs",
+    "fork":    "leshchenko1979/opencrabs",   # legacy alias of "binary" (owner order 2026-10-09)
 }
 DEFAULT_TRACKER = os.environ.get("OC_ISSUE_DISPATCH_TRACKER", "factory")
 #: The tracker THIS RUN dispatches from. Set from --tracker in main(); every
