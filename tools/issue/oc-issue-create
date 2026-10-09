@@ -19,16 +19,16 @@
 # Exit:  0 created / 2 usage / 3 REFUSED by the gate (nothing filed)
 #        4 gh failed / 5 no repo at --repo-path
 #
-# TRACKER (three streams, SKILL.md; owner order 2026-10-03, RE-SCOPED 2026-10-08
-# -- q69 option 0): --tracker factory (DEFAULT) targets
-# leshchenko1979/opencrabs-dev-factory; --tracker binary targets
-# opencrabs/opencrabs; --tracker fork targets leshchenko1979/opencrabs, the
-# FORK-ONLY defect tracker (a defect whose surface exists ONLY in our fork, so
-# neither other tracker can act on it). The fork is NOT a general issues home and
-# its historical portfolio stays read-only. --repo is a raw override that wins
-# over --tracker. The resolved target is PRINTED on every run, so the default is
-# DECLARED, never silent -- a silent default is what let this tool keep filing on
-# a tracker after the law moved.
+# TRACKER (two streams, SKILL.md; owner order 2026-10-03, SUPERSEDED by the owner
+# order 2026-10-09 -- fork-first binary issues): --tracker factory (DEFAULT)
+# targets leshchenko1979/opencrabs-dev-factory; --tracker binary targets the FORK
+# leshchenko1979/opencrabs, the single BINARY tracker since 2026-10-09 (the legacy
+# value `fork` is accepted as an ALIAS of `binary`). UPSTREAM opencrabs/opencrabs
+# is PRs-only and receives no issues; it stays reachable only through an explicit
+# --repo override. --repo is a raw override that wins over --tracker. The resolved
+# target is PRINTED on every run, so the default is DECLARED, never silent -- a
+# silent default is what let this tool keep filing on a tracker after the law
+# moved.
 #
 # GATE: a title matching ^(fix|bug)[(:] with NO --parent is REFUSED. The refusal
 # prints the rule + law citation, mechanically-derived candidate parents, and
@@ -49,9 +49,9 @@ if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-create" "$@"
 trap 'oc_log_finish $?' EXIT
 
 SELF="$0"
-# Three trackers, two live streams (SKILL.md v0.4.284, owner order 2026-10-03).
-# FACTORY is the default target for NEW issues; the fork is the FORK-ONLY defect
-# tracker (it also stays the CI host and the PR target).
+# Two streams (SKILL.md; owner order 2026-10-09). FACTORY is the default target
+# for NEW issues; the FORK leshchenko1979/opencrabs is the single BINARY tracker
+# (it also stays the CI host and the PR target). UPSTREAM receives no issues.
 FACTORY_REPO="${OC_ISSUE_CREATE_FACTORY:-leshchenko1979/opencrabs-dev-factory}"
 FORK_REPO="leshchenko1979/opencrabs"
 REPO_PATH="${OC_ISSUE_CREATE_REPO:-$HOME/opencrabs}"
@@ -83,11 +83,11 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
                       surface is upstream-inherited.
   --propose-parent    compute and print candidate parents only; file nothing
   --tracker <which>   target tracker: `factory` (default — the dev-factory repo,
-                      leshchenko1979/opencrabs-dev-factory), `binary` (upstream
-                      opencrabs/opencrabs), or `fork` (leshchenko1979/opencrabs —
-                      the FORK-ONLY defect tracker: a defect whose surface exists
-                      ONLY in our fork; not a general issues home).
-                      Aliases: --factory / --binary.
+                      leshchenko1979/opencrabs-dev-factory) or `binary` (the FORK
+                      leshchenko1979/opencrabs, the single binary tracker since
+                      2026-10-09). UPSTREAM opencrabs/opencrabs is PRs-only and
+                      receives no issues. `fork` is accepted as an alias of
+                      `binary`. Aliases: --factory / --binary.
   --repo <slug>       raw override of the target repo; WINS over --tracker
                       (default: whichever repo --tracker resolves to)
   --repo-path <dir>   override the git checkout used for blame (default ~/opencrabs)
@@ -139,13 +139,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ---- tracker -> target repo (three streams; re-scoped 2026-10-08) -----------
+# ---- tracker -> target repo (two streams; owner order 2026-10-09) -----------
 # A FACTORY issue (this tools/** tree, CI, release automation, process) belongs
 # on the dev-factory tracker; a BINARY issue (runtime behaviour, channels,
-# providers, TUI, memory, the src/brain/tools registry) belongs upstream; a
-# FORK-ONLY defect (surface exists ONLY in our fork) belongs on the fork. The
-# fork is not a general issues home. --repo is a raw override and WINS: a caller
-# legitimately naming a third repo is not a mistake.
+# providers, TUI, memory, the src/brain/tools registry) belongs on the FORK
+# leshchenko1979/opencrabs, the single binary tracker since 2026-10-09. UPSTREAM
+# opencrabs/opencrabs is PRs-only and receives no issues. --repo is a raw
+# override and WINS: a caller legitimately naming a third repo is not a mistake.
 case "$TRACKER" in
   factory|dev-factory|devfactory) TRACKER="factory"; REPO_SLUG="$FACTORY_REPO" ;;
   binary|upstream)                TRACKER="binary";  REPO_SLUG="$UPSTREAM_SLUG" ;;
@@ -340,12 +340,11 @@ JSN
   has "…and the parent still reaches gh"   "$T/o10" 'parent.*10'
   has "…and the root is still recorded"    "$T/o10" 'root: 1662'
 
-  # --- three-stream tracker routing (SKILL.md; re-scoped 2026-10-08) ----------
-  # The default MUST be the factory tracker: the fork is not a general issues
-  # home, and a SILENT fork default is exactly the defect this fixes. The
-  # `hasnt` leg is DISCRIMINATING -- the factory slug has the fork slug as a
-  # prefix, so only the `$` anchor separates "defaulted to the factory" from
-  # "defaulted to the fork".
+  # --- two-stream tracker routing (SKILL.md; owner order 2026-10-09) ----------
+  # The default MUST be the factory tracker: a SILENT fork default is exactly the
+  # defect this fixes. The `hasnt` leg is DISCRIMINATING -- the factory slug has
+  # the fork slug as a prefix, so only the `$` anchor separates "defaulted to the
+  # factory" from "defaulted to the fork".
   bash "$SELF" --title "feat(tools): routed" --body x --dry-run >"$T/o11" 2>&1
   chk "default-tracker create passes" 0 $?
   has "…and defaults to the FACTORY tracker" "$T/o11" 'tracker=factory target=leshchenko1979/opencrabs-dev-factory'
@@ -355,9 +354,10 @@ JSN
   has "…and targets upstream"                "$T/o12" 'tracker=binary target=opencrabs/opencrabs'
   bash "$SELF" --title "feat(tools): routed" --body x --binary --dry-run >"$T/o13" 2>&1
   has "…the --binary alias agrees"           "$T/o13" 'tracker=binary target=opencrabs/opencrabs'
-  # --tracker fork is the FORK-ONLY defect stream (owner re-scope 2026-10-08): it
-  # must be REACHABLE and resolve to the fork slug. The `$` anchor is
-  # DISCRIMINATING -- the factory slug has the fork slug as a prefix.
+  # --tracker fork is the LEGACY alias of the binary stream (owner order
+  # 2026-10-09): it must be REACHABLE and resolve to the fork slug, exactly as
+  # `binary` does. The `$` anchor is DISCRIMINATING -- the factory slug has the
+  # fork slug as a prefix.
   bash "$SELF" --title "feat(tools): routed" --body x --tracker fork --dry-run >"$T/o16" 2>&1
   chk "--tracker fork passes" 0 $?
   has "…and targets the fork"                "$T/o16" 'tracker=fork target=leshchenko1979/opencrabs$'
@@ -546,7 +546,7 @@ fi
 
 # ---- create ------------------------------------------------------------------
 # Declare the resolved target on every run: a SILENT tracker default is what let
-# this tool keep filing on a read-only tracker after the law moved.
+# this tool keep filing on a stale tracker after the law moved.
 echo "oc-issue-create: tracker=$TRACKER target=$REPO_SLUG"
 CMD=("$GH_BIN" "issue" "create" "-R" "$REPO_SLUG")
 [ -n "$PARENT" ] && CMD+=("--parent" "$PARENT")

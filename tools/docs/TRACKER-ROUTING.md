@@ -1,25 +1,25 @@
 # TRACKER ROUTING — which GitHub repo each `tools/**` site targets
 
-**Owns:** the per-site tracker decision for the three-stream issue-routing law
-(`SKILL.md` §Hard rules — ISSUE ROUTING; owner order 2026-10-03 21:17Z,
-**re-scoped 2026-10-08 14:59Z**, `q69` → option 0). Records WHAT each tool
-targets and WHY, so a later reader does not have to re-derive it.
+**Owns:** the per-site tracker decision for the **two-stream** issue-routing law
+(`SKILL.md` §Hard rules — ISSUE ROUTING; owner order **2026-10-09**, superseding the
+2026-10-03 21:17Z three-stream law and its 2026-10-08 14:59Z fork-only re-scope).
+Records WHAT each tool targets and WHY, so a later reader does not have to re-derive it.
 
 **Law (verbatim, SKILL.md §Hard rules — ISSUE ROUTING):**
 
 | stream | tracker | what belongs there |
 |---|---|---|
-| **BINARY** | `opencrabs/opencrabs` | runtime behaviour, channels, providers, TUI, memory, tools |
+| **BINARY** | `leshchenko1979/opencrabs` (the FORK) | runtime behaviour, channels, providers, TUI, memory, tools — **EVERY** opencrabs binary issue |
 | **FACTORY** | `leshchenko1979/opencrabs-dev-factory` | tooling, CI, release automation, process |
-| **FORK** | `leshchenko1979/opencrabs` | **FORK-ONLY defects** — a surface that exists ONLY in our fork, so neither tracker above can act on it. The fork's historical portfolio stays read-only and the fork is **not** a general issues home; PRs still land here. |
+| **UPSTREAM** | `opencrabs/opencrabs` | **PULL REQUESTS ONLY** — never an issue home (owner order 2026-10-09) |
 
-**Discriminator for the FORK stream** (`fleet-directives.md` §Fork-only issue
-stream): the fork-only boundary register ([#761](https://github.com/leshchenko1979/opencrabs/issues/761)
-— `harvest-registry.json` → `manual_records`, the `not-upstreamable` rows) and
-the census `FORK_ONLY_SURFACE` predicate (`tools/harvest/oc-harvest-census`).
-A defect is fork-only when its **surface** exists only in the fork; a defect
-whose surface is upstream's is a BINARY issue regardless of where it is
-observed. **EVERY OTHER new issue stays two-stream.**
+**The discriminator is RETIRED.** The 2026-10-08 fork-only stream and its
+discriminator (the boundary register
+[#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json`
+→ `manual_records`, the `not-upstreamable` rows — and the census `FORK_ONLY_SURFACE`
+predicate, `tools/harvest/oc-harvest-census`) no longer route anything: with EVERY
+binary issue on the fork there is nothing left to discriminate. The register survives,
+if at all, as an informational record.
 
 **RENAME (2026-10-04):** upstream `adolfousier/opencrabs` was renamed to
 **`opencrabs/opencrabs`**. The NEW slug is canonical in every site below; the
@@ -27,99 +27,83 @@ LEGACY slug still resolves (GitHub redirects it) and is retained **in the
 claim-ownership SET only** — so an `Issue-Ref` written before the rename keeps
 anchoring — but it is **NOT** a second tracker and NOT a second number space.
 
-`Closes #N` is now **VALID same-repo**, **FORBIDDEN across trackers**.
-Claiming = assignment on the tracker, **ATTEMPTED AND VERIFIED** (owner order
-2026-10-03; the binary-tracker leg became verifiable once TRIAGE was granted —
-see below). A denied assignment is **recorded, never silently skipped**; the
-ledger `claim` row + `Issue-Ref` trailer then carry the claim. A mandatory
+`Closes #N` is **VALID same-repo** (a fork binary issue, closed by the fork commit that
+fixes it), **FORBIDDEN across trackers** (a fork or factory issue has no upstream number
+space; the upstream PR body ends `Original issue: <full URL>`). Claiming = assignment on
+the tracker, **ATTEMPTED AND VERIFIED**. A denied assignment is **recorded, never silently
+skipped**; the ledger `claim` row + `Issue-Ref` trailer then carry the claim. A mandatory
 duplicate sweep (open+closed, issues+PRs) runs BEFORE filing.
 
-## The assignment leg — VERIFIED, with a recorded denial path
+## The assignment leg — VERIFIED on both live trackers
 
 **Owner order 2026-10-03:** claiming is the tracker ASSIGNMENT (the public
 signal) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row.
 
-- **BINARY tracker (`opencrabs/opencrabs`):** our account now holds **TRIAGE**,
-  so the assignment WRITE succeeds — `gh issue edit <N> --add-assignee @me` →
-  rc 0, read back `['leshchenko1979']` (verified 2026-10-04; HQ ledger n=14388,
-  q57 granted). Permissions read live:
-  `{pull:true, triage:true, push:false, maintain:false, admin:false}`.
-- **FACTORY tracker:** we hold `admin`; the assignment has always worked.
-- **Where the platform STILL denies the assignment** (a repo where we hold no
-  write-capable role), **record the denial** and let the ledger `claim` row +
-  `Issue-Ref` trailer **BE** the claim. A **silent skip is a violation** — it is
-  indistinguishable from a permission limit.
+- **BINARY tracker — the FORK `leshchenko1979/opencrabs`:** we hold `admin`, so the
+  assignment WRITE succeeds (`gh issue edit <N> --add-assignee @me` → rc 0).
+- **FACTORY tracker `leshchenko1979/opencrabs-dev-factory`:** we hold `admin`; the
+  assignment has always worked.
+- **The upstream TRIAGE grant (2026-10-04) is now HISTORICAL** — `opencrabs/opencrabs`
+  receives PRs only, so no issue claim happens there.
+- **Where a platform STILL denies the assignment**, **record the denial** and let the
+  ledger `claim` row + `Issue-Ref` trailer **BE** the claim. A **silent skip is a
+  violation** — it is indistinguishable from a permission limit.
 
 In the BINARY row, **`tools` means `src/brain/tools/**`** — the runtime tool
 registry compiled into the binary — **not** the CLI `tools/**` directory this
 document is about. `oc-issue-scope` already encodes exactly this split:
 `tools/**` = IN (factory), `src/brain/tools/**` = OUT (binary).
 
-**Topology, verified 2026-10-04:**
+**Topology, verified live:**
 
 | slug | role | evidence |
 |---|---|---|
-| `opencrabs/opencrabs` | upstream — BINARY tracker + PR target | PUBLIC, `hasIssuesEnabled: true`; **TRIAGE** held; renamed from `adolfousier/opencrabs` |
+| `leshchenko1979/opencrabs` | **BINARY tracker** + CI host + PR target | PUBLIC, issues enabled; we hold `admin` |
+| `leshchenko1979/opencrabs-dev-factory` | FACTORY tracker | PUBLIC, issues enabled; we hold `admin` |
+| `opencrabs/opencrabs` | **PR target ONLY** — never an issue home | PUBLIC, `hasIssuesEnabled: true` (legacy issues readable); renamed from `adolfousier/opencrabs` |
 | `adolfousier/opencrabs` | **legacy alias** of the row above (GitHub redirects it) | retained in the claim-ownership set only; not a separate number space |
-| `leshchenko1979/opencrabs-dev-factory` | FACTORY tracker | PUBLIC, `hasIssuesEnabled: true`; we hold `admin` |
-| `leshchenko1979/opencrabs` | historical fork — **FORK-ONLY defect tracker** (not a general issues home) | PUBLIC, issues still enabled; the CI host and PR target |
 
-The fork's last 40 issues being **factory tooling** is the routing evidence:
-that traffic belongs on the factory tracker now. The fork stays the **CI host
-and PR target** — `gh run list -R leshchenko1979/opencrabs` shows live
-`PR-lane gates` and `Auto-assign issues` runs on 2026-10-03 — and since the
-2026-10-08 re-scope it is ALSO the home for **fork-only defects**.
+**Why "PRs still land" upstream is separate from the issue streams:** the fork carries
+the opencrabs source (the PR-lane builds it); the HARVEST lane ports mature fork work
+upstream as PULL REQUESTS. A `Closes #N` in a **fork** PR closes a **fork** issue. The
+upstream PR body carries `Original issue: <fork issue URL>`, never `Closes #N`.
 
-**Why "PRs still land here" is separate from the issue streams:** the fork
-carries the opencrabs source (the PR-lane builds it), the factory repo carries
-`tools/**` and the skill. A `Closes #N` in a fork PR closes a fork issue, which
-now means a **fork-only defect** — any other fix PR names its issue with the
-tracker-qualified `Issue-Ref` trailer instead (below).
+## The `Issue-Ref` trailer under two trackers
 
-## The `Issue-Ref` trailer under three trackers
-
-`tools/lib/oc_claims.py` parsed a commit trailer's issue number against ONE
-fork slug, so a value naming another repository was skipped outright. With
-three live trackers, a lane working a binary issue writes
-`Issue-Ref: opencrabs/opencrabs#1901` (or the legacy `adolfousier/opencrabs#1901`),
-and the old one-slug predicate read **no issue** from it.
-
-**Decision:** the tracked set is a **HOME-SLUG SET** — every tracker the fleet
-files on, PLUS the binary tracker's legacy slug so pre-rename refs still anchor:
+`tools/lib/oc_claims.py` parses a commit trailer's issue number against a
+**HOME-SLUG SET** — every tracker the fleet files on, plus the legacy slugs so
+pre-rename refs still anchor:
 
 ```python
 HOME_REPO_SLUGS = (
-    "opencrabs/opencrabs",                  # BINARY (canonical)
-    "adolfousier/opencrabs",                # BINARY (legacy slug; redirects)
+    "leshchenko1979/opencrabs",             # BINARY (the fork — canonical since 2026-10-09)
     "leshchenko1979/opencrabs-dev-factory", # FACTORY
-    "leshchenko1979/opencrabs",             # FORK (historical, still resolves)
+    "opencrabs/opencrabs",                  # UPSTREAM (PR-side refs + legacy issue refs)
+    "adolfousier/opencrabs",                # UPSTREAM legacy slug (redirects)
 )
 ```
 
 A slug outside the set is **still refused** — that refusal is the #379
 protection, and it keeps its discriminating control (a non-tracker slug such
-as `acme/widgets#7`). Dropping the legacy slug would turn every pre-rename
-binary-tracker ref into a #379 refusal, so it stays.
+as `acme/widgets#7`).
 
-**Resolution ambiguity is the hazard, and it is real:** the three number
-spaces overlap, so a bare `#N` names an issue in whichever tracker happens to
-carry it. `sweep-closed-claims` must therefore **not** report a claim CLOSED
-on a single-repo hit: a token is CLOSED only when it is closed in **every**
-home repo where it exists **and open in none**. Anything else is OPEN. That
-keeps a real fix-PR/issue state from being read as a closure that did not
-happen, and the ambiguity can only ever resolve toward "still open".
+**Resolution ambiguity is the hazard, and it is real:** the number spaces overlap, so a
+bare `#N` names an issue in whichever tracker happens to carry it. `sweep-closed-claims`
+must therefore **not** report a claim CLOSED on a single-repo hit: a token is CLOSED only
+when it is closed in **every** home repo where it exists **and open in none**. Anything
+else is OPEN — the ambiguity can only ever resolve toward "still open".
 
-## Per-site decisions (the nine HQ-named sites)
+## Per-site decisions (the HQ-named sites)
 
 | # | site | refs found | decision | why |
 |---|---|---|---|---|
-| 1 | `tools/issue/oc-issue-create` | `:43` `FORK_REPO`; `:56` `UPSTREAM_SLUG`; usage; `--root upstream:` normaliser | **`--tracker binary\|factory\|fork`** (default factory); print the resolved target; `--root` strips BOTH binary slugs | the creation-time intake tool — the stream split IS its job; a silent default is what made it target the dead tracker; `fork` is admitted for FORK-ONLY defects |
-| 2 | `tools/issue/oc-issue-sweep` | `:48` `UPSTREAM`; usage; shim; assertions | **`--factory`**; search all three, open+closed | it IS the mandatory duplicate-sweep tool; a sweep that misses the factory tracker cannot satisfy the law |
-| 3 | `tools/issue/oc-issue-scope` | `FORK_REPO`; `-R "$REPO"` | **default → factory tracker** | body-surface classifier over a *population* of issues; the population is the factory's own work units |
-| 4 | `tools/issue/oc-issue-dispatch` | list/view/landed-filter/envelope/fixtures; `TRACKERS["binary"]` | **`--tracker binary\|factory\|fork`** (default factory) | the issue-reader; envelope URL and list/view slug must follow the tracker |
+| 1 | `tools/issue/oc-issue-create` | `:43` `FORK_REPO`; `:56` `UPSTREAM_SLUG`; usage; `--root upstream:` normaliser | **`--tracker binary\|factory`** (default factory); `binary` resolves to the FORK; legacy `fork` accepted as an alias of `binary`; print the resolved target; `--root` strips the upstream slugs | the creation-time intake tool — the stream split IS its job; `binary` now lands on the fork |
+| 2 | `tools/issue/oc-issue-sweep` | `:48` `UPSTREAM`; usage; shim; assertions | **`--factory`**; search fork + factory open+closed, plus upstream closed for uniqueness | it IS the mandatory duplicate-sweep tool; a sweep that misses a live tracker cannot satisfy the law |
+| 3 | `tools/issue/oc-issue-scope` | `FORK_REPO`; `-R "$REPO"` | **default → the FORK** | body-surface classifier over a *population* of issues; the binary population now lives on the fork |
+| 4 | `tools/issue/oc-issue-dispatch` | list/view/landed-filter/envelope/fixtures; `TRACKERS["binary"]` | **`--tracker binary\|factory`** (default factory); `binary` → fork | the issue-reader; envelope URL and list/view slug must follow the tracker |
 | 5 | `tools/state/oc-questions` | `FORK_REPO`; probe | **default → factory tracker** | files factory questions; the tracker is already framed as a factory parameter (`OC_QUESTIONS_TRACKER` env kept) |
-| 6 | `tools/lib/oc_claims.py` | `HOME_REPO_SLUGS`; `_is_foreign_ref`; `parse_issue_ref_value` | **home-slug SET** (4 entries incl. the binary legacy slug) | with three trackers the "our space" set is all of them; an upstream ref must anchor, a foreign slug must still be refused |
-| 7 | `tools/state/oc-ledger` | `HOME_REPOS`; confirm view; sweep probe; texts | **probe all three**; fail-safe closure; fix the stale name | closure resolution must see the tracker the claim was filed on |
+| 6 | `tools/lib/oc_claims.py` | `HOME_REPO_SLUGS`; `_is_foreign_ref`; `parse_issue_ref_value` | **home-slug SET** (fork + factory + upstream + legacy) | with two live trackers + a PR-only upstream, "our space" is the union; an upstream ref must anchor, a foreign slug must still be refused |
+| 7 | `tools/state/oc-ledger` | `HOME_REPOS`; confirm view; sweep probe; texts | **probe fork + factory (+ upstream for legacy)**; fail-safe closure | closure resolution must see the tracker the claim was filed on |
 | 8 | `tools/audit/oc-watcher-audit` | fixtures; fallbacks | **NO CHANGE** | those refs are **CI-run** refs, not issue-tracker refs: the fork still runs `PR-lane gates`; the two fallbacks fire only when a checkpoint names no repo |
 | 9 | `tools/state/tools.toml.example` | `opencrabs-skill` paths | **rename → `opencrabs-dev-factory`** | stale repo NAME after the rename; the file would point a new install at a dead path |
 
@@ -133,12 +117,8 @@ break the tool. It is untouched.
   control re-armed with a discriminating non-tracker slug;
 - `bash tools/tests/run.sh` (battery) — must exit 0 with FAIL 0;
 - `tools/docs/RC-CONTRACT.md` gains a routing stanza on each edited row;
-- the fork stream's own control is the register/predicate named above: a
-  non-fork-only defect filed with `--tracker fork` is a routing error, and the
-  `--tracker fork` arm's selftest legs pin that it resolves to
-  `leshchenko1979/opencrabs` and that the usage error names all three streams;
+- `oc-vendor-drift` reads `IN_SYNC` — a reworded routing comment inside a vendored tool
+  must move `vendor-manifest.json`'s `match`/`match_upstream` pair with it, or the drift
+  audit reads the rewording as drift;
 - the tracker permissions that gate the assignment leg are read live, never
-  assumed — `gh api repos/<slug> --jq .permissions`: BINARY
-  `{pull:true, triage:true, push:false, maintain:false, admin:false}`,
-  FACTORY `{admin:true, maintain:true, push:true, triage:true}` (verified
-  2026-10-04; mirrors HQ's `SKILL.md:418` commit `7bab7b61`).
+  assumed — `gh api repos/<slug> --jq .permissions`.

@@ -276,16 +276,16 @@ _REF_RE = re.compile(r"(?:#[0-9]+|issue[ \t=#]*[0-9]+)", re.IGNORECASE)
 _DIGITS_RE = re.compile(r"[0-9]+")
 
 #: The repos that OWN this box's issue space — every tracker the fleet files on
-#: (three-stream routing, SKILL.md; owner order 2026-10-03, re-scoped 2026-10-08). A reference
+#: (two-stream routing, SKILL.md; owner order 2026-10-03, superseded 2026-10-09). A reference
 #: qualified by a slug INSIDE this set is OUR space and anchors normally; a slug
 #: OUTSIDE it is foreign (third-party/upstream-other space) and must never fence
 #: an issue here (#379).
 #:
 #: Before v0.4.284 this was a SINGLE fork slug, so a reference qualified
 #: `adolfousier/opencrabs#N` read as foreign and was skipped. That was correct
-#: while the fork was the only tracker — and is WRONG now, because that slug IS
-#: the binary tracker, and a lane working a binary issue writes exactly that
-#: trailer. The set, not the slug, is the discriminator.
+#: while the fork was the only tracker — and is WRONG now, because refs written
+#: against the upstream slug (and its pre-rename legacy form) still live in the
+#: ledger and must keep anchoring. The set, not the slug, is the discriminator.
 #:
 #: 2026-10-04 — the upstream repo was RENAMED `adolfousier/opencrabs` ->
 #: `opencrabs/opencrabs`. The NEW slug is the canonical one lanes now write; the
@@ -293,10 +293,10 @@ _DIGITS_RE = re.compile(r"[0-9]+")
 #: before the rename must keep anchoring. Dropping the legacy slug would turn
 #: every pre-rename binary-tracker ref into a #379 foreign-ref refusal.
 HOME_REPO_SLUGS = (
-    "opencrabs/opencrabs",                   # BINARY tracker (upstream, canonical)
-    "adolfousier/opencrabs",                 # BINARY tracker (legacy slug; redirects)
+    "leshchenko1979/opencrabs",              # BINARY tracker (the fork; canonical since 2026-10-09)
+    "opencrabs/opencrabs",                   # UPSTREAM (PRs-only since 2026-10-09; legacy issue refs still anchor)
+    "adolfousier/opencrabs",                 # UPSTREAM (legacy slug; redirects)
     "leshchenko1979/opencrabs-dev-factory",  # FACTORY tracker
-    "leshchenko1979/opencrabs",              # FORK (fork-only defect tracker; PRs land here)
 )
 
 #: The FORK slug specifically. On UPSTREAM (`adolfousier/main`) a bare `#N`
@@ -327,8 +327,8 @@ def _is_foreign_ref(text, pos):
     (:func:`parse_issue_ref_value`); this is the same refusal for prose.
 
     v0.4.284 widened the ownership test from ONE slug to :data:`HOME_REPO_SLUGS`,
-    because the fleet now files on three trackers and a binary-issue trailer
-    (`adolfousier/opencrabs#1901`) must ANCHOR rather than be skipped. The n=1678
+    because the fleet files on more than one tracker and a binary-issue trailer
+    (`leshchenko1979/opencrabs#1901`) must ANCHOR rather than be skipped. The n=1678
     carrier is the live example of the change: it was a dead letter under the
     one-slug rule and is a legitimate claim on the binary tracker now. A slug
     OUTSIDE the set — `acme/widgets#7` — is still refused, and that is the #379
@@ -630,8 +630,9 @@ def open_holds(events, target_issue=None):
 #: The set of repos that OWN the issue space. An `Issue-Ref` naming a repository
 #: OUTSIDE the set is foreign and must never fence an issue here. Measured live
 #: 2026-09-18, six commits carried `Issue-Ref: adolfousier/opencrabs#1419` and
-#: were skipped as upstream; since v0.4.284 that slug IS the binary tracker, so
-#: those six now anchor (correctly) on binary issue 1419.
+#: were skipped as upstream; since v0.4.284 that slug anchors (correctly), and it
+#: keeps anchoring after the 2026-10-09 move — upstream is PRs-only now, but its
+#: legacy issue refs remain in the ledger.
 # HOME_REPO_SLUGS now lives above, with _REF_RE — the prose path shares it (#379).
 
 # `#N` or `<owner>/<repo>#N` — the two forms oc-commit writes.

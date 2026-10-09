@@ -28,13 +28,14 @@
 # Emits: bucket (IN|OUT|UNPINNED -- the surface FACT) AND priority (1|2|3 -- the
 #        ORDERING: 1 fix the factory, 2 fix the binary, 3 new features).
 #
-# TRACKER (three streams, SKILL.md; owner order 2026-10-03, RE-SCOPED 2026-10-08):
-# the DEFAULT repo is the FACTORY tracker leshchenko1979/opencrabs-dev-factory,
-# whose open-issue population is the factory's own work units -- exactly what the
-# factory-scoped patrol classifies. A BINARY issue (upstream opencrabs/opencrabs)
-# is classified by passing --repo opencrabs/opencrabs; a FORK-ONLY defect
-# (leshchenko1979/opencrabs) by --repo leshchenko1979/opencrabs. The fork is the
-# fork-only defect tracker, not a general issues home.
+# TRACKER (two streams, SKILL.md; owner order 2026-10-03, SUPERSEDED by the owner
+# order 2026-10-09 -- fork-first binary issues): the DEFAULT repo is the FACTORY
+# tracker leshchenko1979/opencrabs-dev-factory, whose open-issue population is the
+# factory's own work units -- exactly what the factory-scoped patrol classifies. A
+# BINARY issue is classified by passing --repo leshchenko1979/opencrabs (the single
+# binary tracker since 2026-10-09). UPSTREAM opencrabs/opencrabs is PRs-only and
+# receives no issues; its legacy corpus is still classifiable by an explicit
+# --repo opencrabs/opencrabs.
 #
 # THREE RULES, each measured before it was encoded:
 #

@@ -129,12 +129,12 @@ if not os.path.exists(DEFAULT_LEDGER):
     DEFAULT_LEDGER = os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")
 DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
 
-# ---- three-stream issue routing (SKILL.md; re-scoped 2026-10-08) -------------
-# BINARY issues live upstream (opencrabs/opencrabs); FACTORY issues (this
-# tools/** tree, CI, release automation, process) live on the dev-factory
-# tracker; FORK-ONLY defects (surface exists ONLY in our fork) live on the fork.
-# The fork is not a general issues home, but it still holds an open corpus, so it
-# stays selectable.
+# ---- two-stream issue routing (SKILL.md; owner order 2026-10-09) -------------
+# BINARY issues live on the FORK leshchenko1979/opencrabs (the single binary
+# tracker since 2026-10-09); FACTORY issues (this tools/** tree, CI, release
+# automation, process) live on the dev-factory tracker. UPSTREAM
+# opencrabs/opencrabs is PRs-only and receives no issues, but it still holds an
+# open legacy corpus, so it stays selectable.
 TRACKER_SLUGS = {
     "factory": "leshchenko1979/opencrabs-dev-factory",
     "binary":  "opencrabs/opencrabs",
@@ -4221,9 +4221,10 @@ def main():
     parser.add_argument("--to", help="Target session UUID for targeted dispatch")
     parser.add_argument("--tracker", choices=["factory", "binary", "fork"], default=DEFAULT_TRACKER,
                         help="Issue tracker to dispatch from (default: factory — the dev-factory repo "
-                             "leshchenko1979/opencrabs-dev-factory; 'binary' = upstream opencrabs/opencrabs; "
-                             "'fork' = leshchenko1979/opencrabs, the FORK-ONLY defect tracker). "
-                             "Three-stream routing, SKILL.md (re-scoped 2026-10-08)")
+                             "leshchenko1979/opencrabs-dev-factory; 'binary' = the FORK "
+                             "leshchenko1979/opencrabs, the single binary tracker since 2026-10-09; "
+                             "'fork' is an alias of 'binary'). UPSTREAM opencrabs/opencrabs is PRs-only. "
+                             "Two-stream routing, SKILL.md (owner order 2026-10-09)")
     # NOT a slug: this --repo is the PATH to the opencrabs checkout (used as cwd
     # for git). The tracker SLUG is --tracker. Do not conflate the two.
     parser.add_argument("--repo", default=DEFAULT_REPO, help="Path to opencrabs repo checkout (a PATH, not a slug)")

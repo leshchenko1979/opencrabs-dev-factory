@@ -4,10 +4,10 @@
 
 > **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `editor.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
 
-Scope: work from an issue — a BINARY issue on `opencrabs/opencrabs` (the binary tracker since
-2026-10-03), a FACTORY issue on `leshchenko1979/opencrabs-dev-factory`, or a FORK-ONLY issue on
-`leshchenko1979/opencrabs` (a defect whose surface exists ONLY in our fork — the sole class that may
-be filed there since the owner's 2026-10-08 re-scope; every other new issue stays two-stream). Fix the code in a
+Scope: work from an issue — a BINARY issue on the FORK `leshchenko1979/opencrabs` (the single
+binary tracker since the owner's 2026-10-09 fork-first order) or a FACTORY issue on
+`leshchenko1979/opencrabs-dev-factory`. Upstream `opencrabs/opencrabs` receives PULL REQUESTS ONLY.
+Fix the code in a
 worktree, SIGN every commit with the session trailer, push the branch, then ship via
 `oc-ship-chain` (§Phase 5 — Ship (`oc-ship-chain`), below).
 After any
@@ -77,8 +77,8 @@ editor-facing duties:
   `session_notify` (target resolved dynamically — `oc-ledger roster --live --role toolsmith`, never a uuid from memory),
   format `QUIRK: <tool> <observed behavior> BECAUSE <what you expected>` + evidence.
   Never retry-around silently, never self-patch — Toolsmith owns `tools/**/oc-*` tool code.
-  Core daemon bugs are BINARY defects → file on upstream `opencrabs/opencrabs`, never the fork
-  (the fork takes FORK-ONLY defects only; see `SKILL.md` §Hard rules — ISSUE ROUTING).
+  Core daemon bugs are BINARY defects → file on the FORK `leshchenko1979/opencrabs`, never upstream
+  (upstream takes no new issues; see `SKILL.md` §Hard rules — ISSUE ROUTING).
   Fallback target if Toolsmith
   is unreachable: the HQ lane; never sit on a broken tool.
 
@@ -234,8 +234,8 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
    - **Design-gate precondition (owner order 2026-09-12)**: Issue the goal **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). While the design is unapproved the editor stays in the design/approval phase — an early `/goal` would carry it past the very gate that requires owner approval BEFORE code. Fixed sequence: design → owner confirms → `/goal` → continuous execution through Phase 6.
    - **Autonomous Goal Mandate**: After the owner's design confirmation, the editor MUST execute `/goal follow the skill until the smoke test phase` (via `slash_command`). The Editor is mandated to drive autonomously and continuously from Phase 1 through Phase 6 smoke testing (claim → worktree → code → sign → ship via `oc-ship-chain` → live behavioral smoke test on swapped binary → record 4-leg smoke verdict in `smoke-verdicts.log`). **Editors MUST NOT stop or ask for confirmation after Phase 4 (writing code) or after intermediate ship legs.** The task is only complete once the live behavioral smoke test is recorded in `smoke-verdicts.log`.
 1. **Uniqueness Gate**: Search existing issues first via `tools/issue/oc-issue-sweep '<query>'` (sweeps fork open/closed + upstream closed).
-2. **Issue Creation & Continuous Relationship Linking**: file a `fix(`/`bug(`-titled issue via `tools/issue/oc-issue-create` declaring its origin ON the creating command -- `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), `--no-parent "<reason>"` as the last resort. A declared root or orphan is legal; a silent one is a violation. **THE GATE HAS THREE LEGS, NOT ONE (owner order 2026-10-05, origin opencrabs/opencrabs#1932): ORIGIN, ASSIGNEE, NATIVE LINK.** Beyond declaring the origin, the creating command must carry **`--assignee <login>`** (binary tracker: `adolfousier`; factory tracker: the filing role's owner — upstream's `auto-assign.yml` otherwise assigns the AUTHOR, which is why #1932 landed on `leshchenko1979` until the owner hand-corrected it), and where the declared origin resolves to a SAME-TRACKER issue the **native parent link is OBLIGATORY** — `--parent <N>` at creation or `gh issue edit <issue> --parent <N>` immediately after. For `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer (#1932's root `ede0763be` carries `Closes #737`). A comment-only `root:` satisfies declaredness, never the link when a same-tracker parent exists.
-   - If no issue fits, open ONE issue on the tracker that OWNS the surface — never a blanket fork filing: binary behaviour → `gh issue create -R opencrabs/opencrabs`; factory tooling/CI/process → `-R leshchenko1979/opencrabs-dev-factory`; a FORK-ONLY defect (surface exists only in our fork) → `-R leshchenko1979/opencrabs` (symptom + evidence). Canonical routing: `SKILL.md` §Hard rules — ISSUE ROUTING.
+2. **Issue Creation & Continuous Relationship Linking**: file a `fix(`/`bug(`-titled issue via `tools/issue/oc-issue-create` declaring its origin ON the creating command -- `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), `--no-parent "<reason>"` as the last resort. A declared root or orphan is legal; a silent one is a violation. **THE GATE HAS THREE LEGS, NOT ONE (owner order 2026-10-05, origin opencrabs/opencrabs#1932): ORIGIN, ASSIGNEE, NATIVE LINK.** Beyond declaring the origin, the creating command must carry **`--assignee <login>`** (fork binary tracker: the filing role's owner; factory tracker: the filing role's owner — a tracker's `auto-assign.yml` can otherwise assign the AUTHOR rather than the intended claimer), and where the declared origin resolves to a SAME-TRACKER issue the **native parent link is OBLIGATORY** — `--parent <N>` at creation or `gh issue edit <issue> --parent <N>` immediately after. For `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer (#1932's root `ede0763be` carries `Closes #737`). A comment-only `root:` satisfies declaredness, never the link when a same-tracker parent exists.
+   - If no issue fits, open ONE issue on the tracker that OWNS the surface: binary behaviour (runtime, channels, providers, TUI, memory, tools) → `gh issue create -R leshchenko1979/opencrabs` (the fork is the binary tracker since 2026-10-09); factory tooling/CI/process → `-R leshchenko1979/opencrabs-dev-factory`. Upstream `opencrabs/opencrabs` takes NO new issues. Canonical routing: `SKILL.md` §Hard rules — ISSUE ROUTING.
    - **Continuous Relationship Linking Mandate (owner order 2026-09-16)**: Whenever parent subsystem relationships, blocker dependencies, or child sub-issues are known at creation or discovered in-flight during implementation, the editor MUST establish native links in the same turn via `gh issue edit <issue> --parent <parent-issue>` and/or `gh issue edit <issue> --add-blocked-by <blocker-issue>`.
 3. **Atomic Claim & Worktree (Milestone 1 — `oc-start`)**:
    ```bash
