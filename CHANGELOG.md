@@ -1,5 +1,15 @@
 # Changelog — opencrabs-dev
 
+## v0.4.296 — vpn answer backend pins the CLI path (owner order 2026-10-09)
+
+**Owner order.** *"Backend.py should not resolve by a glob. It should know where exactly the CLI tool is."* The vpn answer backend (`/opt/questions/backend.py`, `questions.l1979.ru`) resolved the register CLI by searching the skill's tools tree — `ls -1 <root>/*/oc-questions <root>/oc-questions`, refusing unless exactly one matched. A search can silently pick up a stray copy, and its "want exactly 1" guard turns a second copy into a hard 502 rather than a diagnosis.
+
+**Landed.** The path is now ONE constant — `<profile>/skills/opencrabs-dev/tools/state/oc-questions` — checked executable on every call, so a layout move still fails **loudly** (rc=127, naming the path) instead of silently. `OQ_CLI` remains the deployment override. The startup log line now reads `cli=<exact path>` instead of `cli=auto (<root>)`: the deployed path is observable in the service's own log.
+
+**Deployed & verified.** vpn pre-image `backend.py.pre-pin-20261009T070735Z`; service restarted; startup line names the pinned path; `list --json` rc=0 through the pinned path from the vpn. Snapshot committed in the state repo (`380386b65`, `questions/backend.py`).
+
+**Scope:** the vpn service and its versioned snapshot; no CLI change, no build. The dynamic-tool bridge (`oc_questions_tool.py`) still prefers the exact path first and globs only as a fallback — left as-is, flagged for the Toolsmith's call.
+
 ## v0.4.295 — Duty-4+6 cycle `20261008-c28`: eleven-lens review, six accepted findings landed (2026-10-08)
 
 **Origin.** Cadence FIRE (7/5, boundary n=14009) — the standing Duty-4+6 periodic skill review, corpus **v0.4.294** (`693229d7`). Eleven lenses dispatched read-only (A–J + standing brain-scrub; lens **I** deliberately held until the ten reports persisted, so it audits the pattern and not the noise). Ten reports landed 15:23–16:06Z, I followed, all persisted to `$OC_DEV_STATE/reviews/20261008-c28/reports/`; `oc-review-persist check-cycle` → **OK (11 persisted, 0 waived, 0 unreceipted) rc=0**. Every load-bearing finding was re-run first-hand by HQ — **an unreproduced finding is not a finding**, and this cycle three were falsified or down-rated (record: `c28-findings.md`).
