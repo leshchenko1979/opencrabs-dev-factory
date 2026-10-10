@@ -256,20 +256,32 @@ selftest() {
   # Stub gh: `issue list` answers a canned open set; `issue create` answers a URL.
   cat > "$T/bin/gh" <<'STUB'
 #!/bin/sh
-case "$1 $2" in
-  "issue list")   cat "$OC_STUB_ISSUES" ;;
-  "issue create") echo "https://github.com/leshchenko1979/opencrabs-dev-factory/issues/4242" ;;
-  "issue comment") exit 0 ;;
+# Dispatch on $1 and discriminate on the RIGHT positional (factory #35).
+# The previous form was `case "$1 $2" in api)` -- a pattern that had to equal the
+# WHOLE "api repos/<slug>/commits/<sha>" string, so it could never match and EVERY
+# api/pr call fell through to `*) exit 0`. The stub answered rc 0 to everything,
+# which made its own "DISCRIMINATE" comment false: o7/o8 resolved vacuously (any
+# PR/sha number), and o9 refused only because ~/opencrabs/.git exists, so the
+# refusal came from `git cat-file -e`, never from the stub. A zero from an
+# instrument that cannot observe the failure class (rule 7).
+# For `api` the discriminator is $2 (the path); for `pr` it is $3 (the number).
+case "$1" in
+  issue) case "$2" in
+           list)    cat "$OC_STUB_ISSUES" ;;
+           create)  echo "https://github.com/leshchenko1979/opencrabs-dev-factory/issues/4242" ;;
+           comment) exit 0 ;;
+           *)       exit 0 ;;
+         esac ;;
   # --root resolution (#646): DISCRIMINATE, so an unresolvable root is testable.
   # A stub that answered 0 for everything would make the refusal leg vacuous.
-  api) case "$3" in
-         */commits/5d326aa12*|*/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*) echo "5d326aa12"; exit 0 ;;
-         *) exit 1 ;;
-       esac ;;
-  pr)  case "$3" in
-         1662|1700) echo '{"number":'"$3"'}'; exit 0 ;;
-         *) exit 1 ;;
-       esac ;;
+  api)   case "$2" in
+           */commits/5d326aa12*|*/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*) echo "5d326aa12"; exit 0 ;;
+           *) exit 1 ;;
+         esac ;;
+  pr)    case "$3" in
+           1662|1700) echo '{"number":'"$3"'}'; exit 0 ;;
+           *) exit 1 ;;
+         esac ;;
   *) exit 0 ;;
 esac
 STUB
@@ -333,6 +345,21 @@ JSN
   chk "fix + UNRESOLVABLE --root REFUSES" 3 $?
   has "…and names the resolve requirement"  "$T/o9" 'does not RESOLVE'
   has "…and cites the law clause"           "$T/o9" 'better clothes'
+
+  # The stub's api/pr arms are the instrument these three legs rest on. Before
+  # factory #35 they were unreachable dead code: `o9` refused only by accident
+  # (the local checkout, via `git cat-file -e`), and these two would have
+  # "resolved" against a stub that answered 0 to everything. o7/o8 are the
+  # POSITIVE controls (they redden if the stub always says no); these two are the
+  # NEGATIVE pair (they redden if it always says yes). Only both together make
+  # the stub trustworthy.
+  bash "$SELF" --title "fix(tools): root-bad-sha" --body x --root upstream:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef >"$T/o17" 2>&1
+  chk "fix + UNRESOLVABLE --root sha REFUSES" 3 $?
+  has "…and names the resolve requirement"  "$T/o17" 'does not RESOLVE'
+  has "…and reports the kind it tried"      "$T/o17" 'kind: sha'
+  bash "$SELF" --title "fix(tools): root-bad-pr" --body x --root upstream:999999 >"$T/o18" 2>&1
+  chk "fix + UNRESOLVABLE --root PR REFUSES" 3 $?
+  has "…and reports the kind it tried"      "$T/o18" 'kind: pr'
 
   bash "$SELF" --title "fix(tools): root-and-parent" --body x --parent 10 --root upstream:1662 --dry-run >"$T/o10" 2>&1
   chk "--parent + --root together pass"      0 $?
