@@ -121,7 +121,7 @@ selftest() {
     'exit 1' > "$d/bin/gh"
   chmod +x "$d/bin/gh"
   local src="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee"
-  total=$((total+3))
+  total=$((total+5))
   # (12) no job name carries a "(<sha>, <features>)" embed -> PROVENANCE rc 4
   perr="$(PATH="$d/bin:$PATH" STUB_JOBS='{"jobs":[{"name":"ORDER gates"}]}' \
     "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 2>&1 1>/dev/null)"
@@ -135,6 +135,20 @@ selftest() {
   # (14) positive: the embed names THIS source -> pass
   PATH="$d/bin:$PATH" STUB_JOBS="{\"jobs\":[{\"name\":\"ship / Linux amd64 ($src, telegram)\"}]}" \
     "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 >/dev/null 2>&1; rc=$?; [ "$rc" = 0 ] && passed=$((passed+1))
+  # (15-16) GATE MODE (factory #34): a gate run carries ONLY the bare "(<sha>)"
+  # form — its two-field build-job name never renders because the build job is
+  # SKIPPED. Pass 2 must resolve provenance from it, and must still fail closed
+  # when that bare sha is not ours.
+  # (15) bare form names THIS source -> pass
+  PATH="$d/bin:$PATH" STUB_JOBS="{\"jobs\":[{\"name\":\"gate / PR-lane gates ($src)\"},{\"name\":\"gate / ORDER gates (\${{ inputs.source_ref }})\"}]}" \
+    "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 >/dev/null 2>&1; rc=$?; [ "$rc" = 0 ] && passed=$((passed+1))
+  # (16) bare form names a DIFFERENT sha -> rc 4 PROVENANCE-MISMATCH: the
+  # fallback shares the SAME sha gate as the two-field leg (13), so it is not a
+  # blanket accept.
+  perr="$(PATH="$d/bin:$PATH" STUB_JOBS='{"jobs":[{"name":"gate / PR-lane gates (9999999999999999999999999999999999999999)"}]}' \
+    "$0" "$d/fake-bin-x64" --source "$src" --run-id 42 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'PROVENANCE-MISMATCH' <<< "$perr" && passed=$((passed+1))
   rm -rf "$d"
   if [ "$passed" = "$total" ]; then
     echo "selftest OK: $passed/$total cases (no network)"
@@ -228,9 +242,13 @@ fi
 SRC_MATCH="not-checked"
 if [ -n "$RUN_ID" ] && [ -n "$SOURCE" ]; then
   printf '%s' "$SOURCE" | grep -Eq '^[0-9a-fA-F]{40}$' || fail 1 "source_ref must be a FULL 40-char sha"
-  # select the JOB whose name carries the "(<sha>, <features>)" embed via the
-  # SHARED decoder (lib/oc-embed.sh) — first job whose name decodes non-empty
-  # (the ORDER gates job has no comma after the sha, so it decodes empty).
+  # select the JOB whose name carries an embed via the SHARED decoders
+  # (lib/oc-embed.sh). TWO accepted shapes (factory #34): pass 1 PREFERS the
+  # two-field "(<sha>, <features>)" build-job embed; pass 2 falls back to the
+  # bare "(<sha>)" gates-job form — the ONLY 40-hex a GATE-MODE run carries,
+  # since its build job is SKIPPED and that name never renders. The ORDER gates
+  # job matches neither shape, so it still decodes empty.
+  JOB_NAMES="$(gh run view "$RUN_ID" -R "$REPO" --json jobs 2>/dev/null | jq -r '.jobs[] | .name')"
   JOB=""
   EMBED=""
   while IFS= read -r jn; do
@@ -238,10 +256,18 @@ if [ -n "$RUN_ID" ] && [ -n "$SOURCE" ]; then
     EMBED="$(oc_decode_job_embed "$jn")"
     if [ -n "$EMBED" ]; then JOB="$jn"; break; fi
   done <<EOF
-$(gh run view "$RUN_ID" -R "$REPO" --json jobs 2>/dev/null | jq -r '.jobs[] | .name')
+$JOB_NAMES
 EOF
-  [ -n "$JOB" ] || fail 4 "PROVENANCE: no embed-carrying job (name with '(<sha>,' pattern) for run $RUN_ID"
-  E="${EMBED%%|*}"
+  if [ -z "$JOB" ]; then
+    while IFS= read -r jn; do
+      [ -n "$jn" ] || continue
+      if [ -n "$(oc_decode_job_sha_any "$jn")" ]; then JOB="$jn"; break; fi
+    done <<EOF
+$JOB_NAMES
+EOF
+  fi
+  [ -n "$JOB" ] || fail 4 "PROVENANCE: no embed-carrying job (name with '(<sha>,' or a bare '(<sha>)' pattern) for run $RUN_ID"
+  if [ -n "$EMBED" ]; then E="${EMBED%%|*}"; else E="$(oc_decode_job_sha_any "$JOB")"; fi
   if [ "$E" = "$SOURCE" ] || { [ -n "$E" ] && [ "${E:0:12}" = "${SOURCE:0:12}" ]; }; then
     SRC_MATCH="verified"
   else

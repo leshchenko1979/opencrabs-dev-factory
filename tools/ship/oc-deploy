@@ -2445,11 +2445,8 @@ fanout_mark_done() { # $1=run $2=verdict $3=notified $4=skipped $5=unowned
   fi
 }
 
-decode_job_sha_any() { # $1=job name -> 40-hex sha from EITHER name shape (#72): the build-job embed "(<sha>, <features>)" or the gates-job bare form "(<sha>)"; empty if none
-  local s
-  s="$(oc_decode_job_embed "$1" 2>/dev/null | cut -d'|' -f1)"
-  [ -n "$s" ] && { printf '%s' "$s"; return 0; }
-  printf '%s\n' "${1:-}" | sed -nE 's/.*\(([0-9a-f]{40})\).*/\1/p'
+decode_job_sha_any() { # $1=job name -> 40-hex sha from EITHER name shape (#72): the build-job embed "(<sha>, <features>)" or the gates-job bare form "(<sha>)"; empty if none. DELEGATES to the shared decoder (lib/oc-embed.sh) — the predicate has ONE home (factory #34); this wrapper keeps the #72 call-site name.
+  oc_decode_job_sha_any "${1:-}"
 }
 
 run_built_sha() { # $1=run id -> echo sha from the FIRST job name that decodes (ANY shape, ALL jobs scanned — #72); rc 0/3

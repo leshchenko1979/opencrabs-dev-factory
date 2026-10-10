@@ -1039,6 +1039,24 @@ if [ -f "$TOOLS_DIR/lib/oc-embed.sh" ]; then
   [ -z "$out" ] \
     && ok "embed: prefixed PR-lane gates job is NOT decodable" \
     || bad "embed real-prelanegates should be empty, got: '$out'"
+
+  # ---- oc_decode_job_sha_any (factory #34): EITHER shape ---------------------
+  # The GATE-MODE anchor. oc-job-verify / oc-artifact-verify verify runs whose
+  # only 40-hex job name is the gates job's bare "(<sha>)" -- in gate mode the
+  # build job is SKIPPED, so its two-field name never renders and the two-field
+  # decoder above finds nothing. This function is the fix; oc_decode_job_embed
+  # is deliberately NOT relaxed, and its non-decodability of the bare form is
+  # asserted just above -- that asymmetry is load-bearing for run_built_sha.
+  out="$(oc_decode_job_sha_any "gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)")"
+  [ "$out" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] \
+    && ok "embed-any: bare gates-job form -> sha" || bad "embed-any bare got: '$out'"
+  out="$(oc_decode_job_sha_any "ship / Linux amd64 (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, telegram)")"
+  [ "$out" = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ] \
+    && ok "embed-any: two-field build-job form -> sha (features dropped)" || bad "embed-any two-field got: '$out'"
+  out="$(oc_decode_job_sha_any "ORDER gates / validate (no embed here)")"
+  [ -z "$out" ] && ok "embed-any: no embed -> empty" || bad "embed-any no-embed got: '$out'"
+  out="$(oc_decode_job_sha_any "Linux amd64 (shortsha, x)")"
+  [ -z "$out" ] && ok "embed-any: non-40-hex parenthetical -> empty" || bad "embed-any short-sha got: '$out'"
 else
   bad "lib/oc-embed.sh missing"
 fi

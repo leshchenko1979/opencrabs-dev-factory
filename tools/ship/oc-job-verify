@@ -61,7 +61,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's
 }
 
 selftest() {
-  local passed=0 total=12 rc d perr jout
+  local passed=0 total=15 rc d perr jout
   d="$(mktemp -d)"
   # gh is stubbed on PATH: the stub picks its payload from the --json value the
   # tool asks for, so every gate below runs with no network and no remote.
@@ -143,6 +143,35 @@ selftest() {
     "$0" "$run" "$ref" --identity-only >/dev/null 2>&1; rc=$?
   [ "$rc" = 0 ] && passed=$((passed+1))
 
+  # (13-14) GATE MODE (factory #34) — a gate run carries NO two-field build-job
+  # embed: its build job is SKIPPED, so that name renders as the literal
+  # "gate / Linux amd64 (${{ inputs.source_ref }}, ${{ inputs.features }})" and
+  # the ONLY 40-hex in the run is the bare "(<sha>)" on the gates job. Pass 2
+  # must resolve it; the two-field embed stays preferred (pass 1) so a build run
+  # is unaffected.
+  # (13) gate-mode bare form, sha matches -> rc 0
+  PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"pr-checks\",\"headSha\":\"$head\",\"name\":\"pr-checks\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"gate / PR-lane gates ($ref)\"},{\"name\":\"gate / Linux amd64 (\${{ inputs.source_ref }}, \${{ inputs.features }})\"},{\"name\":\"gate / ORDER gates (\${{ inputs.source_ref }})\"}]}" \
+    "$0" "$run" "$ref" --identity-only >/dev/null 2>&1; rc=$?
+  [ "$rc" = 0 ] && passed=$((passed+1))
+  # (14) gate-mode bare form carrying a DIFFERENT sha -> rc 4 on the SAME sha
+  # gate as the two-field leg (9), i.e. the fallback is not a blanket accept.
+  perr="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"pr-checks\",\"headSha\":\"$head\",\"name\":\"pr-checks\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"gate / PR-lane gates ($other)\"},{\"name\":\"gate / Linux amd64 (\${{ inputs.source_ref }}, \${{ inputs.features }})\"}]}" \
+    "$0" "$run" "$ref" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 4 ] && grep -qF 'job embed sha' <<< "$perr" && passed=$((passed+1))
+  # (15) PREFERENCE — with BOTH shapes present, pass 1's two-field embed must win
+  # even when the bare gate job is listed FIRST: the two-field name is the only
+  # one carrying FEATURES, so falling through to the bare form would silently
+  # drop them and verify a feature-requested run as if it carried none.
+  jout="$(PATH="$d/bin:$PATH" STUB_VIEW="{\"status\":\"completed\",\"conclusion\":\"success\",\"displayTitle\":\"ship\",\"headSha\":\"$head\",\"name\":\"ship\"}" \
+    STUB_JOBS="{\"jobs\":[{\"name\":\"gate / PR-lane gates ($other)\"},{\"name\":\"ship / Linux amd64 ($ref, telegram,code-graph)\"}]}" \
+    "$0" "$run" "$ref" --features telegram,code-graph --json 2>/dev/null)"
+  rc=$?
+  [ "$rc" = 0 ] && grep -qF "\"embed_sha\": \"$ref\"" <<< "$jout" \
+    && grep -qF '"embed_features": "telegram,code-graph"' <<< "$jout" && passed=$((passed+1))
+
   rm -rf "$d"
   if [ "$passed" = "$total" ]; then
     echo "selftest OK: $passed/$total cases (no network)"
@@ -215,9 +244,27 @@ while IFS= read -r jn; do
 done <<EOF
 $JOB_NAMES
 EOF
-[ -n "$EMBED" ] || fail 4 "REF-MISMATCH: no '(sha, features)' embed found in job names of run $RUN_ID"
-E_REF="${EMBED%%|*}"
-E_FEAT="${EMBED#*|}"
+# TWO accepted name shapes (factory #34). Pass 1 above prefers the two-field
+# build-job embed "(<sha>, <features>)" because it carries the FEATURE list.
+# Pass 2 below falls back to the bare gates-job form "(<sha>)" — the ONLY
+# 40-hex a GATE-MODE run carries, since its build job is SKIPPED and its
+# two-field name therefore never renders. The bare form has no features, so a
+# --features request against a gate-mode run still fails closed below.
+if [ -n "$EMBED" ]; then
+  E_REF="${EMBED%%|*}"
+  E_FEAT="${EMBED#*|}"
+else
+  E_REF=""
+  while IFS= read -r jn; do
+    [ -n "$jn" ] || continue
+    E_REF="$(oc_decode_job_sha_any "$jn")"
+    [ -n "$E_REF" ] && break
+  done <<EOF
+$JOB_NAMES
+EOF
+  E_FEAT=""
+fi
+[ -n "$E_REF" ] || fail 4 "REF-MISMATCH: no '(sha, features)' or bare '(sha)' embed found in job names of run $RUN_ID"
 
 REF_MATCH=0
 [ "$E_REF" = "$REF" ] && REF_MATCH=1
