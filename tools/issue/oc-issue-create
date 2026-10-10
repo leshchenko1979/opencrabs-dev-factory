@@ -13,6 +13,7 @@
 # (gh 2.100.0, `gh issue create --help:41`), so no follow-up edit is needed.
 #
 # Usage: oc-issue-create [--parent <N>] [--no-parent <reason>] [--propose-parent]
+#                        [--assignee <login>] [--no-assignee <reason>]
 #                        [--tracker factory|binary|fork] [--repo <slug>]
 #                        [--repo-path <dir>] [--dry-run] [--selftest]
 #                        [--] <gh issue create flags...>
@@ -36,6 +37,17 @@
 # declaration as the first comment: the gate forbids a SILENT default, never a
 # DECLARED one, so a legitimate orphan bug is not blocked.
 #
+# ASSIGNEE (factory #36): `gh issue create --assignee` existed all along, but this
+# wrapper documented `--assignee` as "passed through to gh unchanged" and had NO
+# handling for it, so the creation gate's assignment leg was carried by hand by
+# every filing lane. --assignee is now OURS: it defaults per tracker and is
+# VERIFIED to resolve before anything is filed. The default is MEASURED
+# (2026-10-10): `gh api repos/<slug>/assignees` returns leshchenko1979 ALONE on
+# BOTH live trackers. `adolfousier` is RETIRED -- he is not a collaborator on the
+# fork, and `--add-assignee adolfousier` NO-OPS with rc 0, so the failure reads as
+# SUCCESS. An assignee that does not resolve is REFUSED (rc 3, nothing filed):
+# filing unassigned silently is the defect this closes.
+#
 # Solo-surface (editor.md:96): the create output is the only receipt of the
 # identifier, so it is surfaced unambiguously on this tool's own stdout.
 # =============================================================================
@@ -54,6 +66,9 @@ SELF="$0"
 # (it also stays the CI host and the PR target). UPSTREAM receives no issues.
 FACTORY_REPO="${OC_ISSUE_CREATE_FACTORY:-leshchenko1979/opencrabs-dev-factory}"
 FORK_REPO="leshchenko1979/opencrabs"
+# The assignee default (factory #36). MEASURED 2026-10-10: BOTH live trackers
+# expose leshchenko1979 alone; `adolfousier` is 404 on the fork.
+DEFAULT_ASSIGNEE="${OC_ISSUE_CREATE_ASSIGNEE:-leshchenko1979}"
 REPO_PATH="${OC_ISSUE_CREATE_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_ISSUE_CREATE_GH:-gh}"
 UPSTREAM_SLUG="${OC_ISSUE_CREATE_UPSTREAM:-opencrabs/opencrabs}"
@@ -64,6 +79,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDE
   [ "$rc" = 0 ] && fd=1
   cat >&$fd <<'USAGE'
 usage: oc-issue-create [--parent <N>] [--root <upstream:obj>] [--no-parent <reason>]
+                       [--assignee <login>] [--no-assignee <reason>]
                        [--propose-parent]
                        [--tracker factory|binary|fork] [--repo <slug>]
                        [--repo-path <dir>] [--dry-run] [--selftest]
@@ -81,6 +97,16 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
                       comment. The gate forbids a SILENT default, not a
                       declared one. Last resort -- prefer --root when the
                       surface is upstream-inherited.
+  --assignee <login>  the assignee for the new issue. Defaults to
+                      leshchenko1979 (the only assignable account on both live
+                      trackers). The login is VERIFIED against the target repo
+                      before anything is filed; an unresolvable one is REFUSED.
+                      With --repo <slug> (a third repo) there is no known
+                      default, so an explicit --assignee or --no-assignee is
+                      required.
+  --no-assignee <why> file anyway, recording the declaration as the first
+                      comment. The gate forbids a SILENT default, not a
+                      declared one.
   --propose-parent    compute and print candidate parents only; file nothing
   --tracker <which>   target tracker: `factory` (default — the dev-factory repo,
                       leshchenko1979/opencrabs-dev-factory) or `binary` (the FORK
@@ -95,7 +121,9 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
   --selftest          run the built-in checks
 
 Everything else is passed through to `gh issue create` unchanged
-(--title, --body, --body-file, --label, --assignee, --milestone, ...).
+(--title, --body, --body-file, --label, --milestone, ...).
+--assignee is OURS, not a passthrough (factory #36): it defaults per tracker and
+is verified to resolve before anything is filed.
 
 Exit: 0 created / 2 usage / 3 REFUSED (nothing filed) / 4 gh failed / 5 no repo
 
@@ -113,6 +141,7 @@ USAGE
 
 # ---- arg parsing: ours vs gh's ----------------------------------------------
 PARENT=""; NO_PARENT=""; NO_PARENT_SET=0; ROOT=""; ROOT_SET=0; PROPOSE=0; DRY=0; SELFTEST=0
+ASSIGNEE=""; NO_ASSIGNEE=""; NO_ASSIGNEE_SET=0
 TRACKER="factory"; REPO_OVERRIDE=""; PASSTHRU=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -128,6 +157,10 @@ while [ $# -gt 0 ]; do
     --no-parent=*) NO_PARENT="${1#--no-parent=}"; NO_PARENT_SET=1; shift ;;
     --root) [ $# -ge 2 ] || { echo "oc-issue-create: --root needs a value" >&2; usage; }; ROOT="$2"; ROOT_SET=1; shift 2 ;;
     --root=*) ROOT="${1#--root=}"; ROOT_SET=1; shift ;;
+    --assignee) [ $# -ge 2 ] || { echo "oc-issue-create: --assignee needs a value" >&2; usage; }; ASSIGNEE="$2"; shift 2 ;;
+    --assignee=*) ASSIGNEE="${1#--assignee=}"; shift ;;
+    --no-assignee) [ $# -ge 2 ] || { echo "oc-issue-create: --no-assignee needs a reason" >&2; usage; }; NO_ASSIGNEE="$2"; NO_ASSIGNEE_SET=1; shift 2 ;;
+    --no-assignee=*) NO_ASSIGNEE="${1#--no-assignee=}"; NO_ASSIGNEE_SET=1; shift ;;
     --propose-parent) PROPOSE=1; shift ;;
     --repo) [ $# -ge 2 ] || usage; REPO_OVERRIDE="$2"; shift 2 ;;
     --repo=*) REPO_OVERRIDE="${1#--repo=}"; shift ;;
@@ -276,6 +309,20 @@ case "$1" in
   # A stub that answered 0 for everything would make the refusal leg vacuous.
   api)   case "$2" in
            */commits/5d326aa12*|*/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*) echo "5d326aa12"; exit 0 ;;
+           # factory #36: a commit whose message carries the trailer the parent
+           # derivation reads, and one whose trailer names a number that does
+           # NOT resolve on the target repo (the cross-tracker collision case).
+           */commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) printf 'fix(tools): a ported thing\n\nCloses #10\n'; exit 0 ;;
+           */commits/cccccccccccccccccccccccccccccccccccccccc) printf 'fix(tools): a ported thing\n\nCloses #999\n'; exit 0 ;;
+           # factory #36: the assignee leg. `gh api repos/<slug>/assignees/<login>`
+           # answers 204 (rc 0) when the login is assignable and 404 (rc 1) when
+           # it is not -- the discriminator the refusal leg rests on.
+           */assignees/leshchenko1979|*/assignees/someone-else) exit 0 ;;
+           */assignees/*) exit 1 ;;
+           # factory #36: the target-repo issue lookup a derived parent is
+           # validated against before use.
+           */issues/10) echo "10"; exit 0 ;;
+           */issues/*) exit 1 ;;
            *) exit 1 ;;
          esac ;;
   pr)    case "$3" in
@@ -390,9 +437,62 @@ JSN
   bash "$SELF" --title "feat(tools): routed" --body x --tracker nonsense --dry-run >"$T/o14" 2>&1
   chk "an unknown --tracker is a usage error" 2 $?
   has "…and the error names both streams"    "$T/o14" "must be 'factory' or 'binary'"
-  bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --repo acme/widgets --dry-run >"$T/o15" 2>&1
+  # --assignee is explicit here: a --repo override names a repo with no known
+  # assignee default, so #36 REFUSES it otherwise (leg o23 pins that).
+  bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --repo acme/widgets --assignee leshchenko1979 --dry-run >"$T/o15" 2>&1
   chk "--repo + --tracker still pass" 0 $?
   has "…and --repo WINS over --tracker"      "$T/o15" 'target=acme/widgets'
+
+  # --- factory #36 ITEM 1: the assignee leg ----------------------------------
+  # The creation gate's assignment leg. Before #36 `--assignee` was documented as
+  # "passed through to gh unchanged" with NO handling: the leg was carried by hand
+  # by every filing lane. The default is MEASURED (both live trackers expose
+  # leshchenko1979 ALONE); `adolfousier` is RETIRED and no-ops with rc 0, so an
+  # unresolvable assignee would file UNASSIGNED while reporting success.
+  #
+  # The declaration leg is MUTATION-SENSITIVE: delete DEFAULT_ASSIGNEE and the
+  # declaration reads `assignee=none`, so the leg REDDENS. A leg that passes with
+  # the default removed would test nothing.
+  bash "$SELF" --title "feat(tools): assigned" --body x --dry-run >"$T/o19" 2>&1
+  chk "the default assignee resolves" 0 $?
+  has "…and is declared on stdout"           "$T/o19" 'assignee=leshchenko1979'
+  has "…and reaches gh"                      "$T/o19" 'assignee leshchenko1979'
+  bash "$SELF" --title "feat(tools): assigned" --body x --assignee=someone-else --dry-run >"$T/o20" 2>&1
+  chk "an explicit --assignee resolves" 0 $?
+  has "…and overrides the default"           "$T/o20" 'assignee=someone-else'
+  # DISCRIMINATING: an assignee that does not resolve must REFUSE. The stub
+  # answers 404 (rc 1) for any login but the two it knows -- so this leg reddens
+  # if the resolver is dropped and the tool files unassigned instead.
+  bash "$SELF" --title "feat(tools): assigned" --body x --assignee nobody-at-all --dry-run >"$T/o21" 2>&1
+  chk "an UNRESOLVABLE --assignee REFUSES" 3 $?
+  has "…and names the resolve requirement"   "$T/o21" 'does not RESOLVE'
+  has "…and names the assignee it tried"     "$T/o21" 'assignee: nobody-at-all'
+  bash "$SELF" --title "feat(tools): assigned" --body x --no-assignee "bot-only repo" --dry-run >"$T/o22" 2>&1
+  chk "--no-assignee passes" 0 $?
+  has "…and the declaration is recorded"     "$T/o22" 'no assignee: bot-only repo'
+  has "…and nothing is declared assigned"    "$T/o22" 'assignee=none'
+  # A --repo override has no known default: refuse, never file unassigned.
+  bash "$SELF" --title "feat(tools): assigned" --body x --repo acme/widgets --dry-run >"$T/o23" 2>&1
+  chk "an unknown --repo with no --assignee REFUSES" 3 $?
+  has "…and says how to proceed"             "$T/o23" 'no known assignee default'
+
+  # --- factory #36 ITEM 2: the trailer-derived parent -------------------------
+  # Where the origin is a --root upstream:<sha> commit, the parent is derivable
+  # from that commit's own `Closes #N` trailer (the law's ede0763be -> #737 case).
+  # The derived number is an UPSTREAM number and upstream numbers COLLIDE with
+  # ours, so it is VALIDATED against the target repo before use.
+  bash "$SELF" --title "fix(tools): trailer" --body x --root upstream:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --dry-run >"$T/o24" 2>&1
+  chk "a sha root with a resolvable trailer passes" 0 $?
+  has "…and the parent is derived"           "$T/o24" 'parent.*10'
+  has "…and the derivation is declared"      "$T/o24" 'derived parent #10'
+  bash "$SELF" --title "fix(tools): trailer" --body x --root upstream:cccccccccccccccccccccccccccccccccccccccc --dry-run >"$T/o25" 2>&1
+  chk "a trailer naming an UNRESOLVABLE number REFUSES" 3 $?
+  has "…and names the cross-tracker hazard"  "$T/o25" 'CROSS-TRACKER HAZARD'
+  # An explicit parent is never overridden by a derivation.
+  bash "$SELF" --title "fix(tools): trailer" --body x --root upstream:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --parent 12 --dry-run >"$T/o26" 2>&1
+  chk "--parent wins over the derivation" 0 $?
+  has "…and the explicit parent is used"     "$T/o26" 'parent.*12'
+  hasnt "…and no derivation ran"             "$T/o26" 'derived parent'
 
   # --- trap controls: each check can only pass if the trap is AVOIDED ---------
   # (a) `git blame -s` ABBREVIATES, so a 40-hex match finds nothing. The control
@@ -570,18 +670,119 @@ ROOTFAIL
   fi
 fi
 
+# ---- assignee resolution (factory #36) ----------------------------------------
+# The creation gate's assignment leg. Until #36 `--assignee` was documented as
+# "passed through to gh unchanged" with NO handling at all, so every filing lane
+# carried the leg by hand.
+#
+# The default is MEASURED (2026-10-10): `gh api repos/<slug>/assignees` returns
+# leshchenko1979 ALONE on BOTH live trackers. `adolfousier` is RETIRED -- he is
+# not a collaborator on the fork, and `--add-assignee adolfousier` NO-OPS with
+# rc 0, so the failure reads as SUCCESS. That is why an unresolvable assignee is
+# REFUSED (rc 3, nothing filed) rather than filed unassigned.
+if [ "$NO_ASSIGNEE_SET" = 1 ]; then
+  ASSIGNEE=""
+elif [ -n "$ASSIGNEE" ]; then
+  : # explicit -- verified below
+elif [ "$TRACKER" = "override" ]; then
+  cat >&2 <<NODEFAULT
+oc-issue-create: REFUSED -- nothing filed.
+
+  --repo $REPO_SLUG is a raw override and has no known assignee default.
+    target: $REPO_SLUG
+
+  Pass one of:
+    --assignee <login>        # the login to assign
+    --no-assignee "<reason>"  # declare that this repo takes no assignee
+NODEFAULT
+  exit 3
+else
+  ASSIGNEE="$DEFAULT_ASSIGNEE"
+fi
+
+if [ -n "$ASSIGNEE" ] && ! "$GH_BIN" api "repos/$REPO_SLUG/assignees/$ASSIGNEE" >/dev/null 2>&1; then
+  cat >&2 <<ASSIGNFAIL
+oc-issue-create: REFUSED -- nothing filed.
+
+  The assignee does not RESOLVE on the target repo.
+    assignee: $ASSIGNEE
+    target:   $REPO_SLUG
+
+  WHY REFUSED AND NOT FILED UNASSIGNED: `gh issue create --assignee <login>`
+  NO-OPS with rc 0 when the login is not assignable, so an unresolvable assignee
+  produces an UNASSIGNED issue that reports success. `adolfousier` is RETIRED on
+  both trackers and fails exactly this way.
+
+  Pass a login that resolves (measured 2026-10-10: leshchenko1979 is the only
+  assignable account on both live trackers), or declare the exception:
+    --no-assignee "<reason>"
+ASSIGNFAIL
+  exit 3
+fi
+
+# ---- derive --parent from a --root upstream:<sha> commit's own trailer ---------
+# The law (AGENTS.md: Continuous Issue Relationship Linking, creation-time parent
+# gate leg (b)): where the declared origin resolves to a SAME-TRACKER issue the
+# native parent link is OBLIGATORY, and for --root upstream:<sha> the parent is
+# derivable from that commit's own `Closes #N` / `Fixes #N` trailer.
+#
+# CROSS-TRACKER HAZARD (measured 2026-10-10): a trailer's `#N` is an UPSTREAM
+# number, and upstream numbers COLLIDE with ours -- fork #737 is "oc-waiter is a
+# RETIRED stub", upstream #737 is "Plan left dangling". Copying the number blind
+# attaches a WRONG parent, which is worse than attaching none. So the derived
+# number is VALIDATED against the TARGET repo, and a number that does not resolve
+# there is refused rather than guessed.
+if [ "$ROOT_SET" = 1 ] && [ -z "$PARENT" ] && [ "$NO_PARENT_SET" = 0 ]; then
+  _rv="${ROOT#upstream:}"; _rv="${_rv#opencrabs/opencrabs}"; _rv="${_rv#adolfousier/opencrabs}"
+  if [ "$(root_kind "$_rv")" = "sha" ]; then
+    _msg="$("$GH_BIN" api "repos/$UPSTREAM_SLUG/commits/$_rv" --jq .commit.message 2>/dev/null || true)"
+    _derived="$(printf '%s' "$_msg" | grep -oiE '(closes|fixes) #[0-9]+' | grep -oE '[0-9]+' | head -1)"
+    if [ -n "$_derived" ]; then
+      if "$GH_BIN" api "repos/$REPO_SLUG/issues/$_derived" --jq .number >/dev/null 2>&1; then
+        PARENT="$_derived"
+        echo "oc-issue-create: derived parent #$_derived from the root commit's trailer"
+      else
+        cat >&2 <<COLLIDE
+oc-issue-create: REFUSED -- nothing filed.
+
+  The root commit's trailer names #$_derived, but that number does not RESOLVE
+  on the target repo.
+    root:   $ROOT
+    target: $REPO_SLUG
+
+  CROSS-TRACKER HAZARD: a trailer's `#N` is an UPSTREAM number and upstream
+  numbers collide with ours -- fork #737 is "oc-waiter is a RETIRED stub",
+  upstream #737 is "Plan left dangling". Linking it blind would attach a WRONG
+  parent. Name the parent explicitly instead:
+    --parent <N>              # the same-tracker issue
+    --no-parent "<reason>"    # declare the orphan
+COLLIDE
+        exit 3
+      fi
+    fi
+  fi
+fi
+
 # ---- create ------------------------------------------------------------------
-# Declare the resolved target on every run: a SILENT tracker default is what let
-# this tool keep filing on a stale tracker after the law moved.
+# Declare the resolved target AND assignee on every run: a SILENT tracker default
+# is what let this tool keep filing on a stale tracker after the law moved.
+# The assignee gets its OWN line rather than a third field on the target line: the
+# selftest's fork legs anchor `target=leshchenko1979/opencrabs$`, and that `$` is
+# LOAD-BEARING (it is what stops the fork slug from also matching the factory
+# slug). Appending a field would silently disarm them -- a leg that can no longer
+# fail is decoration.
 echo "oc-issue-create: tracker=$TRACKER target=$REPO_SLUG"
+echo "oc-issue-create: assignee=${ASSIGNEE:-none}"
 CMD=("$GH_BIN" "issue" "create" "-R" "$REPO_SLUG")
 [ -n "$PARENT" ] && CMD+=("--parent" "$PARENT")
+[ -n "$ASSIGNEE" ] && CMD+=("--assignee" "$ASSIGNEE")
 for a in "${PASSTHRU[@]:-}"; do [ -n "$a" ] && CMD+=("$a"); done
 
 if [ "$DRY" = 1 ]; then
   echo "oc-issue-create --dry-run:"
   printf ' %q' "${CMD[@]}"; echo
   [ "$NO_PARENT_SET" = 1 ] && echo "  (then comment: no parent derivable: $NO_PARENT)"
+  [ "$NO_ASSIGNEE_SET" = 1 ] && echo "  (then comment: no assignee: $NO_ASSIGNEE)"
   [ "$ROOT_SET" = 1 ] && echo "  (then comment: root: ${ROOT#upstream:})"
   exit 0
 fi
@@ -600,6 +801,7 @@ if [ -n "$NUM" ]; then
   echo "oc-issue-create: created #$NUM"
   oc_log_extra "issue=$NUM"
   oc_log_extra "parent=${PARENT:-none}"
+  oc_log_extra "assignee=${ASSIGNEE:-none}"
   [ "$ROOT_SET" = 1 ] && oc_log_extra "root=$ROOT"
   if [ "$ROOT_SET" = 1 ]; then
     BODY_FILE="$(mktemp)"
@@ -620,6 +822,18 @@ if [ -n "$NUM" ]; then
       echo "oc-issue-create: recorded the no-parent declaration on #$NUM"
     else
       echo "oc-issue-create: WARN — created #$NUM but the no-parent declaration" >&2
+      echo "  could NOT be recorded. Add it by hand; the gate's contract is that" >&2
+      echo "  silence is impossible, so an unrecorded declaration is a breach." >&2
+    fi
+    rm -f "$BODY_FILE"
+  fi
+  if [ "$NO_ASSIGNEE_SET" = 1 ]; then
+    BODY_FILE="$(mktemp)"
+    printf 'no assignee: %s\n' "$NO_ASSIGNEE" > "$BODY_FILE"
+    if "$GH_BIN" issue comment "$NUM" -R "$REPO_SLUG" --body-file "$BODY_FILE" >/dev/null 2>&1; then
+      echo "oc-issue-create: recorded the no-assignee declaration on #$NUM"
+    else
+      echo "oc-issue-create: WARN — created #$NUM but the no-assignee declaration" >&2
       echo "  could NOT be recorded. Add it by hand; the gate's contract is that" >&2
       echo "  silence is impossible, so an unrecorded declaration is a breach." >&2
     fi
