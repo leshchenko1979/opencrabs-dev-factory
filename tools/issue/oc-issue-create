@@ -182,7 +182,7 @@ done
 case "$TRACKER" in
   factory|dev-factory|devfactory) TRACKER="factory"; REPO_SLUG="$FACTORY_REPO" ;;
   binary|upstream|fork)           TRACKER="binary";  REPO_SLUG="$FORK_REPO" ;;
-  *) echo "oc-issue-create: --tracker must be 'factory' or 'binary' (got '$TRACKER')" >&2; usage ;;
+  *) echo "oc-issue-create: --tracker must be 'factory' or 'binary' ('fork' is accepted as an alias of 'binary') (got '$TRACKER')" >&2; usage ;;
 esac
 if [ -n "$REPO_OVERRIDE" ]; then REPO_SLUG="$REPO_OVERRIDE"; TRACKER="override"; fi
 
@@ -436,7 +436,7 @@ JSN
   has "…and the legacy alias resolves to binary" "$T/o16" 'tracker=binary target=leshchenko1979/opencrabs$'
   bash "$SELF" --title "feat(tools): routed" --body x --tracker nonsense --dry-run >"$T/o14" 2>&1
   chk "an unknown --tracker is a usage error" 2 $?
-  has "…and the error names both streams"    "$T/o14" "must be 'factory' or 'binary'"
+  has "…and the error names the fork alias"  "$T/o14" "'fork' is accepted as an alias of 'binary'"
   # --assignee is explicit here: a --repo override names a repo with no known
   # assignee default, so #36 REFUSES it otherwise (leg o23 pins that).
   bash "$SELF" --title "feat(tools): routed" --body x --tracker binary --repo acme/widgets --assignee leshchenko1979 --dry-run >"$T/o15" 2>&1
