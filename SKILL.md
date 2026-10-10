@@ -490,8 +490,10 @@ links; development-time upstream contact is PR-comments only (supersedes the
   in better clothes. Full clause + Duty T5 backstop: `upstream-merge-runbook.md`, `triage.md`.**
   **THE GATE HAS THREE LEGS, NOT ONE — ASSIGNMENT and NATIVE LINK joined ORIGIN (owner order 2026-10-05, origin
   opencrabs/opencrabs#1932).** **(a) ASSIGNMENT:** a `fix(`/`bug(`-titled issue MUST carry an assignee ON the
-  creating command (`--assignee <login>`): on the FORK binary tracker the filing role's owner, on the FACTORY
-  tracker the filing role's owner. This leg exists because a tracker's `auto-assign.yml` can assign the AUTHOR
+  creating command (`--assignee <login>`): on the FORK binary tracker `leshchenko1979`, on the FACTORY
+  tracker `leshchenko1979` — each tracker's ONLY assignable account (measured 2026-10-10); the
+  pre-2026-10-09 `adolfousier` constant does NOT resolve on the fork, where he is not a collaborator
+  and `--add-assignee adolfousier` silently no-ops (rc 0, assignees unchanged). This leg exists because a tracker's `auto-assign.yml` can assign the AUTHOR
   rather than the intended claimer (upstream's did: #1932 landed on `leshchenko1979` and had to be hand-corrected
   to `adolfousier`, 2026-10-05T06:27:32Z). **(b) NATIVE LINK:** where the declared origin resolves to a SAME-TRACKER issue, the native
   parent link is OBLIGATORY — `--parent <N>` at creation, or `gh issue edit <issue> --parent <N>` as the immediate

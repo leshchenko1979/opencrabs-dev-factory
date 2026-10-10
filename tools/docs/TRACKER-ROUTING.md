@@ -50,9 +50,16 @@ duplicate sweep (open+closed, issues+PRs) runs BEFORE filing.
 signal) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row.
 
 - **BINARY tracker — the FORK `leshchenko1979/opencrabs`:** we hold `admin`, so the
-  assignment WRITE succeeds (`gh issue edit <N> --add-assignee @me` → rc 0).
+  assignment WRITE succeeds (`gh issue edit <N> --add-assignee @me` → rc 0). **The
+  assignable set is exactly ONE login** — `gh api repos/leshchenko1979/opencrabs/assignees`
+  returns `leshchenko1979` and nothing else (measured 2026-10-10) — so the creation gate's
+  `--assignee` value is `leshchenko1979`. **The pre-2026-10-09 `adolfousier` constant is
+  RETIRED:** he is not a collaborator on the fork (`collaborators/adolfousier` → 404) and
+  `--add-assignee adolfousier` **silently no-ops** (rc 0, assignees unchanged — the failure
+  reads as success). It was calibrated when the binary tracker WAS upstream.
 - **FACTORY tracker `leshchenko1979/opencrabs-dev-factory`:** we hold `admin`; the
-  assignment has always worked.
+  assignment has always worked — its assignable set is the same single login
+  `leshchenko1979` (measured 2026-10-10).
 - **The upstream TRIAGE grant (2026-10-04) is now HISTORICAL** — `opencrabs/opencrabs`
   receives PRs only, so no issue claim happens there.
 - **Where a platform STILL denies the assignment**, **record the denial** and let the
