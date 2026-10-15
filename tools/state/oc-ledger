@@ -101,7 +101,7 @@
 #                                          push tail step (v0.4.50, off-box
 #                                          durability — attach ruling)
 #   sweep-closed-claims [--dry-run]        releases OPEN claims whose issue is
-#                                          CLOSED on the fork: scans via the
+#                                          CLOSED on a home tracker: scans via the
 #                                          canonical predicate (tools/lib/
 #                                          oc_claims.py) and, unless --dry-run,
 #                                          stamps ONE addressed `unclaim` row
@@ -113,6 +113,13 @@
 #                                          to NO fork issue is reported as
 #                                          UNRESOLVED and the clean verdict is
 #                                          withheld (see cmd_sweep_closed_claims).
+#                                          #38: the three home trackers have
+#                                          OVERLAPPING number spaces and a claim
+#                                          token is a bare integer, so a title is
+#                                          printed only when the number was seen
+#                                          on ONE tracker; on an overlap the
+#                                          ambiguity is named, never a title
+#                                          asserted.
 #   --selftest                             fixture suite (585 cases)
 #
 # Exit codes: 0 ok · 1 verdict (cadence FIRE / check-version mismatch — both
@@ -3339,21 +3346,25 @@ DOMEOF
 # both states, so a mock that ignores --repo makes every repo answer alike and
 # a mock that ignores --state cannot distinguish OPEN from CLOSED. The data per
 # repo is deliberate:
-#   FORK    closed {29,49,52,55,126,80}  open {38,63}
-#   FACTORY closed {77}                  open {55}
+#   FORK    closed {29,49,52,55,126,80,64}  open {38,63}
+#   FACTORY closed {77,64}                  open {55}
 #   BINARY  (none)
 # #55 is the fail-safe discriminator: CLOSED on the fork, OPEN on the factory.
+# #64 is the OVERLAP discriminator (#38): CLOSED on BOTH, with a DIFFERENT title
+# on each. Its release verdict is unambiguous (closed everywhere, open nowhere)
+# but the bare token cannot say which repo it means, so NEITHER title may be
+# printed. A tool that prints the first-probed title fails the overlap legs.
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
   case "$*" in
     *"opencrabs/opencrabs"*) echo '[]' ;;
     *"opencrabs-dev-factory"*)
       case "$*" in
-        *"--state closed"*) echo '[{"number":77,"title":"factory-closed"}]' ;;
+        *"--state closed"*) echo '[{"number":77,"title":"factory-closed"},{"number":64,"title":"factory-sixtyfour"}]' ;;
         *"--state open"*)   echo '[{"number":55,"title":"factory-open"}]' ;;
       esac ;;
     *)
       case "$*" in
-        *"--state closed"*) echo '[{"number":29,"title":"compaction"},{"number":49,"title":"cap"},{"number":52,"title":"row-budget"},{"number":55,"title":"fork-closed"},{"number":126,"title":"ontology"},{"number":80,"title":"bg-resume"}]' ;;
+        *"--state closed"*) echo '[{"number":29,"title":"compaction"},{"number":49,"title":"cap"},{"number":52,"title":"row-budget"},{"number":55,"title":"fork-closed"},{"number":126,"title":"ontology"},{"number":80,"title":"bg-resume"},{"number":64,"title":"fork-sixtyfour"}]' ;;
         *"--state open"*)   echo '[{"number":38,"title":"bg-resume-half"},{"number":63,"title":"open fork issue"}]' ;;
       esac ;;
   esac
@@ -3496,6 +3507,41 @@ EOF
     "$(OC_LEDGER="$UAT/sweep_cross.json" bash "$ME" claims 77 2>/dev/null | wc -l | tr -d ' ')"
   OC_LEDGER="$UAT/sweep_cross.json" bash "$ME" claims 55 > "$T/sweep-cross-c55.out" 2>/dev/null
   grep -q "22222222" "$T/sweep-cross-c55.out" && ok || bad "sweep-cross-55-claim-survived"
+
+  # 54f (#38, toolsmith 2fae1230): THE OVERLAP SHAPE. 54e covers a number closed
+  # on ONE non-fork tracker (#77) and a number closed on the fork but OPEN on the
+  # factory (#55). Neither builds the case that hid #38: a number CLOSED on TWO
+  # home trackers, where the release verdict is unambiguous but the TITLE is not.
+  # probe() keeps the FIRST-probed repo title (the fork, since HOME_REPOS is
+  # ordered fork-first) and the emit used to print it, so a factory claim on #33
+  # was reported as "Comatose sessions after restart" -- the fork's #33. The
+  # claim token is a bare int (parse_issue_ref_value DISCARDS the slug), so the
+  # token names no repo and NO title may be asserted. #64 is the discriminator;
+  # #29 (fork-only) is the in-run positive control, so a fix that withheld EVERY
+  # title would fail here rather than pass vacuously.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-10-14T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #64 — closed on BOTH the fork and the factory"},
+      {n:2, t:"2026-10-14T00:00:01Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"claim", what:"CLAIM #29 — closed on the fork alone"}]}' > "$UAT/sweep_overlap.json"
+  PATH="$T/mock_bin:$PATH" OC_LEDGER="$UAT/sweep_overlap.json" bash "$ME" sweep-closed-claims > "$T/sweep-overlap.out" 2>/dev/null
+  chk "sweep-overlap-rc" 0 $?
+  # Positive control: a number seen on exactly ONE home tracker KEEPS its title.
+  grep -q "Issue #29 (CLOSED: compaction)" "$T/sweep-overlap.out" \
+    && ok || bad "sweep-overlap-single-tracker-title-kept"
+  # THE DEFECT: on an overlap NEITHER title may be printed -- the fork's is the
+  # one the pre-#38 emit asserted (first-probed wins), the factory's is equally
+  # unsupported. MUTATION KILL: make the emit print the first-probed title
+  # unconditionally and BOTH of these redden.
+  grep -q "fork-sixtyfour" "$T/sweep-overlap.out" \
+    && bad "sweep-overlap-prints-fork-title" || ok
+  grep -q "factory-sixtyfour" "$T/sweep-overlap.out" \
+    && bad "sweep-overlap-prints-factory-title" || ok
+  grep -q "no single title" "$T/sweep-overlap.out" && ok || bad "sweep-overlap-ambiguity-named"
+  grep -q "2 home trackers" "$T/sweep-overlap.out" && ok || bad "sweep-overlap-names-the-count"
+  # ...and the RELEASE VERDICT is untouched: closed everywhere, open nowhere.
+  chk "sweep-overlap-released-64" "0" \
+    "$(OC_LEDGER="$UAT/sweep_overlap.json" bash "$ME" claims 64 2>/dev/null | wc -l | tr -d ' ')"
+  OC_LEDGER="$UAT/sweep_overlap.json" bash "$ME" claims 29 > "$T/sweep-overlap-c29.out" 2>/dev/null
+  [ -s "$T/sweep-overlap-c29.out" ] && bad "sweep-overlap-29-still-open" || ok
 
   # 54d (#313, toolsmith 2fae1230): CROSS-LANE STANDDOWN closure — canonical
   # rule signal 2. `STANDDOWN #N (<uuid>) — …` is stamped by a DIFFERENT lane
@@ -4410,6 +4456,16 @@ HOME_REPOS = ("leshchenko1979/opencrabs",
               "opencrabs/opencrabs")
 
 def probe(state):
+    """number -> {"title": str, "repos": [repo, ...]}
+
+    #38: the three home trackers have OVERLAPPING number spaces, so one number
+    can exist on more than one of them with a DIFFERENT title on each. The
+    claim token it is matched against is a bare integer -- parse_issue_ref_value
+    (tools/lib/oc_claims.py) keeps the number and DISCARDS the slug -- so the
+    token cannot say which tracker it means. The first-probed repo title is
+    therefore kept for display only, and the repos a number was seen on ride
+    beside it so the emit can withhold a title the token cannot support.
+    """
     out = {}
     for repo in HOME_REPOS:
         res = subprocess.run(
@@ -4423,7 +4479,9 @@ def probe(state):
             sys.exit(4)
         try:
             for i in json.loads(res.stdout):
-                out.setdefault(i["number"], i.get("title", ""))
+                ent = out.setdefault(i["number"],
+                                     {"title": i.get("title", ""), "repos": []})
+                ent["repos"].append(repo)
         except Exception as e:
             sys.stderr.write("failed to parse %s issues (%s): %s\n"
                              % (repo, state, e))
@@ -4444,8 +4502,20 @@ for claim in open_claims:
             n_open += 1
         elif tok in closed_map:
             n_closed += 1
+            # #38: print a title ONLY when the number was seen on exactly one
+            # home tracker. On an overlap the bare token names no repo, so the
+            # first-probed repo title is a specificity the claim does not
+            # carry -- the release verdict is still correct (closed everywhere,
+            # open nowhere) but the title is withheld and the ambiguity named.
+            ent = closed_map[tok]
+            repos = ent["repos"]
+            if len(repos) == 1:
+                label = (ent["title"] or "")[:60]
+            else:
+                label = ("no single title — #%d exists on %d home trackers (%s)"
+                         % (tok, len(repos), ", ".join(repos)))
             sys.stdout.write("C\t%d\t%s\t%s\n"
-                             % (tok, claim["by"], (closed_map[tok] or "")[:60]))
+                             % (tok, claim["by"], label))
         else:
             unresolved.append((tok, claim["by"], claim["what"][:60]))
 for tok, by, what in unresolved:
