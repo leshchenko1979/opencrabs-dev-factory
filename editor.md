@@ -53,6 +53,48 @@ error surfaces only at CI as `error[E0599]` — one full ~30 min gate cycle.
 `#[cfg(test)]` gate, not deletion (clippy `dead_code` fires in the non-test lib
 target). Incidents: `war-stories.md §OpenCrabs fork ops — tooling lessons`.
 
+## Execution isolation — the cgroup boundary (declared 2026-10-15)
+
+**Declared boundary (opencrabs-dev ruling, 2026-10-15): cgroup isolation is a
+property of the BATTERY RUNNER only. Every other invocation a lane makes — a tool,
+a probe, a script — is KNOWINGLY UNISOLATED and lands in the daemon's own cgroup.**
+Do not assume isolation you were not given.
+
+**The accounting domain is a USER unit — query the user manager.** The daemon runs
+as `opencrabs-ops.service` under `user@0.service`:
+`/user.slice/user-0.slice/user@0.service/app.slice/opencrabs-ops.service`. A plain
+`systemctl show opencrabs-ops.service` (the SYSTEM manager) answers
+`ActiveState=inactive SubState=dead ControlGroup=` and `MemoryMax=infinity` — a FALSE
+NEGATIVE that reads exactly like "no cgroup, no limits, no problem". Use
+`XDG_RUNTIME_DIR=/run/user/0 systemctl --user show opencrabs-ops.service`, or read the
+cgroup files directly.
+
+**Measured 2026-10-15** (direct cgroup read, live):
+
+| Quantity | Value |
+|---|---|
+| `memory.current` / `memory.max` | 2136567808 / 2147483648 = **99.5 %** (headroom **10.4 MiB**) |
+| `memory.peak` vs `memory.max` | 2148098048 **>** 2147483648 (crossed by 614400 B) |
+| `memory.swap.current` / `memory.swap.max` | 1950273536 / 2684354560 = **72.7 %** |
+| `memory.high` vs `memory.max` | 2147483648 **==** 2147483648 — ONE wall, no throttle band |
+| `memory.events` | `high 6`, `max 769201`, `oom 0`, `oom_kill 0` |
+| load | 7.50 on 4 cores, 17 procs in the cgroup |
+
+The load was the cgroup's own children, not battery runs: `git log --numstat` 75.9 %
+CPU, the daemon 62.4 %, `python3 tests/test_ledger_index.py`, a 391 s
+`tools/audit.py --json`. **With `high == max` the two counters do not contradict**:
+`max` counts reclaim contact against the wall, `high` counts excursions past it.
+
+**The structural closure is FILED, not assumed:** fork
+[#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached
+job in its own transient scope, at the harness's own spawn point. Until it lands, a lane
+that spawns heavy work is spending the daemon's memory budget, and #504 (8 h of jobs
+starved, silent) is the measured cost of forgetting it.
+
+Precedent that a fifth path will not converge: the same root cause was patched per-path
+at #720 (battery runner — the ONLY isolation that exists today), #727 (`oc-prchecks`),
+#504 (cron child) and #403 (`OOMPolicy`) — all CLOSED, each covering one path.
+
 ## Telegram surface — editor duties (delta of SKILL.md §Telegram surface law)
 
 Full law + audit history: SKILL.md §Telegram surface law (canonical). Your
