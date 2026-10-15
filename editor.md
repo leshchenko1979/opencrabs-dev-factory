@@ -397,8 +397,11 @@ git -C ~/opencrabs-wt/<task> push -u origin <branch>
 
 # 2. Arm the chain in its OWN unit (resumes the session on finish)
 systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
-  tools/ship/oc-ship-chain --sha <commit-sha> --branch <branch> [--issue <issue-n>]
+  tools/ship/oc-ship-chain --sha <commit-sha> --branch <branch> [--issue <issue-n>] \
+    --test-threads 2
 ```
+
+**`--test-threads 2` IS LAW ON THE SHIP INVOCATION UNTIL #1936 IS FIXED (HQ ruling 2026-10-15, on the proposal of lane 2fbfb2f8).** Upstream #1936's four-slot deadlock hangs the gate, so a default chain re-rolls a 45-minute wall: measured run `38799188468` (`--full`, default threads, gate input `466e7dfb3`) was **CANCELLED** at **2722 s** against the workflow's own `timeout-minutes: 45` (**2700 s**), wedged with **zero** `test result:` lines — and `fmt` + `clippy` both read `success` on that run, so the wedge is **not** the diff. The same gate input re-dispatched with `--test-threads 2` (run `38806046232`) came back **GREEN in 31.4 min (1884 s)**. Tool leg: factory #39, `d514000c` — `--test-threads N` / `OC_SHIPCHAIN_TEST_THREADS=2`, forwarded to the LEG1 `oc-prchecks` dispatch. **SCOPE — read before relying on it:** the flag rides the **fresh-dispatch** path only and is **INERT on `--gated-run`** (the chain now warns loudly instead of silently dropping it, `oc-ship-chain:1145`), and it bites **only when the test leg runs** — a `--fast` gate skips tests, so the flag is a no-op there. Remove this line when #1936's hang is fixed.
 
 **THE LAUNCH SURFACE IS LOAD-BEARING (measured 2026-09-26, lane 63d775f9).** Two consecutive chains armed via the harness's background mode died `rc=143` (SIGTERM) ~75 s after the wrapper exited 6 — **even though LAW 17's re-exec had already placed each in its own user scope** (`run-r02937f26c50b43bea91cb45c7ca6dc58`, `run-rd0e1dd4e3b404e09b861bb58a87a3e0a`; detached logs `747586` / `758792`, both ending `gate infra rc=143`). Swap, a peer's broad `pkill` and a ship-lock wait were each ruled out by same-turn reads. The identical chain armed with `--unit=… --collect` survives and polls. **The CAUSE is NOT established** — the discriminator is. And the cost of getting it wrong is not just a lost chain: the killed run leaves its gate **`in_progress` with nobody polling it**. Measured the same hour: `36277623534` and `36277682621`, both `status=in_progress` / `conclusion=null` — two wasted full gates.
 
