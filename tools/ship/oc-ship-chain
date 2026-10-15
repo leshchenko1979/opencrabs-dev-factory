@@ -16,7 +16,8 @@
 #   oc-ship-chain --sha <sha> --branch <branch> [--issue <n>] [--issue-repo <slug>]
 #                 [--repo <fork-slug>]
 #                 [--gated-sha <sha>] [--gated-run <id>] [--wait <sec>]
-#                 [--gate-wait <sec>] [--full] [--dry-run] [--no-ledger] [--selftest] [--help]
+#                 [--gate-wait <sec>] [--full] [--test-threads <N>]
+#                 [--dry-run] [--no-ledger] [--selftest] [--help]
 #   oc-ship-chain --eval-docs-skip [<sha>]
 #
 # Flags:
@@ -30,6 +31,16 @@
 #                    Can also be paired with --sha <sha>.
 #   --fast           Default gate mode (passes fast=true to oc-prchecks).
 #   --full|--no-fast Opt-in full test suite gate (~30 min).
+#   --test-threads <N>  LEG1 gate: libtest --test-threads for the carrier's
+#                    `Run tests` step — the #1936 Stage-1 hang mitigation,
+#                    forwarded to oc-prchecks' dispatch (factory #39).
+#                    FRESH-DISPATCH ONLY: on the --gated-sha / --gated-run
+#                    paths NO leg runs here, so the flag is INERT and the
+#                    chain SAYS SO on stderr rather than dropping it silently
+#                    (a caller who believes the mitigation applied would read
+#                    a carried run as mitigated evidence it never got).
+#                    Env: OC_SHIPCHAIN_TEST_THREADS (same shape; empty =
+#                    not requested, which leaves the dispatch byte-identical).
 #
 # --issue-repo <slug>  The tracker that OWNS --issue, for LEG2's mandatory
 #                    per-commit comment. `--repo` above is the FORK CHECKOUT's
@@ -461,6 +472,15 @@ EOF
 
 FAST_GATE=1
 EVAL_DOCS_SKIP=0
+# factory #39: the #1936 Stage-1 hang mitigation, forwarded to LEG1's
+# oc-prchecks dispatch. The env default follows the house pattern
+# (OC_SHIPCHAIN_GATE_WAIT / OC_SHIPCHAIN_SHIP_WAIT); EMPTY = not requested,
+# the only value that leaves the dispatch byte-identical to pre-#39 behaviour.
+TEST_THREADS="${OC_SHIPCHAIN_TEST_THREADS:-}"
+case "$TEST_THREADS" in
+  '') : ;;
+  *[!0-9]*) die "OC_SHIPCHAIN_TEST_THREADS needs a non-negative integer (got '$TEST_THREADS')" 2 ;;
+esac
 while [ $# -gt 0 ]; do
   case "$1" in
     --eval-docs-skip)
@@ -483,6 +503,14 @@ while [ $# -gt 0 ]; do
     --gated-run) GATED_RUN="${2:?}"; shift 2 ;;
     --fast)            FAST_GATE=1; shift ;;
     --full|--no-fast)  FAST_GATE=0; shift ;;
+    --test-threads)    shift; TEST_THREADS="${1:-}"
+                       # Shape is validated HERE, not left to the callee: a
+                       # typo must die at the caller's own arg boundary (rc 2
+                       # usage) rather than reach oc-prchecks as a bad input.
+                       case "$TEST_THREADS" in
+                         ''|*[!0-9]*) die "--test-threads needs a non-negative integer (got '$TEST_THREADS')" 2 ;;
+                       esac
+                       shift ;;
     --dry-run)   DRY=1; shift ;;
     --no-ledger) NOLEDGER=1; shift ;;
     --help|-h)   usage ;;
@@ -1013,6 +1041,11 @@ else
   [ -n "$REPO" ] && PRCHECKS_CALL+=(--repo "$REPO")
   PRCHECKS_CALL+=(--wait "$GATE_WAIT")
   [ "$FAST_GATE" -eq 1 ] && PRCHECKS_CALL+=(--fast)
+  # factory #39: the #1936 Stage-1 hang mitigation rides the FRESH dispatch.
+  # The carrier-yml contract check is NOT duplicated here -- oc-prchecks owns
+  # it and refuses rc 4 with NO dispatch when the yml cannot honour the input,
+  # which is the loud behaviour a caller-requested mitigation requires.
+  [ -n "$TEST_THREADS" ] && PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")
   # LEG1 journal prints the RESOLVED argv (defect #9, 2026-09-12): the old
   # line expanded ${FAST_GATE:+ --fast} from the flag variable — FAST_GATE is
   # always "1"/"0" (both non-empty), so the journal claimed --fast even on
@@ -1108,6 +1141,22 @@ elif [ "$GATE_CARRIED_FORWARD" = "1" ]; then
 fi
 printf 'oc-ship-chain: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
 journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
+
+# factory #39: --test-threads is a DISPATCH-time request, and on the
+# CARRIED-FORWARD / SKIPPED-DOCS paths NO gate leg is dispatched HERE -- so the
+# mitigation cannot apply to the gate being carried. Say so out loud: a silent
+# drop is exactly what oc-prchecks' #33 contract refuses, and a caller who
+# believed the mitigation applied would read a carried run as mitigated
+# evidence it never received. The FRESH path (FAST/FULL) prints nothing here.
+if [ -n "$TEST_THREADS" ]; then
+  case "$SHIP_GATE_MODE" in
+    CARRIED-FORWARD|SKIPPED-DOCS)
+      printf 'oc-ship-chain: --test-threads %s is INERT on this path -- GATE MODE = %s: no gate leg is dispatched here, so the #1936 mitigation CANNOT apply to the gate being carried. To apply it, dispatch the gate out-of-band first: %s %s --test-threads %s --wait <sec>, then re-arm with --gated-run <id>.\n' \
+        "$TEST_THREADS" "$SHIP_GATE_MODE" "${PRCHECKS_BIN##*/}" "$SHA" "$TEST_THREADS" >&2
+      journal "LEG1 --test-threads $TEST_THREADS INERT (GATE MODE $SHIP_GATE_MODE: no dispatch here)"
+      ;;
+  esac
+fi
 
 # ---- LEG2 tracker resolution (#11, factory) -------------------------------
 # The 2026-10-03 routing split the trackers, SUPERSEDED 2026-10-09 (fork-first
@@ -1635,6 +1684,41 @@ EOF
   grep "LEG1 gate start" "$T/journal.log" | grep -q -- "--fast" && bad "journal-leg1-argv-truth-full-claims-fast" || ok "journal-leg1-argv-truth-full-omits-fast"
   grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -qF "$FSHA"     && ok "journal-leg1-argv-names-sha" || bad "journal-leg1-argv-names-sha"
 
+  # 1b-tt. factory #39: --test-threads rides LEG1's FRESH dispatch. Four legs:
+  # forward, ABSENCE control, env default, and shape. The absence control is
+  # load-bearing -- without it a mutant that always appends --test-threads (a
+  # hardcoded default, say) passes the forward leg VACUOUSLY.
+  rm -f "$T/journal.log" "$T/prchecks.log"
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 --test-threads 2 2>&1)" || RC=$?
+  check_rc "test-threads/chain-green" "$RC" 0
+  grep -q -e "--test-threads 2" "$T/prchecks.log" && ok "test-threads/forwarded: --test-threads 2 reaches the LEG1 dispatch" || bad "test-threads/forwarded: $(head -2 "$T/prchecks.log" 2>/dev/null | tr '\n' ' ')"
+  grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -q -- "--test-threads 2" && ok "test-threads/journal-resolved-argv" || bad "test-threads/journal-resolved-argv"
+  case "$OUT" in *INERT*) bad "test-threads/fresh-path-is-not-inert: $OUT" ;; *) ok "test-threads/fresh-path-is-not-inert" ;; esac
+
+  # 1b-tt-absence. NEGATIVE CONTROL: the same chain WITHOUT the flag (and
+  # without the env) must carry NO --test-threads at all.
+  rm -f "$T/journal.log" "$T/prchecks.log"
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
+  check_rc "test-threads/absent-chain-green" "$RC" 0
+  grep -q -e "--test-threads" "$T/prchecks.log" && bad "test-threads/absent: no flag -> dispatch carries NO --test-threads" || ok "test-threads/absent: no flag -> dispatch carries NO --test-threads (absence control)"
+
+  # 1b-tt-env. OC_SHIPCHAIN_TEST_THREADS is the env default. Scoped to the
+  # command substitution's own subshell so it cannot leak into later legs.
+  rm -f "$T/journal.log" "$T/prchecks.log"
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_SHIPCHAIN_TEST_THREADS=3 FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
+  check_rc "test-threads/env-chain-green" "$RC" 0
+  grep -q -e "--test-threads 3" "$T/prchecks.log" && ok "test-threads/env: OC_SHIPCHAIN_TEST_THREADS=3 reaches the dispatch" || bad "test-threads/env: $(head -2 "$T/prchecks.log" 2>/dev/null | tr '\n' ' ')"
+
+  # 1b-tt-shape. A non-integer is a usage error (rc 2) and NOTHING dispatches.
+  rm -f "$T/prchecks.log"
+  RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 --test-threads abc 2>&1)" || RC=$?
+  check_rc "test-threads/shape-usage" "$RC" 2
+  [ -s "$T/prchecks.log" ] && bad "test-threads/shape-dispatched-nothing" || ok "test-threads/shape: rc 2 and NO dispatch"
+  case "$OUT" in *"non-negative integer"*) ok "test-threads/shape-names-the-contract" ;; *) bad "test-threads/shape-names-the-contract: $OUT" ;; esac
+
   # 1c. LEG2 issue-log FAILURE must ABORT the chain (defect fix 2026-09-19,
   #     fork #361, lane d18ce16a report). Before the fix this leg journalled
   #     "non-fatal" and the chain carried on regardless, so the MANDATORY
@@ -2126,6 +2210,19 @@ EOF
   RC=0; OUT="$(OC_GH="$T/fake-gh-run" run_chain --sha "$FSHA" --branch feat --gated-run 11111 2>&1)" || RC=$?
   check_rc "gated-run-green" "$RC" 0
   grep -q "LEG1 gate pre-verified GREEN (gh run: 11111 completed success" "$T/journal.log" && ok "journal-gated-run" || bad "journal-gated-run"
+
+  # 6-tt. factory #39: --test-threads on a CARRY-FORWARD path is INERT, and the
+  # chain must SAY SO. A silent drop would let a lane read the carried run as
+  # mitigated evidence it never received -- and NOTHING may dispatch here, so
+  # the empty fake-prchecks log is the control that no second gate was fired.
+  rm -f "$T/prchecks.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_GH="$T/fake-gh-run" FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --gated-run 11111 --test-threads 2 2>&1)" || RC=$?
+  check_rc "test-threads/inert-carry-green" "$RC" 0
+  case "$OUT" in *INERT*) ok "test-threads/inert-declared-on-stderr" ;; *) bad "test-threads/inert-declared-on-stderr: $OUT" ;; esac
+  grep -q "INERT" "$T/journal.log" && ok "test-threads/inert-journalled" || bad "test-threads/inert-journalled"
+  [ -s "$T/prchecks.log" ] && bad "test-threads/inert-dispatched-nothing" || ok "test-threads/inert: no dispatch on the carry-forward path"
 
   # 6a. Duty-4 n=2520, the arm the editor lane ACTUALLY hit: --gated-run whose
   # job name carries the PRE-rebase sha. The job match is by `contains($SHA)`,
