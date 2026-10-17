@@ -328,6 +328,79 @@ selftest() {
   { [ "$rc" = 0 ] && grep -qF 're-derive with --refresh-refs' <<< "$out"; } \
     && passed=$((passed+1)) || echo "  FAIL leg-R stale-set rc=$rc out='$out'" >&2
 
+  # ---- Leg R population (#43): the ref set must cover issues AND PRs ------
+  # `gh issue list` omits PRs, and that one fact cost BOTH directions at once:
+  # 69 of 124 rows were false positives (a fork number coinciding with an
+  # upstream PR number), and a fork PR number — in NEITHER issue list — held no
+  # row at all, so a genuinely dead ref could never be flagged. The mock below
+  # is the ONLY population source and it FAILS LOUDLY on `gh issue list`, so a
+  # regression back to the wrong population reddens this leg instead of quietly
+  # rebuilding the bug. The fixture encodes both directions by construction:
+  #   fork #4   = a PR on the fork, 404 upstream -> TRUE fork-only (the class
+  #               `gh issue list` could not see at all)
+  #   fork #13  = exists upstream as a PR       -> both (the class it called
+  #               fork-only 69 times)
+  mkdir -p "$sd/mock"
+  cat > "$sd/mock/gh" <<'MOCKGH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_CALLS"
+[ "$1" = "issue" ] && { echo "MOCK: gh issue list is the #43 wrong-population read" >&2; exit 1; }
+case "$2" in
+  "repos/opencrabs/opencrabs/issues?state=all&per_page=100") printf '%s\n' $MOCK_UP_NUMS ;;
+  "repos/leshchenko1979/opencrabs/issues?state=all&per_page=100") printf '%s\n' $MOCK_FORK_NUMS ;;
+  "search/issues?q=repo:opencrabs/opencrabs+type:issue") echo "$MOCK_UP_ISS" ;;
+  "search/issues?q=repo:opencrabs/opencrabs+type:pr") echo "$MOCK_UP_PRS" ;;
+  "search/issues?q=repo:leshchenko1979/opencrabs+type:issue") echo "$MOCK_FORK_ISS" ;;
+  "search/issues?q=repo:leshchenko1979/opencrabs+type:pr") echo "$MOCK_FORK_PRS" ;;
+  *) echo "MOCK: unhandled: $2" >&2; exit 3 ;;
+esac
+MOCKGH
+  chmod +x "$sd/mock/gh"
+  # a CLEAN branch, so rc 0 below is the refresh's verdict and not masked by the
+  # deliberate findings on `fr`
+  git -C "$d" checkout -q -b frpop "$b"
+  printf 'ok = 1\n' > "$d/frpop.txt"; git -C "$d" add frpop.txt
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "frpop clean" \
+    --trailer "Session-Id: ufrpop" --trailer "Issue-Ref: leshchenko1979/opencrabs#4"
+  cpop="$(git -C "$d" rev-parse HEAD)"
+
+  total=$((total+1))
+  rm -f "$sd/rpop.tsv" "$sd/calls.log"
+  out="$(MOCK_CALLS="$sd/calls.log" MOCK_FORK_NUMS="4 13 100 200" MOCK_UP_NUMS="13 100 150" \
+         MOCK_FORK_ISS=3 MOCK_FORK_PRS=1 MOCK_UP_ISS=2 MOCK_UP_PRS=1 \
+         OC_SWEEP_FORK_ONLY_CACHE="$sd/rpop.tsv" PATH="$sd/mock:$PATH" \
+         "$self" frpop --repo "$d" --base "$b" --port-of "$cpop" --refresh-refs 2>&1)"; rc=$?
+  { [ "$rc" = 0 ] \
+    && grep -qx "$(printf '4\tfork-only')" "$sd/rpop.tsv" \
+    && grep -qx "$(printf '200\tfork-only')" "$sd/rpop.tsv" \
+    && grep -qx "$(printf '13\tboth')" "$sd/rpop.tsv" \
+    && grep -qx "$(printf '100\tboth')" "$sd/rpop.tsv" \
+    && ! grep -qF "$(printf '13\tfork-only')" "$sd/rpop.tsv" \
+    && ! grep -qF 'issue list' "$sd/calls.log" 2>/dev/null; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R population rc=$rc cache='$(tr '\n' '|' < "$sd/rpop.tsv" 2>/dev/null)' out='$out'" >&2
+
+  # A TRUNCATED PAGINATE must refuse, not write a set with a gap in it: the
+  # search index is an INDEPENDENT declaration of the population, and a read
+  # smaller than it is missing pages. The sentinel proves the cache was not
+  # touched — a refused read that still overwrites is the #343 shape.
+  total=$((total+1))
+  printf 'SENTINEL\n' > "$sd/rtrunc.tsv"
+  out="$(MOCK_CALLS=/dev/null MOCK_FORK_NUMS="4 13 100 200" MOCK_UP_NUMS="13 100" \
+         MOCK_FORK_ISS=3 MOCK_FORK_PRS=1 MOCK_UP_ISS=2 MOCK_UP_PRS=1 \
+         OC_SWEEP_FORK_ONLY_CACHE="$sd/rtrunc.tsv" PATH="$sd/mock:$PATH" \
+         "$self" frpop --repo "$d" --base "$b" --port-of "$cpop" --refresh-refs 2>&1)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'could not read the WHOLE population' <<< "$out" \
+    && grep -qx 'SENTINEL' "$sd/rtrunc.tsv"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R truncation rc=$rc cache='$(cat "$sd/rtrunc.tsv" 2>/dev/null)' out='$out'" >&2
+
+  # The cache must say what POPULATION it covers, not just when: a set built
+  # from the wrong population is the defect itself, and its own header is the
+  # only place a later reader can see which read produced it.
+  total=$((total+1))
+  { grep -qF '# read: gh api repos/<r>/issues?state=all — issues AND pull requests (#43)' "$sd/rpop.tsv" \
+    && grep -qF '# counts: fork 4 / upstream 3 (search index 4 / 3)' "$sd/rpop.tsv"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R cache-provenance header='$(head -5 "$sd/rpop.tsv" 2>/dev/null | tr '\n' '|')'" >&2
+
   rm -rf "$d" "$sd" "$td" 2>/dev/null
   echo "selftest OK: $passed/$total legs"
   [ "$passed" = "$total" ]
@@ -412,16 +485,51 @@ fi
 # must never read as a leg that passed.
 REFS_CACHE="${REFS_CACHE:-${OC_SWEEP_FORK_ONLY_CACHE:-${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}/fork-only-refs.tsv}}"
 if [ "$REFRESH_REFS" = 1 ]; then
-  _fr_fork="$(gh issue list -R leshchenko1979/opencrabs --state all --limit 2000 --json number --jq '.[].number' 2>/dev/null)"
-  _fr_up="$(gh issue list -R opencrabs/opencrabs --state all --limit 4000 --json number --jq '.[].number' 2>/dev/null)"
-  if [ -z "$_fr_fork" ] || [ -z "$_fr_up" ]; then
-    echo -e "fork-refs\tFINDING: --refresh-refs could not read BOTH trackers (fork $(printf '%s\n' "$_fr_fork" | grep -c . ) number(s), upstream $(printf '%s\n' "$_fr_up" | grep -c .) number(s)) — cache NOT touched; a half-read pair would misclassify every number in the gap"
+  # POPULATION (#43, measured 2026-10-17). `gh issue list` EXCLUDES pull
+  # requests, and both trackers are deep in that gap: upstream 1608 issues vs
+  # 2005 issues+PRs (397 PRs), fork 763 vs 783 (20). Building the set from it
+  # cost BOTH directions at once:
+  #   FALSE POSITIVE — a fork number coinciding with an upstream PR number was
+  #     classified fork-only, so the leg demanded qualification of refs that
+  #     were already correct: 69 of 124 rows, a 55.6% noise rate on a corpus
+  #     that already carries real findings. A lint that cries wolf gets
+  #     switched off, which is how the original leak shipped.
+  #   FALSE NEGATIVE — a fork PR number is in NEITHER issue list, so it held no
+  #     row at all and a genuinely dead ref could never be flagged (fork #4 is
+  #     a PR, and upstream #4 is 404).
+  # The issues API returns PRs as issues, so BOTH sets are read from it.
+  _fr_api_read() {  # every issue AND PR number on one tracker
+    gh api "repos/$1/issues?state=all&per_page=100" --paginate --jq '.[].number' 2>/dev/null
+  }
+  _fr_api_pop() {   # INDEPENDENT declaration of the expected population
+    local _i _p
+    _i="$(gh api "search/issues?q=repo:$1+type:issue" --jq '.total_count' 2>/dev/null || true)"
+    _p="$(gh api "search/issues?q=repo:$1+type:pr" --jq '.total_count' 2>/dev/null || true)"
+    case "${_i}${_p}" in ''|*[!0-9]*) printf '' ;; *) printf '%s' "$((_i + _p))" ;; esac
+  }
+  _fr_fork_exp="$(_fr_api_pop leshchenko1979/opencrabs)"
+  _fr_up_exp="$(_fr_api_pop opencrabs/opencrabs)"
+  _fr_fork="$(_fr_api_read leshchenko1979/opencrabs)"
+  _fr_up="$(_fr_api_read opencrabs/opencrabs)"
+  _fr_fork_n="$(printf '%s\n' "$_fr_fork" | grep -c . || true)"
+  _fr_up_n="$(printf '%s\n' "$_fr_up" | grep -c . || true)"
+  # A TRUNCATED PAGINATE IS THE #343 CLASS, NOT A COMPLETE READ: trackers only
+  # ever GAIN numbers, so a read smaller than the search index said is missing
+  # pages, and a set with a gap in it misclassifies every number in the gap.
+  # This control would also have caught #43 itself: 1608 read, 2005 expected.
+  # A read LARGER than expected is normal drift (a number landed between the
+  # two calls) and is NOT a fault.
+  if [ -z "$_fr_fork" ] || [ -z "$_fr_up" ] || [ -z "$_fr_fork_exp" ] || [ -z "$_fr_up_exp" ] \
+     || [ "$_fr_fork_n" -lt "$_fr_fork_exp" ] || [ "$_fr_up_n" -lt "$_fr_up_exp" ]; then
+    echo -e "fork-refs\tFINDING: --refresh-refs could not read the WHOLE population (fork ${_fr_fork_n:-0}/${_fr_fork_exp:-?}, upstream ${_fr_up_n:-0}/${_fr_up_exp:-?} numbers vs the search index) — cache NOT touched; a set with a gap in it misclassifies every number in it"
     rc=1
   else
     _fr_tmp="$(mktemp)"
     {
       printf '# as-of: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       printf '# source: leshchenko1979/opencrabs (fork) minus opencrabs/opencrabs (upstream)\n'
+      printf '# read: gh api repos/<r>/issues?state=all — issues AND pull requests (#43)\n'
+      printf '# counts: fork %s / upstream %s (search index %s / %s)\n' "$_fr_fork_n" "$_fr_up_n" "$_fr_fork_exp" "$_fr_up_exp"
       printf '# format: <number>\\t<fork-only|both>\n'
       comm -23 <(printf '%s\n' "$_fr_fork" | sed '/^$/d' | sort -u) <(printf '%s\n' "$_fr_up" | sed '/^$/d' | sort -u) | sed 's/$/\tfork-only/'
       comm -12 <(printf '%s\n' "$_fr_fork" | sed '/^$/d' | sort -u) <(printf '%s\n' "$_fr_up" | sed '/^$/d' | sort -u) | sed 's/$/\tboth/'
