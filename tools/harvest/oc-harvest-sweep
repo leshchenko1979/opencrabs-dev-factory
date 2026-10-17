@@ -281,6 +281,17 @@ selftest() {
     && grep -qF "$(printf 'fork-refs\tWARN')" <<< "$out" && grep -qF '#490' <<< "$out"; } \
     && passed=$((passed+1)) || echo "  FAIL leg-R arms rc=$rc find=$fr_find out='$out'" >&2
 
+  # THE MEASURED TREE IS PART OF THE RESULT (#40 correction, 2026-10-17). A
+  # count taken on the fork and published as upstream's is the exact error that
+  # cost a public correction: same predicate, same 19 files, 44 vs 43. The SCOPE
+  # row must name the branch AND the resolved commit, so a wrong-tree reading is
+  # visible in the output rather than in the prose wrapped around it.
+  total=$((total+1))
+  frtip="$(git -C "$d" rev-parse --short fr)"
+  out="$("$self" fr --repo "$d" --base "$b" --port-of "$c1,$c2,$c3,$c5" 2>/dev/null)"; rc=$?
+  { grep -qF "$(printf 'fork-refs\tSCOPE: measured fr @ %s in %s' "$frtip" "$d")" <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R scope (want fr@$frtip) rc=$rc out='$out'" >&2
+
   # THE TRAP (measured 2026-10-17): a naive #N matcher reads the theme pack's
   # colour literal #86e1fc as a reference to #86 and reports 4 phantom
   # violations. A matcher that cries wolf on a colour table gets switched off,
@@ -429,6 +440,17 @@ if [ -f "$REFS_CACHE" ]; then
 fi
 
 FR_FIND=0
+# THE MEASURED TREE IS PART OF THE RESULT — printed BEFORE the findings, because
+# a count taken on one tree and labelled another is the failure this leg exists
+# to prevent and it happened: 2026-10-17 a fork-tree count (44) was published on
+# #40 as upstream's figure when upstream's was 43 — same predicate, same 19
+# files, different number space, and the corpus is NOT monotone, so neither tree
+# substitutes for the other in either direction. Naming the repo and the exact
+# commit read puts a wrong-tree measurement in the output instead of in the
+# prose wrapped around it.
+if [ "$FR_N" -gt 0 ]; then
+  echo -e "fork-refs\tSCOPE: measured $BRANCH @ $(git -C "$REPO" rev-parse --short "$BRANCH" 2>/dev/null || echo UNRESOLVED) in $REPO"
+fi
 # R1 — trailer FORM. Needs no number set: a bare `Issue-Ref: #N` is unattributable
 # upstream whichever space N came from, so this arm runs even with no cache.
 while IFS=$'\t' read -r _fc _fs; do
