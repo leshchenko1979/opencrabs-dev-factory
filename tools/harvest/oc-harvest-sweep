@@ -8,7 +8,8 @@
 # branch BEFORE the first gate dispatch. Leg (c) (behavioral judgment)
 # stays human.
 #
-# Usage: oc-harvest-sweep <pr-branch> [--base <upstream-ref>] [--repo <path>] [--port-of sha1,sha2] | --selftest
+# Usage: oc-harvest-sweep <pr-branch> [--base <upstream-ref>] [--repo <path>] [--port-of sha1,sha2]
+#                          [--refresh-refs] [--refs-cache <path>] | --selftest
 # Exit:  0 clean / 1 findings / 2 usage / 3 git-fail
 # Legs:  (T) trailer sweep — every commit in base..branch carries Session-Id
 #        (P) patch-id — each --port-of sha has a patch-id match on the branch
@@ -20,6 +21,16 @@
 #            one that can see a squash/rebase that silently dropped a hunk.
 #            With no --port-of there is nothing to compare against, and the
 #            sweep refuses to certify clean (pre-#343 it printed CLEAN anyway).
+#        (R) fork-ref (#40) — a ported line, commit subject or Issue-Ref
+#            trailer that carries a BARE `#N` for a FORK-only issue. Upstream's
+#            number space is a different space: the same `#N` either resolves
+#            to nothing (dead ref) or to an unrelated upstream issue (silent
+#            collision, the worse arm). Measured 2026-10-17 before this leg
+#            existed: 43 bare fork-only refs already in upstream's own src
+#            tree, and 98 of 125 distinct Issue-Ref trailers on landed commits
+#            bare. The fork-only set comes from the tracker pair and is CACHED
+#            with its own as-of instant (--refresh-refs re-derives it); with no
+#            cache the leg REFUSES TO CERTIFY rather than pass silently.
 # =============================================================================
 set -u
 set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
@@ -34,7 +45,7 @@ trap 'oc_log_finish $?' EXIT
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
   local rc="${1:-2}" fd=2
   [ "$rc" = 0 ] && fd=1
-  echo "usage: $0 <pr-branch> [--base adolfousier/main] [--repo <path>] [--port-of sha1,sha2] | --selftest" >&$fd
+  echo "usage: $0 <pr-branch> [--base adolfousier/main] [--repo <path>] [--port-of sha1,sha2] [--refresh-refs] [--refs-cache <path>] | --selftest" >&$fd
   exit "$rc"
 }
 die() { echo "oc-harvest-sweep: $2" >&2; exit "$1"; }
@@ -48,6 +59,15 @@ selftest() {
   # this selftest runs many deliberately-failing invocations; the fleet
   # flood guard would otherwise answer rc 8 instead of the gate's code
   export OC_TOOLS_NOLOG=1 OC_NO_FLOODGUARD=1 OC_DEPLOY_STATE_DIR="$sd"
+
+  # ---- Leg R fixture: a ref set with a KNOWN shape ------------------------
+  # 86/116/350/352/396 are fork-only (absent upstream), 490/548 exist on BOTH
+  # trackers (the collision class). Without this file Leg R fail-closes and the
+  # all-green legs go red -- which is the leg working, but it must be fed here.
+  printf '# as-of: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$sd/refs.tsv"
+  printf '# source: selftest fixture\n# format: <number>\t<fork-only|both>\n' >> "$sd/refs.tsv"
+  printf '86\tfork-only\n116\tfork-only\n350\tfork-only\n352\tfork-only\n396\tfork-only\n490\tboth\n548\tboth\n' >> "$sd/refs.tsv"
+  export OC_SWEEP_FORK_ONLY_CACHE="$sd/refs.tsv"
 
   # ---- usage / arg shape (rc 2) ------------------------------------------
   total=$((total+1)); "$self" >/dev/null 2>&1; rc=$?
@@ -225,17 +245,91 @@ selftest() {
   { [ "$rc" = 1 ] && grep -qF 'no --port-of' <<< "$out" && ! grep -qF 'SWEEP: CLEAN' <<< "$out"; } \
     && passed=$((passed+1)) || echo "  FAIL #343 no-port-of rc=$rc out='$out'" >&2
 
+  # ---- Leg R: fork-ref enforcement (#40) ----------------------------------
+  # A ported bare `#N` is a lie upstream: DEAD when N is absent there (#86 x10,
+  # #116 x13, #350 x3, #352 x7, #396 x10 already shipped in upstream src), and
+  # COLLISION when N belongs to an unrelated upstream issue (fork #490
+  # notify-tail-loss vs upstream #490 narration-leak), which autolinks silently
+  # and is the worse of the two. Each arm gets its OWN commit, and the hex
+  # control its OWN branch, so a mutant can redden exactly one leg: the phantom
+  # it guards (a colour literal read as a ref) would otherwise inflate the
+  # finding count and mask a dead arm.
+  git -C "$d" checkout -q -b fr "$b"
+  printf 'let a = 1; // see #116 for context\n' > "$d/fr1.txt"; git -C "$d" add fr1.txt
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "fr1 bare line ref" \
+    --trailer "Session-Id: ufr1" --trailer "Issue-Ref: leshchenko1979/opencrabs#116"
+  c1="$(git -C "$d" rev-parse HEAD)"
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "fr2 fix thing (#350)" \
+    --trailer "Session-Id: ufr2" --trailer "Issue-Ref: leshchenko1979/opencrabs#350"
+  c2="$(git -C "$d" rev-parse HEAD)"
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "fr3 bare trailer" \
+    --trailer "Session-Id: ufr3" --trailer "Issue-Ref: #86"
+  c3="$(git -C "$d" rev-parse HEAD)"
+  printf 'x = 1; // upstream #490\n' > "$d/fr5.txt"; git -C "$d" add fr5.txt
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "fr5 collision" \
+    --trailer "Session-Id: ufr5" --trailer "Issue-Ref: leshchenko1979/opencrabs#490"
+  c5="$(git -C "$d" rev-parse HEAD)"
+
+  # the three FAIL arms (DIFF line, SUBJ, bare trailer) plus the collision WARN
+  total=$((total+1))
+  out="$("$self" fr --repo "$d" --base "$b" --port-of "$c1,$c2,$c3,$c5" 2>/dev/null)"; rc=$?
+  fr_find="$(grep -cF "$(printf 'fork-refs\tFINDING')" <<< "$out" || true)"
+  { [ "$rc" = 1 ] && [ "$fr_find" = 3 ] \
+    && grep -qF 'fr1.txt:1' <<< "$out" \
+    && grep -qF 'subject carries bare fork-only #350' <<< "$out" \
+    && grep -qF "bare Issue-Ref '#86'" <<< "$out" \
+    && grep -qF "$(printf 'fork-refs\tWARN')" <<< "$out" && grep -qF '#490' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R arms rc=$rc find=$fr_find out='$out'" >&2
+
+  # THE TRAP (measured 2026-10-17): a naive #N matcher reads the theme pack's
+  # colour literal #86e1fc as a reference to #86 and reports 4 phantom
+  # violations. A matcher that cries wolf on a colour table gets switched off,
+  # which is how the leak survived. This branch is clean and must stay clean.
+  git -C "$d" checkout -q -b frhex "$b"
+  printf 'accent_teal = "#86e1fc"\n' > "$d/fr4.toml"; git -C "$d" add fr4.toml
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "fr4 hex literal" \
+    --trailer "Session-Id: ufr4" --trailer "Issue-Ref: leshchenko1979/opencrabs#352"
+  c4="$(git -C "$d" rev-parse HEAD)"
+  total=$((total+1))
+  out="$("$self" frhex --repo "$d" --base "$b" --port-of "$c4" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 0 ] && grep -qF "$(printf 'fork-refs\tOK')" <<< "$out" && ! grep -qF 'fr4.toml' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R hex-control rc=$rc out='$out'" >&2
+
+  # no set at all: the leg must REFUSE to certify, never read as a pass (#343)
+  total=$((total+1))
+  out="$("$self" fr --repo "$d" --base "$b" --port-of "$c1,$c2,$c3,$c5" --refs-cache "$sd/nope.tsv" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 1 ] && grep -qF 'CANNOT CERTIFY' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R no-cache rc=$rc out='$out'" >&2
+
+  # a stale set is a partial instrument: it must WARN (naming its age) without
+  # inventing a failure, so the arm runs on a CLEAN branch and stays rc 0. It
+  # must NOT ride the hex branch: a phantom there would redden this leg too and
+  # couple two independent properties into one (measured: ARM A of negctl-40
+  # dropped 2 legs instead of 1 for exactly that reason).
+  git -C "$d" checkout -q -b frc "$b"
+  printf 'let z = 1;\n' > "$d/frc.txt"; git -C "$d" add frc.txt
+  git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "frc clean" \
+    --trailer "Session-Id: ufrc" --trailer "Issue-Ref: leshchenko1979/opencrabs#116"
+  c6="$(git -C "$d" rev-parse HEAD)"
+  total=$((total+1))
+  sed 's/^# as-of: .*/# as-of: 2020-01-01T00:00:00Z/' "$sd/refs.tsv" > "$sd/stale.tsv"
+  out="$("$self" frc --repo "$d" --base "$b" --port-of "$c6" --refs-cache "$sd/stale.tsv" 2>/dev/null)"; rc=$?
+  { [ "$rc" = 0 ] && grep -qF 're-derive with --refresh-refs' <<< "$out"; } \
+    && passed=$((passed+1)) || echo "  FAIL leg-R stale-set rc=$rc out='$out'" >&2
+
   rm -rf "$d" "$sd" "$td" 2>/dev/null
   echo "selftest OK: $passed/$total legs"
   [ "$passed" = "$total" ]
 }
 
-BASE="adolfousier/main"; REPO="$HOME/opencrabs"; PORT=""; BRANCH=""
+BASE="adolfousier/main"; REPO="$HOME/opencrabs"; PORT=""; BRANCH=""; REFRESH_REFS=0; REFS_CACHE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --base needs a value" >&2; usage; exit 2; }; BASE=""$2""; shift 2 ;;
     --repo) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --repo needs a value" >&2; usage; exit 2; }; REPO=""$2""; shift 2 ;;
     --port-of) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --port-of needs a value" >&2; usage; exit 2; }; PORT=""$2""; shift 2 ;;
+    --refs-cache) [ $# -ge 2 ] || { echo "oc-harvest-sweep: --refs-cache needs a value" >&2; usage; exit 2; }; REFS_CACHE="$2"; shift 2 ;;
+    --refresh-refs) REFRESH_REFS=1; shift ;;
     --selftest) selftest; exit $? ;;
     -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) if [ -z "$BRANCH" ]; then BRANCH="$1"; else usage; fi; shift ;;
@@ -286,6 +380,134 @@ if [ -n "$BRANCH_DIFF_FILES" ]; then
       fi
     fi
   done <<< "$BRANCH_DIFF_FILES"
+fi
+
+# Leg R — fork-ref enforcement (#40)
+# The fork and upstream are DIFFERENT number spaces, so a bare `#N` in ported
+# code is not a shorthand, it is a lie: upstream autolinks it to whatever issue
+# happens to hold N there. Two arms, and the silent one is worse:
+#   DEAD      — N does not exist upstream at all; the ref resolves to nothing.
+#   COLLISION — N is a real upstream issue about something else entirely
+#               (fork #490 notify-tail-loss vs upstream #490 narration-leak).
+# Measured 2026-10-17, before this leg existed: 43 bare fork-only refs already
+# in upstream's own src tree (#86 x10, #116 x13, #350 x3, #352 x7, #396 x10),
+# and 98 of 125 distinct Issue-Ref trailers on landed commits bare — of which
+# 68 collided and 23 were dead.
+#
+# The fork-only set comes from the TRACKER PAIR, never from a guess, and it is
+# cached WITH its own as-of instant: a cache that cannot say when it was taken
+# is a claim of absence from an instrument of unknown vintage. With no cache
+# the leg REFUSES TO CERTIFY (rc 1) — the #343 precedent: a leg that cannot run
+# must never read as a leg that passed.
+REFS_CACHE="${REFS_CACHE:-${OC_SWEEP_FORK_ONLY_CACHE:-${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}/fork-only-refs.tsv}}"
+if [ "$REFRESH_REFS" = 1 ]; then
+  _fr_fork="$(gh issue list -R leshchenko1979/opencrabs --state all --limit 2000 --json number --jq '.[].number' 2>/dev/null)"
+  _fr_up="$(gh issue list -R opencrabs/opencrabs --state all --limit 4000 --json number --jq '.[].number' 2>/dev/null)"
+  if [ -z "$_fr_fork" ] || [ -z "$_fr_up" ]; then
+    echo -e "fork-refs\tFINDING: --refresh-refs could not read BOTH trackers (fork $(printf '%s\n' "$_fr_fork" | grep -c . ) number(s), upstream $(printf '%s\n' "$_fr_up" | grep -c .) number(s)) — cache NOT touched; a half-read pair would misclassify every number in the gap"
+    rc=1
+  else
+    _fr_tmp="$(mktemp)"
+    {
+      printf '# as-of: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '# source: leshchenko1979/opencrabs (fork) minus opencrabs/opencrabs (upstream)\n'
+      printf '# format: <number>\\t<fork-only|both>\n'
+      comm -23 <(printf '%s\n' "$_fr_fork" | sed '/^$/d' | sort -u) <(printf '%s\n' "$_fr_up" | sed '/^$/d' | sort -u) | sed 's/$/\tfork-only/'
+      comm -12 <(printf '%s\n' "$_fr_fork" | sed '/^$/d' | sort -u) <(printf '%s\n' "$_fr_up" | sed '/^$/d' | sort -u) | sed 's/$/\tboth/'
+    } > "$_fr_tmp"
+    mkdir -p "$(dirname "$REFS_CACHE")" 2>/dev/null
+    mv "$_fr_tmp" "$REFS_CACHE" 2>/dev/null \
+      || { echo -e "fork-refs\tFINDING: cannot write refs cache $REFS_CACHE"; rc=1; }
+  fi
+fi
+
+FR_ASOF=""; FR_N=0
+if [ -f "$REFS_CACHE" ]; then
+  FR_ASOF="$(sed -n 's/^# as-of: //p' "$REFS_CACHE" | head -1)"
+  FR_N="$(grep -cvE '^#|^[[:space:]]*$' "$REFS_CACHE" 2>/dev/null || true)"
+  [ -n "$FR_N" ] || FR_N=0
+fi
+
+FR_FIND=0
+# R1 — trailer FORM. Needs no number set: a bare `Issue-Ref: #N` is unattributable
+# upstream whichever space N came from, so this arm runs even with no cache.
+while IFS=$'\t' read -r _fc _fs; do
+  [ -n "$_fc" ] || continue
+  while IFS= read -r _ft; do
+    [ -n "$_ft" ] || continue
+    if [[ "$_ft" =~ ^#[0-9]+$ ]]; then
+      echo -e "fork-refs\tFINDING: ${_fc:0:12} bare Issue-Ref '$_ft' — unattributable upstream; write 'Issue-Ref: leshchenko1979/opencrabs${_ft}'"
+      rc=1; FR_FIND=$((FR_FIND+1))
+    fi
+  done <<< "$(git -C "$REPO" log -1 --format='%(trailers:key=Issue-Ref,valueonly)' "$_fc" 2>/dev/null)"
+done <<< "$(git -C "$REPO" log --format='%H%x09%s' "$BASE..$BRANCH" 2>/dev/null)"
+
+if [ "$FR_N" -gt 0 ]; then
+  # R2/R3 — subject and added-line scan, both keyed on the fork-only set.
+  # A line scan reads ADDED lines only (`+` with the +++ header excluded); the
+  # `@@ +c,d @@` header supplies the new-file line number so a finding is
+  # actionable without a second pass.
+  # HEX EXCLUSION (do not remove): the char AFTER the digits is rejected when it
+  # is a hex letter, because the TUI theme packs carry colour literals such as
+  # #86e1fc, which a naive #N matcher reads as a reference to #86. Measured
+  # 2026-10-17: 4 such literals in upstream src (3 in tokyonight.toml, 1 in the
+  # json fixture) produce exactly 4 phantom findings, and a matcher that cries
+  # wolf on a colour table gets switched off — which is how the leak survived.
+  FR_ROWS="$(
+    { git -C "$REPO" log --format='SUBJ%x09%H%x09%s' "$BASE..$BRANCH" 2>/dev/null
+      git -C "$REPO" diff --no-color -U0 "$BASE..$BRANCH" 2>/dev/null
+    } | awk -v setf="$REFS_CACHE" '
+      BEGIN { while ((getline l < setf) > 0) { if (l ~ /^#/ || l ~ /^[[:space:]]*$/) continue; split(l, f, "\t"); if (f[2]=="fork-only") fo[f[1]]=1; else if (f[2]=="both") bo[f[1]]=1 } }
+      /^SUBJ\t/ { split($0, a, "\t"); c=a[2]; s=a[3]
+        while (match(s, /#[0-9]+/)) {
+          pre=(RSTART>1)?substr(s,RSTART-1,1):""; num=substr(s,RSTART+1,RLENGTH-1); post=substr(s,RSTART+RLENGTH,1)
+          if (post !~ /^[0-9a-fA-F]$/ && pre !~ /[A-Za-z0-9_&#\/]/ && (num in fo)) printf "SUBJ\t%s\t%s\t%s\n", c, num, a[3]
+          s=substr(s,RSTART+RLENGTH)
+        }
+        next }
+      /^diff --git / { path=""; nl=0; next }
+      /^\+\+\+ / { path=$0; sub(/^\+\+\+ (b\/)?/,"",path); next }
+      /^@@ / { if (match($0, /\+[0-9]+/)) nl=substr($0,RSTART+1,RLENGTH-1)+0; next }
+      /^\+/ { s=$0
+        while (match(s, /#[0-9]+/)) {
+          pre=(RSTART>1)?substr(s,RSTART-1,1):""; num=substr(s,RSTART+1,RLENGTH-1); post=substr(s,RSTART+RLENGTH,1)
+          if (post !~ /^[0-9a-fA-F]$/ && pre !~ /[A-Za-z0-9_&#\/]/) {
+            if (num in fo) printf "DIFF\t%s:%d\t%s\t%s\n", path, nl, num, substr($0,2)
+            else if (num in bo) printf "BOTH\t%s:%d\t%s\t%s\n", path, nl, num, substr($0,2)
+          }
+          s=substr(s,RSTART+RLENGTH)
+        }
+        nl++; next }
+      /^ / { nl++ }
+    '
+  )"
+  # the port's own Issue-Ref numbers: the ONLY disambiguator for a BOTH hit
+  FR_CLAIM_NUMS="$(git -C "$REPO" log --format='%(trailers:key=Issue-Ref,valueonly)' "$BASE..$BRANCH" 2>/dev/null | grep -oE '#[0-9]+' | tr -d '#' | sort -u)"
+  while IFS=$'\t' read -r _fcls _floc _fnum _ftxt; do
+    [ -n "$_fcls" ] || continue
+    case "$_fcls" in
+      DIFF) echo -e "fork-refs\tFINDING: $_floc bare #$_fnum is FORK-ONLY (dead upstream) — $_ftxt"; rc=1; FR_FIND=$((FR_FIND+1)) ;;
+      SUBJ) echo -e "fork-refs\tFINDING: commit ${_floc:0:12} subject carries bare fork-only #$_fnum — $_ftxt"; rc=1; FR_FIND=$((FR_FIND+1)) ;;
+      BOTH) if oc_has "$FR_CLAIM_NUMS" "$_fnum"; then
+              echo -e "fork-refs\tWARN: $_floc bare #$_fnum exists on BOTH trackers and this port's Issue-Ref names it — upstream autolinks the OTHER issue; qualify it — $_ftxt"
+            fi ;;
+    esac
+  done <<< "$FR_ROWS"
+  if [ "$FR_FIND" -eq 0 ]; then
+    echo -e "fork-refs\tOK (no bare fork-only refs in subject, added lines or trailers; set as-of ${FR_ASOF:-unknown}, $FR_N numbers)"
+  fi
+  # a stale set is a partial instrument: it cannot see a fork issue opened since
+  # it was taken, so say so rather than let the OK row imply a full sweep
+  if [ -n "$FR_ASOF" ]; then
+    _fr_a="$(date -u -d "$FR_ASOF" +%s 2>/dev/null || true)"
+    if [ -n "$_fr_a" ]; then
+      _fr_age=$(( ( $(date -u +%s) - _fr_a ) / 3600 ))
+      [ "$_fr_age" -gt 24 ] && echo -e "fork-refs\tWARN: ref set as-of $FR_ASOF is ${_fr_age}h old — a fork issue opened since then is NOT in the set (re-derive with --refresh-refs)"
+    fi
+  fi
+else
+  echo -e "fork-refs\tFINDING: no fork-only ref set at $REFS_CACHE — CANNOT CERTIFY (run with --refresh-refs, or pass --refs-cache <path>)"
+  rc=1
 fi
 
 # Leg S — source-union containment (#343)
