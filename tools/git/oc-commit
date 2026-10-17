@@ -30,6 +30,7 @@
 #
 # Usage:
 #   oc-commit -m <msg> [-m <msg>...] [--issue N] [--repo <path>]
+#             [--tracker factory|binary|fork] [--issue-repo <owner>/<repo>]
 #             [--no-comment] [--state <text>] [--session-id-only] | --selftest
 #
 # E2 finding 2 (v0.4.72): the post leg is FOLDED — after a gated commit the
@@ -51,9 +52,32 @@
 # here: it is an unprobed hypothesis about the parser, and belief is not
 # evidence.
 #
+# #45 (2026-10-17): the Issue-Ref trailer and the post-commit comment both name
+# a TRACKER, and until now neither did. The trailer was emitted BARE
+# (`Issue-Ref: #N`), which the shipped-ref law forbids: a bare number in a
+# commit that reaches `adolfousier/main` autolinks to a REAL BUT DIFFERENT
+# upstream issue (fork #490 notify-tail loss vs upstream #490 narration leak).
+# The comment leg was worse — it hardcoded the FORK
+# (`--repo ${OC_ISSUE_LOG_REPO:-leshchenko1979/opencrabs}`), so every
+# implementation comment for a FACTORY issue landed on the fork's issue of the
+# same number: measured on this lane's own commits, fork #43 and fork #44 each
+# carry an "Implementation commit:" note belonging to factory #43/#44.
+#
+# Both now resolve from ONE repo slug:
+#   --issue-repo <owner>/<repo>    raw override, WINS over --tracker
+#   --tracker factory|binary|fork  house vocabulary (oc-issue-create's)
+#   OC_ISSUE_REPO / OC_COMMIT_TRACKER   env equivalents
+# Default: factory. The slug is VALIDATED (rc 2 if malformed) and the trailer is
+# built from it, so a BARE ref is unreachable — not "avoided by convention".
+# The comment leg follows the same slug unless OC_ISSUE_LOG_REPO overrides it.
+# Both flags are REFUSED with --session-id-only, for the same reason --issue is:
+# a commit carrying no ref has no tracker to name, and a silent no-op reads as
+# honoured.
+#
 # Exit codes: 0 committed+commented (0 also for a --session-id-only commit,
 #             which posts no comment by design) · 2 usage (incl.
-#             --session-id-only together with --issue) · 3 gate-fail (detached HEAD /
+#             --session-id-only together with --issue/--issue-repo/--tracker,
+#             and a malformed --issue-repo slug) · 3 gate-fail (detached HEAD /
 #             no actor / nothing staged / no issue derivable / derived ref
 #             contradicts the branch or subject) · 4
 #             git-commit failure · 5 commit landed but comment FAILED
@@ -69,7 +93,7 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-commit" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
-usage() { echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--no-comment] [--state <text>] [--session-id-only] | --selftest" >&2; exit 2; }
+usage() { echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--tracker factory|binary|fork] [--issue-repo <owner>/<repo>] [--no-comment] [--state <text>] [--session-id-only] | --selftest" >&2; exit 2; }
 
 if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
   d="$(mktemp -d)" || exit 3
@@ -151,7 +175,7 @@ exit 3
   #     first failure). Each assertion now reads its own commit.
   LOG="$(git -C "$R" log -1 --format=%B)"
   grep -q "Session-Id: f1c7c0de-0000-4000-8000-000000000149" <<< "$LOG" || { echo "selftest: Session-Id trailer missing" >&2; exit 1; }
-  grep -q "Issue-Ref: #149" <<< "$LOG" || { echo "selftest: Issue-Ref #149 missing" >&2; exit 1; }
+  grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#149" <<< "$LOG" || { echo "selftest: #45 Issue-Ref #149 missing the qualified form (got: $(grep -i 'issue-ref' <<< "$LOG" || echo none))" >&2; exit 1; }
   # 4b. comment leg folded: stub fails -> rc 5 (commit landed, comment FAILED)
   ( cd "$R" && echo q > k && git add k && OC_ISSUE_LOG_BIN="$STUB_FAIL" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "fix: comment-fail" --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 5 ] || { echo "selftest: comment-fail-after-commit != 5" >&2; exit 1; }
@@ -160,7 +184,68 @@ exit 3
   [ $? -eq 0 ] || { echo "selftest: --no-comment drill != 0" >&2; exit 1; }
   # 5. explicit --issue overrides derivation
   ( cd "$R" && echo w > i && git add i && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: override" --issue 42 --repo "$R" ) >/dev/null 2>&1
-  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: #42" || { echo "selftest: --issue override missing" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#42" || { echo "selftest: #45 --issue override missing the qualified form" >&2; exit 1; }
+  # 5b. (#45) the tracker selector: binary/fork resolve to the FORK slug, and
+  #     the raw --issue-repo override WINS over --tracker. Each leg asserts the
+  #     exact trailer, so a selector that silently fell back to the factory
+  #     default reddens here rather than passing as "some ref was written".
+  ( cd "$R" && echo w2 > i2 && git add i2 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: tracker binary" --issue 42 --tracker binary --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #45-tracker-binary rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs#42" \
+    || { echo "selftest: #45-tracker-binary --tracker binary must name the fork slug" >&2; exit 1; }
+  ( cd "$R" && echo w3 > i3 && git add i3 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: tracker fork alias" --issue 42 --tracker fork --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #45-tracker-fork rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs#42" \
+    || { echo "selftest: #45-tracker-fork 'fork' must be an alias of binary" >&2; exit 1; }
+  ( cd "$R" && echo w4 > i4 && git add i4 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: raw repo override" --issue 42 --tracker binary --issue-repo acme/widgets --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #45-issue-repo-wins rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: acme/widgets#42" \
+    || { echo "selftest: #45-issue-repo-wins --issue-repo must WIN over --tracker" >&2; exit 1; }
+  # 5c. (#45) a malformed slug is a USAGE error, never a silent fallback: a
+  #     qualified ref naming the WRONG repo autolinks to a real issue and reads
+  #     as correct, which is worse than the bare form this replaced.
+  ( cd "$R" && echo w5 > i5 && git add i5 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: bad slug" --issue 42 --issue-repo not-a-slug --no-comment --repo "$R" ) >/dev/null 2>"$d/45slug.err"
+  [ $? -eq 2 ] || { echo "selftest: #45-bad-slug want 2" >&2; exit 1; }
+  grep -q "must be '<owner>/<repo>'" "$d/45slug.err" \
+    || { echo "selftest: #45-bad-slug must name the expected slug shape" >&2; exit 1; }
+  ( cd "$R" && echo w6 > i6 && git add i6 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: bad tracker" --issue 42 --tracker nonsense --no-comment --repo "$R" ) >/dev/null 2>"$d/45trk.err"
+  [ $? -eq 2 ] || { echo "selftest: #45-bad-tracker want 2" >&2; exit 1; }
+  grep -q "must be 'factory' or 'binary'" "$d/45trk.err" \
+    || { echo "selftest: #45-bad-tracker must name the accepted vocabulary" >&2; exit 1; }
+  # 5d. (#45) the resolved slug REACHES the comment leg. The stub records its
+  #     argv, so this is a receipt rather than an inference from silence — and
+  #     it is the leg that reddens if the comment repo reverts to the hardcoded
+  #     fork, which is how factory #43/#44 comments landed on fork #43/#44.
+  STUB_ARGS="$d/il-args"; rm -f "$STUB_ARGS"
+  STUB_REC="$d/il-record"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s"\nexit 0\n' "$STUB_ARGS" > "$STUB_REC"; chmod +x "$STUB_REC"
+  ( cd "$R" && echo w7 > i7 && git add i7 && OC_ISSUE_LOG_BIN="$STUB_REC" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: comment repo follows tracker" --issue 42 --tracker binary --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #45-comment-repo rc want 0" >&2; exit 1; }
+  grep -q '^leshchenko1979/opencrabs$' "$STUB_ARGS" \
+    || { echo "selftest: #45-comment-repo the comment leg must receive the RESOLVED slug, not the hardcoded fork default (got: $(tr '\n' ' ' < "$STUB_ARGS"))" >&2; exit 1; }
+  #     DISCRIMINATOR: `--tracker binary` resolves to the fork, which is ALSO the
+  #     old hardcoded default — so that assertion alone passes under the very
+  #     regression it is aimed at (measured: negctl-45's comment_fork_default
+  #     arm survived it). A slug that is neither the fork nor the factory pins
+  #     the comment leg to the RESOLVED value: under the hardcoded default this
+  #     posts the note to the wrong repo, which is the #45 defect itself.
+  ( cd "$R" && echo w7b > i7b && git add i7b && OC_ISSUE_LOG_BIN="$STUB_REC" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: comment repo follows issue-repo" --issue 42 --issue-repo acme/widgets --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #45-comment-repo-override rc want 0" >&2; exit 1; }
+  grep -q '^acme/widgets$' "$STUB_ARGS" \
+    || { echo "selftest: #45-comment-repo-override the comment leg must follow --issue-repo, not any hardcoded slug (got: $(tr '\n' ' ' < "$STUB_ARGS"))" >&2; exit 1; }
+  #     CONTROL: the same leg under the factory default must pass the factory
+  #     slug — otherwise 5d would pass on a stub that simply echoes a constant.
+  ( cd "$R" && echo w8 > i8 && git add i8 && OC_ISSUE_LOG_BIN="$STUB_REC" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: comment repo factory" --issue 42 --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #45-comment-repo-control rc want 0" >&2; exit 1; }
+  grep -q '^leshchenko1979/opencrabs-dev-factory$' "$STUB_ARGS" \
+    || { echo "selftest: #45-comment-repo-control the DEFAULT must be the factory slug" >&2; exit 1; }
+  # 5e. (#45) --session-id-only refuses the tracker flags for the same reason it
+  #     refuses --issue: a commit with no ref has no tracker to name, and an
+  #     accepted-but-inert flag is indistinguishable from an honoured one.
+  ( cd "$R" && echo w9 > i9 && git add i9 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --session-id-only --tracker binary --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 2 ] || { echo "selftest: #45-sid-only-tracker want 2" >&2; exit 1; }
+  ( cd "$R" && echo w10 > i10 && git add i10 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --session-id-only --issue-repo acme/widgets --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 2 ] || { echo "selftest: #45-sid-only-issue-repo want 2" >&2; exit 1; }
   # 6. claim without #N and no --issue -> 3
   cat > "$d/wl2.json" <<'JSON'
 {"workers":[{"uuid":"f1c7c0de-0000-4000-8000-000000000149","role":"editor"}],"events":[
@@ -180,8 +265,8 @@ JSON
   [ $? -eq 3 ] || { echo "selftest: closed-claim derivation != 3" >&2; exit 1; }
   ( cd "$R" && echo t > t2 && git add t2 && OC_LEDGER="$d/wl3.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: explicit" --issue 42 --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: closed-claim + --issue override != 0" >&2; exit 1; }
-  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: #42" \
-    || { echo "selftest: closed-claim --issue override trailer missing" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#42" \
+    || { echo "selftest: #45 closed-claim --issue override trailer missing the qualified form" >&2; exit 1; }
   # 6c. (#346) a message that ALREADY carries the trailers must not get them twice.
   #     git's trailer.ifexists default compares only the NEIGHBOURING trailer, so
   #     the second append (Issue-Ref) collides with a caller-supplied copy while
@@ -195,8 +280,8 @@ JSON
       || { echo "selftest: duplicate/absent Issue-Ref ($1)" >&2; exit 1; }
     git -C "$R" log -1 --format="%(trailers)" | grep -q '^Session-Id: f1c7c0de-0000-4000-8000-000000000149$' \
       || { echo "selftest: derived Session-Id did not win ($1)" >&2; exit 1; }
-    git -C "$R" log -1 --format="%(trailers)" | grep -q '^Issue-Ref: #149$' \
-      || { echo "selftest: derived Issue-Ref did not win ($1)" >&2; exit 1; }
+    git -C "$R" log -1 --format="%(trailers)" | grep -q '^Issue-Ref: leshchenko1979/opencrabs-dev-factory#149$' \
+      || { echo "selftest: derived Issue-Ref did not win — a caller-supplied BARE ref must be REPLACED by the qualified one ($1); got: $(git -C "$R" log -1 --format='%(trailers)' | grep '^Issue-Ref:' | tr '\n' ' ')" >&2; exit 1; }
   }
   ( cd "$R" && echo d1 > d1 && git add d1 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "fix: caller already carries the trailers
 
@@ -312,8 +397,8 @@ Full battery on the tree carrying both fixes:
   #         derivation that never fired.
   ( cd "$R" && echo n3 > n3 && git add n3 && OC_LEDGER="$d/wl.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore(tools): the same commit without the flag" --no-comment --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: #728-control-derivation rc want 0" >&2; exit 1; }
-  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: #149" \
-    || { echo "selftest: #728-control-derivation FAILED — without the flag the derivation must still fire, else 10a proves nothing" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#149" \
+    || { echo "selftest: #728-control-derivation FAILED — without the flag the derivation must still fire (qualified), else 10a proves nothing" >&2; exit 1; }
   #    10d. the post-commit comment leg must NOT be invoked. The stub CREATES a
   #         marker, so an invocation is detectable rather than inferred from
   #         silence — the env default (OC_COMMIT_COMMENT=1, NO_COMMENT=0) would
@@ -336,7 +421,7 @@ Full battery on the tree carrying both fixes:
   echo "selftest OK"; exit 0
 fi
 
-REPO="$(pwd)"; MSGS=(); ISSUE=""; ISSUE_EXPLICIT=0; NO_COMMENT=0; CSTATE=""; MBODY=""; SESSION_ID_ONLY=0
+REPO="$(pwd)"; MSGS=(); ISSUE=""; ISSUE_EXPLICIT=0; NO_COMMENT=0; CSTATE=""; MBODY=""; SESSION_ID_ONLY=0; ISSUE_REPO=""; TRACKER=""; TRACKER_EXPLICIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     # #428: the body text is ALSO accumulated — MBODY is the scan's input. MSGS
@@ -345,10 +430,19 @@ while [ $# -gt 0 ]; do
     -m) [ -n "${2:-}" ] || usage; MSGS+=("$1" "$2"); MBODY="${MBODY}${2}"$'\n'; shift 2 ;;
     --issue) ISSUE="${2:-}"; [ -n "$ISSUE" ] || usage; ISSUE_EXPLICIT=1; shift 2 ;;
     --repo) REPO="${2:-}"; [ -n "$REPO" ] || usage; shift 2 ;;
+    # #45: the TRACKER the issue lives on. House vocabulary from oc-issue-create
+    # (`factory` | `binary` | `fork`, the last an alias of binary), so a lane
+    # moving between trackers uses one word, not two dialects.
+    --tracker) TRACKER="${2:-}"; [ -n "$TRACKER" ] || usage; TRACKER_EXPLICIT=1; shift 2 ;;
+    --tracker=*) TRACKER="${1#--tracker=}"; [ -n "$TRACKER" ] || usage; TRACKER_EXPLICIT=1; shift ;;
+    # #45: raw slug override; WINS over --tracker (same precedence as
+    # oc-issue-create's --repo).
+    --issue-repo) ISSUE_REPO="${2:-}"; [ -n "$ISSUE_REPO" ] || usage; shift 2 ;;
+    --issue-repo=*) ISSUE_REPO="${1#--issue-repo=}"; [ -n "$ISSUE_REPO" ] || usage; shift ;;
     --no-comment) NO_COMMENT=1; shift ;;
     --session-id-only) SESSION_ID_ONLY=1; shift ;;
     --state) CSTATE="${2:-}"; [ -n "$CSTATE" ] || usage; shift 2 ;;
-    -h|--help) echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--no-comment] [--state <text>] [--session-id-only] | --selftest"; exit 0 ;;
+    -h|--help) echo "usage: $0 -m <msg> [-m <msg>...] [--issue N] [--repo <path>] [--tracker factory|binary|fork] [--issue-repo <owner>/<repo>] [--no-comment] [--state <text>] [--session-id-only] | --selftest"; exit 0 ;;
     selftest) bash "$0" --selftest; exit $? ;;
     *) usage ;;
   esac
@@ -359,6 +453,13 @@ done
 # ORDER never decides the outcome.
 if [ "$SESSION_ID_ONLY" = 1 ] && [ "$ISSUE_EXPLICIT" = 1 ]; then
   echo "usage: --session-id-only emits no Issue-Ref, so it cannot be combined with --issue" >&2
+  exit 2
+fi
+# #45: same contradiction one level out — a commit with no ref has no tracker to
+# name. Refused rather than silently ignored: an accepted-but-inert flag is
+# indistinguishable from an honoured one at read time.
+if [ "$SESSION_ID_ONLY" = 1 ] && { [ "$TRACKER_EXPLICIT" = 1 ] || [ -n "$ISSUE_REPO" ]; }; then
+  echo "usage: --session-id-only emits no Issue-Ref, so it cannot be combined with --tracker or --issue-repo" >&2
   exit 2
 fi
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
@@ -462,6 +563,26 @@ if [ "$ISSUE_EXPLICIT" = 0 ] && [ "$SESSION_ID_ONLY" = 0 ]; then
   fi
 fi
 
+# --- #45: resolve the TRACKER slug the Issue-Ref must name -------------------
+# Precedence (later wins): built-in factory default -> OC_COMMIT_TRACKER env ->
+# --tracker -> OC_ISSUE_REPO env -> --issue-repo. One slug feeds BOTH the
+# trailer and the post-commit comment, so they cannot disagree.
+#
+# A malformed slug is a USAGE error, never a fallback: falling back would emit a
+# QUALIFIED ref naming the WRONG repo — which reads as correct, autolinks to a
+# real issue, and is worse than the bare form this replaced. Fail closed.
+case "${TRACKER:-${OC_COMMIT_TRACKER:-factory}}" in
+  factory) _tr_slug="leshchenko1979/opencrabs-dev-factory" ;;
+  binary|fork) _tr_slug="leshchenko1979/opencrabs" ;;
+  *) echo "usage: --tracker must be 'factory' or 'binary' ('fork' is accepted as an alias of 'binary') (got '${TRACKER:-$OC_COMMIT_TRACKER}')" >&2; exit 2 ;;
+esac
+ISSUE_REPO="${ISSUE_REPO:-${OC_ISSUE_REPO:-$_tr_slug}}"
+printf '%s' "$ISSUE_REPO" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' \
+  || { echo "usage: --issue-repo must be '<owner>/<repo>' (got '$ISSUE_REPO')" >&2; exit 2; }
+# Announced on stderr: a resolution that prints nothing is a claim without a
+# receipt, and the whole defect was a silent wrong default.
+echo "issue-repo: $ISSUE_REPO (Issue-Ref + comment target)" >&2
+
 # --- #428 close-keyword hazard scan — ADVISORY: it warns, it never gates -----
 # GitHub's default-branch commit parser closes an issue when the body carries a
 # close keyword followed by #N, and it CANNOT read negation. Honest-limit prose
@@ -529,14 +650,20 @@ scan_close_keywords "$MBODY"
 # to land on. Under --session-id-only both are absent and the commit carries
 # Session-Id alone.
 # LIMIT, stated rather than hidden: this governs the trailers the WRAPPER adds.
-# A caller who writes `Issue-Ref: #N` into their own -m body still gets it —
-# that is prose they authored, and the wrapper has never rewritten a caller's
-# body. The flag's guarantee is "no ref is DERIVED or ADDED", not "the message
-# is scrubbed".
+# Under a normal commit the wrapper's `Issue-Ref` is added with
+# `-c trailer.ifexists=replace`, so a caller who wrote a BARE `Issue-Ref: #N`
+# into their own -m body has it REPLACED by the qualified derived ref (selftest
+# 6c pins both the same-value and the foreign-value case) — the bare form cannot
+# survive a commit this wrapper signs. Under --session-id-only nothing is
+# derived at all, so a caller-authored bare ref DOES survive: the flag's
+# guarantee is "no ref is DERIVED or ADDED", not "the message is scrubbed".
 if [ "$SESSION_ID_ONLY" = 1 ]; then
   _TRAILERS=(--trailer "Session-Id: $OC_ACTOR")
 else
-  _TRAILERS=(--trailer "Session-Id: $OC_ACTOR" --trailer "Issue-Ref: #$ISSUE")
+  # #45: QUALIFIED, always. `Issue-Ref: #N` is unreachable from this wrapper —
+  # the slug is interpolated, not optional — because a bare ref in a ported
+  # commit autolinks to a real but DIFFERENT upstream issue.
+  _TRAILERS=(--trailer "Session-Id: $OC_ACTOR" --trailer "Issue-Ref: $ISSUE_REPO#$ISSUE")
 fi
 if $G -c trailer.ifexists=replace commit "${_TRAILERS[@]}" "${MSGS[@]}"; then
   CSHA="$($G rev-parse --short HEAD)"
@@ -550,7 +677,7 @@ if $G -c trailer.ifexists=replace commit "${_TRAILERS[@]}" "${MSGS[@]}"; then
   # the leg is skipped structurally rather than by a NO_COMMENT side effect.
   if [ "$SESSION_ID_ONLY" = 0 ] && [ "$NO_COMMENT" = 0 ] && [ "${OC_COMMIT_COMMENT:-1}" = 1 ]; then
     IL="${OC_ISSUE_LOG_BIN:-$OC_TOOLS_DIR/issue/oc-issue-log}"
-    if "$IL" "$ISSUE" "$CSHA" ${CSTATE:+--state "$CSTATE"} --repo "${OC_ISSUE_LOG_REPO:-leshchenko1979/opencrabs}" --repo-path "$REPO" >/dev/null 2>&1; then
+    if "$IL" "$ISSUE" "$CSHA" ${CSTATE:+--state "$CSTATE"} --repo "${OC_ISSUE_LOG_REPO:-$ISSUE_REPO}" --repo-path "$REPO" >/dev/null 2>&1; then
       echo "implementation comment posted on #$ISSUE"
     else
       echo "COMMENT FAILED after commit $CSHA — post it NOW: $IL $ISSUE $CSHA --state '<verification>'" >&2
