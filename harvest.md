@@ -227,12 +227,15 @@ Rules:
   fork). WE close the fork issue (step 5) right
   after the PR is up — do not wait for the maintainer merge.
 - **QUALIFIED FORK REFS (fork [#54](https://github.com/leshchenko1979/opencrabs/issues/54)):**
-  no bare `#N` with FORK issue numbers on any upstream surface (PR body,
-  PR title, issue body, comment) OUTSIDE a code span — write
+  no bare `#N` with FORK issue numbers on ANY upstream surface — PR body,
+  PR title, issue body, comment, **a source or doc comment in a file the port
+  ships (`src/**`, `src/tests/**` included)**, **the commit subject's `(#N)`
+  suffix**, and **the `Issue-Ref:` trailer** (always
+  `Issue-Ref: leshchenko1979/opencrabs#N`). Write
   `leshchenko1979/opencrabs#N` or the full URL (GitHub autolinks bare `#N`
-  against adolfo's issue space). Code spans exempt. Bare `#N` stays reserved
-  for UPSTREAM-local references. Incident + rationale:
-  §Phase 7 Reference Rules below.
+  against adolfo's issue space). The exemption is MARKDOWN BACKTICKS only,
+  never shipped source. Bare `#N` stays reserved for UPSTREAM-local
+  references. Corpus + incident: §Phase 7 Reference Rules below.
 - One feature = one PR; never bundle two features to save a PR.
 - **DEEP CORE ADVANCE HEADS-UP GATE (owner order 2026-09-17; paths corrected + executor assigned v0.4.204, HQ ruling 2026-09-18; config added to scope by owner order 2026-09-19):** If the PR touches **Deep Core** (runtime scheduler, compaction algorithms, provider routing/fallbacks, subagent orchestration, tool loop, configuration — loading, profile resolution, write guards, migrations — the PROSE scope is operative, paths are a reading aid: `src/cron/`, `src/brain/agent/service/tool_loop.rs`, `src/brain/agent/context.rs`, `src/brain/provider/`, `src/brain/tools/subagent/`, `src/config/`), post a concise 1-liner heads-up **as a comment on the upstream PR itself, by the filing lane** (it filed the PR, so it already holds the surface), before or simultaneously with opening it: `Core heads-up: <symptom> → proposed fix in <subsystem> (PR #<N>)` — nothing else; detail belongs in the PR body. **TELEGRAM VENUES RETIRED 2026-09-27 (owner relay + maintainer request):** the former `OC Dev` / `Opencrabs Dev Factory` group-post venues are WITHDRAWN — `OC Dev` carries the maintainer (`@adolfodev`) as a NON-OPERATOR member, which makes it member-visible under §Agent briefing law, and he has asked for feedback on GitHub only. With the venue on GitHub, §Telegram surface law no longer applies and the filing lane posts it directly. Surface integrations (Telegram channel handler, cards, formatting) remain under autonomous maintainer authority and ship with 4-leg smoke receipts without advance group chat posting. Canon: `harvest.md §Deep Core Advance Heads-Up Gate`.
 - **ATOMICITY & ZERO BUNDLING:** the LAW — **1 Intent = 1 Unit**, never mix features and bug fixes in
@@ -374,13 +377,19 @@ Reference detail behind upstream PR harvesting and surfaces:
 
 - **QUALIFIED FORK REFS on upstream surfaces (fork [#54](https://github.com/leshchenko1979/opencrabs/issues/54)):**
   a bare `#N` where N is a FORK issue number must never appear on an upstream
-  surface (PR body, PR title, issue body, comment) OUTSIDE a code span — GitHub
-  autolinks it against adolfousier's issue space and the tooltip points at an
-  unrelated upstream issue (upstream #29 = memory-process question vs fork #29 =
-  compaction signal). Write `leshchenko1979/opencrabs#N` or the full URL. Bare
-  `#N` stays reserved for UPSTREAM-local references. Code spans are exempt
-  (GitHub does not autolink inside backticks) — literal log-line quotes stay
-  verbatim. Fork-side surfaces are unaffected (bare #N resolves correctly there).
+  surface — PR body, PR title, issue body, comment, **a source/doc comment in
+  any file the port ships (`src/**`, `src/tests/**` included)**, **the commit
+  subject's `(#N)` suffix**, or **the `Issue-Ref:` trailer**. GitHub autolinks
+  it against adolfousier's issue space and the tooltip points at an unrelated
+  upstream issue (upstream #29 = memory-process question vs fork #29 =
+  compaction signal); where the number is absent upstream the ref is simply
+  dead. Write `leshchenko1979/opencrabs#N` or the full URL. Bare `#N` stays
+  reserved for UPSTREAM-local references. The exemption is MARKDOWN CODE
+  SPANS (backticks) — never a source comment; literal log-line quotes stay
+  verbatim. Fork-side surfaces are unaffected (bare #N resolves correctly
+  there). **Measured 2026-10-17: 43 such lines in upstream `src/` from our
+  commits, and 49 of 59 `Issue-Ref` numbers in upstream history appear ONLY
+  bare — the 2026-08-31 "sweep clean" claim is WITHDRAWN.**
 
 ### Deep Core Advance Heads-Up Gate (Core vs Integration Rule, Owner Order 2026-09-17)
 
