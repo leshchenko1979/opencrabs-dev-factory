@@ -26,9 +26,21 @@
 #   UPSTREAM_UNREACHABLE repo, ref or path could not be read (never green)
 #   +UPSTREAM_MOVED      suffix advisory: origin/main advanced past the recorded ref
 #
-# The delta is matched as a REGEX against whole lines and stripped from BOTH
-# sides, so a declared line that was merely reworded upstream still reports
-# DRIFTED rather than silently passing.
+# Two delta SHAPES are supported, because the manifest must be able to name any
+# legitimate difference and nothing more:
+#
+#   {"match": ..., "match_upstream": ..., "why": ...}
+#       A REGEX matched against whole lines (fullmatch) and stripped from BOTH
+#       sides. Use when the line is UNIQUE in the file: a reworded upstream line
+#       still reports DRIFTED rather than silently passing.
+#
+#   {"block": [<exact lines>], "side": "local"|"upstream", "why": ...}
+#       A contiguous patch stripped as an EXACT run from ONE side only (#44).
+#       Use when the lines are NOT unique -- a bare '#', a blank line, a
+#       duplicated assertion -- where any per-line pattern broad enough to match
+#       would also strip unrelated lines and stop the guard discriminating.
+#       The block must occur EXACTLY ONCE on its own side; zero or two
+#       occurrences is DRIFTED naming the count, never a silent pass (#343).
 
 set -uo pipefail
 
@@ -224,6 +236,121 @@ rc, out = check(mpath, local, up)
 ck("UPSTREAM_MOVED" in out,
    "upstream advanced -> UPSTREAM_MOVED advisory present (control)")
 
+# LEG 7 -- a BLOCK delta (#44): a contiguous patch whose lines are NOT unique.
+# The real case (measured 2026-10-17 on the vendored oc-questions) carried a bare
+# '#', a blank line and a duplicated assertion, so NO per-line pattern can name
+# it: a broad one strips unrelated lines and the guard stops discriminating (the
+# #41 trap). A block is stripped as an EXACT contiguous run, own side only.
+BLOCK_UP = ('#!/usr/bin/env python3\n'
+            '# old one\n'
+            'CLOSED = ("a", "b")\n'
+            '# SHARED MARKER\n'
+            'SHARED = 1\n'
+            'def main():\n'
+            '    return 0\n')
+BLOCK_LOC = ('#!/usr/bin/env python3\n'
+             '#\n'
+             '# new\n'
+             '#\n'
+             'CLOSED = ("a", "b", "c")\n'
+             '# SHARED MARKER\n'
+             'SHARED = 1\n'
+             'def main():\n'
+             '    return 0\n')
+with open(os.path.join(up, "T", "thing"), "w") as fh:
+    fh.write(BLOCK_UP)
+subprocess.run(["git", "-C", up, "add", "-A"], check=True, capture_output=True)
+subprocess.run(["git", "-C", up, "commit", "-qm", "block"], check=True,
+               capture_output=True)
+subprocess.run(["git", "-C", up, "branch", "-f", "origin/main", "HEAD"],
+               check=True, capture_output=True)
+REF_B = subprocess.run(["git", "-C", up, "rev-parse", "HEAD"],
+                       capture_output=True, text=True).stdout.strip()
+with open(LOC, "w") as fh:
+    fh.write(BLOCK_LOC)
+blk = {"upstream_repo": up,
+       "vendor": [{"local": "tools/state/thing", "upstream_path": "T/thing",
+                   "ref": REF_B,
+                   "delta": [
+                       {"block": ["# old one", 'CLOSED = ("a", "b")'],
+                        "side": "upstream", "why": "upstream form"},
+                       {"block": ["#", "# new", "#",
+                                  'CLOSED = ("a", "b", "c")'],
+                        "side": "local",
+                        "why": "local patch with a duplicated hash line"}]}]}
+write_manifest(blk)
+rc, out = check(mpath, local, up)
+ck(rc == 0 and "IN_SYNC" in out,
+   "block delta carrying non-unique lines -> IN_SYNC rc=0 (rc=%d)" % rc)
+
+# LEG 7b -- one byte edited INSIDE a declared block is drift: a block is EXACT,
+# never a fuzzy region.
+with open(LOC, "w") as fh:
+    fh.write(BLOCK_LOC.replace('"a", "b", "c"', '"a", "b", "d"'))
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "DRIFTED" in out,
+   "one byte inside a declared block -> DRIFTED rc=1 (rc=%d)" % rc)
+
+# LEG 7c -- a block occurring TWICE is unusable and must FAIL CLOSED, naming the
+# count. This is the control that stops "strip the first match" from passing.
+with open(LOC, "w") as fh:
+    fh.write(BLOCK_LOC + BLOCK_LOC)
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "occurs 2 times" in out,
+   "ambiguous block (2 occurrences) -> DRIFTED naming the count (rc=%d)" % rc)
+
+# LEG 7d -- SIDE SCOPING: a block declared for ONE side must not be stripped
+# from the other. Both files are IDENTICAL and carry the marker, and the marker
+# is declared for 'upstream' ONLY: side respected leaves the local copy in place
+# and the verdict is DRIFTED; ignoring `side` strips it from both, the files
+# match, and the verdict reads IN_SYNC -- silently hiding that the declaration
+# names the wrong side. (Measured 2026-10-17: the first version of this leg used
+# divergent fixtures, so stripping the block from both sides STILL differed and
+# the leg passed under the very mutant it exists to catch.)
+SIDE_BOTH = ('#!/usr/bin/env python3\n'
+             '# SHARED MARKER\n'
+             'SHARED = 1\n'
+             'def main():\n'
+             '    return 0\n')
+with open(os.path.join(up, "T", "thing"), "w") as fh:
+    fh.write(SIDE_BOTH)
+subprocess.run(["git", "-C", up, "add", "-A"], check=True, capture_output=True)
+subprocess.run(["git", "-C", up, "commit", "-qm", "side"], check=True,
+               capture_output=True)
+subprocess.run(["git", "-C", up, "branch", "-f", "origin/main", "HEAD"],
+               check=True, capture_output=True)
+REF_C = subprocess.run(["git", "-C", up, "rev-parse", "HEAD"],
+                       capture_output=True, text=True).stdout.strip()
+with open(LOC, "w") as fh:
+    fh.write(SIDE_BOTH)
+side_man = {"upstream_repo": up,
+            "vendor": [{"local": "tools/state/thing",
+                        "upstream_path": "T/thing", "ref": REF_C,
+                        "delta": [{"block": ["# SHARED MARKER", "SHARED = 1"],
+                                   "side": "upstream",
+                                   "why": "side-scoping control"}]}]}
+write_manifest(side_man)
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "DRIFTED" in out,
+   "a block declared for one side is not stripped from the other -> DRIFTED "
+   "(rc=%d)" % rc)
+
+# LEG 7e -- a delta entry with NO matcher must FAIL CLOSED. The old code fell
+# back to "$^", which under fullmatch matches the EMPTY string: it strips every
+# blank line from both sides and the pair reads IN_SYNC -- a silent over-strip
+# that makes the guard stop discriminating. The files here are IDENTICAL, so
+# IN_SYNC is exactly the wrong answer and only the declaration is at fault.
+with open(LOC, "w") as fh:
+    fh.write(SIDE_BOTH)
+nomatch_man = {"upstream_repo": up,
+               "vendor": [{"local": "tools/state/thing",
+                           "upstream_path": "T/thing", "ref": REF_C,
+                           "delta": [{"why": "no matcher declared at all"}]}]}
+write_manifest(nomatch_man)
+rc, out = check(mpath, local, up)
+ck(rc == 1 and "DRIFTED" in out and "neither 'match' nor" in out,
+   "a delta with no matcher -> DRIFTED, never a silent strip (rc=%d)" % rc)
+
 shutil.rmtree(tmp, ignore_errors=True)
 print("selftest: %d passed, %d failed" % (ok, bad))
 sys.exit(1 if bad else 0)
@@ -269,9 +396,28 @@ def norm(text, delta, side="local"):
     file that is exactly as declared.
     """
     pats = []
-    for d in (delta or []):
+    blocks = []
+    for i, d in enumerate(delta or []):
+        if "block" in d:
+            # A BLOCK delta (#44): a contiguous patch whose lines are NOT unique
+            # in the file -- a bare '#', a blank line, a duplicated assertion --
+            # so no per-line pattern can name it without stripping unrelated
+            # lines. It is stripped from its OWN side only, as an exact
+            # contiguous run.
+            if (d.get("side") or "local") == side:
+                blocks.append(d)
+            continue
         m = d.get("match_upstream") if side == "upstream" else d.get("match")
-        m = m or d.get("match") or "$^"
+        m = m or d.get("match")
+        if not m:
+            # FAIL CLOSED. The old fallback was "$^", which is a VALID
+            # regex matching the EMPTY string: under fullmatch it strips
+            # every blank line from BOTH sides, so a declaration that
+            # names nothing silently over-strips and reads green -- the
+            # #41 force-match trap wearing a default.
+            raise ValueError(
+                "delta entry #%d has neither 'match' nor 'match_upstream'"
+                % (i + 1))
         pats.append(re.compile(m))
     out = []
     for line in text.splitlines(True):
@@ -282,7 +428,24 @@ def norm(text, delta, side="local"):
         if any(p.fullmatch(line.rstrip("\n")) for p in pats):
             continue
         out.append(line)
-    return "".join(out)
+    text = "".join(out)
+    for d in blocks:
+        block = d["block"]
+        lines = text.splitlines()
+        spans = [i for i in range(len(lines) - len(block) + 1)
+                 if block and lines[i:i + len(block)] == block]
+        if len(spans) != 1:
+            # FAIL CLOSED (#343): a block that is absent or AMBIGUOUS cannot be
+            # declared, and must never read as stripped. The caller turns this
+            # into DRIFTED naming the count -- never a silent pass, never a
+            # traceback that bypasses the verdict vocabulary.
+            raise ValueError(
+                "declared block occurs %d times (need exactly 1): %s"
+                % (len(spans), (d.get("why") or "")[:70] or repr(block[:1])))
+        i = spans[0]
+        del lines[i:i + len(block)]
+        text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    return text
 
 try:
     with open(MANIFEST, encoding="utf-8") as fh:
@@ -340,11 +503,27 @@ for e in entries:
 
     with open(local_abs, encoding="utf-8", errors="replace") as fh:
         local_text = fh.read()
-    a = norm(local_text, delta, "local")
-    b = norm(up_text, delta, "upstream")
+    try:
+        a = norm(local_text, delta, "local")
+        b = norm(up_text, delta, "upstream")
+    except ValueError as exc:
+        # A declared delta that cannot be applied is DRIFT, never a pass and
+        # never a crash: the manifest is part of the claim being made (#44).
+        row["verdict"] = "DRIFTED"
+        row["detail"] = "declared delta unusable: %s" % exc
+        drift += 1
+        results.append(row)
+        continue
     if a == b:
-        row["detail"] = "%d lines match after %d declared delta line(s)" % (
-            len(a.splitlines()), len(delta))
+        n_pats = sum(1 for d in delta if "block" not in d)
+        n_block = sum(len(d.get("block") or []) for d in delta
+                      if "block" in d)
+        row["detail"] = ("%d lines match after %d delta entr%s "
+                         "(%d per-line pattern%s, %d block line%s)") % (
+            len(a.splitlines()), len(delta),
+            "y" if len(delta) == 1 else "ies",
+            n_pats, "" if n_pats == 1 else "s",
+            n_block, "" if n_block == 1 else "s")
     else:
         al, bl = a.splitlines(), b.splitlines()
         first = ""

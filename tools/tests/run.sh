@@ -3343,11 +3343,22 @@ $(printf '%s' "$VD_OUT" | head -5)"
   else
     bad "oc-vendor-drift: unresolvable ref gave rc=$VD_BRC, contract says 3"
   fi
+  # Assert ZERO FAILED plus a FLOOR on the pass count, never an exact total.
+  # An exact total is brittle in the wrong direction: every legitimate new leg
+  # reddens the battery for no reason, and the tempting repair is to lower the
+  # number -- which is exactly how a leg gets silently deleted. The floor keeps
+  # the anti-deletion property (measured 2026-10-17: the hardcoded "8 passed"
+  # reddened the battery when #44 took the suite to 13).
   VD_ST="$(./tools/audit/oc-vendor-drift --selftest 2>&1)"; VD_SRC=$?
-  case "$VD_ST" in
-    *"selftest: 8 passed, 0 failed"*) ok "oc-vendor-drift selftest: 8 passed, 0 failed" ;;
-    *) bad "oc-vendor-drift selftest: $(printf '%s' "$VD_ST" | tail -2)" ;;
-  esac
+  VD_PASS="$(printf '%s' "$VD_ST" | sed -n 's/^selftest: \([0-9][0-9]*\) passed.*/\1/p' | tail -1)"
+  VD_FAIL="$(printf '%s' "$VD_ST" | sed -n 's/.*passed, \([0-9][0-9]*\) failed.*/\1/p' | tail -1)"
+  VD_FLOOR=13   # floor, not a total: #44 (block deltas) took 8 -> 13
+  if [ "${VD_FAIL:-x}" = 0 ] && [ -n "$VD_PASS" ] && [ "$VD_PASS" -ge "$VD_FLOOR" ]; then
+    ok "oc-vendor-drift selftest: $VD_PASS passed, 0 failed (floor $VD_FLOOR)"
+  else
+    bad "oc-vendor-drift selftest: passed=${VD_PASS:-?} failed=${VD_FAIL:-?} floor=$VD_FLOOR:
+$(printf '%s' "$VD_ST" | tail -3)"
+  fi
   [ "$VD_SRC" -eq 0 ] || bad "oc-vendor-drift selftest rc=$VD_SRC"
 else
   bad "oc-vendor-drift missing at tools/audit/oc-vendor-drift"

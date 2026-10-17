@@ -5,8 +5,8 @@
   {
    "local": "tools/state/oc-questions",
    "upstream_path": "TEMPLATE/tools/questions",
-   "ref": "a67a7ddfd08dba16f379bdfa9b773ca4c410cda2",
-   "why": "The Open Questions register. This fleet's file must be named oc-questions (the vpn backend resolver globs */oc-questions and requires exactly one match); upstream names it questions. Re-flattened 2026-10-06 at origin/main 7ead63d (which carries #762 — `resolve_lane` prefers a `topic_edited` rename row over the stale creation-time `topic_name`, and the selftest covers it); before that 2026-10-05 at origin/main 657a7cb; the content last changed upstream at 657a7cb (#736 — the `--help` synopsis now names the sanctioned recommendation form `[--recommended <0-based-index|LABEL|LETTER>]` on BOTH `ask` and `amend`; the resolver was already correct and is untouched) and before that at a484af7 (#709 — `--schema` is DERIVED from FLAG_SPEC, the ONE flag table the handlers themselves parse with, so a consumer reads the contract instead of keeping a second copy that drifts; every cmd_* now parses via flag_spec(<verb>), behaviour-identical by construction) and this copy carries it byte-for-byte after the seven declared deltas. Six of the seven were UPSTREAM-IDENTICAL at the 2026-10-06 flatten (upstream had adopted them since the old ref), so they matched on both sides and stayed declared no-ops, kept so the comparison stays symmetric; the routing-default comment left that class on 2026-10-08, when the owner re-scoped the fork into a third stream; that re-scope was SUPERSEDED on 2026-10-09 (fork = the single binary-issue home, upstream PRs-only), and the local comment now reads 'two-stream routing, SKILL.md; owner order 2026-10-03, superseded 2026-10-09'. It is a live delta of TWO single-line alternatives, with `match` naming OUR forms and `match_upstream` theirs. RE-FLATTENED 2026-10-17 at origin/main a67a7dd (recorded ref was 7ead63d): upstream adopted the #494 behaviour this copy had carried LOCALLY since 2026-10-16 (the status-based DELIVERY population, DELIVERABLE_STATUSES, and the retraction-clears-the-answer legs), so the local divergence became upstream's own code and the copy is now byte-identical to a67a7dd after EIGHT declared deltas -- the six live ones above, the close-reason entry (now a symmetric no-op because upstream adopted its local form; kept so the comparison stays symmetric) and the two documentation-pointer comment lines that the old ref never compared. The ROUTING-COMMENT delta was REMOVED at the same flatten: upstream adopted our two-line form verbatim, so the entry became ASYMMETRIC -- it still stripped our two lines while its stale `match_upstream` (`# fork.`) stripped nothing upstream, shifting the comparison and reporting DRIFTED at line 202 with `6314 vendored vs 6316 upstream`. A delta whose two sides have converged must be deleted, not left declared: a one-sided strip is a defect in the comparison, not a no-op. Between 7ead63d and a67a7dd TEMPLATE/tools/questions moved +286/-24; the renderer is BYTE-IDENTICAL across the same range, so its ref is bumped for a single flatten instant, not because its content moved.",
+   "ref": "c2856ad09abb251feb237336a0892c7da9496a81",
+   "why": "Vendored copy of the Open Questions register. The delta below is the DEPLOYMENT difference only. Re-flattened at c2856ad (#44): the #497 vocabulary widening is now declared as BLOCK deltas because its lines are not unique (a bare '#' and blank lines recur), and a per-line pattern broad enough to name them would strip unrelated lines and stop the guard discriminating -- the #41 trap. A block is an EXACT contiguous run stripped from its OWN side only; zero or two occurrences is DRIFTED, never a silent pass (#343).",
    "delta": [
     {
      "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
@@ -19,8 +19,8 @@
      "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
     },
     {
-     "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
-     "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+     "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+     "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
      "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
     },
     {
@@ -47,18 +47,98 @@
      "match": "^# Unified tools log \\(schema per RC-CONTRACT\\)$",
      "match_upstream": "^# Unified tools log \\(entry: ts, tool, actor, args, exit, secs, extra\\)$",
      "why": "Same class as the rc-vocabulary line: this fleet points at RC-CONTRACT.md for the unified-log schema instead of restating the field list, so the two copies cannot drift apart on a schema the doc already owns. Undeclared until the 2026-10-17 re-flatten surfaced it. UPSTREAM ASK: none."
+    },
+    {
+     "block": [
+      "# A question is CLOSED once it is answered, withdrawn, expired, or closed by a",
+      "# predicate. \"clarifying\" is NOT closed: a Clarify request means the owner asked",
+      "# for more context and is still waiting. Counting it as closed archived the WHOLE",
+      "# set and silently removed it from the live register \u2014 the opposite of the",
+      "# contract (\"a Clarify request ... never silently closes the question\").",
+      "#",
+      "# \"resolved_mechanically\" BELONGS HERE and was missing (#497). The mechanical",
+      "# writer in `apply_mechanical_closures` stamps that status TOGETHER with",
+      "# `closed_at` and `closed_reason` \u2014 a CLOSED row by every other measure \u2014 while",
+      "# this tuple, which `question_is_closed` is a plain membership test on, did not",
+      "# name it. One omission, three readers wrong at once: the predicate said False,",
+      "# so `set_is_closed` could never archive a mechanically-resolved set (its last",
+      "# question never read as closed), and `cmd_answer`'s idempotent-by-contract guard",
+      "# never fired, letting a resolved question be FLIPPED to `answered` by a",
+      "# re-submit instead of being refused with rc 3. The law settles which side is",
+      "# wrong \u2014 `docs/instruments/open-questions.md` \u00a73: \"Closure is mechanical",
+      "# wherever it can be\" \u2014 so the vocabulary is widened, not the writer changed.",
+      "# ONE constant, because every reader derives from it: no reader-local special",
+      "# case, no second list (#494's class, applied to closure).",
+      "CLOSED_STATUSES = (\"answered\", \"withdrawn\", \"expired\", \"resolved_mechanically\")"
+     ],
+     "side": "local",
+     "why": "local-only patch at residual line 781 (20 lines, 0 context)"
+    },
+    {
+     "block": [
+      "# A question is CLOSED only once it is answered, withdrawn or expired.",
+      "# \"clarifying\" is NOT closed: a Clarify request means the owner asked for more",
+      "# context and is still waiting. Counting it as closed archived the WHOLE set and",
+      "# silently removed it from the live register \u2014 the opposite of the contract",
+      "# (\"a Clarify request ... never silently closes the question\").",
+      "CLOSED_STATUSES = (\"answered\", \"withdrawn\", \"expired\")"
+     ],
+     "side": "upstream",
+     "why": "upstream form replaced at residual line 781 (6 lines, 0 context)"
+    },
+    {
+     "block": [
+      "        # -- 8e. #497: the closed vocabulary NAMES the status the mechanical",
+      "        # writer writes. `apply_mechanical_closures` stamps `resolved_mechanically`",
+      "        # together with `closed_at` and `closed_reason` -- a closed row by every",
+      "        # other measure -- while CLOSED_STATUSES, which `question_is_closed` is a",
+      "        # plain membership test on, did not name it. One omission, three readers",
+      "        # wrong at once, so the legs below are the three readers plus the control.",
+      "        ck(question_is_closed({\"status\": \"resolved_mechanically\"}),",
+      "           \"question_is_closed reads a mechanically-resolved row as CLOSED (#497)\")",
+      "        # The set predicate is the second reader, and it is what `gc` consults",
+      "        # before it flips a fully-closed set. A set of ONE mechanically-resolved",
+      "        # question was never closed, so the set stayed `open` forever.",
+      "        ck(set_is_closed({\"questions\": [{\"status\": \"resolved_mechanically\"}]}),",
+      "           \"\\u2026and set_is_closed reads a mechanically-resolved set as CLOSED\")",
+      "        ck(get_set(mech_set).get(\"status\") == \"answered\",",
+      "           \"\\u2026so gc marks the set itself answered once every question is \"",
+      "           \"closed (status=%r)\" % (get_set(mech_set) or {}).get(\"status\"))",
+      "        # The third reader is `cmd_answer`'s idempotent-by-contract guard. It must",
+      "        # REFUSE (rc 3) and leave the row untouched -- not flip it to `answered`.",
+      "        rc, out, _ = run(\"answer\", mech_set, \"q1\", \"0\")",
+      "        ck(rc == 3, \"a re-submit on a mechanically-resolved question is REFUSED, \"",
+      "                    \"idempotent-by-contract (rc=%d)\" % rc)",
+      "        ck(get_set(mech_set)[\"questions\"][0][\"status\"] == \"resolved_mechanically\",",
+      "           \"\\u2026and the row keeps its status instead of being flipped to \"",
+      "           \"answered (%r)\" % get_set(mech_set)[\"questions\"][0][\"status\"])",
+      "        # THE POSITIVE CONTROL. A fix that widened the guard to refuse everything",
+      "        # would pass every leg above, so the three statuses that were ALREADY in",
+      "        # the vocabulary must keep reading closed, and the three that were never",
+      "        # closed must keep reading open. The vocabulary was WIDENED, not replaced.",
+      "        for _closed in (\"answered\", \"withdrawn\", \"expired\"):",
+      "            ck(question_is_closed({\"status\": _closed}),",
+      "               \"\\u2026and the pre-existing status %r still reads CLOSED\" % _closed)",
+      "        for _open in (\"open\", \"clarifying\", \"clarified\"):",
+      "            ck(not question_is_closed({\"status\": _open}),",
+      "               \"\\u2026while %r still reads NOT closed, so the guard was widened \"",
+      "               \"rather than made to refuse everything\" % _open)",
+      ""
+     ],
+     "side": "local",
+     "why": "local-only patch at residual line 5211 (36 lines, 0 context)"
     }
    ]
   },
   {
    "local": "tools/state/oc-questions-render.mjs",
    "upstream_path": "TEMPLATE/tools/questions-render.mjs",
-   "ref": "a67a7ddfd08dba16f379bdfa9b773ca4c410cda2",
+   "ref": "c2856ad09abb251feb237336a0892c7da9496a81",
    "why": "The json-render catalog the register renders its page through. Re-flattened 2026-10-06 at origin/main 7ead63d; the only upstream movement since ece0f4e is commit 6bc92ae (fix(template): no shipped file depends on the absent `oc-*` toolchain, #85), which genericised the two header comment lines so upstream names its own `questions` / `tools/questions`. Those names are WRONG for this fleet -- the copy here really is `tools/state/oc-questions-render.mjs`, invoked by `tools/state/oc-questions` -- so both lines are declared deltas, same class as the register's deployment-name deltas. Otherwise byte-identical.",
    "delta": [
     {
-     "match": "^// oc\\-questions\\-render\\.mjs — the Open Questions page renderer \\(#547\\)\\.$",
-     "match_upstream": "^// questions\\-render\\.mjs — the Open Questions page renderer \\(#547\\)\\.$",
+     "match": "^// oc\\-questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
+     "match_upstream": "^// questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
      "why": "Self-identification header: must name the file that exists here. Upstream names its own TEMPLATE file."
     },
     {
