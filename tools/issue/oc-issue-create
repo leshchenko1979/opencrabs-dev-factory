@@ -448,6 +448,13 @@ JSN
   chk "fix title on the FORK + --fork-only passes" 0 $?
   has "…and the fork-only declaration is RECORDED"  "$T/o29" 'recorded the fork-only declaration on #4242'
   hasnt "…and no unrecorded-declaration WARN"       "$T/o29" 'could NOT be recorded'
+  # The OTHER channel: --root satisfies the ORIGIN gate on the fork. Without this
+  # leg the gate is only proven to accept one of its two escape hatches, so a
+  # regression narrowing it to --fork-only alone would read green.
+  bash "$SELF" --title "fix(tools): fork-rooted" --body x --tracker binary --root upstream:1662 >"$T/o30" 2>&1
+  chk "fix title on the FORK + --root passes"      0 $?
+  has "…and the root declaration is RECORDED"      "$T/o30" 'recorded the root declaration on #4242'
+  hasnt "…and no origin refusal fired"             "$T/o30" 'fork-only boundary'
 
   # --- two-stream tracker routing (SKILL.md; owner order 2026-10-09) ----------
   # The default MUST be the factory tracker: a SILENT fork default is exactly the
