@@ -226,22 +226,29 @@ Rules:
   it resolves against adolfousier's issue space, not ours (issues live on the
   fork). WE close the fork issue (step 5) right
   after the PR is up — do not wait for the maintainer merge.
-- **QUALIFIED FORK REFS (fork [#54](https://github.com/leshchenko1979/opencrabs/issues/54)):**
-  no bare `#N` with FORK issue numbers on ANY upstream surface — PR body,
-  PR title, issue body, comment, **a source or doc comment in a file the port
-  ships (`src/**`, `src/tests/**` included)**, **the commit subject's `(#N)`
-  suffix**, and **the `Issue-Ref:` trailer** (always
-  `Issue-Ref: leshchenko1979/opencrabs#N`). Write
-  `leshchenko1979/opencrabs#N` or the full URL (GitHub autolinks bare `#N`
-  against adolfo's issue space). The exemption is MARKDOWN BACKTICKS only,
-  never shipped source. Bare `#N` stays reserved for UPSTREAM-local
-  references. **AUTHORING BINDS BEFORE PORTING (owner order 2026-10-19):**
-  the fork's `src/**` is UPSTREAM-VISIBLE BY DEFAULT — the maintainer pulls
-  fork code directly, with no port and no gate in the loop — so qualify the
-  ref WHEN YOU WRITE THE COMMENT. A bare `#N` is legal on a fork-only
-  surface and FORBIDDEN in `src/**`. 108 such refs reached upstream by a
-  PULL, not a port; no port-time check could see them. Corpus + incident:
-  §Phase 7 Reference Rules below.
+- **NO FORK ISSUE NUMBER ON AN UPSTREAM SURFACE, BARE **OR** QUALIFIED (fork [#54](https://github.com/leshchenko1979/opencrabs/issues/54)):**
+  the maintainer REFUSED the qualifier itself on 2026-10-19 — PR
+  [#2126](https://github.com/opencrabs/opencrabs/pull/2126) closed unmerged,
+  *"hardcoding an external personal fork namespace
+  (`leshchenko1979/opencrabs#N`) into the core source code is an anti-pattern
+  we cannot merge"*. So the 2026-10-17 remedy ("write the qualifier") is
+  DEAD: on an upstream-visible surface a fork number must not appear at all.
+  **The remedy is self-contained prose stating the WHY inline** — what the
+  defect WAS, never where we filed it — or, where a ticket is genuinely
+  needed, an UPSTREAM ticket id. Surfaces: PR/issue bodies, titles, comments;
+  **source and doc comments in any file the port ships (`src/**`,
+  `src/tests/**`)**; **the commit subject's `(#N)` suffix**. The
+  `Issue-Ref:` trailer is the ONE place a fork ticket stays legal
+  (`Issue-Ref: leshchenko1979/opencrabs#N`) — it is OUR routing metadata and
+  the maintainer's own advice puts history context in trailers, not code.
+  The exemption is MARKDOWN CODE SPANS (backticks) — never a source comment;
+  bare `#N` stays reserved for UPSTREAM-local references. **AUTHORING BINDS
+  BEFORE PORTING (owner order 2026-10-19):** the fork's `src/**` is
+  UPSTREAM-VISIBLE BY DEFAULT — the maintainer pulls fork code directly, with
+  no port and no gate in the loop — so the comment must stand alone WHEN YOU
+  WRITE IT. 108 fork-only refs reached upstream by a PULL, not a port; no
+  port-time check could see them. Corpus + THE REFUSAL verbatim:
+  §Phase 7 Reference Rules below; canon `fleet-directives.md` item 4.
 - One feature = one PR; never bundle two features to save a PR.
 - **DEEP CORE ADVANCE HEADS-UP GATE (owner order 2026-09-17; paths corrected + executor assigned v0.4.204, HQ ruling 2026-09-18; config added to scope by owner order 2026-09-19):** If the PR touches **Deep Core** (runtime scheduler, compaction algorithms, provider routing/fallbacks, subagent orchestration, tool loop, configuration — loading, profile resolution, write guards, migrations — the PROSE scope is operative, paths are a reading aid: `src/cron/`, `src/brain/agent/service/tool_loop.rs`, `src/brain/agent/context.rs`, `src/brain/provider/`, `src/brain/tools/subagent/`, `src/config/`), post a concise 1-liner heads-up **as a comment on the upstream PR itself, by the filing lane** (it filed the PR, so it already holds the surface), before or simultaneously with opening it: `Core heads-up: <symptom> → proposed fix in <subsystem> (PR #<N>)` — nothing else; detail belongs in the PR body. **TELEGRAM VENUES RETIRED 2026-09-27 (owner relay + maintainer request):** the former `OC Dev` / `Opencrabs Dev Factory` group-post venues are WITHDRAWN — `OC Dev` carries the maintainer (`@adolfodev`) as a NON-OPERATOR member, which makes it member-visible under §Agent briefing law, and he has asked for feedback on GitHub only. With the venue on GitHub, §Telegram surface law no longer applies and the filing lane posts it directly. Surface integrations (Telegram channel handler, cards, formatting) remain under autonomous maintainer authority and ship with 4-leg smoke receipts without advance group chat posting. Canon: `harvest.md §Deep Core Advance Heads-Up Gate`.
 - **ATOMICITY & ZERO BUNDLING:** the LAW — **1 Intent = 1 Unit**, never mix features and bug fixes in
@@ -381,29 +388,35 @@ Reference detail behind upstream PR harvesting and surfaces:
 - **CROSS-BOUNDARY UNIT TEST INTEGRITY (v0.4.198):**
   Unit tests in upstream PRs that assert file paths, contracts, or serialized formats must test real cross-boundary interaction (e.g. real file writer -> reader round-trip in a `tempfile` directory) rather than testing a helper function against its own internal delegate. Tautological unit tests provide zero regression protection across module boundaries and are rejected.
 
-- **QUALIFIED FORK REFS on upstream surfaces (fork [#54](https://github.com/leshchenko1979/opencrabs/issues/54)):**
-  a bare `#N` where N is a FORK issue number must never appear on an upstream
-  surface — PR body, PR title, issue body, comment, **a source/doc comment in
-  any file the port ships (`src/**`, `src/tests/**` included)**, **the commit
-  subject's `(#N)` suffix**, or **the `Issue-Ref:` trailer**. GitHub autolinks
-  it against adolfousier's issue space and the tooltip points at an unrelated
-  upstream issue (upstream #29 = memory-process question vs fork #29 =
-  compaction signal); where the number is absent upstream the ref is simply
-  dead. Write `leshchenko1979/opencrabs#N` or the full URL. Bare `#N` stays
-  reserved for UPSTREAM-local references. The exemption is MARKDOWN CODE
+- **NO FORK ISSUE NUMBER ON AN UPSTREAM SURFACE, BARE **OR** QUALIFIED (fork [#54](https://github.com/leshchenko1979/opencrabs/issues/54)):**
+  a fork issue number must not appear at all on an upstream surface — PR body,
+  PR title, issue body, comment, **a source/doc comment in any file the port
+  ships (`src/**`, `src/tests/**` included)**, or **the commit subject's `(#N)`
+  suffix**. GitHub autolinks a bare `#N` against adolfousier's issue space and
+  the tooltip points at an unrelated upstream issue (upstream #29 =
+  memory-process question vs fork #29 = compaction signal); where the number is
+  absent upstream the ref is simply dead. **The remedy is self-contained prose
+  stating the WHY inline** — what the defect WAS, never where we filed it — or
+  an UPSTREAM ticket id where a ticket is genuinely needed. **The qualifier
+  `leshchenko1979/opencrabs#N` is FORBIDDEN here, not a remedy:** the maintainer
+  refused it on 2026-10-19 (*"hardcoding an external personal fork namespace
+  into the core source code is an anti-pattern we cannot merge"*) and closed PR
+  [#2126](https://github.com/opencrabs/opencrabs/pull/2126) unmerged. Bare `#N`
+  stays reserved for UPSTREAM-local references; the exemption is MARKDOWN CODE
   SPANS (backticks) — never a source comment; literal log-line quotes stay
-  verbatim. Fork-side surfaces are unaffected (bare #N resolves correctly
-  there). **AUTHORING IS THE BINDING POINT (owner order 2026-10-19):** the
+  verbatim. Fork-side surfaces are unaffected (bare `#N` resolves correctly
+  there, and the `Issue-Ref:` trailer keeps `leshchenko1979/opencrabs#N` for our
+  routing). **AUTHORING IS THE BINDING POINT (owner order 2026-10-19):** the
   maintainer pulls fork code DIRECTLY — measured 2026-10-08 (the whole LFL
   cluster absorbed, `5a71bd3c2`→`8257134ce`) and 2026-10-19
   (`extract_local_files` byte-identical to fork `origin/main`) — so a port
-  gate is not the only door to upstream, and `src/**` must be qualified at
-  authoring. **Measured 2026-10-19 at upstream `f01ef0e03`: 108 bare
-  fork-only refs across 46 files in `src/**`, over 13 numbers; the earlier
-  43 was the five-number subset. Swept by upstream PR
-  [#2126](https://github.com/opencrabs/opencrabs/pull/2126); 112 of our
-  commits in upstream history carry `Issue-Ref` over 59 distinct numbers,
-  50 bare-only.**
+  gate is not the only door to upstream, and a comment in `src/**` must stand
+  alone WHEN IT IS WRITTEN. **Measured 2026-10-19 at upstream `f01ef0e03`: 108
+  bare fork-only refs across 46 files in `src/**`, over 13 numbers; the earlier
+  43 was the five-number subset. STILL PRESENT — the sweep was REFUSED, so
+  re-running #2126 would recreate the defect; the corpus needs inline prose.
+  112 of our commits in upstream history carry `Issue-Ref` over 59 distinct
+  numbers, 50 bare-only.**
 
 ### Deep Core Advance Heads-Up Gate (Core vs Integration Rule, Owner Order 2026-09-17)
 
