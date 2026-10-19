@@ -68,7 +68,18 @@
 #                                          on mismatch names the CAUSE —
 #                                          FLEET-LEVEL (0 workers behind:
 #                                          skipped sync) vs LANE-LEVEL
-#                                          (>=1 worker ack behind) (#359)
+#                                          (>=1 worker ack behind) (#359);
+#                                          also compares the LAW-FILE DIGEST
+#                                          against the newest skill-bump stamp
+#                                          and names UNBUMPED-LAW (factory #47)
+#                                          — the failure a version string
+#                                          cannot see, because the missing bump
+#                                          IS the failure
+#   law-digest                             current law-file digest vs the
+#                                          newest stamped one (RO); rc 0
+#                                          MATCH or NO-BASELINE, 1 DRIFT, 3
+#                                          ledger unreadable. Single home for
+#                                          the law-file SET and the algorithm
 #   cadence                                skill-bumps since last review (RO)
 #   ack <uuid> <0.N.N version> [--at <ts>]  worker last_acked + ack event
 #                                          (v0.4.55: full skill version shape —
@@ -1258,6 +1269,53 @@ EOF
   return 0
 }
 
+# ---- law-file digest (factory #47) -------------------------------------------
+# The skill version is a SELF-REPORT, and a self-report that can be skipped is
+# not an instrument. Measured 2026-10-19 (factory #47): ten law commits between
+# 2026-10-09 and 2026-10-19 all left SKILL.md at `version: 0.4.295`, so
+# `check-version` read "all fields agree" (it compares registry<->roster),
+# `oc-drift-check` read NO-DRIFT for nine days (it reads that same frontmatter),
+# and lanes acked law that had moved underneath them. This is the SECOND
+# occurrence of the class already noted at CHANGELOG.md:65 — a note is not a
+# guard.
+#
+# The BASELINE is the ledger's own append-only skill-bump row, stamped by the
+# same act that publishes the version (HQ ruling 2026-10-19, issue #47 comment).
+# Neither side reads the frontmatter, so an edit that never bumped MOVES THE
+# DIGEST and leaves the stamp behind — the only shape that can observe this
+# failure class, because the missing bump IS the failure.
+#
+# The SET is the law a lane must re-read on a bump. Excluded, deliberately:
+#   CHANGELOG.md   — written by the bumper in the SAME act (HQ constraint);
+#                    including it would redden every legitimate bump
+#   registry/state — sync writes them in the same act (same reason)
+#   tools/docs/**  — tool-surface docs that ship with tools/** commits, a
+#                    separate ownership carve-out with its own battery; coupling
+#                    them to the skill version would redden on tool work
+#   README.md      — partly the Toolsmith's tool-fleet surface (same reason)
+# An ABSENT file hashes as ABSENT, so a rename or deletion is a law change too:
+# an absent file is a state, not a no-op.
+LAW_FILES=(
+  SKILL.md editor.md hq.md triage.md toolsmith.md harvest.md
+  fleet-directives.md upstream-merge-runbook.md review-lenses.md
+  session-notify.md environment.md war-stories.md s2-swap-journal-spec.md
+)
+law_digest() {
+  local f h out=""
+  for f in "${LAW_FILES[@]}"; do
+    if [ -f "$SKILL_DIR/$f" ]; then
+      h="$(sha256sum "$SKILL_DIR/$f" 2>/dev/null | cut -d' ' -f1)"
+    else
+      h="ABSENT"
+    fi
+    out="$out$f:$h"$'\n'
+  done
+  printf '%s' "$out" | sha256sum | cut -d' ' -f1
+}
+law_digest_stamped() { # newest skill-bump row's stamp; "" when absent (pre-#47 rows)
+  jq -r '[.events[]? | select(.kind == "skill-bump")] | last | .law_digest // ""' "$LEDGER" 2>/dev/null
+}
+
 cmd_sync() {
   case "${1:-}" in -h|--help) echo "usage: oc-ledger sync --version <v> --why <text> [--catch-up] [--allow-sweep]"; exit 0 ;; esac
   local v="" why="" catchup=0 allow_sweep=0
@@ -1333,6 +1391,18 @@ cmd_sync() {
     # (e.g. re-running after a failed git leg) → fields refreshed, NO dup event
     dup="$(jq --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | length' "$LEDGER")"
     if [ "${dup:-0}" -gt 0 ]; then
+      # factory #47: a re-sync at the SAME version is an idempotent repair of a
+      # failed git leg — it must never launder a law edit into a published
+      # version. If the digest moved, the bump is missing and the only honest
+      # action is the NEXT version: refreshing meta here would make the stamp
+      # describe law the version never covered. Fail closed (an unrepairable
+      # row is worse than a refused re-run). An empty stamp means a pre-#47 row,
+      # which has no baseline to contradict — allowed, and check-version
+      # discloses the missing baseline instead of inventing one.
+      local dup_stamp; dup_stamp="$(jq -r --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | last | .law_digest // ""' "$LEDGER")"
+      if [ -n "$dup_stamp" ] && [ "$dup_stamp" != "$ldg" ]; then
+        die 6 "sync: law files changed since v$v was stamped ($dup_stamp -> $ldg) — a re-sync is not a bump; publish the NEXT version (bump SKILL.md + CHANGELOG, then sync --version <next>)"
+      fi
       atomic_jq --arg v "$v" --arg t "$t" \
         '.current_skill_version = $v | .meta.current_skill_version = $v
          | .meta.skill_version = $v | .updated_at = $t' || return $?
@@ -1341,7 +1411,7 @@ cmd_sync() {
       return 0
     fi
     atomic_jq --arg v "$v" --arg n "$n" --arg t "$t" --arg why "$why" --arg rts "$rts" \
-      --arg cur "$cur" --arg skipped "$skipped" --argjson catchup "$catchup" \
+      --arg cur "$cur" --arg skipped "$skipped" --argjson catchup "$catchup" --arg ldg "$ldg" \
       '.current_skill_version = $v
        | .meta.current_skill_version = $v
        | .meta.skill_version = $v
@@ -1351,7 +1421,8 @@ cmd_sync() {
                               then ("v" + $v + " — catch-up from " + $cur
                                     + (if $skipped != "" then " (" + $skipped + ")" else "" end) + ": ")
                               else ("v" + $v + " — ") end)
-                             + $why + "; battery receipt ts " + $rts)}]' || return $?
+                             + $why + "; battery receipt ts " + $rts),
+                      law_digest: $ldg}]' || return $?
     echo "synced version=$v (event n=$n)"
     git_state_commit "ledger n=$n: skill-bump v$v via oc-ledger sync"
     return 0
@@ -1399,6 +1470,11 @@ cmd_sync() {
       die 7 "sync: refusing to sweep unrelated dirty paths (stray-guard v0.4.157)"
     fi
   fi
+  # factory #47: the law-file digest is stamped by the SAME act that publishes
+  # the version — no second write to forget, and the append-only row cannot be
+  # retro-edited by a later bump. Computed only after every gate above passed, so
+  # a refused sync leaves no stamp behind (a refused bump must leave no drift).
+  local ldg; ldg="$(law_digest)"
   with_lock _sync_locked || exit $?
   # skill-repo git leg: commit the version docs + tag.
   # v0.4.63 root-fix (incident n=1405, three strikes v0.4.58/61/62): stage the
@@ -1459,7 +1535,28 @@ cmd_check_version() {
     if [ "$nm" = "SKILL.md" ]; then continue; fi
     if [ "$got" != "$want" ]; then echo "MISMATCH $nm=$got (SKILL.md=$want)"; bad=1; fi
   done
-  if [ "$bad" -eq 0 ]; then echo "ok: all fields agree at $sv"; return 0; fi
+  # factory #47: the version fields can ALL agree while the LAW moved — the case
+  # the version string cannot see, because the missing bump IS the failure. The
+  # baseline is the newest skill-bump row's stamp (append-only, written by the
+  # publishing act), never the frontmatter: a baseline that can be skipped
+  # re-creates the blind spot one layer down.
+  local ldg stamped lawbad=0
+  ldg="$(law_digest)"
+  stamped="$(law_digest_stamped)"
+  if [ -z "$stamped" ]; then
+    # Pre-#47 row: there is no baseline to contradict. Disclosed, never
+    # invented, and never a failure — the next sync stamps it. A note here is
+    # honest; a red would be a claim the instrument cannot support.
+    echo "note: law digest baseline absent (newest skill-bump row predates #47) — stamped at the next sync; un-bumped law is not yet observable"
+  elif [ "$stamped" != "$ldg" ]; then
+    lawbad=1
+    echo "MISMATCH law_digest=$ldg (newest skill-bump stamp=$stamped)"
+  fi
+  if [ "$bad" -eq 0 ] && [ "$lawbad" -eq 0 ]; then echo "ok: all fields agree at $sv"; return 0; fi
+  if [ "$bad" -eq 0 ]; then
+    echo "CAUSE UNBUMPED-LAW: the law files changed after the newest skill-bump stamp — the version fields agree because no bump was attempted; publish the NEXT version (bump SKILL.md + CHANGELOG, then: oc-ledger sync --version <next>)"
+    return 1
+  fi
   # #359: name the CAUSE, because two structurally different states shared one
   # rc and a bare MISMATCH could not tell them apart. The exit code stays 1 for
   # BOTH — hq.md:109 codifies rc=1 as the FLEET-LEVEL heal ("treat rc=1 as a
@@ -1478,6 +1575,35 @@ cmd_check_version() {
     echo "CAUSE LANE-LEVEL: $behind worker(s) ack behind SKILL.md — real drift; those lanes must re-ack"
   fi
   return 1
+}
+
+# ---- law-digest (RO) ---------------------------------------------------------
+# Single home for the law-file SET and the algorithm: sync stamps with
+# law_digest(), check-version compares with it, and oc-drift-check consumes THIS
+# verb instead of re-implementing the shape — the same rule that made its roster
+# read go through oc-ledger rather than re-read the ledger schema.
+cmd_law_digest() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger law-digest [--json]"; echo "Exit: 0 MATCH or NO-BASELINE / 1 DRIFT / 3 ledger unreadable"; exit 0 ;; esac
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  local ldg stamped verdict rc
+  ldg="$(law_digest)"; stamped="$(law_digest_stamped)"
+  if [ -z "$stamped" ]; then verdict="NO-BASELINE"; rc=0
+  elif [ "$stamped" = "$ldg" ]; then verdict="MATCH"; rc=0
+  else verdict="DRIFT"; rc=1; fi
+  if [ "${1:-}" = "--json" ]; then
+    jq -n --arg v "$verdict" --arg cur "$ldg" --arg st "$stamped" \
+      '{verdict:$v, current:$cur, stamped:$st}'
+  else
+    case "$verdict" in
+      MATCH)       echo "law-digest: MATCH $ldg" ;;
+      NO-BASELINE) echo "law-digest: NO-BASELINE (newest skill-bump row predates #47; stamped at the next sync) — current $ldg" ;;
+      DRIFT)       echo "law-digest: DRIFT — the law files moved after the newest skill-bump stamp"
+                   echo "  current: $ldg"
+                   echo "  stamped: $stamped"
+                   echo "  a law edit without a bump: publish the NEXT version (bump SKILL.md + CHANGELOG, then: oc-ledger sync --version <next>)" ;;
+    esac
+  fi
+  return $rc
 }
 
 # ---- cadence (RO) ------------------------------------------------------------
@@ -2073,6 +2199,36 @@ PAYLOAD
   git -C "$T/skill" show v0.4.3 --name-only | grep -q "payload-probe.sh" && ok || bad "sync-sweeps-payload"
   # 18-19: check-version
   bash "$ME" check-version >/dev/null 2>&1; chk "check-version-ok" 0 $?
+  # factory #47: the LAW DIGEST leg. The version is a self-report, so the only
+  # observable for "law moved without a bump" is a digest stamped by the
+  # publishing act and compared against the tree. These legs run while the
+  # version FIELDS still agree, so a red here cannot be the field mismatch the
+  # legs below manufacture — the discriminator is the point: the nine-day case
+  # was every field saying 0.4.295 while the law moved underneath.
+  bash "$ME" law-digest >/dev/null 2>&1; chk "law-digest-match-rc" 0 $?
+  LDG_STAMP="$(jq -r '[.events[] | select(.kind=="skill-bump")] | last | .law_digest // ""' "$OC_LEDGER")"
+  # 64 hex chars, no non-hex: a constant or an empty field fails this.
+  if [ "${#LDG_STAMP}" -eq 64 ] && [ "${LDG_STAMP#*[!0-9a-f]}" = "$LDG_STAMP" ]; then ok; else bad "law-digest-stamped-in-bump-row"; fi
+  # ANTI-VACUITY: the stamp is a function of the law BYTES, not a constant. A law
+  # file APPEARING where there was none is a law change too (ABSENT -> hash), so
+  # this also covers the deletion/rename direction.
+  printf 'fixture law\n' > "$T/skill/editor.md"
+  LDG_MOVED="$(bash "$ME" law-digest --json 2>/dev/null | jq -r '.current')"
+  if [ -n "$LDG_MOVED" ] && [ "$LDG_MOVED" != "$LDG_STAMP" ]; then ok; else bad "law-digest-moves-with-law"; fi
+  bash "$ME" law-digest >/dev/null 2>&1; chk "law-digest-drift-rc" 1 $?
+  bash "$ME" check-version >"$T/lawdrift.out" 2>&1; chk "check-version-unbumped-law-rc" 1 $?
+  grep -q "UNBUMPED-LAW" "$T/lawdrift.out" && ok || bad "check-version-names-unbumped-law"
+  if grep -q "ok: all fields agree" "$T/lawdrift.out"; then bad "check-version-unbumped-law-is-not-a-field-mismatch"; else ok; fi
+  # A re-sync at the SAME version must never launder moved law into a published
+  # version. --allow-sweep is passed deliberately: the stray-guard's consent must
+  # NOT override this refusal, or the consent flag becomes the laundering route.
+  bash "$ME" sync --version 0.4.3 --why relaw --allow-sweep >"$T/relaw.out" 2>&1; chk "sync-resync-law-moved-refused" 6 $?
+  grep -q "a re-sync is not a bump" "$T/relaw.out" && ok || bad "sync-resync-law-moved-names-cause"
+  # restoring the law restores the verdict — a leg stuck red after the state is
+  # repaired would be a false alarm generator, not a guard.
+  rm -f "$T/skill/editor.md"
+  bash "$ME" law-digest >/dev/null 2>&1; chk "law-digest-restored-rc" 0 $?
+  bash "$ME" check-version >/dev/null 2>&1; chk "check-version-restored-rc" 0 $?
   jq '.meta.skill_version = "0.4.1"' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
   bash "$ME" check-version > "$T/cv.out" 2>&1; grep -q "meta.skill_version" "$T/cv.out" && ok || bad "check-version-names-field"   # v0.4.72 pipefail: capture-then-grep, pipeline rc no longer masks tool exit
   bash "$ME" check-version >/dev/null 2>&1; chk "check-version-drift-rc" 1 $?
@@ -4979,7 +5135,7 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
 
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
-case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | [selftest|--selftest]"; exit 0 ;; esac
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | [selftest|--selftest]"; exit 0 ;; esac
 if [ "$SELFTEST" -eq 1 ]; then
   # (#722) `selftest --help` must be a READ. parse_global consumes the bare
   # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
@@ -4993,6 +5149,7 @@ case "$sub" in
   stamp) cmd_stamp "${rest[@]+"${rest[@]}"}" ;;
   sync) cmd_sync "${rest[@]+"${rest[@]}"}" ;;
   check-version) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger check-version"; exit 0 ;; esac; cmd_check_version ;;
+  law-digest) cmd_law_digest "${rest[@]+"${rest[@]}"}" ;;
   cadence) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger cadence"; exit 0 ;; esac; cmd_cadence ;;
   ack) cmd_ack "${rest[@]+"${rest[@]}"}" ;;
   enroll) cmd_enroll "${rest[@]+"${rest[@]}"}" ;;
@@ -5010,7 +5167,7 @@ case "$sub" in
   duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
   selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
-    echo "stamp sync check-version cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates"
+    echo "stamp sync check-version law-digest cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates"
     exit 0
     ;;
   *)
@@ -5023,7 +5180,7 @@ case "$sub" in
       kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
       push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
       version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
-      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | --verbs | --selftest" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | --verbs | --selftest" ;;
     esac
     ;;
 esac

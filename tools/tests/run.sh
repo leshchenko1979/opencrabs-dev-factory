@@ -3674,6 +3674,60 @@ else
 fi
 rm -rf "$_hg_fx"
 
+# ---- 87. law-digest SET covers the tree (factory #47) ------------------------
+# The digest's SET is the instrument's COVERAGE BOUNDARY, and a law file added to
+# the tree but not to LAW_FILES is invisible to the check built to make law edits
+# visible — the same defect one layer out, and the reason the set is read FROM THE
+# TOOL here rather than re-listed (a second copy would drift, and the copy that
+# drifts is the one nobody reads). Two exclusions are documented in the tool:
+# CHANGELOG.md (written by the bumper in the same act) and README.md (the
+# tool-fleet surface, Toolsmith-owned).
+# PHANTOM is the inverse direction: a name in the set that does not exist hashes
+# ABSENT forever — stable, so it never reddens, and the set silently shrinks.
+SKILL_ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
+_law_scan() { # $1 = root to scan for top-level .md
+  python3 - "$TOOLS_DIR/state/oc-ledger" "$1" <<'PY'
+import re,sys,os
+tool,root=sys.argv[1],sys.argv[2]
+try: src=open(tool).read()
+except OSError: print("NOSET"); raise SystemExit(0)
+m=re.search(r'^LAW_FILES=\((.*?)^\)', src, re.S|re.M)
+if not m: print("NOSET"); raise SystemExit(0)
+declared=set(m.group(1).split())
+excl={"CHANGELOG.md","README.md"}
+present={f for f in os.listdir(root) if os.path.isfile(os.path.join(root,f))}
+top={f for f in present if f.endswith(".md")}
+print("MISSING:"+",".join(sorted(top-declared-excl)))
+print("PHANTOM:"+",".join(sorted(declared-present)))
+print("COUNT:%d"%len(declared))
+PY
+}
+_law_real="$(_law_scan "$SKILL_ROOT")"
+case "$_law_real" in
+  *NOSET*) bad "#47 LAW_FILES not found in oc-ledger — the coverage leg cannot read the set" ;;
+  *)
+    _law_miss="$(printf '%s\n' "$_law_real" | sed -n 's/^MISSING://p')"
+    _law_phant="$(printf '%s\n' "$_law_real" | sed -n 's/^PHANTOM://p')"
+    _law_cnt="$(printf '%s\n' "$_law_real" | sed -n 's/^COUNT://p')"
+    [ -n "$_law_cnt" ] && [ "$_law_cnt" -ge 10 ] && ok "#47 LAW_FILES declares $_law_cnt law files (read from the tool)" \
+      || bad "#47 LAW_FILES declares '$_law_cnt' law files — expected the 13-file law set"
+    if [ -z "$_law_miss" ]; then ok "#47 every top-level .md is declared or in the documented exclusions"
+    else bad "#47 UNDECLARED law file(s) would be invisible to the digest: $_law_miss — add to LAW_FILES in oc-ledger"; fi
+    if [ -z "$_law_phant" ]; then ok "#47 no phantom entry in LAW_FILES (every declared name exists)"
+    else bad "#47 LAW_FILES names file(s) that do NOT exist (hash ABSENT forever): $_law_phant"; fi
+    # NEGATIVE CONTROL: the same scanner must FLAG an undeclared law file. A leg
+    # that cannot fire on the defect it exists for is decoration.
+    _law_fx="$(mktemp -d)"
+    for _f in "$SKILL_ROOT"/*.md; do : > "$_law_fx/$(basename "$_f")"; done
+    : > "$_law_fx/zz-undeclared-law.md"
+    _law_ctrl="$(_law_scan "$_law_fx")"
+    rm -rf "$_law_fx"
+    case "$_law_ctrl" in
+      *"MISSING:zz-undeclared-law.md"*) ok "#47 NEGATIVE CONTROL: an undeclared law file IS flagged (the leg can fail)" ;;
+      *) bad "#47 NEGATIVE CONTROL: scanner missed the injected undeclared file — the coverage leg is inert" ;;
+    esac ;;
+esac
+
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
 battery_capture_fail_rows

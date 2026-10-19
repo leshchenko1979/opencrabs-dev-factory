@@ -170,6 +170,28 @@ cmd_drift() {
   if [ "$bump_state" = "absent" ]; then
     bump_note="NOTE: no skill-bump ledger event for $cur — the on-disk version is ahead of the last sync (author window); advisory only, verdict unchanged"
   fi
+  # factory #47: the law can move WITHOUT a version bump, and then every lane's
+  # NO-DRIFT is a proxy lying about the thing it proxies. The digest has ONE home
+  # (oc-ledger `law-digest`, stamped into the append-only skill-bump row by the
+  # publishing act) — never the frontmatter, which is the field that can be
+  # skipped, and never a second copy of the algorithm here.
+  #
+  # ADVISORY, never the verdict, and that is a considered choice rather than
+  # caution. The remedy this tool prescribes is "re-read the law and ack", but an
+  # ack records the VERSION — so a lane that complied would still read DRIFT on
+  # every later run until someone else bumped. A guard that stays red after its
+  # own prescribed remedy teaches lanes to ignore it, which is how a control
+  # dies. The heal belongs to the bumper (`check-version` reds and names it), so
+  # the lane-facing tool SURFACES the fact without blocking on a state the lane
+  # cannot clear.
+  local law_note=""
+  if [ "$no_history" = "0" ]; then
+    local ldg_rc
+    OC_LEDGER="$LEDGER" "$_OC_DIR/state/oc-ledger" law-digest >/dev/null 2>&1; ldg_rc=$?
+    if [ "$ldg_rc" -eq 1 ]; then
+      law_note="NOTE: the law files moved AFTER the newest skill-bump stamp (oc-ledger law-digest: DRIFT) — your ack names $cur, but that version no longer describes the law on disk; re-read the changed law now and expect the next bump to publish it"
+    fi
+  fi
   # --ack stamps on BOTH paths (defect fix 2026-09-11, lanes d18ce16a + a5b34466).
   # This block used to sit AFTER the no-drift early return, so --ack fired ONLY on
   # DRIFT — the inverse of the promise in the header and of every RELOAD brief,
@@ -196,16 +218,19 @@ cmd_drift() {
     echo "NO-HISTORY: no last_acked recorded for $uuid (claimed side: $claimed_src) — treat as DRIFT, re-read SKILL.md + editor.md IN FULL before next phase boundary"
     echo "  live side: $cur from $live_src"
     if [ -n "$bump_note" ]; then echo "$bump_note"; fi
+    if [ -n "$law_note" ]; then echo "$law_note"; fi
     oc_log_extra verdict NO-HISTORY
     return 1
   fi
   if [ "$claimed_bare" = "$cur" ]; then
     echo "NO-DRIFT: claimed $claimed_bare (claimed side: $claimed_src) == live $cur (live side: $live_src)"
     if [ -n "$bump_note" ]; then echo "$bump_note"; fi
+    if [ -n "$law_note" ]; then echo "$law_note"; fi
     oc_log_extra verdict NO-DRIFT; return 0
   fi
   echo "DRIFT: claimed $claimed_bare (claimed side: $claimed_src) != live $cur (live side: $live_src) — re-read SKILL.md + editor.md IN FULL before next phase boundary"
   if [ -n "$bump_note" ]; then echo "$bump_note"; fi
+  if [ -n "$law_note" ]; then echo "$law_note"; fi
   oc_log_extra verdict DRIFT
   return 1
 }
