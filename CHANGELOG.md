@@ -1,5 +1,13 @@
 # Changelog — opencrabs-dev
 
+## v0.4.299 — a test leg that cannot go red is decoration: the mutant receipt becomes a review leg (2026-10-19)
+
+**What forced it.** The Toolsmith lane closed [opencrabs-dev-factory#48](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/48) with mutation evidence over its own three fixes, and two of the mutants exposed a class the catalog had no owner for. Deleting the swap handoff's bus probe left `poll-bus-unreachable-rc` **GREEN** — a real handoff also dies rc 4, so the rc leg never discriminated the fix; only the message legs and the argv legs (`--scope --collect /bin/true` recorded, no `--unit=` recorded) reddened. Deleting the hoisted preflight checkout check left both `preflight-checkout-rc3` and `-names-condition` **green**, because LEG3's surviving check exits 3 with the same sentence; only `-gate-not-dispatched` reddened, by asserting an **empty** prchecks stub log. The general shape: an rc assertion is decoration whenever a sibling failure path shares the exit code, and an ordering claim ("before X") is not expressible as rc-plus-message at all.
+
+**What changed.** (1) `review-lenses.md` Reviewer C gains a MUTATION-DISCRIMINATION LEG: every battery/selftest leg added or amended in the window must name the mutant it kills, verified by deletion in an isolated worktree, with **both** receipts cited — the mutant, and the one leg that was the only one to redden. (2) The ops `CODE.md` Testing Standards item 3 — the existing "a test that cannot fail on its defect" family, which already owned the mock-value blind spot — gains the same rule, so it binds at test-writing time and not only at review time.
+
+**Deliberately NOT changed.** No new lens name. `oc-review-persist`'s `LENSES` whitelist and its `[A-J][0-9]` dispatch globs are **tools code** (the Toolsmith surface), and an unregistered name dies rc 2 there; the leg therefore rides Reviewer C's existing sub-leg shape instead of inventing `mutant-discrimination`. A new lens letter would need a Toolsmith edit first.
+
 ## v0.4.298 — the QUALIFIER is refused too: a fork issue number may not appear on an upstream surface at all (2026-10-19)
 
 **Owner order.** *"Amend law so that the fork issue ref problem is not repeated in future."*
