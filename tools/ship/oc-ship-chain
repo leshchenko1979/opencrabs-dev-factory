@@ -210,8 +210,35 @@ fi
 # which reaches a SETTLED session. Best-effort by construction: a wake fault
 # must never change the chain's exit status. Only non-zero, non-usage exits
 # wake -- a usage error is the caller's typo, which it already sees.
+# THE WAKE'S REMEDY IS DERIVED FROM rc (factory #48 defect 1). Until this the
+# message carried ONE sentence for every exit code -- "a stale fix often needs
+# only --gated-run after a rebase" -- and both stops of one real chain showed
+# it wrong (measured 2026-10-19): rc=3 was a checkout precondition that no gate
+# name can touch (right by accident), and rc=6 was a dead user bus on a chain
+# ALREADY armed with --gated-run 39281758213 (wrong twice: the gate was
+# carried, and no gate naming fixes a bus). A remedy that is right by luck
+# teaches the lane to name a gate instead of reading the cause, which is the
+# opposite of what a wake is for.
+#
+# The arms below are the rc vocabulary this tool ACTUALLY emits -- read off its
+# own `die` sites, not invented. An unlisted code falls back to the generic arm
+# rather than to a confident guess.
+chain_remedy() { # $1 = exit code
+  case "${1:-}" in
+    3) printf '%s' "a PRECONDITION refused before any gate ran, so no gate name can satisfy it -- fix the condition the journal line names (checkout not main, dirty tree, branch not pushed, missing Session-Id signature), then re-arm. Do NOT pass --gated-run: there is no gate to carry." ;;
+    4) printf '%s' "a GATE or ORDER verdict, not infra -- read the run/validator output. If the branch was rebased since the gate, re-gate; --gated-run <id> is correct ONLY when that run still names the sha being landed." ;;
+    5) printf '%s' "LANDING/LINEAGE refused -- rebase onto fork main and re-gate. --gated-run <id> carries only if the rebase preserved the gated sha; a rewritten tip needs a fresh gate." ;;
+    6) printf '%s' "INFRASTRUCTURE, not a gate -- the wrapped tool's own message is in the journal, so read THAT line; naming a gate cannot fix a dead user bus, a failed handoff or a refused swap. Fix the cause, then resume the leg the journal names." ;;
+    7) printf '%s' "the gate is still IN FLIGHT -- wait for the run, then re-arm with --gated-run <id>. Re-dispatching burns a second full gate cycle for the same answer." ;;
+    8) printf '%s' "the carrier build did not reach a terminal state inside the LEG4 --wait budget -- do NOT re-dispatch it; wait, then resume with: oc-deploy poll --sha <sha> --execute --wait <sec>." ;;
+    9) printf '%s' "the landing lock was held for the whole queue budget -- this is NOT infra and the gate is NOT broken. Re-arm once the holder finishes, or raise SHIP_LOCK_TIMEOUT." ;;
+    *) printf '%s' "re-read the chain journal for the failing leg -- the cause is in its last lines, not in a flag." ;;
+  esac
+}
+
+
 _chain_wake_arming_lane() { # $1 = exit code
-  local rc="$1" uuid="" chain_lib="" bin="" prof="" _dep="" _state=""
+  local rc="$1" uuid="" chain_lib="" bin="" prof="" _dep="" _state="" _rem=""
   case "$rc" in 0|2) return 0 ;; esac          # 0 = SWAPPED, 2 = usage
   # #14: only a real chain ATTEMPT may wake. Set after the required-arg
   # checks, so --help (usage, rc 0 now) and --eval-docs-skip (rc 1/3) never
@@ -266,6 +293,10 @@ _chain_wake_arming_lane() { # $1 = exit code
   # OPENCRABS_SESSION_ID WINS over OC_ACTOR -- the latter is retired for the actor
   # and a continuation doc can carry a stale one. The commit's Session-Id trailer
   # is the last resort, not the first.
+  # #48 defect 1: the remedy is DERIVED from rc (chain_remedy, defined above).
+  # Same ERR-EXIT SAFETY as _dep above: this runs from the EXIT trap, where a
+  # failing command substitution would REPLACE the chain's own exit code.
+  _rem="$(chain_remedy "$rc" 2>/dev/null)" || _rem=""
   uuid="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
   if [ -z "$uuid" ] && [ -n "${SHA:-}" ] && command -v git >/dev/null 2>&1; then
     uuid="$(git -C "${FORK_REPO:-$HOME/opencrabs}" log -1 --format='%(trailers:key=Session-Id,valueonly)' "$SHA" 2>/dev/null | tr -d ' \n')"
@@ -285,7 +316,7 @@ _chain_wake_arming_lane() { # $1 = exit code
   prof="${OC_SHIPCHAIN_PROFILE:-ops}"
   oc_notify_session "$bin" "$prof" "oc-ship-chain" "$uuid" \
     "SHIP-CHAIN ${CHAIN:-?}: EXITED rc=$rc" \
-    "The chain armed by this lane has STOPPED with rc=$rc. ${_state} -- re-read the chain journal for ${SHA:-?} before re-arming, and note that a stale fix often needs only --gated-run after a rebase. This wake exists because a settled lane is not resumed by the boot classifier." >/dev/null 2>&1 || true
+    "The chain armed by this lane has STOPPED with rc=$rc. ${_state} -- ${_rem:-Re-read the chain journal for the failing leg.} Re-read the chain journal for ${SHA:-?} before re-arming. This wake exists because a settled lane is not resumed by the boot classifier." >/dev/null 2>&1 || true
 }
 
 _chain_exit_handler() {
@@ -798,6 +829,15 @@ if [ -n "$MAIN_WT" ] && [ "$MAIN_WT" != "$FORK_REPO" ]; then
 fi
 DIRTY="$(git -C "$FORK_REPO" status --porcelain)"
 [ -z "$DIRTY" ] || die "fork checkout dirty — clean before chaining: $(printf '%s\n' "$DIRTY" | head -5)" 3
+# CHECKOUT PRE-FLIGHT (factory #48 defect 2). LEG3's `[ "$CUR" = main ]` was the
+# FIRST reader of this condition, and it runs AFTER LEG1 has dispatched and
+# polled the gate: measured 2026-10-19, a chain held ~35 minutes before refusing
+# on a precondition readable in the first second. Same rc-3 class as the dirty
+# check above, and it costs no dispatch. LEG3 keeps its OWN re-check -- a
+# checkout switched WHILE the gate ran is still a real case, and that check is
+# now a mid-chain re-verify rather than the first look.
+CUR_PRE="$(git -C "$FORK_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+[ "$CUR_PRE" = "main" ] || die "fork checkout on '${CUR_PRE:-unknown}', not main — check out main first (this is read BEFORE the gate, so nothing was dispatched)" 3
 # REMOTE-BRANCH PRE-FLIGHT (defect fix 2026-09-11, lane facd50af report).
 # LEG1 dispatches a gate that needs the branch ON THE FORK REMOTE, but nothing
 # checked that before dispatching. A locally-committed, never-pushed branch
@@ -1478,7 +1518,16 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   POLL_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" poll --execute 2>&1)"
   POLL_RC=$?
   set -e
-  [ "$POLL_RC" = "0" ] || { journal "LEG5 poll rc=$POLL_RC"; die "swap poll failed rc=$POLL_RC — check oc-deploy status and resume via: oc-deploy poll --execute" 6; }
+  # #48 defect 3: surface the WRAPPED tool's own diagnosis. The old message
+  # compressed every poll failure into "swap poll failed", so a handoff refusal
+  # that had already named its cause (`oc-deploy: user bus unreachable ...`) read
+  # as an anonymous infra fault and the lane hunted infrastructure. oc-deploy
+  # prints its cause on stderr, and POLL_OUT captures both streams.
+  [ "$POLL_RC" = "0" ] || {
+    journal "LEG5 poll rc=$POLL_RC"
+    POLL_CAUSE="$(printf '%s\n' "$POLL_OUT" | sed -n 's/^oc-deploy: //p' | head -1)"
+    die "swap poll failed rc=$POLL_RC — oc-deploy's own diagnosis: ${POLL_CAUSE:-none on stdout} — resume via: oc-deploy poll --execute from a shell that HAS the user bus (a chain armed as a system unit does not)" 6
+  }
   set +e
   ST_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" status --json 2>/dev/null)"
   set -e
@@ -2502,6 +2551,52 @@ EOF
     CHAIN_INTENT=1 _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"deployed.sha is ABSENT"*) ok "wake-reads-marker-no-swap" ;;
     *) bad "wake-reads-marker-no-swap: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
+
+  # 11d3. #48 defect 1: the wake's REMEDY is derived from rc, not hardcoded.
+  # Both real stops of one chain falsified the old single sentence: rc=3 was a
+  # checkout precondition no gate name can satisfy, rc=6 a dead user bus on a
+  # chain ALREADY armed with --gated-run. Three codes whose remedies must
+  # DIFFER, each asserting the blanket line's ABSENCE -- a table that repeated
+  # it everywhere would otherwise pass a "names the cause" leg on rc 7 alone.
+  for _rc in 3 6 7; do
+    rm -f "$T/wake.log"
+    ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-48" \
+      OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+      OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      CHAIN_INTENT=1 _chain_wake_arming_lane "$_rc" ) >/dev/null 2>&1 || true
+    case "$_rc" in
+      3) _WAKE_3="$(cat "$T/wake.log" 2>/dev/null)" ;;
+      6) _WAKE_6="$(cat "$T/wake.log" 2>/dev/null)" ;;
+      7) _WAKE_7="$(cat "$T/wake.log" 2>/dev/null)" ;;
+    esac
+  done
+  case "$_WAKE_3" in *"PRECONDITION refused"*) ok "wake-remedy-rc3-is-precondition" ;;
+    *) bad "wake-remedy-rc3-is-precondition: [$_WAKE_3]" ;; esac
+  case "$_WAKE_6" in *"INFRASTRUCTURE, not a gate"*) ok "wake-remedy-rc6-is-infra" ;;
+    *) bad "wake-remedy-rc6-is-infra: [$_WAKE_6]" ;; esac
+  case "$_WAKE_7" in *"--gated-run <id>"*) ok "wake-remedy-rc7-names-gated-run" ;;
+    *) bad "wake-remedy-rc7-names-gated-run: [$_WAKE_7]" ;; esac
+  case "$_WAKE_3$_WAKE_6" in *"often needs only --gated-run"*) bad "wake-remedy-drops-the-blanket-line" ;;
+    *) ok "wake-remedy-drops-the-blanket-line" ;; esac
+  case "$_WAKE_6" in *"--gated-run"*) bad "wake-remedy-rc6-does-not-name-a-gate" ;;
+    *) ok "wake-remedy-rc6-does-not-name-a-gate" ;; esac
+  case "$_WAKE_3" in *"--gated-run: there is no gate"*) ok "wake-remedy-rc3-warns-against-the-gate" ;;
+    *) bad "wake-remedy-rc3-warns-against-the-gate: [$_WAKE_3]" ;; esac
+
+  # 11d4. #48 defect 2: the checkout precondition is read BEFORE the gate. The
+  # cost being fixed is TIME-TO-VERDICT, so "rc 3" alone is not the assertion --
+  # the prchecks stub logs every call, and an EMPTY log is the receipt that the
+  # expensive leg never ran. A mutant that only moved the check after LEG1 would
+  # still exit 3 and be caught here.
+  rm -f "$T/journal.log" "$T/prchecks.log"
+  git -C "$T/clone" checkout -q -b feat-precondition
+  RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
+  check_rc "preflight-checkout-rc3" "$RC" 3
+  case "$OUT" in *"not main"*) ok "preflight-checkout-names-condition" ;;
+    *) bad "preflight-checkout-names-condition: $OUT" ;; esac
+  [ -s "$T/prchecks.log" ] && bad "preflight-checkout-gate-not-dispatched: [$(cat "$T/prchecks.log")]" \
+    || ok "preflight-checkout-gate-not-dispatched"
+  git -C "$T/clone" checkout -q main
 
   # 11e. SWAPPED (rc 0) must NOT wake -- the lane already sees the verdict, and a
   # wake on every success would be the noise this tool's own fan-out was filed for.

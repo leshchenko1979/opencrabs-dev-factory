@@ -1168,6 +1168,40 @@ STUB
     "$SELF_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-inflight-other-rc" $rc 0
   check_has "poll-inflight-other-handoff" "$out" "HANDOFF"
+  # 10a-bus. #48 defect 3: the handoff PROBES the user bus BEFORE arming.
+  #      The discriminating pair differs in ONE variable -- the launcher's exit
+  #      code -- so a leg that passes on a broken probe cannot hide behind a
+  #      different fixture. The probe is the launcher's own bus path, and the
+  #      fake records argv so "nothing was armed" is a receipt, not a claim.
+  mkdir -p "$T/busbin"; : > "$T/bus.log"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 1\n' "$T/bus.log" > "$T/busbin/systemd-run"; chmod +x "$T/busbin/systemd-run"
+  out="$(PATH="$T/busbin:$PATH" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_SWAP_INFLIGHT_LISTER=/bin/true "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+  check_rc "poll-bus-unreachable-rc" $rc 4
+  check_has "poll-bus-unreachable-names-bus" "$out" "user bus unreachable"
+  check_has "poll-bus-unreachable-says-nothing-touched" "$out" "nothing was touched"
+  grep -q -- "--unit=" "$T/bus.log" && { fail=$((fail+1)); echo "SELFTEST FAIL: #48 bus refusal still ARMED a unit"; } || pass=$((pass+1))
+  grep -q -- "--scope --collect /bin/true" "$T/bus.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #48 no probe invocation recorded"; }
+  grep -q "launch-preflight-no-user-bus" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #48 no bus-preflight shadow row"; }
+  # 10a-bus-ok. POSITIVE CONTROL: same fixture, launcher exits 0 -> the handoff
+  #      must proceed and arm a unit. Without this the refusal leg above would
+  #      pass against a tool that refused EVERY handoff.
+  : > "$T/bus.log"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$T/bus.log" > "$T/busbin/systemd-run"; chmod +x "$T/busbin/systemd-run"
+  out="$(PATH="$T/busbin:$PATH" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_SWAP_INFLIGHT_LISTER=/bin/true "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+  check_rc "poll-bus-reachable-rc" $rc 0
+  check_has "poll-bus-reachable-handoff" "$out" "HANDOFF"
+  grep -q -- "--unit=" "$T/bus.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #48 probe passed but no handoff unit was armed"; }
+  # 10a-bus-override. An EXPLICIT OC_SWAP_LAUNCH is the operator's own choice and
+  #      is NOT probed -- the fake systemd-run below is dead, and the handoff
+  #      must still proceed through the named stub.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$T/busbin/systemd-run"; chmod +x "$T/busbin/systemd-run"
+  out="$(PATH="$T/busbin:$PATH" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+  check_rc "poll-bus-probe-skipped-on-override-rc" $rc 0
+  check_has "poll-bus-probe-skipped-on-override-handoff" "$out" "HANDOFF"
+
   # 10b. C-#2: poll --wait with nothing new -> timeout rc 5 + notify wake
   printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$SD/deployed.sha"
   : > "$T/notify.log"
@@ -3862,6 +3896,26 @@ case "$MODE" in
           plan "swap already in flight for ${B_SHA:0:8}: $INFLIGHT_1 — NOT arming a duplicate"
           echo "swap already in flight: $INFLIGHT_1 owns sha=${B_SHA:0:8} (run=$RUN_ID) — not arming a duplicate" >&2
           exit 0
+        fi
+        # USER-BUS PRE-FLIGHT (factory #48 defect 3). A chain armed as a SYSTEM
+        # transient unit carries no XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS,
+        # so the default `systemd-run --user` cannot reach the user manager: the
+        # handoff died ~31 s AFTER dispatch, `poll --execute` returned rc 4, and
+        # the chain reported it as infra rc 6 -- the reader hunted a phantom
+        # infrastructure fault while the cause was a known environmental
+        # precondition. The probe exercises the launcher's OWN bus path BEFORE
+        # anything is armed, so the refusal costs no wait and touches nothing.
+        #
+        # Only the DEFAULT launcher is probed. An explicit OC_SWAP_LAUNCH is the
+        # operator's own choice and is not ours to model -- every selftest stub
+        # takes that path, and a probe of an arbitrary launcher with systemd-run
+        # flags would be a wrong instrument.
+        if [ -z "${OC_SWAP_LAUNCH:-}" ]; then
+          # shellcheck disable=SC2086  # $LAUNCH is a command + args by design
+          if ! $LAUNCH --scope --collect /bin/true >/dev/null 2>&1; then
+            shadow_log swap "$B_SHA" "$FEATURES" "launch-preflight-no-user-bus"
+            die 4 "user bus unreachable — '$LAUNCH' cannot reach the systemd user manager (XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR:-<unset>}', DBUS_SESSION_BUS_ADDRESS='${DBUS_SESSION_BUS_ADDRESS:-<unset>}'), so the swap was NOT armed and nothing was touched. Resume from a shell that has the user bus: oc-deploy poll --execute (or set OC_SWAP_LAUNCH to a launcher that does not need it)."
+          fi
         fi
         UNIT="oc-swap-${B_SHA:0:8}-$(date +%s)"
         OC_SWAP_DETACHED=1 $LAUNCH --unit="$UNIT" --collect "$SELF" swap-execute --sha "$B_SHA" --run "$RUN_ID" --features "$FEATURES" \
