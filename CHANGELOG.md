@@ -1,5 +1,23 @@
 # Changelog — opencrabs-dev
 
+## v0.4.297 — version-record catch-up: ten law commits land under one bump, and the self-report gap is named (2026-10-19)
+
+**Why this entry exists.** v0.4.296 was written into this file on 2026-10-09 (`31fa2c3e`) but its frontmatter bump, tag and `oc-ledger sync` never happened, so the published sequence stopped at v0.4.295 while this file declared v0.4.296. Ten law commits then landed between 2026-10-09 22:07 and 2026-10-19 00:09 with no bump of any kind. Measured consequence: `oc-drift-check` reads `SKILL.md`'s `version:` line (`tools/state/oc-drift-check:95`), so every lane acked at 0.4.295 read **NO-DRIFT** while the law text changed underneath it — the exact failure the instrument exists to prevent, and the SECOND occurrence of the class recorded at CHANGELOG:65 (registry read 0.4.284 while lanes acked 0.4.291). v0.4.296's change is real and deployed (the vpn answer backend pins the CLI path); only its version record was missing, so this entry numbers the catch-up v0.4.297 rather than relabelling a dated entry.
+
+**Landed since v0.4.295 — issue routing.** Two-stream issue routing (owner order 2026-10-09, `e66902d9`, `7c54c376`, `4990ed41`): ALL binary issues go to the fork `leshchenko1979/opencrabs`, factory issues to `leshchenko1979/opencrabs-dev-factory`, and upstream `opencrabs/opencrabs` receives PULL REQUESTS ONLY. The issue-routing discriminator is retired; the harvest boundary machinery (`manual_records` / `FORK_ONLY_SURFACE`) is NOT, because it decides whether a COMMIT can be ported upstream, never which tracker an issue goes to. The claim sweep probes three home trackers, not the fork alone.
+
+**Landed since v0.4.295 — the issue gate.** The `adolfousier` assignee constant is retired (`b082869f`, tool leg `9f7e90be`): `leshchenko1979` is the only assignable account on both live trackers, and `--add-assignee adolfousier` silently no-ops there (rc 0, assignees unchanged). `oc-issue-create` gains `--assignee` and derives `--parent` from a `--root upstream:<sha>` commit's own `Closes #N` trailer.
+
+**Landed since v0.4.295 — smoke.** An unrecoverable smoke gap is a THIRD terminal state (`a5029b92`): annotate it, never dress it as a verdict.
+
+**Landed since v0.4.295 — isolation.** The cgroup boundary is declared (`6b87a202`): isolation is the battery runner's property only.
+
+**Landed since v0.4.295 — ship.** `--test-threads 2` on the ship invocation (`be446805`), with its expiry keyed on the SYMPTOM rather than on upstream #1936's issue state (`7723a1a4`) — because #1936 closed on a stall watchdog while its own closer declared the root cause still under investigation, and the deadlock recurred on 2026-10-15 with a character-identical stuck set. Tool legs: `b13f88e0` (`oc-prchecks --test-threads N`), `8acdd02a` (gate-mode job identity from the bare `<sha>` embed), `12c44d94` (RC-contract row).
+
+**Landed since v0.4.295 — fork refs.** Bare fork `#N` is forbidden in shipped source and doc comments, in the commit subject's `(#N)` suffix, and in the `Issue-Ref:` trailer (`8737607f`), and refs are qualified at AUTHORING (`e475d7d6`). The markdown exemption is CODE SPANS (backticks), never shipped source — the old wording is named in the law as what invited the misread. Measured 2026-10-19 on `adolfousier/main`: **43** bare fork-only refs in `src/` comments (#86 x10, #116 x13, #350 x3, #352 x7, #396 x10), none resolvable on upstream; measured 2026-10-17: 176 of our commits sit in upstream history carrying 59 distinct `Issue-Ref` numbers, 49 of them bare.
+
+**Durable half — OPEN, not fixed here.** The version is a SELF-REPORT, and a self-report that can be skipped is not an instrument: a law edit that forgets the bump is invisible to every check, because `oc-ledger check-version` compares registry against roster and cannot see law that moved without a bump. Filed as factory #47 for the Toolsmith leg (a law-file hash stamped at bump time and compared by `oc-drift-check`, or a "law files changed since the version was set" leg in `check-version`). Until that lands, this entry is a repair, not a guard.
+
 ## v0.4.296 — vpn answer backend pins the CLI path (owner order 2026-10-09)
 
 **Owner order.** *"Backend.py should not resolve by a glob. It should know where exactly the CLI tool is."* The vpn answer backend (`/opt/questions/backend.py`, `questions.l1979.ru`) resolved the register CLI by searching the skill's tools tree — `ls -1 <root>/*/oc-questions <root>/oc-questions`, refusing unless exactly one matched. A search can silently pick up a stray copy, and its "want exactly 1" guard turns a second copy into a hard 502 rather than a diagnosis.
