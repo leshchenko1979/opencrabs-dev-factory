@@ -198,6 +198,20 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      a SECOND `--wait` used as a verdict waiter is the double-duty flagged. Each
      violation names the session id from the log row. Boundary watch vs A/B: C's dimension is
      GAPS (what should be a command), not doc wording or weight.
+     MUTATION-DISCRIMINATION LEG (v0.4.299, opencrabs-dev-factory#48):
+     for every battery or selftest leg ADDED or AMENDED in the window, NAME
+     THE MUTANT IT KILLS — delete the code the leg exists for (isolated
+     worktree, `tree_changed: false`) and confirm the leg reddens. A leg that
+     stays green is a finding: it asserts a SURVIVING SIBLING path, or it is
+     decoration. The commonest form is an rc-only arm, because exit codes are
+     a small vocabulary every failure path shares — deleting the swap
+     handoff's bus probe left `poll-bus-unreachable-rc` GREEN while only the
+     message and argv legs reddened. Cite BOTH receipts: the mutant, and the
+     one leg that was the only one to redden. An ORDERING claim ("before the
+     gate") is never carried by rc-plus-message — deleting the hoisted
+     preflight checkout check left both its rc and name legs green off LEG3's
+     identical surviving sentence, and only an EMPTY-stub-log assertion
+     reddened.
      BOUNDARY vs J (v0.4.161): C's object is a PROCEDURE carrying a recurring
      multi-step ritual; J's object is LAW TEXT carrying a single decision that is a
      pure function of state on disk — including one-shot checks and any set or list
