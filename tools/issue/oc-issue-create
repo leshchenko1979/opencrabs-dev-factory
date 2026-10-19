@@ -79,6 +79,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDE
   [ "$rc" = 0 ] && fd=1
   cat >&$fd <<'USAGE'
 usage: oc-issue-create [--parent <N>] [--root <upstream:obj>] [--no-parent <reason>]
+                       [--fork-only <reason>]
                        [--assignee <login>] [--no-assignee <reason>]
                        [--propose-parent]
                        [--tracker factory|binary|fork] [--repo <slug>]
@@ -97,6 +98,15 @@ Wraps `gh issue create` and REFUSES a fix/bug-titled issue that names no parent.
                       comment. The gate forbids a SILENT default, not a
                       declared one. Last resort -- prefer --root when the
                       surface is upstream-inherited.
+  --fork-only <why>   declare the ORIGIN of a fork-targeted fix: the defect has
+                      no upstream counterpart, so the fork is where it lives.
+                      REQUIRED on a fix/bug title whose RESOLVED target is the
+                      fork (leshchenko1979/opencrabs) unless --root declares the
+                      other origin. Keyed on the resolved repo, never on the
+                      flag name, so --repo <fork slug> cannot bypass it.
+                      Recorded as the first comment (`fork-only: <why>`).
+                      The PARENT gate is independent: a fork fix declares its
+                      parent relation as well as its origin.
   --assignee <login>  the assignee for the new issue. Defaults to
                       leshchenko1979 (the only assignable account on both live
                       trackers). The login is VERIFIED against the target repo
@@ -141,6 +151,7 @@ USAGE
 
 # ---- arg parsing: ours vs gh's ----------------------------------------------
 PARENT=""; NO_PARENT=""; NO_PARENT_SET=0; ROOT=""; ROOT_SET=0; PROPOSE=0; DRY=0; SELFTEST=0
+FORK_ONLY=""; FORK_ONLY_SET=0
 ASSIGNEE=""; NO_ASSIGNEE=""; NO_ASSIGNEE_SET=0
 TRACKER="factory"; REPO_OVERRIDE=""; PASSTHRU=()
 while [ $# -gt 0 ]; do
@@ -157,6 +168,8 @@ while [ $# -gt 0 ]; do
     --no-parent=*) NO_PARENT="${1#--no-parent=}"; NO_PARENT_SET=1; shift ;;
     --root) [ $# -ge 2 ] || { echo "oc-issue-create: --root needs a value" >&2; usage; }; ROOT="$2"; ROOT_SET=1; shift 2 ;;
     --root=*) ROOT="${1#--root=}"; ROOT_SET=1; shift ;;
+    --fork-only) [ $# -ge 2 ] || { echo "oc-issue-create: --fork-only needs a reason" >&2; usage; }; FORK_ONLY="$2"; FORK_ONLY_SET=1; shift 2 ;;
+    --fork-only=*) FORK_ONLY="${1#--fork-only=}"; FORK_ONLY_SET=1; shift ;;
     --assignee) [ $# -ge 2 ] || { echo "oc-issue-create: --assignee needs a value" >&2; usage; }; ASSIGNEE="$2"; shift 2 ;;
     --assignee=*) ASSIGNEE="${1#--assignee=}"; shift ;;
     --no-assignee) [ $# -ge 2 ] || { echo "oc-issue-create: --no-assignee needs a reason" >&2; usage; }; NO_ASSIGNEE="$2"; NO_ASSIGNEE_SET=1; shift 2 ;;
@@ -413,6 +426,29 @@ JSN
   has "…and the parent still reaches gh"   "$T/o10" 'parent.*10'
   has "…and the root is still recorded"    "$T/o10" 'root: 1662'
 
+  # --- the fork-only ORIGIN gate (q70, owner 2026-10-19) ---------------------
+  # A fix/bug title filed on the FORK must declare its ORIGIN. The gate is keyed
+  # on the RESOLVED repo, so the --repo form must be gated IDENTICALLY -- a
+  # resolver reading the FLAG rather than the slug lets it slip past.
+  bash "$SELF" --title "fix(tools): fork-undeclared" --body x --tracker binary --parent 10 >"$T/o27" 2>&1
+  chk "fix title on the FORK + no origin REFUSES" 3 $?
+  has "…the refusal names the fork-only boundary" "$T/o27" 'fork-only boundary'
+  has "…and offers the escape hatch"              "$T/o27" 'fork-only "<why>"'
+  # `--assignee` is passed DELIBERATELY: a --repo override has no known assignee
+  # default, so without it this leg would refuse at the ASSIGNEE gate (rc 3) and
+  # pass for the wrong reason. With it satisfied, only the ORIGIN gate can refuse.
+  bash "$SELF" --title "fix(tools): fork-undeclared" --body x --repo leshchenko1979/opencrabs --parent 10 --assignee leshchenko1979 >"$T/o28" 2>&1
+  chk "…and the --repo form is gated IDENTICALLY" 3 $?
+  has "…naming the resolved target"               "$T/o28" 'target: leshchenko1979/opencrabs$'
+  # A DECLARED origin passes AND the declaration is RECORDED -- not merely echoed
+  # in a --dry-run hint. This leg takes the REAL path: the stub answers the create
+  # URL, then answers `issue comment` rc 0. Delete the recording block and this
+  # leg reddens; the dry-run legs above cannot see that block at all.
+  bash "$SELF" --title "fix(tools): fork-declared" --body x --tracker binary --parent 10 --fork-only "no upstream counterpart" >"$T/o29" 2>&1
+  chk "fix title on the FORK + --fork-only passes" 0 $?
+  has "…and the fork-only declaration is RECORDED"  "$T/o29" 'recorded the fork-only declaration on #4242'
+  hasnt "…and no unrecorded-declaration WARN"       "$T/o29" 'could NOT be recorded'
+
   # --- two-stream tracker routing (SKILL.md; owner order 2026-10-09) ----------
   # The default MUST be the factory tracker: a SILENT fork default is exactly the
   # defect this fixes. The `hasnt` leg is DISCRIMINATING -- the factory slug has
@@ -646,6 +682,42 @@ ESCAPE
   exit 3
 fi
 
+# ---- the fork-only ORIGIN gate (q70, owner 2026-10-19) -----------------------
+# A fix/bug title filed on the FORK must declare its ORIGIN. The fork is the
+# single binary tracker (owner order 2026-10-09) and its src/** is upstream-
+# visible, so a fork-only defect and an upstream-inherited one have the SAME
+# shape at filing time and differ only by this declaration. Keyed on the
+# RESOLVED repo, never on the flag name: `--repo leshchenko1979/opencrabs`
+# resolves to the same slug as `--tracker fork` and must not slip past. The
+# PARENT gate above is INDEPENDENT -- this one runs only once a parent relation
+# is already declared, so a fork fix owes both.
+if is_fix_title "$TITLE" && [ "$REPO_SLUG" = "$FORK_REPO" ] && [ "$FORK_ONLY_SET" = 0 ] && [ "$ROOT_SET" = 0 ]; then
+  cat >&2 <<FORKREFUSAL
+oc-issue-create: REFUSED — nothing filed.
+
+  The title is fix/bug-scoped and the target is the FORK, but the ORIGIN is
+  undeclared.
+    title:  $TITLE
+    target: $REPO_SLUG
+
+  LAW: the fork-only boundary. leshchenko1979/opencrabs is the single binary
+  tracker (owner order 2026-10-09) and its src/** is upstream-visible, so a ref
+  to a fork issue travels upstream where the same number means a DIFFERENT
+  issue. A reader must be able to tell AT FILING whether the defect is ours
+  alone or inherited from upstream -- and nothing downstream can recover a
+  declaration that was never made.
+
+  ESCAPE HATCH — declare the origin:
+    oc-issue-create --fork-only "<why>" ...            # no upstream counterpart
+    oc-issue-create --root upstream:<sha|PR|path> ...  # upstream-inherited;
+                                                       # the object must RESOLVE
+  A DECLARED origin is never blocked: the gate forbids a SILENT default, not a
+  declared one. The PARENT relation is a separate leg and is already satisfied
+  here.
+FORKREFUSAL
+  exit 3
+fi
+
 # ---- validate a declared root --------------------------------------------------
 # Only reached when ROOT_SET=1 and no parent was given. An unresolvable root is
 # refused: recording it would satisfy the letter of the gate while defeating it.
@@ -784,6 +856,7 @@ if [ "$DRY" = 1 ]; then
   [ "$NO_PARENT_SET" = 1 ] && echo "  (then comment: no parent derivable: $NO_PARENT)"
   [ "$NO_ASSIGNEE_SET" = 1 ] && echo "  (then comment: no assignee: $NO_ASSIGNEE)"
   [ "$ROOT_SET" = 1 ] && echo "  (then comment: root: ${ROOT#upstream:})"
+  [ "$FORK_ONLY_SET" = 1 ] && echo "  (then comment: fork-only: $FORK_ONLY)"
   exit 0
 fi
 
@@ -803,6 +876,7 @@ if [ -n "$NUM" ]; then
   oc_log_extra "parent=${PARENT:-none}"
   oc_log_extra "assignee=${ASSIGNEE:-none}"
   [ "$ROOT_SET" = 1 ] && oc_log_extra "root=$ROOT"
+  [ "$FORK_ONLY_SET" = 1 ] && oc_log_extra "fork-only=$FORK_ONLY"
   if [ "$ROOT_SET" = 1 ]; then
     BODY_FILE="$(mktemp)"
     printf 'root: %s\n' "${ROOT#upstream:}" > "$BODY_FILE"
@@ -834,6 +908,18 @@ if [ -n "$NUM" ]; then
       echo "oc-issue-create: recorded the no-assignee declaration on #$NUM"
     else
       echo "oc-issue-create: WARN — created #$NUM but the no-assignee declaration" >&2
+      echo "  could NOT be recorded. Add it by hand; the gate's contract is that" >&2
+      echo "  silence is impossible, so an unrecorded declaration is a breach." >&2
+    fi
+    rm -f "$BODY_FILE"
+  fi
+  if [ "$FORK_ONLY_SET" = 1 ]; then
+    BODY_FILE="$(mktemp)"
+    printf 'fork-only: %s\n' "$FORK_ONLY" > "$BODY_FILE"
+    if "$GH_BIN" issue comment "$NUM" -R "$REPO_SLUG" --body-file "$BODY_FILE" >/dev/null 2>&1; then
+      echo "oc-issue-create: recorded the fork-only declaration on #$NUM"
+    else
+      echo "oc-issue-create: WARN — created #$NUM but the fork-only declaration" >&2
       echo "  could NOT be recorded. Add it by hand; the gate's contract is that" >&2
       echo "  silence is impossible, so an unrecorded declaration is a breach." >&2
     fi
