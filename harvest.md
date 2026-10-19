@@ -235,7 +235,13 @@ Rules:
   `leshchenko1979/opencrabs#N` or the full URL (GitHub autolinks bare `#N`
   against adolfo's issue space). The exemption is MARKDOWN BACKTICKS only,
   never shipped source. Bare `#N` stays reserved for UPSTREAM-local
-  references. Corpus + incident: §Phase 7 Reference Rules below.
+  references. **AUTHORING BINDS BEFORE PORTING (owner order 2026-10-19):**
+  the fork's `src/**` is UPSTREAM-VISIBLE BY DEFAULT — the maintainer pulls
+  fork code directly, with no port and no gate in the loop — so qualify the
+  ref WHEN YOU WRITE THE COMMENT. A bare `#N` is legal on a fork-only
+  surface and FORBIDDEN in `src/**`. 108 such refs reached upstream by a
+  PULL, not a port; no port-time check could see them. Corpus + incident:
+  §Phase 7 Reference Rules below.
 - One feature = one PR; never bundle two features to save a PR.
 - **DEEP CORE ADVANCE HEADS-UP GATE (owner order 2026-09-17; paths corrected + executor assigned v0.4.204, HQ ruling 2026-09-18; config added to scope by owner order 2026-09-19):** If the PR touches **Deep Core** (runtime scheduler, compaction algorithms, provider routing/fallbacks, subagent orchestration, tool loop, configuration — loading, profile resolution, write guards, migrations — the PROSE scope is operative, paths are a reading aid: `src/cron/`, `src/brain/agent/service/tool_loop.rs`, `src/brain/agent/context.rs`, `src/brain/provider/`, `src/brain/tools/subagent/`, `src/config/`), post a concise 1-liner heads-up **as a comment on the upstream PR itself, by the filing lane** (it filed the PR, so it already holds the surface), before or simultaneously with opening it: `Core heads-up: <symptom> → proposed fix in <subsystem> (PR #<N>)` — nothing else; detail belongs in the PR body. **TELEGRAM VENUES RETIRED 2026-09-27 (owner relay + maintainer request):** the former `OC Dev` / `Opencrabs Dev Factory` group-post venues are WITHDRAWN — `OC Dev` carries the maintainer (`@adolfodev`) as a NON-OPERATOR member, which makes it member-visible under §Agent briefing law, and he has asked for feedback on GitHub only. With the venue on GitHub, §Telegram surface law no longer applies and the filing lane posts it directly. Surface integrations (Telegram channel handler, cards, formatting) remain under autonomous maintainer authority and ship with 4-leg smoke receipts without advance group chat posting. Canon: `harvest.md §Deep Core Advance Heads-Up Gate`.
 - **ATOMICITY & ZERO BUNDLING:** the LAW — **1 Intent = 1 Unit**, never mix features and bug fixes in
@@ -387,9 +393,17 @@ Reference detail behind upstream PR harvesting and surfaces:
   reserved for UPSTREAM-local references. The exemption is MARKDOWN CODE
   SPANS (backticks) — never a source comment; literal log-line quotes stay
   verbatim. Fork-side surfaces are unaffected (bare #N resolves correctly
-  there). **Measured 2026-10-17: 43 such lines in upstream `src/` from our
-  commits, and 49 of 59 `Issue-Ref` numbers in upstream history appear ONLY
-  bare — the 2026-08-31 "sweep clean" claim is WITHDRAWN.**
+  there). **AUTHORING IS THE BINDING POINT (owner order 2026-10-19):** the
+  maintainer pulls fork code DIRECTLY — measured 2026-10-08 (the whole LFL
+  cluster absorbed, `5a71bd3c2`→`8257134ce`) and 2026-10-19
+  (`extract_local_files` byte-identical to fork `origin/main`) — so a port
+  gate is not the only door to upstream, and `src/**` must be qualified at
+  authoring. **Measured 2026-10-19 at upstream `f01ef0e03`: 108 bare
+  fork-only refs across 46 files in `src/**`, over 13 numbers; the earlier
+  43 was the five-number subset. Swept by upstream PR
+  [#2126](https://github.com/opencrabs/opencrabs/pull/2126); 112 of our
+  commits in upstream history carry `Issue-Ref` over 59 distinct numbers,
+  50 bare-only.**
 
 ### Deep Core Advance Heads-Up Gate (Core vs Integration Rule, Owner Order 2026-09-17)
 
