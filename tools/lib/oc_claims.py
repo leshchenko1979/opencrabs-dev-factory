@@ -1008,6 +1008,28 @@ MANUAL_STATUS_NOT_UPSTREAMABLE = "not-upstreamable"
 #: issue -- so no dependent PR can be filed today. A conditional row still REFUSES
 #: dispatch (it is not harvestable now); what changes is that it says WHY.
 MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE = "conditionally-upstreamable"
+#: #49: a unit's DECLARED BLOCKER is not a dependency of its PORT. The census
+#: reads the declared edge (fork #620 blocked-by #617) and refuses on it, but a
+#: declaration cannot describe the port's shape: when upstream already
+#: guarantees the blocker's substance natively, the fork predicate is incidental
+#: to a fork-only struct and there is nothing to satisfy upstream. Measured live
+#: (2026-10-19): #617's substance is "media-bearing bubbles must not be deleted
+#: as burial evidence", which upstream implements at `intermediates.rs:354-362`
+#: by construction -- so #620 was portable-by-construction and unportable-by-
+#: declaration, with no way to say so. The only escape was editing the unit's
+#: own blocker edge on the tracker, i.e. rewriting the world to satisfy a tool.
+#:
+#: This class records the lane's ASSERTION plus the UPSTREAM OBJECT it rests on
+#: (`clears_dependency` + `re_expressed_at`), and the leg clears the blocker ONLY
+#: when that object RESOLVES at the upstream ref -- the same discipline `--root`
+#: applies. A flag would suppress the leg; a resolving assertion is re-checkable
+#: by a reviewer and goes stale loudly instead of silently.
+#:
+#: CRITICAL: this row is NOT a unit disposition and MUST NOT match
+#: `manual_record_matches`. `oc-harvest-dispatch` REJECTS every matching row, so
+#: a clearance that matched would refuse the very unit it cleared -- the bug it
+#: exists to fix, wearing the opposite sign.
+MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED = "dependency-re-expressed"
 
 
 def manual_record_status(record):
@@ -1023,17 +1045,18 @@ def manual_record_status(record):
         return MANUAL_STATUS_NOT_UPSTREAMABLE
     if st == MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE:
         return MANUAL_STATUS_CONDITIONALLY_UPSTREAMABLE
+    if st == MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED:
+        return MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED
     return MANUAL_STATUS_FILED
 
 
-def manual_record_matches(record, target, target_iss):
-    """Does ONE manual_records row cover this target? (#564)
+def _record_covers_target(record, target, target_iss):
+    """The UNIT/ISSUE match, independent of the row's disposition (#564, #49).
 
-    The same predicate the census has always used, lifted here so the dispatcher
-    applies it too: dispatch had ZERO manual handling, so a unit a prior lane
-    settled as not-upstreamable was re-proposed on EVERY wave (live instance
-    #209, settled 2026-09-15, re-dispatched 2026-09-24 to a lane that could only
-    refuse it).
+    Split out so the two public predicates below share ONE matcher: a clearance
+    row and a disposition row must be found by the same rule, and a second
+    hand-kept copy is exactly how the census and the dispatcher drifted apart
+    before #564 lifted this here.
     """
     if not isinstance(record, dict):
         return False
@@ -1047,6 +1070,41 @@ def manual_record_matches(record, target, target_iss):
     by_unit = bool(record.get("unit")) and str(record["unit"]).lower() == str(target).lower()
     return bool(by_issue or by_unit)
 
+def manual_record_matches(record, target, target_iss):
+    """Does ONE manual_records row DISPOSE OF this target? (#564)
+
+    The same predicate the census has always used, lifted here so the dispatcher
+    applies it too: dispatch had ZERO manual handling, so a unit a prior lane
+    settled as not-upstreamable was re-proposed on EVERY wave (live instance
+    #209, settled 2026-09-15, re-dispatched 2026-09-24 to a lane that could only
+    refuse it).
+
+    #49: a DEPENDENCY-RE-EXPRESSED row is an assertion about ONE declared
+    blocker, never a disposition of the unit -- the unit stays harvestable and
+    its remaining legs keep running. It MUST NOT match here: this predicate is
+    the dispatcher's REJECTION gate (oc-harvest-dispatch:885), so a clearance
+    that matched would refuse the very unit it cleared. The census finds those
+    rows through `manual_clearance_matches` instead.
+    """
+    if not isinstance(record, dict):
+        return False
+    if manual_record_status(record) == MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED:
+        return False
+    return _record_covers_target(record, target, target_iss)
+
+def manual_clearance_matches(record, target, target_iss):
+    """Is this row a DEPENDENCY-RE-EXPRESSED clearance for this target? (#49)
+
+    The exact complement of `manual_record_matches` on the clearance class: same
+    unit/issue rule, opposite disposition. Kept as its own predicate so neither
+    caller can accidentally consume the other's rows -- the census's leg 6 wants
+    ONLY clearances, and every refusal gate wants NONE of them.
+    """
+    if not isinstance(record, dict):
+        return False
+    if manual_record_status(record) != MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED:
+        return False
+    return _record_covers_target(record, target, target_iss)
 
 def manual_record_claim(record, target):
     """One honest sentence about a matching row (#564), WITHOUT the rc prefix.
@@ -1061,6 +1119,14 @@ def manual_record_claim(record, target):
     """
     unit = (record or {}).get("unit")
     tail = " (unit %s)" % unit if unit else ""
+    if manual_record_status(record) == MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED:
+        dep, ref = manual_record_clearance(record)
+        return ("Target %s carries a DEPENDENCY-RE-EXPRESSED clearance%s: declared "
+                "blocker #%s is re-expressed upstream at %s%s"
+                % (target, tail, dep if dep is not None else '?',
+                   ref if ref else '(NO upstream object named -- the clearance cannot resolve)',
+                   '; reason: %s' % str(record.get('reason')).strip()
+                   if str((record or {}).get('reason') or '').strip() else ''))
     if manual_record_status(record) == MANUAL_STATUS_NOT_UPSTREAMABLE:
         reason = str((record or {}).get("reason") or "").strip()
         why = "; reason: %s" % reason if reason else ""
@@ -1077,6 +1143,63 @@ def manual_record_claim(record, target):
     return ("Target %s is manually recorded with NO PR number recorded%s -- the record is "
             "incomplete, or a not-upstreamable marker stored in the pr field without a status"
             % (target, tail))
+
+def manual_record_clearance(record):
+    """The `(dependency, upstream_ref)` a DEPENDENCY-RE-EXPRESSED row asserts (#49).
+
+    Returns `(int|None, str|None)` -- never raises, because the caller is a
+    refusal leg and a malformed row must DEGRADE to "cannot clear", never to a
+    crash and never to a silent clearance. The pair is the lane's assertion; it
+    is not evidence, and this function does not verify it: RESOLUTION needs the
+    repo, so it belongs to the census (`resolve_upstream_refspec`), which is the
+    only caller holding a checkout.
+    """
+    if not isinstance(record, dict):
+        return (None, None)
+    raw_dep = record.get('clears_dependency')
+    dep = None
+    try:
+        if raw_dep is not None and str(raw_dep).strip() != '':
+            dep = int(str(raw_dep).strip().lstrip('#'))
+    except (TypeError, ValueError):
+        dep = None
+    raw_ref = record.get('re_expressed_at')
+    ref = str(raw_ref).strip() if raw_ref is not None else ''
+    return (dep, ref or None)
+
+def parse_upstream_refspec(ref):
+    """Split `<path>[:<line>|-<start>-<end>]` into `(path, start, end)` (#49).
+
+    `end` is None for a single-line ref and for a bare path. Returns None for
+    anything it cannot read, so the caller reports "unparseable" rather than
+    guessing a path that happens to be a prefix.
+
+    The line range is what makes the assertion RE-CHECKABLE: a clearance that
+    named only a file would survive the file being rewritten, while a named
+    range going stale is the signal that the premise moved.
+    """
+    if not isinstance(ref, str):
+        return None
+    txt = ref.strip()
+    if not txt:
+        return None
+    if ':' not in txt:
+        return (txt, None, None)
+    path, _, rng = txt.rpartition(':')
+    m = re.fullmatch(r'(\d+)\s*(?:-\s*(\d+))?', rng or '')
+    if not m:
+        # Not a line spec, so the colon belongs to the PATH. Return the whole
+        # string and let RESOLUTION reject it: a path that does not exist
+        # upstream fails loudly, which is the safe direction, whereas dropping
+        # the suffix here would silently clear against a DIFFERENT file.
+        return (txt, None, None)
+    if not path:
+        return None
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    if start < 1 or end < start:
+        return None
+    return (path, start, end)
 
 
 # ---------------------------------------------------------------------------

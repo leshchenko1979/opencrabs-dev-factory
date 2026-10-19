@@ -22,9 +22,11 @@
 #       - Exits 2 on usage / bad arguments.
 #       - Exits 3 on API/git failure.
 #   record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
-#          [--status filed|not-upstreamable|conditionally-upstreamable] [--reason <text>]
+#          [--status filed|not-upstreamable|conditionally-upstreamable|dependency-re-expressed]
+#          [--reason <text>]
 #          [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
 #          [--prerequisite <ref>] [--condition <text>] [--dispatch <lane>]
+#          [--clears-dependency <N>] [--re-expressed-at <path[:line[-end]]>]
 #          [--state-file <path>]
 #       Records/updates a manual_records row (upsert keyed on UNIT, #761).
 #       --pr is required only for the default 'filed' status; a
@@ -35,7 +37,13 @@
 #       CONDITIONAL row's own fields (#20): the walk re-verifies a
 #       `conditionally-upstreamable` row on its named --prerequisite's live
 #       issue/PR state, so a conditional row written without one is UNCOVERED
-#       and cannot be re-verified at all.
+#       and cannot be re-verified at all. --clears-dependency and
+#       --re-expressed-at are the DEPENDENCY-RE-EXPRESSED row's own fields
+#       (#49): the row asserts that ONE declared blocker is incidental to the
+#       port because upstream already implements its substance, and the
+#       census's HELD_DEPENDENCY_NOT_UPSTREAM leg clears that blocker ONLY
+#       while the named upstream object still RESOLVES. Such a row is NOT a
+#       unit disposition -- it never refuses the unit itself.
 #   purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
 #                                    REFUSED (rc 2) unless --dry-run: REMOVAL
 #                                    IS FORBIDDEN (harvest.md, #707)
@@ -103,13 +111,19 @@ Usage:
       its own PR is not refused [HELD_BASE_RED] -- the two states were
       indistinguishable before, and the carry is read from the repo's own diff.
   $PROG record --unit <slug> [--pr <number>] [--issue <N>] [--issues <N,N>]
-               [--status filed|not-upstreamable|conditionally-upstreamable] [--reason <text>]
+               [--status filed|not-upstreamable|conditionally-upstreamable|dependency-re-expressed]
+               [--reason <text>]
                [--branches b1,b2] [--revert <recipe>] [--verified-at <ts>]
+               [--clears-dependency <N>] [--re-expressed-at <path[:line[-end]]>]
                [--state-file <path>]
       Records/updates a manual_records row (upsert keyed on UNIT, #761).
       --pr is required only for the default 'filed' status. --branches,
       --revert and --verified-at are OPTIONAL annotations on a
       not-upstreamable row and are carried forward on a re-record.
+      --clears-dependency + --re-expressed-at (#49) write a
+      'dependency-re-expressed' clearance: it clears ONE declared blocker from
+      the HELD_DEPENDENCY_NOT_UPSTREAM leg while the named upstream object
+      resolves, and is never a disposition of the unit itself.
   $PROG purge --unit <slug> [--pr <N>] [--issue <N>] [--state-file <path>] [--dry-run]
   $PROG sync [--repo <path>] [--state-file <path>]
   $PROG walk [--repo <path>] [--upstream <owner/repo>] [--state-file <path>] [--json] [--no-write]
@@ -818,6 +832,48 @@ def ref_exists(base_ref, repo_path):
         return False
     return subprocess.run(['git', '-C', repo_path, 'rev-parse', '--verify', '--quiet', base_ref],
                           capture_output=True).returncode == 0
+
+def resolve_upstream_refspec(repo_path, refspec, branch):
+    """Does a clearance's named UPSTREAM OBJECT resolve at `branch`? (#49)
+
+    Returns `(status, detail)`:
+      `resolved`    -- the path exists at `branch` and, when a line range was
+                       named, the range is inside the file's length
+      `absent`      -- the path does not exist at `branch`
+      `range-stale` -- the path exists but the named range runs past EOF
+      `unparseable` -- the refspec is not `<path>[:<line>[-<end>]]`
+      `unreadable`  -- git itself could not answer (no repo, missing ref)
+
+    This is the whole point of the class: a flag would SUPPRESS the refusal leg,
+    while a named object that must RESOLVE turns the lane's assertion into
+    something a reviewer re-checks and the tool re-tests on every run. It mirrors
+    `--root`'s resolution requirement (upstream-merge-runbook.md), and it never
+    builds: `git cat-file` reads a blob, so the census stays build-free.
+    """
+    parsed = oc_claims.parse_upstream_refspec(refspec)
+    if parsed is None:
+        return ('unparseable', 'refspec %r is not <path>[:<line>[-<end>]]' % (refspec,))
+    path, start, end = parsed
+    if not repo_path or not os.path.isdir(repo_path):
+        return ('unreadable', 'no checkout at %s' % (repo_path or 'the repo path'))
+    if not branch or not ref_exists(branch, repo_path):
+        return ('unreadable', 'upstream ref %s does not resolve' % (branch or '(unset)'))
+    spec = '%s:%s' % (branch, path)
+    if subprocess.run(['git', '-C', repo_path, 'cat-file', '-e', spec],
+                      capture_output=True).returncode != 0:
+        return ('absent', '%s does not exist at %s' % (path, branch))
+    if start is None:
+        return ('resolved', '%s resolves at %s' % (path, branch))
+    r = subprocess.run(['git', '-C', repo_path, 'show', spec],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return ('unreadable', 'git could not read %s' % spec)
+    n_lines = len((r.stdout or '').splitlines())
+    if end > n_lines:
+        return ('range-stale', '%s has %d line(s) at %s, so %d-%d no longer exists'
+                % (path, n_lines, branch, start, end))
+    return ('resolved', '%s:%d-%d resolves at %s (%d lines)'
+            % (path, start, end, branch, n_lines))
 
 def commits_present(commits_list, repo_path):
     # The fix's own commits must be IN the repo for its diff to be derivable.
@@ -2726,13 +2782,74 @@ if action == 'check':
                 if not _b_up:
                     _dep_unup.append(_b)
             if _dep_unup:
-                refuse('REFUSED: Target %s declares blocker(s) %s that have LANDED '
-                       'fork-only and are NOT present in %s [HELD_DEPENDENCY_NOT_UPSTREAM] '
-                       '-- the unit is UNHARVESTED but NOT PORTABLE: its fix depends on '
-                       'substance upstream does not carry, so the port cannot resolve '
-                       'there. This verdict is about PORTABILITY; the UNHARVESTED claim '
-                       'is separate and unchanged.' % (
-                           target, ', '.join('#%d' % b for b in _dep_unup), _dep_branch))
+                # #49: a DECLARED edge is not a PORT dependency. This leg reads
+                # the tracker's blocker graph, but a declaration cannot describe
+                # the port's shape -- when upstream already guarantees the
+                # blocker's substance natively, the fork predicate is incidental
+                # and there is nothing to satisfy. Before #49 the only escape was
+                # editing the unit's own blocker edge on the tracker, i.e.
+                # rewriting the world to satisfy a tool.
+                #
+                # The clearance is an ASSERTION THAT MUST RESOLVE, never a flag:
+                # the row names the upstream object, and this leg re-reads it on
+                # every run. A row whose object is absent, stale or unparseable
+                # leaves the hold STANDING and says why -- the fail-closed
+                # direction, because a clearance that cannot be re-checked is a
+                # suppression wearing a record's clothes.
+                _clr_rows = [r for r in manual
+                             if oc_claims.manual_clearance_matches(r, target, target_iss)]
+                _still, _cleared, _clr_bad = [], [], []
+                for _b in _dep_unup:
+                    _rows = [r for r in _clr_rows
+                             if oc_claims.manual_record_clearance(r)[0] == _b]
+                    if not _rows:
+                        _still.append(_b)
+                        continue
+                    # Last row wins: `record` upserts on unit, so a re-record
+                    # replaces rather than appends, and a fixture or a manual
+                    # edit can only ever leave one live row per unit.
+                    _dep_n, _ref = oc_claims.manual_record_clearance(_rows[-1])
+                    _clr_st, _clr_det = resolve_upstream_refspec(repo_path, _ref, _dep_branch)
+                    if _clr_st == 'unreadable':
+                        # #49: the object a clearance names lives in the UPSTREAM
+                        # tree, which is not necessarily the unit's own checkout.
+                        # When the unit repo cannot answer, resolve against the
+                        # declared upstream tree before calling the premise
+                        # unreadable -- a lane holding both trees must not be told
+                        # its assertion is unreadable while the object sits in the
+                        # one it named. This is a second READ, never a bypass: a
+                        # clearance still clears ONLY on `resolved`, so the
+                        # fail-closed direction is unchanged.
+                        _alt_tree = os.environ.get('OC_HARVEST_UPSTREAM_TREE', '')
+                        if _alt_tree:
+                            _clr_st, _clr_det = resolve_upstream_refspec(
+                                _alt_tree, _ref, _dep_branch)
+                    if _clr_st == 'resolved':
+                        _cleared.append((_b, _clr_det))
+                    else:
+                        _clr_bad.append((_b, _clr_st, _clr_det))
+                        _still.append(_b)
+                for _b, _clr_det in _cleared:
+                    print('NOTE(HELD_DEPENDENCY_NOT_UPSTREAM): declared blocker #%d is '
+                          'CLEARED for this unit -- re-expressed upstream and RESOLVED: '
+                          '%s. The edge still exists on the tracker; the clearance says '
+                          'the PORT does not need it (#49).' % (_b, _clr_det))
+                for _b, _clr_st, _clr_det in _clr_bad:
+                    print('NOTE(HELD_DEPENDENCY_NOT_UPSTREAM): declared blocker #%d '
+                          'carries a clearance that DID NOT RESOLVE (%s): %s -- the '
+                          'hold STANDS.' % (_b, _clr_st, _clr_det))
+                if _still:
+                    refuse('REFUSED: Target %s declares blocker(s) %s that have LANDED '
+                           'fork-only and are NOT present in %s [HELD_DEPENDENCY_NOT_UPSTREAM] '
+                           '-- the unit is UNHARVESTED but NOT PORTABLE: its fix depends on '
+                           'substance upstream does not carry, so the port cannot resolve '
+                           'there. This verdict is about PORTABILITY; the UNHARVESTED claim '
+                           'is separate and unchanged. REMEDY (#49): if the port re-expresses '
+                           'the dependency against upstream structure, record a clearance -- '
+                           '`record --unit <u> --status dependency-re-expressed '
+                           '--clears-dependency <N> --re-expressed-at <path[:line[-end]]>` -- '
+                           'which clears the blocker only while that upstream object resolves.'
+                           % (target, ', '.join('#%d' % b for b in _still), _dep_branch))
             if _dep_unreadable:
                 print('NOTE(HELD_DEPENDENCY_NOT_UPSTREAM): %d declared blocker(s) could '
                       'not be read (%s) -- the verdict above is INCOMPLETE, never a '
@@ -3274,11 +3391,65 @@ elif action == 'walk':
             verified.append(entry)
             r['verified_at'] = walk_stamp
 
+    # ---- #49: the CLEARANCE arm -------------------------------------------
+    # A `dependency-re-expressed` row is neither a disposition nor a surface
+    # claim: it asserts that ONE declared blocker is incidental to the port
+    # because upstream already implements its substance. Its single premise is
+    # that the named upstream object STILL RESOLVES -- the same test the
+    # HELD_DEPENDENCY_NOT_UPSTREAM leg applies at check time, re-run here so a
+    # clearance that went stale during a sync is REPORTED rather than waiting
+    # for whoever happens to check that unit next. A stale clearance is
+    # fail-closed by construction (the leg refuses again), so this arm exists
+    # for DISCOVERY, not for enforcement.
+    clr_rows = [r for r in wrecords
+                if isinstance(r, dict)
+                and oc_claims.manual_record_status(r) == oc_claims.MANUAL_STATUS_DEPENDENCY_RE_EXPRESSED]
+    for r in clr_rows:
+        _dep, _ref = oc_claims.manual_record_clearance(r)
+        prem = {}
+        if _dep is None or not _ref:
+            prem['d'] = ('UNCOVERED',
+                         'row names no parseable blocker/upstream object (%r / %r) -- premise (d) '
+                         'cannot be verified, and the leg will NOT clear anything on it'
+                         % (r.get('clears_dependency'), r.get('re_expressed_at')))
+        else:
+            _st, _det = resolve_upstream_refspec(repo_path, _ref, walk_base)
+            if _st == 'resolved':
+                prem['d'] = ('HOLDS', 'declared blocker #%d is still re-expressed upstream: %s'
+                             % (_dep, _det))
+            elif _st == 'unreadable':
+                prem['d'] = ('UNVERIFIED', 'upstream object could not be read: %s' % _det)
+            else:
+                prem['d'] = ('CHANGED', 'the clearance NO LONGER RESOLVES (%s): %s -- the '
+                             'HELD_DEPENDENCY_NOT_UPSTREAM leg refuses this unit again until the '
+                             'row is re-recorded against the moved premise' % (_st, _det))
+
+        entry = {'unit': str(r.get('unit')), 'issue': r.get('issue'), 'pr': r.get('pr'),
+                 'reason': str(r.get('reason') or ''),
+                 'clearance': {'dependency': _dep, 're_expressed_at': _ref},
+                 'premises': {k: {'verdict': v[0], 'detail': v[1]} for k, v in sorted(prem.items())}}
+        moved = [k for k, v in sorted(prem.items()) if v[0] == 'CHANGED']
+        unsolved = [k for k, v in sorted(prem.items()) if v[0] == 'UNVERIFIED']
+        missing = [k for k, v in sorted(prem.items()) if v[0] == 'UNCOVERED']
+        if moved:
+            entry['moved'] = moved
+            changed.append(entry)
+        elif unsolved or missing:
+            if unsolved:
+                entry['unverified'] = unsolved
+            if missing:
+                entry['uncovered'] = missing
+            uncov.append(entry)
+        else:
+            verified.append(entry)
+            r['verified_at'] = walk_stamp
+
     if not no_write and verified:
         with open(registry_file, 'w') as f:
             json.dump(wdata, f, indent=2)
 
     wsummary = {'open_rows': len(open_rows), 'conditional_rows': len(cond_rows),
+                'clearance_rows': len(clr_rows),
                 'changed': len(changed),
                 'unverified_or_uncovered': len(uncov), 'verified': len(verified),
                 'stamp': walk_stamp, 'wrote': bool(not no_write and verified)}
@@ -3295,6 +3466,10 @@ elif action == 'walk':
         if cond_rows:
             print('      + %d `conditionally-upstreamable` row(s) (#20) -- re-verified on their '
                   'named PREREQUISITE\'s live state, never a surface diff' % len(cond_rows))
+        if clr_rows:
+            print('      + %d `dependency-re-expressed` clearance(s) (#49) -- re-verified by '
+                  'RESOLVING the named upstream object, never by re-reading the declaration'
+                  % len(clr_rows))
         print('')
         print('CHANGED -- premise moved (%d)' % len(changed))
         for e in changed:
@@ -3327,12 +3502,13 @@ elif action == 'walk':
             for _k in sorted(e['premises']):
                 print('      (%s) %s' % (_k, e['premises'][_k]['detail']))
         print('')
-        print('summary: %d OPEN row(s) -- %d CHANGED, %d UNVERIFIED/UNCOVERED, %d VERIFIED%s'
-              % (len(open_rows) + len(cond_rows), len(changed), len(uncov), len(verified),
-                 '' if no_write else ' (stamped %s)' % walk_stamp))
+        print('summary: %d row(s) -- %d CHANGED, %d UNVERIFIED/UNCOVERED, %d VERIFIED%s'
+              % (len(open_rows) + len(cond_rows) + len(clr_rows), len(changed), len(uncov),
+                 len(verified), '' if no_write else ' (stamped %s)' % walk_stamp))
         print('         population: %d terminal (`not-upstreamable`) + %d conditional '
-              '(`conditionally-upstreamable`, #20)'
-              % (len(open_rows), len(cond_rows)))
+              '(`conditionally-upstreamable`, #20) + %d clearance '
+              '(`dependency-re-expressed`, #49)'
+              % (len(open_rows), len(cond_rows), len(clr_rows)))
         print('         no row deleted: REMOVAL IS FORBIDDEN (harvest.md Phase 7c) -- a reported row is a FINDING, not a deletion.')
 
     sys.exit(1 if changed else 0)
@@ -3461,6 +3637,7 @@ cmd_record() {
   local unit="" pr="" issue="" issues_str="" status="" reason=""
   local branches="" revert="" verified_at=""
   local prerequisite="" condition="" dispatch=""
+  local clears_dep="" re_expr=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --unit) [ $# -ge 2 ] || { echo "oc-harvest-census: --unit needs a value" >&2; usage; }; unit="$2"; shift 2 ;;
@@ -3476,6 +3653,8 @@ cmd_record() {
       --prerequisite) [ $# -ge 2 ] || { echo "oc-harvest-census: --prerequisite needs a value" >&2; usage; }; prerequisite="$2"; shift 2 ;;
       --condition) [ $# -ge 2 ] || { echo "oc-harvest-census: --condition needs a value" >&2; usage; }; condition="$2"; shift 2 ;;
       --dispatch) [ $# -ge 2 ] || { echo "oc-harvest-census: --dispatch needs a value" >&2; usage; }; dispatch="$2"; shift 2 ;;
+      --clears-dependency) [ $# -ge 2 ] || { echo "oc-harvest-census: --clears-dependency needs a value" >&2; usage; }; clears_dep="$2"; shift 2 ;;
+      --re-expressed-at) [ $# -ge 2 ] || { echo "oc-harvest-census: --re-expressed-at needs a value" >&2; usage; }; re_expr="$2"; shift 2 ;;
       --repo) [ $# -ge 2 ] || { echo "oc-harvest-census: --repo needs a value" >&2; usage; }; REPO="$2"; shift 2 ;;
       -h|--help) usage 0 ;;
       *) usage ;;
@@ -3487,6 +3666,36 @@ cmd_record() {
   # #564: a NOT-UPSTREAMABLE record has no PR to name -- demanding one is what
   # forced the upstream-issue number into the pr field in the first place. Only
   # the `filed` arm requires a PR number.
+  # #49: the DEPENDENCY-RE-EXPRESSED clearance is validated HERE, ahead of the
+  # `filed` default below. That default turns a status-less clearance into a
+  # `filed` row, whose `--pr` requirement then fires the usage wall -- so the
+  # lane was told it had forgotten a PR when the real defect was a missing
+  # status. A clearance is only a clearance when BOTH halves are present and the
+  # refspec parses, so a half-written row is refused here rather than stored as
+  # an un-resolvable assertion the leg then re-refuses on every run.
+  if [ -n "$clears_dep" ] || [ -n "$re_expr" ]; then
+    if [ "$status" != "dependency-re-expressed" ]; then
+      echo "oc-harvest-census: --clears-dependency/--re-expressed-at require --status dependency-re-expressed (got '${status:-<unset>}')" >&2
+      exit 2
+    fi
+    if [ -z "$clears_dep" ] || [ -z "$re_expr" ]; then
+      echo "oc-harvest-census: a dependency-re-expressed row needs BOTH --clears-dependency and --re-expressed-at" >&2
+      exit 2
+    fi
+    # A `case` glob, not a printf|grep pipe: the battery forbids that shape
+    # (it is a subshell per call and a silent-pass trap when grep is absent).
+    case "${clears_dep#\#}" in
+      ''|*[!0-9]*) echo "oc-harvest-census: --clears-dependency $clears_dep is not an issue number" >&2
+                   exit 2 ;;
+    esac
+    if ! python3 -c 'import sys
+sys.path.insert(0, sys.argv[1])
+import oc_claims
+sys.exit(0 if oc_claims.parse_upstream_refspec(sys.argv[2]) is not None else 1)' "$OC_TOOLS_DIR/lib" "$re_expr"; then
+      echo "oc-harvest-census: --re-expressed-at $re_expr is not <path>[:<line>[-<end>]]" >&2
+      exit 2
+    fi
+  fi
   if [ -z "$status" ]; then
     status="filed"
   fi
@@ -3496,12 +3705,14 @@ cmd_record() {
   if [ -z "$pr" ]; then
     pr=0
   fi
+  local rec_rc=0
   if [ -f "$REGISTRY_FILE" ]; then
     python3 -c '
 import sys, json, os, datetime, re
 reg_file, unit, pr, issue, issues_str = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 status, reason, branches, revert, verified_at = sys.argv[6], sys.argv[7], sys.argv[8], sys.argv[9], sys.argv[10]
 prerequisite, condition, dispatch = sys.argv[11], sys.argv[12], sys.argv[13]
+clears_dep, re_expr = sys.argv[14], sys.argv[15]
 with open(reg_file) as f:
     data = json.load(f)
 records = data.setdefault("manual_records", [])
@@ -3548,6 +3759,15 @@ if condition:
     record_entry["condition"] = condition
 if dispatch:
     record_entry["dispatch"] = dispatch
+# #49: the fields owned by the DEPENDENCY-RE-EXPRESSED clearance. The RULES --
+# both halves present, the status, a parseable refspec -- are enforced in the
+# SHELL above, in one home and ahead of the usage wall; this block only carries
+# the already-validated values into the row. Keeping a second copy here would
+# make the writer answer to two authorities and drift.
+if clears_dep:
+    record_entry["clears_dependency"] = int(str(clears_dep).strip().lstrip("#"))
+if re_expr:
+    record_entry["re_expressed_at"] = re_expr.strip()
 # #761/#733: the row IDENTITY is the UNIT -- never (unit, pr, issue).
 # oc_claims.manual_record_matches() matches a target on unit OR issue, so
 # `unit` is the only identity anything downstream consumes; the old
@@ -3597,11 +3817,15 @@ _what = ("NOT UPSTREAMABLE" if record_entry.get("status") == "not-upstreamable"
                else ("PR #%s" % record_entry["pr"] if int(record_entry.get("pr") or 0) else "NO PR recorded")))
 _final_issues = record_entry.get("issues", [])
 print(f"{verb} Unit {unit} -> {_what} (issues: {_final_issues}) in {reg_file}")
-' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason" "$branches" "$revert" "$verified_at" "$prerequisite" "$condition" "$dispatch"
+' "$REGISTRY_FILE" "$unit" "$pr" "$issue" "$issues_str" "$status" "$reason" "$branches" "$revert" "$verified_at" "$prerequisite" "$condition" "$dispatch" "$clears_dep" "$re_expr" || rec_rc=$?
   else
     echo "Recorded Unit $unit -> PR #$pr (registry uninitialized)"
   fi
-  exit 0
+  # #49: PROPAGATE the writer exit code. This was an unconditional `exit 0`, so
+  # every validation inside the heredoc printed its complaint and then reported
+  # SUCCESS -- a refusal that reads as a write. rc 2 is the usage/validation
+  # contract the battery asserts, and it can only be observed if it survives.
+  exit "$rec_rc"
 }
 
 cmd_sync() {
@@ -6714,6 +6938,180 @@ C601EOF
     ok "#675: a list-form relations file discloses no blockedBy edge and never refuses on the unknown"
   else
     echo "  bad  - #675 list-form edge must disclose and not refuse; got rc=$rc ($out)"
+  fi
+
+  # ---- (#49) DEPENDENCY-RE-EXPRESSED CLEARANCE ------------------------
+  # A declared blocker is not a dependency of the PORT. These legs are the
+  # DISCRIMINATING set: a clearance must clear ONLY while the upstream object it
+  # names still resolves, must never act as a unit disposition, and must never
+  # clear a blocker it does not name.
+  #
+  # The upstream objects are REAL -- a throwaway git repo carrying a branch
+  # named `adolfousier/main` -- because `resolve_upstream_refspec` reads a BLOB.
+  # Mocking it would assert the mock, not the resolution (CODE.md item 3).
+  #
+  # TWO TREES, deliberately. The unit's OWN repo stays $selftest_tmp, because
+  # HELD_SET must read #601 as READY for the #675 leg to be the one under test;
+  # handing the engine $up49 instead starved that member and HELD_SET refused
+  # first -- a green arm asserting its own fixture, not the clearance (measured
+  # here: all three clearance legs reported HELD_SET). The clearance's OBJECT is
+  # read from the upstream tree via OC_HARVEST_UPSTREAM_TREE.
+  local up49="$setdir/up49repo"
+  mkdir -p "$up49"
+  ( cd "$up49" \
+    && git init -q . \
+    && git config user.email selftest@example.invalid \
+    && git config user.name selftest \
+    && mkdir -p src/upstream \
+    && python3 -c 'print("\n".join("// upstream line %d" % i for i in range(1, 401)))' > src/upstream/rel.rs \
+    && git add -A && git commit -qm "selftest base" \
+    && git branch -f adolfousier/main ) >/dev/null 2>&1
+
+  # IN $selftest_tmp, NOT $setdir: the engine derives its STATE DIR from the
+  # registry path's own directory, so a fixture registry parked in a sibling
+  # directory silently moves the state dir and starves member_ready() of the
+  # smoke log -- every clearance leg then refused HELD_SET "#601(open, not
+  # smoked)" while the smoke fixture sat one directory over.
+  local reg_clear="$selftest_tmp/reg_clear.json"
+  local reg_clear_absent="$selftest_tmp/reg_clear_absent.json"
+  local reg_clear_stale="$selftest_tmp/reg_clear_stale.json"
+  local reg_clear_other="$selftest_tmp/reg_clear_other.json"
+  printf '{"manual_records": [{"unit": "600", "issue": 600, "issues": [600], "pr": 0, "status": "dependency-re-expressed", "clears_dependency": 601, "re_expressed_at": "src/upstream/rel.rs:354-362"}]}\n' > "$reg_clear"
+  printf '{"manual_records": [{"unit": "600", "issue": 600, "issues": [600], "pr": 0, "status": "dependency-re-expressed", "clears_dependency": 601, "re_expressed_at": "src/upstream/nope.rs:1"}]}\n' > "$reg_clear_absent"
+  printf '{"manual_records": [{"unit": "600", "issue": 600, "issues": [600], "pr": 0, "status": "dependency-re-expressed", "clears_dependency": 601, "re_expressed_at": "src/upstream/rel.rs:990-999"}]}\n' > "$reg_clear_stale"
+  printf '{"manual_records": [{"unit": "600", "issue": 600, "issues": [600], "pr": 0, "status": "dependency-re-expressed", "clears_dependency": 999, "re_expressed_at": "src/upstream/rel.rs:354-362"}]}\n' > "$reg_clear_other"
+
+  # (f) THE CLEARANCE CLEARS: the SAME fixture as the #675 refusal above, with
+  #     one resolving clearance row added -> ELIGIBLE. This is the whole point:
+  #     a unit portable by construction is no longer unportable by declaration.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_blocked" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_UPSTREAM_ISSUES='[]' \
+    OC_HARVEST_UPSTREAM_TREE="$up49" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$reg_clear" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "ELIGIBLE" \
+     && oc_has "$out" "is CLEARED for this unit" && ! oc_has "$out" "REFUSED:"; then
+    ok "#49: a resolving clearance CLEARS its declared blocker (same fixture as the #675 refusal -> ELIGIBLE)"
+  else
+    echo "  bad  - #49 clearance expected rc=0 ELIGIBLE + CLEARED, got rc=$rc ($out)"
+  fi
+
+  # (g) THE MUTANT KILLER. A clearance naming a path that does NOT exist upstream
+  #     must still REFUSE and say so. An implementation that treats the row as a
+  #     FLAG suppressing the leg passes (f) and fails HERE -- which is exactly
+  #     the decoration this leg exists to prevent.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_blocked" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_UPSTREAM_ISSUES='[]' \
+    OC_HARVEST_UPSTREAM_TREE="$up49" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$reg_clear_absent" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "REFUSED:" && oc_has "$out" "DID NOT RESOLVE (absent)" \
+     && oc_has "$out" "hold STANDS"; then
+    ok "#49: a clearance naming an ABSENT upstream object does NOT clear -- the hold stands, and says why"
+  else
+    echo "  bad  - #49 absent-object clearance expected rc=1 + 'DID NOT RESOLVE (absent)', got rc=$rc ($out)"
+  fi
+
+  # (h) A STALE RANGE is a moved premise: the path exists but the named lines run
+  #     past EOF, so the object the assertion rests on is gone. A bare-path
+  #     clearance would still pass here -- which is why the range is parsed.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_blocked" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_UPSTREAM_ISSUES='[]' \
+    OC_HARVEST_UPSTREAM_TREE="$up49" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$reg_clear_stale" "600" "" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && oc_has "$out" "DID NOT RESOLVE (range-stale)"; then
+    ok "#49: a clearance whose named line range runs past EOF is STALE -- refused, never cleared"
+  else
+    echo "  bad  - #49 stale-range clearance expected rc=1 + 'range-stale', got rc=$rc ($out)"
+  fi
+
+  # (i) SCOPED TO THE BLOCKER IT NAMES. A clearance for #999 must not clear
+  #     #601: an over-broad matcher would pass (f) and (i) together only if it
+  #     ignored `clears_dependency`, so this leg pins the field.
+  rc=0
+  out="$(OC_HARVEST_MOCK_RELATIONS="$rel_blocked" OC_HARVEST_MOCK_ISSUE_STATE="$st_mixed" \
+    OC_HARVEST_MOCK_COMMITS="$c601" OC_HARVEST_MOCK_PRS="$mock_prs" \
+    OC_HARVEST_MOCK_UPSTREAM_ISSUES='[]' \
+    OC_HARVEST_UPSTREAM_TREE="$up49" \
+    OC_HARVEST_MOCK_LEDGER="$selftest_tmp/mock_ledger_empty.json" \
+    run_engine "check" "mock/repo" "$selftest_tmp" "$reg_clear_other" "600" "" 2>&1)" || rc=$?
+  # Anchored on the LEG, not on rc plus a number: HELD_SET also refuses rc=1
+  # naming #601, so the unanchored form passed while the clearance leg never
+  # ran (CODE.md item 3 -- rc is a vocabulary every failure path shares).
+  if [ "$rc" -eq 1 ] && oc_has "$out" "HELD_DEPENDENCY_NOT_UPSTREAM" \
+     && oc_has "$out" "#601" && ! oc_has "$out" "is CLEARED for this unit"; then
+    ok "#49: a clearance for a DIFFERENT blocker does not clear this one (the field is load-bearing)"
+  else
+    echo "  bad  - #49 wrong-blocker clearance expected the HELD_DEPENDENCY_NOT_UPSTREAM refusal naming #601 and NO clearance, got rc=$rc ($out)"
+  fi
+
+  # (j) THE DISPATCHER SAFETY LEG. `manual_record_matches` is the REJECTION gate
+  #     in oc-harvest-dispatch:885, so a clearance row matching there would
+  #     refuse the very unit it cleared -- the bug this class exists to fix,
+  #     wearing the opposite sign. The two predicates must be exact complements.
+  if python3 -c '
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["OC_TOOLS_DIR"], "lib"))
+import oc_claims
+clr = {"unit": "600", "issue": 600, "issues": [600], "pr": 0,
+       "status": "dependency-re-expressed", "clears_dependency": 601,
+       "re_expressed_at": "src/upstream/rel.rs:354-362"}
+disp = {"unit": "600", "issue": 600, "issues": [600], "pr": 0,
+        "status": "not-upstreamable"}
+ok = (oc_claims.manual_record_matches(clr, "600", 600) is False
+      and oc_claims.manual_clearance_matches(clr, "600", 600) is True
+      and oc_claims.manual_record_matches(disp, "600", 600) is True
+      and oc_claims.manual_clearance_matches(disp, "600", 600) is False)
+sys.exit(0 if ok else 1)
+'; then
+    ok "#49: a clearance NEVER matches the dispatcher rejection gate, and a disposition never matches as a clearance"
+  else
+    echo "  bad  - #49 predicate split: clearance/disposition must be exact complements"
+  fi
+
+  # (k) THE WRITER. A half-written clearance is an un-resolvable assertion the
+  #     leg would re-refuse on forever with a message about a field the lane
+  #     thought it had set, so it is refused at write time.
+  local cu49="$setdir/reg_record49.json"
+  printf '{"manual_records": []}\n' > "$cu49"
+  rc=0
+  out="$(bash "$0" record --unit "clr-unit" --status dependency-re-expressed \
+    --clears-dependency 601 --state-file "$cu49" 2>&1)" || rc=$?
+  if [ "$rc" -eq 2 ] && oc_has "$out" "needs BOTH"; then
+    ok "#49 record: a HALF-written clearance is refused at write time (rc=2), never stored unresolvable"
+  else
+    echo "  bad  - #49 half clearance expected rc=2 'needs BOTH', got rc=$rc ($out)"
+  fi
+  rc=0
+  out="$(bash "$0" record --unit "clr-unit" --clears-dependency 601 \
+    --re-expressed-at "src/upstream/rel.rs:354-362" --state-file "$cu49" 2>&1)" || rc=$?
+  if [ "$rc" -eq 2 ] && oc_has "$out" "require --status dependency-re-expressed"; then
+    ok "#49 record: the clearance fields without the status are refused (no silent filed row carrying them)"
+  else
+    echo "  bad  - #49 clearance fields without status expected rc=2, got rc=$rc ($out)"
+  fi
+  rc=0
+  out="$(bash "$0" record --unit "clr-unit" --status dependency-re-expressed \
+    --clears-dependency 601 --re-expressed-at "src/upstream/rel.rs:354-362" \
+    --state-file "$cu49" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && python3 -c '
+import json, sys
+rows = [r for r in json.load(open(sys.argv[1]))["manual_records"] if r.get("unit") == "clr-unit"]
+ok = (len(rows) == 1 and rows[0].get("status") == "dependency-re-expressed"
+      and rows[0].get("clears_dependency") == 601
+      and rows[0].get("re_expressed_at") == "src/upstream/rel.rs:354-362")
+sys.exit(0 if ok else 1)
+' "$cu49"; then
+    ok "#49 record: --clears-dependency + --re-expressed-at AUTHOR the clearance row (no direct edit needed)"
+  else
+    echo "  bad  - #49 clearance writer expected one row with both fields, got rc=$rc ($out)"
   fi
 
   # (d) SET SOAK CLOCK -- the youngest member's swap under 24h holds the set.
