@@ -127,7 +127,22 @@ oc_snap_guard() {
 oc_snap_reap() {
   _osr_dry=0
   case "${1:-}" in --dry-run) _osr_dry=1; shift ;; esac
+  # #53: after the --dry-run shift, $1 IS the root. An unrecognised flag used to
+  # be taken as that root, so `oc_snap_reap --dry-run -v` scanned a directory
+  # named "-v", found nothing there and printed a confident 0 with rc 0 -- a
+  # false "nothing to reap" that is indistinguishable from a clean box, which is
+  # exactly the reading a lane auditing disk space takes at face value
+  # (measured 2026-10-20, this box: 126 dead mirrors / 2.0 GB reported as 0).
+  case "${1:-}" in
+    -*) printf 'oc_snap_reap: unknown option %s\nusage: oc_snap_reap [--dry-run] [root]\n' "$1" >&2; return 2 ;;
+  esac
   _osr_root="${1:-${OC_SNAP_ROOT:-/tmp}}"
+  # The same false-zero class one step further out: a root that is not a
+  # directory cannot hold a population, so it must not report one.
+  if [ ! -d "$_osr_root" ]; then
+    printf 'oc_snap_reap: root is not a directory: %s\n' "$_osr_root" >&2
+    return 2
+  fi
   _osr_n=0
   _osr_ps="$(mktemp 2>/dev/null)" || _osr_ps=""
   [ -n "$_osr_ps" ] || _osr_ps="/tmp/.oc-snap-reap-$$"

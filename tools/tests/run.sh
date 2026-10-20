@@ -59,6 +59,29 @@ BATTERY_SECTIONS_TSV=""
 
 # ---- helpers ---------------------------------------------------------------
 note()  { printf '%s\n' "$*"; }
+
+# ---- oc-snap mirror reap on the EXIT path (factory #53) ----------------------
+# The tools this battery invokes (oc-deploy, oc-smoke, oc-job-verify, oc-prchecks)
+# each create a /tmp/oc-snap-* mirror through oc_snap_guard, and NOTHING reaped
+# them when the run ended. Measured 2026-10-20: one 392-leg run left 126 mirrors
+# totalling 2.0 GB with zero live owner pids, on a root filesystem at 84%.
+# CHANGELOG.md:1296 (2026-10-08) records the identical leak -- "nothing calls it
+# on the battery path" -- routed to the Toolsmith and never patched. Reaping on
+# EXIT covers an early exit as well as the normal tail; oc_snap_reap's own
+# predicate (dead name-pid AND no argv reference, age deliberately excluded per
+# fork #167) protects a concurrent lane's live mirror, so this cannot pull a
+# mirror out from under a running tool.
+_battery_reap_mirrors() {
+  _brm_lib="$TOOLS_DIR/lib/oc-snap.sh"
+  [ -f "$_brm_lib" ] || return 0
+  ( . "$_brm_lib" && oc_snap_reap ) > "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null || :
+  _brm_n="$(cat "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null || printf 0)"
+  rm -f "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null
+  case "$_brm_n" in ''|*[!0-9]*) _brm_n=0 ;; esac
+  [ "$_brm_n" -gt 0 ] && note "  reaped $_brm_n dead /tmp/oc-snap-* mirror(s)"
+  return 0
+}
+trap '_battery_reap_mirrors' EXIT
 ok()    { PASS=$((PASS+1)); note "  ok   - $*"; }
 bad()   { FAIL=$((FAIL+1)); note "  FAIL - $*"; if [ -n "${FAIL_LOG:-}" ]; then printf '  FAIL - %s\n' "$*" >> "$FAIL_LOG"; fi; }
 # tools/ is grouped by KIND (owner order 2026-09-25): oc-* live in functional
@@ -2667,6 +2690,46 @@ MUTM="$(stat -c %Y "$MIRMUT" 2>/dev/null || echo 0)"
   || bad "mutant control did not reproduce the defect (mirror mtime $MUTM) -- the #51 leg proves nothing"
 rm -rf "$S51" "$S51M"
 
+section "oc-snap reap: a false zero is not a verdict, and the battery must call it (#53)"
+# (a) An unrecognised flag must not BECOME the root. Mutant: delete the -* guard
+# in oc_snap_reap -- the call then scans a directory named "-v", finds nothing
+# and prints 0 with rc 0, which is the false "nothing to reap" this leg catches.
+# Measured 2026-10-20: that exact reading nearly became a filed defect.
+S53="$(mktemp -d)"
+mkdir -p "$S53/lib" "$S53/mir/oc-snap-999999999"
+cp "$TOOLS_DIR/lib/oc-snap.sh" "$S53/lib/oc-snap.sh"
+bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap --dry-run -v' _ "$S53" >"$S53/o" 2>"$S53/e"
+RC53=$?
+[ "$RC53" -ne 0 ] \
+  && ok "oc-snap reap rejects an unknown option instead of reading it as the root (#53)" \
+  || bad "oc-snap reap accepted an unknown option (rc=$RC53) -- a bad invocation still reports a confident zero"
+grep -q 'unknown option' "$S53/e" 2>/dev/null \
+  && ok "oc-snap reap names the offending option on stderr" \
+  || bad "oc-snap reap rejected the option WITHOUT naming it: $(cat "$S53/e" 2>/dev/null)"
+# (b) The guard must not have broken the legitimate forms. Without this leg the
+# reject-everything mutant would score green.
+OC_SNAP_ROOT="$S53/mir" bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap --dry-run' _ "$S53" >"$S53/o2" 2>&1
+[ "$(cat "$S53/o2" 2>/dev/null)" = "1" ] \
+  && ok "oc-snap reap --dry-run still counts the population (1 fake mirror)" \
+  || bad "oc-snap reap --dry-run counted [$(cat "$S53/o2" 2>/dev/null)] instead of 1 -- the flag guard broke the real path"
+# (c) A root that does not exist cannot hold a population, so it must not report one.
+bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap /nonexistent-root-53' _ "$S53" >"$S53/o3" 2>"$S53/e3"
+RC53B=$?
+[ "$RC53B" -ne 0 ] \
+  && ok "oc-snap reap refuses a root that is not a directory instead of reporting 0" \
+  || bad "oc-snap reap reported success on a nonexistent root -- a false zero"
+# (d) The battery must actually CALL the reap. This is a SOURCE assertion and is
+# labelled as one: a run cannot observe its own cleanup from inside itself, so
+# the wiring is what is checkable. Mutant: delete the EXIT trap line -- this
+# reddens while every other #53 leg stays green.
+grep -q "^trap '_battery_reap_mirrors' EXIT" "$0" 2>/dev/null \
+  && ok "battery wires the mirror reap onto its EXIT path (#53)" \
+  || bad "battery has no EXIT reap -- every run leaves its own /tmp/oc-snap-* mirrors behind"
+grep -q '^_battery_reap_mirrors() {' "$0" 2>/dev/null \
+  && ok "battery defines the reap function its EXIT trap names" \
+  || bad "the EXIT trap names a function the battery does not define"
+rm -rf "$S53"
+
 section "oc-issue-dispatch SIGKILL evidence (#451)"
 D451STUB="$(mktemp -d)"
 mkdir -p "$D451STUB/tools/lib" "$D451STUB/tools/issue" "$D451STUB/bin" "$D451STUB/home"
@@ -3810,6 +3873,11 @@ printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verd
   "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
   > "$TOOLS_DIR/tests/battery-last.json"
 [ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
+
+# Reap this run's own mirror churn BEFORE the summary so the count lands inside
+# the summary block a reader actually looks at (#53). The EXIT trap repeats the
+# call for the early-exit path; by then it finds nothing and prints nothing.
+_battery_reap_mirrors
 
 # ---- summary ----------------------------------------------------------------
 note ""
