@@ -24,7 +24,7 @@ at `ec353049`) and `633f5337` (387 PASS / 0 FAIL). `f75f40d1` + `c658cd6f` — t
 could not name WHICH gate refused; it now asserts the ORIGIN gate's own text, and the comment above it states the
 MEASURED order (ORIGIN at line 703, assignee at 793 — a later gate cannot preempt an earlier one, so the
 "refused at the assignee gate, so the origin gate never ran" mechanism this factory had believed is unreachable in
-that code). Factory [#52](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/52); battery 392 PASS / 0 FAIL.
+that code). Factory [#52](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/52); battery 392 PASS / 0 FAIL. `972e2bf7` — the battery now reaps the `/tmp/oc-snap-*` mirrors its own tools create (`trap … EXIT`, so an early exit reaps too), and `oc_snap_reap` refuses an unrecognised leading option instead of reading it as the root. This is a RECURRENCE, not a new find: the v0.4.255 entry (2026-10-08) records the identical leak — 850 mirrors / 2.3 GB — and **routed it to the Toolsmith as a finding rather than patching it**; twelve days later one 392-leg run left 126 mirrors / 2.0 GB with zero live owners, on a root filesystem at 84%. The second half is the class this file already owns: `oc_snap_reap --dry-run -v` took `-v` as the root, scanned a directory of that name, found nothing and printed a confident `0` — a false zero and a true zero are the same bytes. Selftest 392 → 398; battery 398 PASS / 0 FAIL. Factory [#53](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/53).
 
 ## v0.4.299 — a test leg that cannot go red is decoration: the mutant receipt becomes a review leg (2026-10-19)
 
