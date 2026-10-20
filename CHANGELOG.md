@@ -10,6 +10,13 @@
 
 **Verification.** Selftest 140 → **148**, with the fixture split across TWO trees: the unit's own repo stays the hermetic temp dir (so `HELD_SET` reads the relative as READY and the leg under test actually runs) while the clearance's object resolves from `OC_HARVEST_UPSTREAM_TREE`. That split was itself a finding — parking the fixture registry in a sibling directory moved the engine's state dir and starved `member_ready()` of its smoke log, so all three clearance legs refused `HELD_SET` while asserting nothing about clearances. Mutation receipt: treating the clearance as a FLAG reddens exactly the `absent` and `range-stale` legs and leaves the clear leg green. Battery 387 PASS / 0 FAIL.
 
+**Bundled in this range.** `ec353049` — `oc-snap` mirrors inherited the SOURCE tree's mtime, so all 42 live
+mirrors were born sharing one timestamp `2026-09-28 09:13:41.661447704` and read ~525 h stale against the 14 h
+hygiene gate line, redding the snap tier on every ship burst (factory [#51](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/51)).
+Fixed at the producer (`touch "$_os_mir"`, root only), never in `hygiene.py` — that file is vendored kit code pinned
+by sha in `registry/kit.json`, so editing it in place would break the pin. Receipts: `ec578aa4` (392 PASS / 0 FAIL
+at `ec353049`), `633f5337` and `16ca9a1d` (387 PASS / 0 FAIL).
+
 ## v0.4.299 — a test leg that cannot go red is decoration: the mutant receipt becomes a review leg (2026-10-19)
 
 **What forced it.** The Toolsmith lane closed [opencrabs-dev-factory#48](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/48) with mutation evidence over its own three fixes, and two of the mutants exposed a class the catalog had no owner for. Deleting the swap handoff's bus probe left `poll-bus-unreachable-rc` **GREEN** — a real handoff also dies rc 4, so the rc leg never discriminated the fix; only the message legs and the argv legs (`--scope --collect /bin/true` recorded, no `--unit=` recorded) reddened. Deleting the hoisted preflight checkout check left both `preflight-checkout-rc3` and `-names-condition` **green**, because LEG3's surviving check exits 3 with the same sentence; only `-gate-not-dispatched` reddened, by asserting an **empty** prchecks stub log. The general shape: an rc assertion is decoration whenever a sibling failure path shares the exit code, and an ordering claim ("before X") is not expressible as rc-plus-message at all.
