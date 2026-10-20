@@ -74,6 +74,20 @@ oc_snap_guard() {
     printf 'oc-snap: copy failed — running direct (EXPOSED)\n' >&2
     return 0
   }
+  # The mirror ROOT's mtime is reset to NOW, because `cp -a` gives it the SOURCE
+  # tree's mtime instead (#51). Copying `src/.` onto `dest/` applies the source
+  # DIRECTORY's own attributes to the destination root, so every mirror was born
+  # carrying tools/'s mtime — measured 2026-10-20: 42 mirrors, one single mtime
+  # to the nanosecond (2026-09-28 09:13:41.661447704) shared by all of them,
+  # predating their births by 21.9 days. The ONLY reader of that mtime is an AGE
+  # instrument (vds-servers/tools/hygiene.py pass 1, `os.path.getmtime` against
+  # a 14 h gate line), so each mirror was ~525 h stale the instant it existed and
+  # any burst of oc-* invocations reddened the daily audit on a healthy box.
+  # Root only: the inner files keep their source mtimes (nothing ages by them)
+  # and -a's mode/ownership preservation, which the copy actually needs, is
+  # untouched. The consumer is vendored and sha-pinned in registry/kit.json, so
+  # the producer is the only place this can be fixed.
+  touch "$_os_mir" 2>/dev/null
 
   [ -f "$_os_mir/$_os_rel" ] || {
     rm -rf "$_os_mir"

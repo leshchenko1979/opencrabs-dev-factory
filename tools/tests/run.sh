@@ -2599,6 +2599,74 @@ rm -rf "$S472"
 # go stale the moment the repo is rebased or that object is gc'd, and would then
 # report a FALSE failure against a healthy tool. Inverting the one mechanism
 # keeps this cell a true single-variable discriminator indefinitely.
+section "lib/oc-snap.sh mirror age is its OWN birth, not the source tree's (#51)"
+# The defect: `cp -a "$src/." "$mir/"` applies the SOURCE DIRECTORY's own
+# attributes to the destination root, so every mirror was born carrying
+# tools/'s mtime. Measured 2026-10-20: 42 mirrors sharing ONE mtime to the
+# nanosecond (2026-09-28 09:13:41.661447704), predating their births by 21.9
+# days. The only reader of that mtime is an AGE instrument
+# (vds-servers/tools/hygiene.py pass 1 against a 14 h gate line), so each
+# mirror was ~525 h stale the instant it existed.
+#
+# Discriminating input: a tools tree with a DELIBERATELY OLD mtime. A mirror
+# that inherits it reads ~22 days old; one that carries its own birth reads
+# seconds old. The mutant is the SAME source with the `touch "$_os_mir"` line
+# removed -- identical fixture, identical run, and the ONLY difference is
+# whether the root is re-stamped. A leg that passed on both would be asserting
+# the fixture, not the fix (CODE.md item 3).
+S51="$(mktemp -d)"
+mkdir -p "$S51/tools/lib" "$S51/tools/demo" "$S51/mir"
+cp "$TOOLS_DIR/lib/oc-snap.sh" "$S51/tools/lib/oc-snap.sh"
+cat > "$S51/tools/demo/oc-demo51" <<'S51TOOLEOF'
+#!/usr/bin/env bash
+. "$(dirname "$0")/../lib/oc-snap.sh"
+oc_snap_guard "$0" "$@"
+echo "ran-from=$0"
+S51TOOLEOF
+chmod +x "$S51/tools/demo/oc-demo51"
+touch -d "2026-09-28 09:13:41" "$S51/tools"
+SRC51="$(stat -c %Y "$S51/tools")"
+NOW51="$(date +%s)"
+OC_TOOLS_DIR="$S51/tools" OC_SNAP_ROOT="$S51/mir" OC_SNAP_VERBOSE=1 \
+  bash "$S51/tools/demo/oc-demo51" >"$S51/out" 2>&1
+MIR51="$(ls -d "$S51"/mir/oc-snap-* 2>/dev/null | head -1)"
+[ -n "$MIR51" ] \
+  && ok "oc-snap guard still creates a mirror (fixture sanity for #51)" \
+  || bad "oc-snap guard created NO mirror -- the #51 legs below cannot judge anything"
+grep -q '^ran-from=.*oc-snap-' "$S51/out" 2>/dev/null \
+  && ok "oc-snap guard still EXECs from the mirror (fixture sanity for #51)" \
+  || bad "oc-snap guard did not run from the mirror: $(cat "$S51/out" 2>/dev/null)"
+if [ -n "$MIR51" ]; then
+  MIRM51="$(stat -c %Y "$MIR51")"
+  [ "$MIRM51" != "$SRC51" ] \
+    && ok "oc-snap mirror does NOT inherit the source tree's mtime (#51)" \
+    || bad "oc-snap mirror inherited the source mtime ($MIRM51) -- the age instrument reads a lie"
+  [ "$(( NOW51 - MIRM51 ))" -le 120 ] && [ "$(( MIRM51 - NOW51 ))" -le 120 ] \
+    && ok "oc-snap mirror ages from its OWN birth (mtime within 120s of now, not 22 days past)" \
+    || bad "oc-snap mirror mtime is $(( (NOW51 - MIRM51) / 86400 )) day(s) off its birth -- #51 regressed"
+fi
+# THE MUTANT: the identical fixture with the re-stamp removed.
+S51M="$(mktemp -d)"
+cp -a "$S51/tools" "$S51M/tools"
+mkdir -p "$S51M/mir"
+python3 - "$S51M/tools/lib/oc-snap.sh" <<'S51MUTEOF'
+import sys
+p = sys.argv[1]
+src = open(p).read()
+out = [ln for ln in src.splitlines(True) if ln.strip() != 'touch "$_os_mir" 2>/dev/null']
+assert len(out) < len(src.splitlines(True)), "mutation did not remove the re-stamp line"
+open(p, 'w').writelines(out)
+S51MUTEOF
+touch -d "2026-09-28 09:13:41" "$S51M/tools"
+OC_TOOLS_DIR="$S51M/tools" OC_SNAP_ROOT="$S51M/mir" \
+  bash "$S51M/tools/demo/oc-demo51" >/dev/null 2>&1
+MIRMUT="$(ls -d "$S51M"/mir/oc-snap-* 2>/dev/null | head -1)"
+MUTM="$(stat -c %Y "$MIRMUT" 2>/dev/null || echo 0)"
+[ -n "$MIRMUT" ] && [ "$MUTM" = "$(stat -c %Y "$S51M/tools")" ] \
+  && ok "mutant control: without the re-stamp the mirror DOES inherit the source mtime -- the leg above is load-bearing" \
+  || bad "mutant control did not reproduce the defect (mirror mtime $MUTM) -- the #51 leg proves nothing"
+rm -rf "$S51" "$S51M"
+
 section "oc-issue-dispatch SIGKILL evidence (#451)"
 D451STUB="$(mktemp -d)"
 mkdir -p "$D451STUB/tools/lib" "$D451STUB/tools/issue" "$D451STUB/bin" "$D451STUB/home"
