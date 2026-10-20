@@ -10,12 +10,21 @@
 
 **Verification.** Selftest 140 → **148**, with the fixture split across TWO trees: the unit's own repo stays the hermetic temp dir (so `HELD_SET` reads the relative as READY and the leg under test actually runs) while the clearance's object resolves from `OC_HARVEST_UPSTREAM_TREE`. That split was itself a finding — parking the fixture registry in a sibling directory moved the engine's state dir and starved `member_ready()` of its smoke log, so all three clearance legs refused `HELD_SET` while asserting nothing about clearances. Mutation receipt: treating the clearance as a FLAG reddens exactly the `absent` and `range-stale` legs and leaves the clear leg green. Battery 387 PASS / 0 FAIL.
 
-**Bundled in this range.** `ec353049` — `oc-snap` mirrors inherited the SOURCE tree's mtime, so all 42 live
-mirrors were born sharing one timestamp `2026-09-28 09:13:41.661447704` and read ~525 h stale against the 14 h
-hygiene gate line, redding the snap tier on every ship burst (factory [#51](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/51)).
+**Landed AFTER this tag, not inside it — recorded here because a tools-only fix mints no version.** Correction to
+this entry as first written: it read "bundled in this range", and they are not — `2529e3f9..16ca9a1d` contains only
+the receipt commit. `tools/**` sits deliberately outside `oc-ledger`'s `LAW_FILES` (its own comment: coupling tool
+work to the skill version would redden every legitimate bump), so none of the commits below mint a `skill-bump` row
+and this paragraph is their only ship-date record. `ec353049` — `oc-snap` mirrors inherited the SOURCE tree's mtime,
+so all 42 live mirrors were born sharing one timestamp `2026-09-28 09:13:41.661447704` and read ~525 h stale against
+the 14 h hygiene gate line, redding the snap tier on every ship burst (factory [#51](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/51)).
 Fixed at the producer (`touch "$_os_mir"`, root only), never in `hygiene.py` — that file is vendored kit code pinned
 by sha in `registry/kit.json`, so editing it in place would break the pin. Receipts: `ec578aa4` (392 PASS / 0 FAIL
-at `ec353049`), `633f5337` and `16ca9a1d` (387 PASS / 0 FAIL).
+at `ec353049`) and `633f5337` (387 PASS / 0 FAIL). `f75f40d1` + `c658cd6f` — the o28 leg asserted rc 3 plus a
+`target:` echo, but the echo prints BEFORE any gate runs and rc 3 is shared by every gate on the tool, so the leg
+could not name WHICH gate refused; it now asserts the ORIGIN gate's own text, and the comment above it states the
+MEASURED order (ORIGIN at line 703, assignee at 793 — a later gate cannot preempt an earlier one, so the
+"refused at the assignee gate, so the origin gate never ran" mechanism this factory had believed is unreachable in
+that code). Factory [#52](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/52); battery 392 PASS / 0 FAIL.
 
 ## v0.4.299 — a test leg that cannot go red is decoration: the mutant receipt becomes a review leg (2026-10-19)
 
