@@ -437,9 +437,20 @@ JSN
   # `--assignee` is passed DELIBERATELY: a --repo override has no known assignee
   # default, so without it this leg would refuse at the ASSIGNEE gate (rc 3) and
   # pass for the wrong reason. With it satisfied, only the ORIGIN gate can refuse.
+  #
+  # BUT `--assignee` ALONE WAS NOT ENOUGH (factory #51 report, measured 2026-10-20
+  # on HQ's note): rc 3 is the exit code of EVERY gate on this tool, so `chk ... 3`
+  # plus the `target:` echo -- printed BEFORE any gate runs -- stayed GREEN even
+  # with the assignee stub mutated to exit 1, i.e. with the ORIGIN gate never
+  # reached. An rc assertion is a small vocabulary shared by every failure path;
+  # it cannot name WHICH gate refused. The two `has` legs below are the receipt:
+  # they assert the ORIGIN gate's OWN refusal text, so a refusal arriving from an
+  # earlier gate reddens them. Mutant: `*/assignees/leshchenko1979) exit 1`.
   bash "$SELF" --title "fix(tools): fork-undeclared" --body x --repo leshchenko1979/opencrabs --parent 10 --assignee leshchenko1979 >"$T/o28" 2>&1
   chk "…and the --repo form is gated IDENTICALLY" 3 $?
   has "…naming the resolved target"               "$T/o28" 'target: leshchenko1979/opencrabs$'
+  has "…and the ORIGIN gate is the one that refused" "$T/o28" 'fork-only boundary'
+  has "…and it offers the escape hatch too"          "$T/o28" 'fork-only "<why>"'
   # A DECLARED origin passes AND the declaration is RECORDED -- not merely echoed
   # in a --dry-run hint. This leg takes the REAL path: the stub answers the create
   # URL, then answers `issue comment` rc 0. Delete the recording block and this
