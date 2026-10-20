@@ -434,19 +434,24 @@ JSN
   chk "fix title on the FORK + no origin REFUSES" 3 $?
   has "…the refusal names the fork-only boundary" "$T/o27" 'fork-only boundary'
   has "…and offers the escape hatch"              "$T/o27" 'fork-only "<why>"'
-  # `--assignee` is passed DELIBERATELY: a --repo override has no known assignee
-  # default, so without it this leg would refuse at the ASSIGNEE gate (rc 3) and
-  # pass for the wrong reason. With it satisfied, only the ORIGIN gate can refuse.
+  # NO `--assignee` HERE, and the absence is the correction (factory #52,
+  # measured 2026-10-20): the ORIGIN gate's refusal precedes the assignee block,
+  # so this leg never reaches assignee resolution at all. The flag was dead
+  # weight carrying a rationale that stated the gate order BACKWARDS ("without
+  # it this leg would refuse at the ASSIGNEE gate"). Dropping it loses no
+  # coverage: the --repo/no-known-default path is o23 above.
   #
-  # BUT `--assignee` ALONE WAS NOT ENOUGH (factory #51 report, measured 2026-10-20
-  # on HQ's note): rc 3 is the exit code of EVERY gate on this tool, so `chk ... 3`
-  # plus the `target:` echo -- printed BEFORE any gate runs -- stayed GREEN even
-  # with the assignee stub mutated to exit 1, i.e. with the ORIGIN gate never
-  # reached. An rc assertion is a small vocabulary shared by every failure path;
-  # it cannot name WHICH gate refused. The two `has` legs below are the receipt:
-  # they assert the ORIGIN gate's OWN refusal text, so a refusal arriving from an
-  # earlier gate reddens them. Mutant: `*/assignees/leshchenko1979) exit 1`.
-  bash "$SELF" --title "fix(tools): fork-undeclared" --body x --repo leshchenko1979/opencrabs --parent 10 --assignee leshchenko1979 >"$T/o28" 2>&1
+  # WHY rc 3 ALONE WAS NOT ENOUGH (factory #52): rc 3 is the exit code of EVERY
+  # gate on this tool, so `chk ... 3` plus the `target:` echo -- printed BEFORE
+  # any gate runs -- asserts nothing about WHICH gate refused. Proven, not
+  # argued: the leg stayed GREEN under a mutant that could not touch it at all
+  # (`*/assignees/leshchenko1979) exit 1`), because the assignee gate is
+  # preempted here -- a NO-OP mutant, not a control. An rc assertion is a
+  # vocabulary shared by every failure path. The two `has` legs below are the
+  # receipt: they assert the ORIGIN gate's OWN refusal text, so a refusal
+  # arriving from any other gate reddens them. The mutant that DOES kill this
+  # leg keys the origin gate on the --tracker flag instead of $REPO_SLUG.
+  bash "$SELF" --title "fix(tools): fork-undeclared" --body x --repo leshchenko1979/opencrabs --parent 10 >"$T/o28" 2>&1
   chk "…and the --repo form is gated IDENTICALLY" 3 $?
   has "…naming the resolved target"               "$T/o28" 'target: leshchenko1979/opencrabs$'
   has "…and the ORIGIN gate is the one that refused" "$T/o28" 'fork-only boundary'
