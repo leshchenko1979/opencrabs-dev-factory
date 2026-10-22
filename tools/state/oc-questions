@@ -26,6 +26,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -2765,6 +2766,19 @@ def parse_blocks(markdown):
 # without parsing HTML.
 RENDER_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           PROG + "-render.mjs")
+# The renderer's DEPENDENCY MANIFEST, shipped BESIDE it (#520, ruling n=3863,
+# adopted here under #50). Node resolves a bare ESM import by walking up from the
+# importing module's own directory, so the five packages oc-questions-render.mjs
+# imports must be installed in render_dir() -- the directory the renderer is
+# copied into and run from. Until this file existed the kit declared `node` on
+# PATH and nothing else, so nothing tracked told a reader WHICH packages to
+# install: the provisioning lived in an evidence directory no member reads, and
+# on this box it was a hand-made untracked file in the build dir. The manifest is
+# copied into the build dir as `package.json` by render_via_node() so the one
+# step is `npm install` in that directory; the install itself stays MANUAL
+# because it is a network operation and no gate may depend on network access.
+RENDER_MANIFEST_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   PROG + "-render.package.json")
 # The Node process needs node_modules beside it, so it runs from the build dir.
 # Overridable so the selftest can point at a scratch tree.
 RENDER_TIMEOUT = 30
@@ -2955,25 +2969,36 @@ def render_via_node(spec):
     and writes nothing, so a Node fault fails the command while the last good
     page keeps serving."""
     directory = render_dir()
-    if not os.path.isfile(RENDER_SRC):
-        return None, "renderer source missing"
     try:
         os.makedirs(directory, exist_ok=True)
     except OSError as exc:
         return None, "build dir unwritable (%s)" % exc.__class__.__name__
-    target = os.path.join(directory, "render.mjs")
-    try:
-        with open(RENDER_SRC, "r", encoding="utf-8") as fh:
-            wanted = fh.read()
-        current = None
-        if os.path.isfile(target):
-            with open(target, "r", encoding="utf-8") as fh:
-                current = fh.read()
-        if current != wanted:
-            with open(target, "w", encoding="utf-8") as fh:
-                fh.write(wanted)
-    except OSError as exc:
-        return None, "renderer copy failed (%s)" % exc.__class__.__name__
+    # The renderer AND its dependency manifest land beside each other (#520):
+    # node resolves the manifest's packages by walking up from the module's
+    # directory, so placing package.json in the build dir is what makes a later
+    # `npm install` run in the right place. A manifest that fails to place is a
+    # fault like any other -- an install nobody can discover is the defect.
+    for source, name, missing, failed in (
+            (RENDER_SRC, "render.mjs", "renderer source missing",
+             "renderer copy failed"),
+            (RENDER_MANIFEST_SRC, "package.json",
+             "renderer dependency manifest missing",
+             "dependency manifest copy failed")):
+        if not os.path.isfile(source):
+            return None, missing
+        try:
+            with open(source, "r", encoding="utf-8") as fh:
+                wanted = fh.read()
+            target = os.path.join(directory, name)
+            current = None
+            if os.path.isfile(target):
+                with open(target, "r", encoding="utf-8") as fh:
+                    current = fh.read()
+            if current != wanted:
+                with open(target, "w", encoding="utf-8") as fh:
+                    fh.write(wanted)
+        except OSError as exc:
+            return None, "%s (%s)" % (failed, exc.__class__.__name__)
     try:
         proc = subprocess.run(
             ["node", "render.mjs"],           # ARGV LIST: never shell=True
@@ -2993,8 +3018,21 @@ def render_via_node(spec):
         cause = next((l for l in lines if "Error" in l), None)
         if cause is None and lines:
             cause = lines[-1]
-        return None, "renderer rc=%d%s" % (proc.returncode,
-                                           (": " + cause.strip()) if cause else "")
+        reason = "renderer rc=%d%s" % (proc.returncode,
+                                       (": " + cause.strip()) if cause else "")
+        # A DECLARATION A READER CANNOT DISCOVER IS HALF A REMEDY (#520, n=3863).
+        # ERR_MODULE_NOT_FOUND is the one fault whose fix is a named, manual step,
+        # so the reason names it: the packages are declared in the package.json
+        # this function just placed beside the renderer, and `npm install` in that
+        # directory is the whole remedy. Naming the DIRECTORY matters -- node
+        # resolves the packages by walking up from the renderer, so an install run
+        # anywhere else leaves this fault exactly as it was.
+        if "ERR_MODULE_NOT_FOUND" in (proc.stderr or ""):
+            reason += (" -- the renderer's packages are NOT installed. Run "
+                       "`npm install` in %s, which holds the package.json this "
+                       "tool places there; installing elsewhere does not resolve "
+                       "them." % directory)
+        return None, reason
     if not proc.stdout.strip():
         return None, "renderer produced no output"
     return proc.stdout, None
@@ -5246,6 +5284,102 @@ def selftest():
            "still serves instead of a 404")
         ck(render_via_node({"root": "page", "elements": {}})[1] is not None,
            "render_via_node reports a REASON on failure, never raises")
+
+        # -- 8d. THE RENDERER'S DEPENDENCY MANIFEST (#520 / factory #50). A page
+        # that cannot be provisioned by anyone reading the repo is a page whose
+        # next render is a coin flip: the packages lived in an evidence dir no
+        # member reads, and on this box in a hand-made untracked build-dir file.
+        # Four legs, each naming the mutant it kills:
+        #   (i)   a fresh build dir receives BOTH render.mjs and package.json
+        #         -- mutant: the single-source copy, which leaves no manifest
+        #   (ii)  the placed manifest is byte-identical to the TRACKED one
+        #         -- mutant: writing a stale or hand-rolled manifest
+        #   (iii) every bare ESM specifier the renderer imports is DECLARED in
+        #         the manifest -- mutant: a manifest that omits react-dom, the
+        #         exact #520 defect (node resolves nothing, and the fault
+        #         arrives as ERR_MODULE_NOT_FOUND with no remedy on disk)
+        #   (iv)  an ERR_MODULE_NOT_FOUND reason NAMES the build dir and the
+        #         `npm install` step -- mutant: the bare rc string, which tells
+        #         a reader the render failed and nothing about the fix
+        _fresh = tempfile.mkdtemp(prefix="oq-manifest-")
+        _saved_render = os.environ.get("OC_QUESTIONS_RENDER_DIR")
+        try:
+            os.environ["OC_QUESTIONS_RENDER_DIR"] = _fresh
+            _m_html, _m_why = render_via_node({"root": "page", "elements": {}})
+            ck(os.path.isfile(os.path.join(_fresh, "render.mjs")),
+               "(i) a render places render.mjs in a FRESH build dir (%r)"
+               % (sorted(os.listdir(_fresh)),))
+            ck(os.path.isfile(os.path.join(_fresh, "package.json")),
+               "(i) ...and package.json BESIDE it, so `npm install` has a "
+               "manifest in the directory node resolves from; a single-source "
+               "copy leaves none and the page cannot be provisioned (%r)"
+               % (sorted(os.listdir(_fresh)),))
+            ck(os.path.isfile(RENDER_MANIFEST_SRC),
+               "(ii) the manifest is TRACKED beside the tool (%s), not only "
+               "hand-placed in a build dir" % (os.path.basename(RENDER_MANIFEST_SRC),))
+            _placed = open(os.path.join(_fresh, "package.json"),
+                           encoding="utf-8").read()
+            _tracked = open(RENDER_MANIFEST_SRC, encoding="utf-8").read()
+            ck(_placed == _tracked,
+               "(ii) ...and the placed copy is byte-identical to the tracked one")
+            # (iii) STATIC sufficiency: no node, no network, no install -- the
+            # manifest must simply name every package the renderer imports.
+            _rsrc = open(RENDER_SRC, encoding="utf-8").read()
+            _bare = set()
+            for _m in re.finditer(r"""(?:from|import)\s*['"]([^'"]+)['"]""", _rsrc):
+                _spec = _m.group(1)
+                if _spec.startswith(".") or _spec.startswith("/"):
+                    continue
+                _bare.add("/".join(_spec.split("/")[:2])
+                          if _spec.startswith("@")
+                          else _spec.split("/")[0])
+            _declared = set(json.loads(_tracked).get("dependencies", {}))
+            ck(bool(_bare),
+               "(iii) the renderer's bare imports were actually EXTRACTED "
+               "(%r) -- an empty set would make the coverage leg vacuous"
+               % (sorted(_bare),))
+            ck(not (_bare - _declared),
+               "(iii) every bare ESM specifier the renderer imports is DECLARED "
+               "in the manifest (missing: %r)"
+               % (sorted(_bare - _declared),))
+            # (iv) The remedy is composed from the RUN's own stderr, so the leg
+            # drives a synthetic ERR_MODULE_NOT_FOUND rather than depending on
+            # whether this box happens to have node_modules installed.
+            _Proc = type("_Proc", (object,), {
+                "returncode": 1, "stdout": "",
+                "stderr": "Error [ERR_MODULE_NOT_FOUND]: Cannot find package "
+                          "'react-dom' imported from render.mjs"})
+            _real_run = subprocess.run
+            try:
+                subprocess.run = lambda *a, **kw: _Proc()
+                _r_html, _r_why = render_via_node({"root": "page", "elements": {}})
+            finally:
+                subprocess.run = _real_run
+            ck(_r_why and "npm install" in _r_why and _fresh in _r_why,
+               "(iv) an ERR_MODULE_NOT_FOUND reason names `npm install` AND the "
+               "build dir it must run in -- a declaration a reader cannot "
+               "discover is half a remedy (%r)" % (_r_why,))
+            # The remedy must be FAULT-SPECIFIC, not appended to every failure:
+            # a non-module fault keeps its own reason. Driven from a synthetic
+            # non-module stderr so the leg does not depend on this box having
+            # node_modules installed.
+            _Proc2 = type("_Proc2", (object,), {
+                "returncode": 1, "stdout": "",
+                "stderr": "Error: Cannot read properties of null (reading 'useMemo')"})
+            try:
+                subprocess.run = lambda *a, **kw: _Proc2()
+                _n_html, _n_why = render_via_node({"root": "page", "elements": {}})
+            finally:
+                subprocess.run = _real_run
+            ck(_n_why and "npm install" not in _n_why,
+               "(iv) ...and the remedy is NOT bolted onto an unrelated fault: "
+               "a non-module fault keeps its own reason (%r)" % (_n_why,))
+        finally:
+            if _saved_render is None:
+                os.environ.pop("OC_QUESTIONS_RENDER_DIR", None)
+            else:
+                os.environ["OC_QUESTIONS_RENDER_DIR"] = _saved_render
+            shutil.rmtree(_fresh, ignore_errors=True)
 
         # -- 8c. C5: amend -- the CLARIFY return leg. A Clarify click used to
         # dead-end: status=clarifying and the question could never be answered
