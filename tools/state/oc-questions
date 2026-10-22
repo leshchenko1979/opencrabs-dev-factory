@@ -5285,10 +5285,14 @@ def selftest():
         ck(render_via_node({"root": "page", "elements": {}})[1] is not None,
            "render_via_node reports a REASON on failure, never raises")
 
-        # -- 8d. THE RENDERER'S DEPENDENCY MANIFEST (#520 / factory #50). A page
+        # -- 8b3. THE RENDERER'S DEPENDENCY MANIFEST (#520 / factory #50). A page
         # that cannot be provisioned by anyone reading the repo is a page whose
         # next render is a coin flip: the packages lived in an evidence dir no
-        # member reads, and on this box in a hand-made untracked build-dir file.
+        # reader consults, and on this box in a hand-made untracked build-dir
+        # file. NUMBERED 8b3, NOT 8d: 8d already belongs to C6 below, and two
+        # sections sharing a number make every "see 8d" reference ambiguous --
+        # the same drift class as a citation nobody can resolve. 8b3 also sits
+        # beside 8b2, the renderer section this one extends.
         # Four legs, each naming the mutant it kills:
         #   (i)   a fresh build dir receives BOTH render.mjs and package.json
         #         -- mutant: the single-source copy, which leaves no manifest
