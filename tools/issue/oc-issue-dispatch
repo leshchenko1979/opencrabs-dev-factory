@@ -327,8 +327,36 @@ AFFINITY_KEYWORDS = {
     # label spans a whole subsystem (`src/brain/agent/**` includes the tool loop),
     # and mapping it here would repeat the #641 defect -- a LABEL standing in for
     # a SURFACE. The path token above makes the error surface declare itself.
+    #
+    # #56 ADDITION -- the VISION tool path, and the candidates measured against
+    # it. #796 (`fix(vision): analyze_image hardcodes max_tokens=1024 ...`, fix
+    # surface `src/brain/tools/provider_vision.rs:247` / `:276`) is the same
+    # defect CLASS as #456: a hardcoded REQUEST BUDGET that a reasoning model
+    # exhausts, so the reply comes back empty and is scored as a failed
+    # candidate. Neither token above is a prefix of it -- `src/brain/provider/`
+    # is a different tree, and the vision tool lives under `src/brain/tools/`.
+    # MEASURED over the same 166-issue open corpus:
+    #   src/brain/tools/provider_vision.rs . fires 1, precision 100% (#796 only)
+    #   src/brain/tools/ ................... fires 32 -- REJECTED: the same trap
+    #                                        as `src/brain/agent/` (3% precision)
+    #   src/brain/goal/judge.rs ............ fires 5, precision 40% -- REJECTED.
+    #     #456 names it, but #364/#299/#300 are goal-LOGIC defects that merely
+    #     quote the parameter. Adopting it would hand five goal issues to this
+    #     lane to catch one: the #641 label-for-surface defect again. (The
+    #     sibling reported as `src/brain/tools/judge.rs` does not exist -- #456
+    #     names `src/brain/goal/judge.rs`.)
+    #   max_tokens= ........................ fires 3, precision 67% -- REJECTED,
+    #                                        under the 71% bar bare "provider" met
+    #   token budget / returns empty content  fires 2, precision 100% -- REJECTED
+    #     anyway: both are PROSE, and a domain that fires on an English phrase is
+    #     the very artefact class #774 ("census") and #792 ("upstream") report.
+    # RESIDUAL, stated rather than hidden: a provider-budget issue that names no
+    # path still scores zero. That is the honest cost of refusing prose tokens.
+    # The class-level remedy -- weighting a PATH hit above a body-WORD hit -- is
+    # a scoring change with routing-wide blast radius and is NOT attempted here.
     "provider": ["(provider):", "handshake", "provider-subsystem",
-                 "src/brain/provider/", "src/brain/agent/error.rs"],
+                 "src/brain/provider/", "src/brain/agent/error.rs",
+                 "src/brain/tools/provider_vision.rs"],
 }
 
 # Role-owned domains (fork #342, Design I step 18 -- sufficiency leg). A lane's
@@ -4370,6 +4398,70 @@ def run_selftest():
     _sel54 = select_best_lane(_p54, _lanes54)
     assert_eq("#54 #792 selects the provider lane, not the telegram tie",
               _sel54["uuid"] if _sel54 else None, _u54)
+
+    # =====================================================================
+    # 19. #56 -- the VISION tool path, and the tokens measured and REJECTED.
+    # =====================================================================
+    # #796 is a provider REQUEST-BUDGET defect (max_tokens=1024 exhausted by a
+    # reasoning model) whose fix surface is src/brain/tools/provider_vision.rs.
+    # Every token #54 added is either a different TREE (src/brain/provider/) or a
+    # different SUBSYSTEM (src/brain/agent/error.rs), so the domain scored ZERO
+    # and the lane still won at 23 on the shared `telegram` domain from the prose
+    # word "message" -- a 3-point margin, not a surface match.
+    _p56 = {"number": 796,
+            "title": "fix(vision): analyze_image hardcodes max_tokens=1024",
+            "body": "Surface: src/brain/tools/provider_vision.rs:247 and :276"}
+    assert_true("#56 a body naming src/brain/tools/provider_vision.rs carries the provider domain",
+                "provider" in detect_issue_domains(_p56))
+    # MUTANT, executed rather than described: pop the token and the SAME fixture
+    # must lose the domain. Without this, the leg above would pass just as well
+    # if the fixture matched some other token by accident.
+    _tok56 = AFFINITY_KEYWORDS["provider"].pop()
+    assert_true("#56 ...and WITHOUT the token the same body carries NO provider (mutant)",
+                _tok56 == "src/brain/tools/provider_vision.rs"
+                and "provider" not in detect_issue_domains(_p56))
+    AFFINITY_KEYWORDS["provider"].append(_tok56)
+    # NEGATIVE CONTROL 1 -- the parent directory. `src/brain/tools/` was measured
+    # at 32 fires: the same trap `src/brain/agent/` set at 3% precision in #54.
+    assert_true("#56 ...but a bare src/brain/tools/ path does NOT (rejected: 32 fires)",
+                "provider" not in detect_issue_domains(
+                    {"number": 2, "title": "fix(tools): x",
+                     "body": "Surface: src/brain/tools/edit.rs"}))
+    # NEGATIVE CONTROL 2 -- the sibling that was measured and REJECTED at 40%
+    # precision. #456 names src/brain/goal/judge.rs, but #364/#299/#300 are
+    # goal-LOGIC defects that merely quote the parameter: adopting it would hand
+    # five goal issues to the provider lane to catch one (#641: label != surface).
+    assert_true("#56 ...and the goal-judge path stays OUT (rejected: 40% precision)",
+                "provider" not in detect_issue_domains(
+                    {"number": 3, "title": "fix(goal): judge exhausts its budget",
+                     "body": "Surface: src/brain/goal/judge.rs:88"}))
+    # NEGATIVE CONTROL 3 -- the PROSE readings that measured 100% on this corpus
+    # and are still refused. A domain that fires on an English phrase is the
+    # artefact class #774 ("census") and #792 ("upstream") report, so this leg
+    # encodes the REFUSAL: a future contributor cannot quietly reintroduce it.
+    assert_true("#56 ...and the prose reading (max_tokens / empty content) does NOT",
+                "provider" not in detect_issue_domains(
+                    {"number": 4, "title": "fix(vision): x",
+                     "body": "max_tokens is too small and the model returns empty content"}))
+    # END TO END: the provider lane now beats the telegram lane on the DOMAIN.
+    # Pre-#56 the same fixture read 23 vs 20 -- one more prose word in a competing
+    # issue would have flipped the pick to the wrong lane.
+    _l56 = {"workers": [{"uuid": _u54, "role": "editor",
+                         "feature": "provider-subsystem"},
+                        {"uuid": _tg54, "role": "editor", "feature": "telegram"}],
+            "events": []}
+    _c56 = {"rows": [{"uuid": _u54, "class": "IDLE", "dirty": 0,
+                      "claims": "-", "worktrees": "-"},
+                     {"uuid": _tg54, "class": "IDLE", "dirty": 0,
+                      "claims": "-", "worktrees": "-"}]}
+    _lanes56 = get_worker_roster(_l56, mock_classify=_c56,
+                                 mock_sessions={_u54, _tg54})
+    _sel56 = select_best_lane(_p56, _lanes56)
+    assert_eq("#56 #796 selects the provider lane",
+              _sel56["uuid"] if _sel56 else None, _u54)
+    _by56 = {w["uuid"]: score_affinity(_p56, w) for w in _lanes56}
+    assert_true("#56 ...by a DOMAIN margin, not a prose one (provider beats telegram)",
+                _by56[_u54] - _by56[_tg54] >= 20)
 
     total = tests_passed + tests_failed
     print(f"selftest: {tests_passed}/{total} OK")
