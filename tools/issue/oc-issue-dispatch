@@ -305,7 +305,30 @@ AFFINITY_KEYWORDS = {
     # `oc-issue-dispatch <n> --dry-run` returns "Could not resolve target lane
     # with matching domain affinity" for every one of them -- the surface was
     # UNDECLARABLE, so no lane could ever be matched to it.
-    "provider": ["(provider):", "handshake", "provider-subsystem"],
+    #
+    # #54 ADDITION -- a PATH is a surface claim. Every token above is either a
+    # title PREFIX or the LANE-side name, so a body whose SUBJECT is the provider
+    # but which never writes `(provider):` was invisible: fork #792
+    # (`fix(agent): a provider content refusal ...`, fix surface
+    # `src/brain/agent/error.rs:177-183`) says "provider" 7x in its body and
+    # scored ZERO, so its true owner tied a telegram lane at 23 and lost the
+    # tie-break. MEASURED over the 166 open fork issues, truth = 7 whose fix
+    # surface resolves under `src/brain/provider/**` or `src/brain/agent/error.rs`:
+    #   src/brain/provider/ ...... fires 4, precision 100%, recall  57%
+    #   src/brain/agent/error.rs . fires 1, precision 100%, recall  14% (#792 only)
+    #   union .................... fires 5, precision 100%, recall  71%
+    # `src/brain/agent/` was measured and REJECTED: 30 fires, precision 3% --
+    # "agent" is ordinary prose in this corpus, the same trap as bare "provider".
+    # This truth set is PATH-resolvable only, so it deliberately EXCLUDES the
+    # handshake-wall issues (#378) that the original entry's broader truth
+    # covered -- which is why `handshake` reads 0/2 here and is still correct:
+    # a narrow instrument must not be used to convict a token it cannot see.
+    # The `(agent)` SCOPE is deliberately NOT mapped to this domain (#54): a scope
+    # label spans a whole subsystem (`src/brain/agent/**` includes the tool loop),
+    # and mapping it here would repeat the #641 defect -- a LABEL standing in for
+    # a SURFACE. The path token above makes the error surface declare itself.
+    "provider": ["(provider):", "handshake", "provider-subsystem",
+                 "src/brain/provider/", "src/brain/agent/error.rs"],
 }
 
 # Role-owned domains (fork #342, Design I step 18 -- sufficiency leg). A lane's
@@ -690,6 +713,22 @@ NOTIFY_TIMEOUT_SECS = _env_positive_int("OC_DISPATCH_NOTIFY_TIMEOUT", 120)
 #: Overridable (#390) so an operator under an outer `timeout N` can shorten it.
 ROSTER_TIMEOUT_SECS = _env_positive_int("OC_DISPATCH_ROSTER_TIMEOUT", 120)
 
+#: How old an open CLAIM may be before it stops counting as "this lane is
+#: working" (#54). A claim is a reservation against DOUBLE-DISPATCH, and
+#: `oc_claims.claim_is_closed` releases it only on a LATER closing row -- so a
+#: claim whose ISSUE stays open never expires and the lane reads busy for ever.
+#: MEASURED live 2026-10-25: 25 open claims, the oldest from 2026-09-18 (37 d);
+#: the provider lane was excluded from #792 on a claim from 2026-09-27 (27.9 d)
+#: while its session had been dormant the whole time. Note that #479 is still
+#: OPEN, so "drop the claim once its issue closes" is NOT a usable test here.
+#:
+#: A DIRTY WORKTREE stays hard-busy regardless of age: that is work in progress
+#: on disk and can genuinely collide. A stale claim on a CLEAN tree cannot
+#: collide with anything, which is what makes this override safe rather than
+#: merely convenient. Overridable so a selftest can move the threshold instead
+#: of waiting a week.
+STALE_CLAIM_H = _env_positive_int("OC_DISPATCH_STALE_CLAIM_H", 168)  # 7 days
+
 #: How long to keep re-reading the journal for a receipt after the send.
 #: Overridable (#451) for the same reason as NOTIFY_TIMEOUT_SECS.
 RECEIPT_GRACE_SECS = _env_positive_int("OC_DISPATCH_RECEIPT_GRACE", 30)
@@ -996,6 +1035,47 @@ def recent_dispatches(ledger_data, window_days=DISPATCH_WINDOW_DAYS):
             out[issue] = (m.group(2), ts)
     return out
 
+def open_claim_ages_h(ledger_data):
+    """uuid -> age in hours of that lane's NEWEST open claim (#54).
+
+    NEWEST, not oldest: a lane holding one ancient claim and one from an hour ago
+    IS working, and the recent row is the evidence. What this bounds is the
+    reservation "nobody else may take this issue", and a lane can only be working
+    on one issue at a time -- so the freshest row is the best available read of
+    whether it still is.
+
+    A row whose actor carries no uuid (a plain `hq` row) is skipped: it cannot
+    name a lane, so it must never make one busy.
+
+    Degrades to an EMPTY map on failure, which leaves every claim busy -- the
+    conservative side, since the override only ever REMOVES a safety margin.
+    """
+    out = {}
+    try:
+        rows = oc_claims.open_claims(ledger_data.get("events", []))
+    except Exception as e:  # pragma: no cover - degrade, never guess
+        sys.stderr.write(
+            "WARN: claim-age read failed (%s); every open claim stays busy\n" % e)
+        return out
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for row in rows:
+        m = re.search(
+            r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            row.get("by") or "")
+        if not m:
+            continue
+        try:
+            t = datetime.datetime.strptime(
+                row["t"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        except (KeyError, ValueError):
+            continue
+        age = (now - t).total_seconds() / 3600.0
+        u = m.group(1)
+        if u not in out or age < out[u]:
+            out[u] = age
+    return out
+
+
 def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_path=None):
     """
     Retrieve workers, identifying idle editors and their topic affinity.
@@ -1054,6 +1134,9 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
                 print(f"WARN: Failed to query sessions DB for liveness check: {e}", file=sys.stderr)
 
     workers = ledger_data.get("workers", [])
+    # #54: claim ages for the whole ledger, read ONCE -- `open_claims` walks every
+    # event row, so calling it per lane would be quadratic on a 15k-row ledger.
+    claim_ages = open_claim_ages_h(ledger_data)
     editor_lanes = []
 
     # Map workers with their active state
@@ -1081,12 +1164,31 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
         # Determine if lane is busy:
         # If oc-roster classify failed completely, default to busy (conservative safety)
         # to avoid misrouting or colliding with busy lanes.
+        claim_age = None
+        stale_claim = None
         if not classify_ok:
             is_busy = True
         else:
             # Busy if: has open claims in classify, or dirty trees > 0
             # Note: Stale/inactive worktrees on disk (without open claims or dirty files) do NOT make a lane busy.
             has_open_claims = c_claims not in ("-", "", None)
+            # #54: a claim whose ISSUE stays open never expires (`claim_is_closed`
+            # needs a LATER closing row), so the lane reads busy for ever and the
+            # selector silently routes around it. Bound the claim by AGE -- but
+            # ONLY on a clean tree: a dirty worktree is real work in progress and
+            # can genuinely collide, so it stays hard-busy at any age. Disclosure
+            # is mandatory: an override that shrinks a safety margin in silence is
+            # the failure class this file keeps re-learning.
+            claim_age = claim_ages.get(uuid)
+            if has_open_claims and not dirty_trees and claim_age is not None \
+                    and claim_age >= STALE_CLAIM_H:
+                stale_claim = (c_claims, claim_age)
+                has_open_claims = False
+                print("NOTE(#54): lane %s holds claim(s) %s, %.1f h old (>= %d h), "
+                      "tree CLEAN -- NOT treated as busy. A claim never expires while "
+                      "its issue stays open; the issue still holds the reservation."
+                      % (uuid[:8], c_claims, claim_age, STALE_CLAIM_H),
+                      file=sys.stderr)
             is_busy = has_open_claims or (dirty_trees > 0)
 
         # Check topic and feature for domain affinity. Topic is optional in
@@ -1103,6 +1205,11 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
             "claims": c_claims,
             "worktrees": c_worktrees,
             "is_busy": is_busy,
+            # #54: the age read, exposed so a leg can assert the OVERRIDE and not
+            # merely its effect -- "not busy" is also what a lane with no claim
+            # reads, so the effect alone cannot tell the two apart.
+            "claim_age_h": claim_age,
+            "claim_stale": bool(stale_claim),
             # Whether is_busy is a REAL reading. When classify fails every lane
             # defaults to busy (conservative safety, above); that unknown state must
             # not be read by the surface-owner override in select_best_lane as
@@ -4185,6 +4292,84 @@ def run_selftest():
               "number,title,labels,body,stateReason,state,updatedAt")
     del os.environ["OC_DISPATCH_MOCK_ISSUES"]
     shutil.rmtree(_f483, ignore_errors=True)
+
+    # =====================================================================
+    # 18. #54 -- the provider SURFACE, and the STALE CLAIM.
+    # =====================================================================
+    # The defect, measured on fork #792: its fix surface is
+    # src/brain/agent/error.rs, its body says "provider" 7x, and it scored ZERO
+    # -- every provider token was either a title PREFIX or the LANE-side name.
+    # Its true owner then lost the tie-break because a 28-day-old claim on a
+    # still-OPEN issue kept it busy, and `claim_is_closed` releases a claim only
+    # on a LATER closing row, so that claim can never expire by itself.
+    _p54 = {"number": 792,
+            "title": "fix(agent): a provider content refusal (403 AUP)",
+            "body": "Surface: src/brain/agent/error.rs:177-183 "
+                    "and src/brain/provider/factory.rs"}
+    assert_true("#54 a body naming src/brain/provider/ carries the provider domain",
+                "provider" in detect_issue_domains(_p54))
+    # NEGATIVE CONTROL -- the token that was measured and REJECTED. Without this
+    # leg the addition above would pass for a `src/brain/agent/` token too, and
+    # that one fires on 30 issues at 3% precision: "agent" is ordinary prose.
+    assert_true("#54 ...but a bare src/brain/agent/ path does NOT (rejected: 3% precision)",
+                "provider" not in detect_issue_domains(
+                    {"number": 1, "title": "fix(agent): x",
+                     "body": "Surface: src/brain/agent/service/mod.rs"}))
+    # The `(agent)` SCOPE must stay unmapped (#641's law: a label is not a
+    # surface). Mapping it would hand the whole src/brain/agent/** subsystem --
+    # the tool loop included -- to the provider lane.
+    assert_eq("#54 the (agent) scope stays UNMAPPED -- a label is not a surface",
+              sorted(declared_scope_domains({"title": "fix(agent): zzz", "body": ""})), [])
+
+    _u54 = "aff7ff41-a3a7-4c53-adc5-80fb7a33ba50"
+    _tg54 = "aaaaaaaa-1111-2222-3333-444444444444"
+
+    def _led54(age_h, dirty=0, claims="479"):
+        """A one-lane ledger whose only claim is `age_h` hours old."""
+        t = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(hours=age_h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return ({"workers": [{"uuid": _u54, "role": "editor",
+                              "feature": "provider-subsystem"}],
+                 "events": [{"kind": "claim", "by": "editor " + _u54, "t": t,
+                             "what": "claiming #479"}]},
+                {"rows": [{"uuid": _u54, "class": "ACTIVE", "dirty": dirty,
+                           "claims": claims, "worktrees": "-"}]})
+
+    _l54, _c54 = _led54(STALE_CLAIM_H + 24)
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a claim past STALE_CLAIM_H on a CLEAN tree does NOT read busy",
+                _lane54["is_busy"] is False)
+    # The override must be OBSERVABLE, not merely applied: "not busy" is also
+    # what a lane holding no claim reads, so the effect alone cannot tell the
+    # two apart -- this leg is what makes the one above discriminating.
+    assert_true("#54 ...and the override is DISCLOSED on the lane (claim_stale)",
+                _lane54["claim_stale"] is True
+                and _lane54["claim_age_h"] > STALE_CLAIM_H)
+    # MUTANT for the pair above: the same claim INSIDE the window stays busy.
+    # Without it, any code that never set is_busy at all would pass them.
+    _l54, _c54 = _led54(1)
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a FRESH claim still reads busy (mutant for the leg above)",
+                _lane54["is_busy"] is True and _lane54["claim_stale"] is False)
+    # MUTANT that keeps the override from becoming a free pass: a dirty tree is
+    # real work in progress and can genuinely collide, so age never excuses it.
+    _l54, _c54 = _led54(STALE_CLAIM_H + 24, dirty=1)
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a stale claim on a DIRTY tree stays hard-busy",
+                _lane54["is_busy"] is True and _lane54["claim_stale"] is False)
+    # END TO END: both defects fixed together is what moves #792 to its owner.
+    # Either alone leaves it on the telegram lane -- the domain fix alone leaves
+    # the provider lane excluded as busy, and the claim fix alone leaves the two
+    # lanes tied at 23.
+    _l54, _c54 = _led54(STALE_CLAIM_H + 24)
+    _l54["workers"].append({"uuid": _tg54, "role": "editor", "feature": "telegram"})
+    _c54["rows"].append({"uuid": _tg54, "class": "IDLE", "dirty": 0,
+                         "claims": "-", "worktrees": "-"})
+    _lanes54 = get_worker_roster(_l54, mock_classify=_c54,
+                                 mock_sessions={_u54, _tg54})
+    _sel54 = select_best_lane(_p54, _lanes54)
+    assert_eq("#54 #792 selects the provider lane, not the telegram tie",
+              _sel54["uuid"] if _sel54 else None, _u54)
 
     total = tests_passed + tests_failed
     print(f"selftest: {tests_passed}/{total} OK")
