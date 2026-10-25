@@ -78,18 +78,42 @@
 #         oc-prchecks rc 2 (its usage/sha-shape/unknown-ref class). A
 #         precondition is the LANE's to fix — it is never an infra fault.
 #       4 GATE-RED (oc-prchecks rc 3) or CARRIER-RED (ship wait verdict RED)
-#       5 — FOUR distinguishable causes, named in the message and the journal
+#       5 — EIGHT distinguishable causes, named in the message and the journal
 #         (Design E, #415 step 11). They share the code because the lane's
-#         remedy differs, not the severity:
+#         remedy differs, not the severity. #55: this header read "FOUR" while
+#         the tool already carried SIX rc-5 die sites, and the four it listed
+#         omitted ALREADY-LANDED and STALE-BASE entirely — a count the code
+#         contradicted, in the one block a lane reads before acting on rc 5.
+#         Enumerated from `grep -c 'die ".*" 5$'`, never recalled: keep the
+#         number equal to that command's output or delete it.
 #           NON-FF         branch not fast-forwardable onto fork main and the
 #                          tip is NOT a descendant of origin/main — a REAL
 #                          divergence. Lane rebases via oc-rebase-safety.
-#           STALE-LOCAL-MAIN  the v0.4.214 false alarm: local fork main is
-#                          behind origin/main while the branch is correctly
-#                          based on it. NOT a rebase problem — reconcile the
-#                          checkout (`git merge --ff-only origin/main`), do
-#                          NOT rebase. Previously shared NON-FF's text and
-#                          sent lanes at a rebase they did not need.
+#           STALE-BASE     caught BEFORE the merge attempt: origin/main itself
+#                          moved since the gate. Rebase with patch-id
+#                          carry-forward; the gated sha will not survive.
+#           ALREADY-LANDED the branch is already contained in fork main. Do
+#                          NOT re-gate — there is nothing to land.
+#           LOCAL-MAIN-AHEAD    (#55) the CHECKOUT's main carries commits
+#                          origin/main does not have, so an ff-merge onto the
+#                          branch cannot apply to it. NOT a rebase problem, and
+#                          reconciling is a NO-OP — main already contains
+#                          origin/main, so `merge --ff-only origin/main` says
+#                          "Already up to date." and the re-run reproduces the
+#                          identical rc 5. Wait for the owning lane to land its
+#                          commits, then re-run. Measured 2026-10-25, n=15480.
+#           LOCAL-MAIN-DIVERGED (#55) both sides moved. No single git command
+#                          reconciles it safely; settle the checkout with the
+#                          owner of the ahead commits first.
+#           STALE-LOCAL-MAIN  (#55, narrowed) the checkout's main is LEVEL with
+#                          origin/main and the tip is correctly based, yet the
+#                          ff was refused — so the refusal is the working tree
+#                          (uncommitted change or held index), not the history.
+#                          NOT a rebase problem. Read `git -C <fork> status`,
+#                          clear that refusal, re-run. This arm used to presume
+#                          "simply behind" and prescribe `merge --ff-only
+#                          origin/main` in EVERY reachable state, including the
+#                          AHEAD one where that command is a silent no-op.
 #           TIP-MOVED      the branch tip no longer equals --sha: a
 #                          rebase/force-push happened while the gate ran, so
 #                          LEG3 must not land an ungated tip — re-gate and
@@ -227,7 +251,7 @@ chain_remedy() { # $1 = exit code
   case "${1:-}" in
     3) printf '%s' "a PRECONDITION refused before any gate ran, so no gate name can satisfy it -- fix the condition the journal line names (checkout not main, dirty tree, branch not pushed, missing Session-Id signature), then re-arm. Do NOT pass --gated-run: there is no gate to carry." ;;
     4) printf '%s' "a GATE or ORDER verdict, not infra -- read the run/validator output. If the branch was rebased since the gate, re-gate; --gated-run <id> is correct ONLY when that run still names the sha being landed." ;;
-    5) printf '%s' "LANDING/LINEAGE refused -- rebase onto fork main and re-gate. --gated-run <id> carries only if the rebase preserved the gated sha; a rewritten tip needs a fresh gate." ;;
+    5) printf '%s' "an rc 5 the chain did not classify, so its own message is unavailable -- and rc 5 covers EIGHT causes with OPPOSITE remedies (ALREADY-LANDED says do NOT re-gate; STALE-LOCAL-MAIN, LOCAL-MAIN-AHEAD and LOCAL-MAIN-DIVERGED say do NOT rebase; NON-FF says rebase). Read the journal line that names the LEG3 cause before acting; a blind rebase here rewrites a possibly correct gated tip and burns the gate." ;;
     6) printf '%s' "INFRASTRUCTURE, not a gate -- the wrapped tool's own message is in the journal, so read THAT line; naming a gate cannot fix a dead user bus, a failed handoff or a refused swap. Fix the cause, then resume the leg the journal names." ;;
     7) printf '%s' "the gate is still IN FLIGHT -- wait for the run, then re-arm with --gated-run <id>. Re-dispatching burns a second full gate cycle for the same answer." ;;
     8) printf '%s' "the carrier build did not reach a terminal state inside the LEG4 --wait budget -- do NOT re-dispatch it; wait, then resume with: oc-deploy poll --sha <sha> --execute --wait <sec>." ;;
@@ -296,7 +320,23 @@ _chain_wake_arming_lane() { # $1 = exit code
   # #48 defect 1: the remedy is DERIVED from rc (chain_remedy, defined above).
   # Same ERR-EXIT SAFETY as _dep above: this runs from the EXIT trap, where a
   # failing command substitution would REPLACE the chain's own exit code.
-  _rem="$(chain_remedy "$rc" 2>/dev/null)" || _rem=""
+  #
+  # #55: the chain's OWN die text WINS over the code legend. A legend keyed on
+  # the code cannot speak for a code that covers several causes with OPPOSITE
+  # remedies, and rc 5 covers EIGHT: ALREADY-LANDED says do NOT re-gate,
+  # STALE-LOCAL-MAIN and LOCAL-MAIN-AHEAD say do NOT rebase, NON-FF says
+  # rebase. Measured 2026-10-25 (ledger n=15480): the wake carried "rebase onto
+  # fork main and re-gate" while the SAME run's journal said "Do NOT rebase",
+  # and following the wake would have rewritten a correctly-based gated tip and
+  # burned a ~26-minute gate. The legend stays as the FALLBACK for an exit that
+  # never reached a die -- a signal, or a wrapped tool's own rc 6/8/9 -- where
+  # the code is genuinely all there is.
+  _rem=""
+  if [ -n "${CHAIN_DIE_MSG:-}" ]; then
+    _rem="$CHAIN_DIE_MSG"
+  else
+    _rem="$(chain_remedy "$rc" 2>/dev/null)" || _rem=""
+  fi
   uuid="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
   if [ -z "$uuid" ] && [ -n "${SHA:-}" ] && command -v git >/dev/null 2>&1; then
     uuid="$(git -C "${FORK_REPO:-$HOME/opencrabs}" log -1 --format='%(trailers:key=Session-Id,valueonly)' "$SHA" 2>/dev/null | tr -d ' \n')"
@@ -353,7 +393,18 @@ FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_GH:-gh}"
 
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF" || :; exit 0; }
-die() { printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
+# #55: the message is RECORDED before exiting so the EXIT-trap wake can carry
+# the cause the chain actually found instead of a code-wide legend. One rc can
+# cover several causes with OPPOSITE remedies -- rc 5 has EIGHT die sites (keep
+# this equal to `grep -c 'die ".*" 5$'`), where ALREADY-LANDED says do NOT
+# re-gate and the checkout-state arms say do NOT rebase while NON-FF says
+# rebase -- so a legend keyed on the CODE can only be
+# a fallback for an exit that never reached a die (a signal, or a wrapped
+# tool's own rc). A plain assignment, never a command substitution: this runs
+# on the exit path, where a failing substitution would REPLACE the chain's own
+# rc and corrupt the very audit surface the code is.
+CHAIN_DIE_MSG=""
+die() { CHAIN_DIE_MSG="$1"; printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 SHA=""; BRANCH=""; ISSUE=""; ISSUE_REPO_FLAG=""; REPO=""; DRY=0; NOLEDGER=0; GATED_SHA=""; GATED_RUN=""
 # #14: set ONLY once the invocation has proven it is a chain attempt (both
@@ -1385,20 +1436,67 @@ git -C "$FORK_REPO" merge --ff-only "$TIP" >/dev/null 2>&1
 FF_RC=$?
 set -e
 if [ "$FF_RC" != "0" ]; then
-  # TWO causes share rc 5 here (Design E, #415 step 11) and their remedies are
-  # OPPOSITE, so the text must say which one this is. Discriminator: is the tip
-  # still a descendant of the CURRENT origin/main? If so the branch is correctly
-  # based and only the LOCAL checkout is behind — the v0.4.214 false alarm,
-  # where a sync force-pushed fork main, local main was left behind, and the
-  # bare ff-merge against that stale main failed for a lane that needed no
-  # rebase. Both directions are tested: the tip descends from origin/main
+  # The causes that share rc 5 here have OPPOSITE remedies, so the text must
+  # say which one this is. FIRST discriminator: is the tip still a descendant
+  # of the CURRENT origin/main? If so the BRANCH is correctly based and only
+  # the LOCAL checkout can be at fault (the v0.4.214 false alarm: a sync
+  # force-pushed fork main and the bare ff-merge failed for a lane that needed
+  # no rebase). Both directions are tested: the tip descends from origin/main
   # (branch based on new main), or the tip is already IN origin/main (landed by
-  # someone else). Either way a reconciled local main merges cleanly.
-  # A genuine divergence fails BOTH tests — that is NON-FF, and only that.
+  # someone else). A genuine divergence fails BOTH tests — that is NON-FF, and
+  # only that.
+  #
+  # #55: "the branch is correctly based" does NOT identify the checkout's
+  # state — that is the SECOND discriminator, and it used to be absent. This
+  # arm presumed "simply behind" in every case and prescribed `merge --ff-only
+  # origin/main`, which is a silent no-op when main is AHEAD (measured
+  # 2026-10-25, ledger n=15480: ahead 2, "Already up to date.", rc 0, HEAD
+  # unmoved, re-run reproduced the identical rc 5). The count pair is read
+  # below and names the state instead of presuming one.
   if git -C "$FORK_REPO" merge-base --is-ancestor origin/main "$TIP" 2>/dev/null \
      || git -C "$FORK_REPO" merge-base --is-ancestor "$TIP" origin/main 2>/dev/null; then
-    journal "LEG3 STALE-LOCAL-MAIN local-main=$(git -C "$FORK_REPO" rev-parse --short main 2>/dev/null || echo '?') origin-main=$(git -C "$FORK_REPO" rev-parse --short origin/main 2>/dev/null || echo '?') tip=$(printf '%s' "$TIP" | cut -c1-8) — tip descends from origin/main, ff-merge is a false alarm"
-    die "STALE-LOCAL-MAIN (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main — the LOCAL fork checkout's main is simply behind it, so the ff-merge failed against stale state. Do NOT rebase. Reconcile the checkout, then re-run: git -C $FORK_REPO merge --ff-only origin/main   (then)   oc-ship-chain --sha $SHA --branch $BRANCH" 5
+    # #55: this arm used to presume the checkout's main was BEHIND origin/main
+    # and prescribe `merge --ff-only origin/main`. Measured 2026-10-25 (ledger
+    # n=15480): local main was AHEAD 2 -- a peer lane's commits, unpushed -- so
+    # that merge printed "Already up to date.", exited 0, changed nothing, and
+    # a re-run reproduced the identical rc 5. A remedy that cannot succeed is
+    # indistinguishable from one that was never applied. Reproduced in a
+    # scratch repo (ahead=1 behind=0 -> "Already up to date.", HEAD unmoved).
+    #
+    # The branch being correctly based says NOTHING about which state the
+    # CHECKOUT is in, so read the two counts and name the state instead of
+    # presuming one. Three reachable shapes:
+    #   ahead>0, behind>0  the checkout's main has DIVERGED from origin/main
+    #   ahead>0, behind=0  main carries commits origin/main does not have
+    #   ahead=0            main is level or behind, yet the ff was refused --
+    #                      that is the CHECKOUT's working tree, not its history
+    # The chain cannot know whether an ahead commit is meant to land or was
+    # abandoned by a force-push, so it states both dispositions and prescribes
+    # neither. What it CAN forbid is the rebase: the branch is correctly based,
+    # so a rebase would rewrite a good gated tip and burn the gate for nothing.
+    _lm_ahead="$(git -C "$FORK_REPO" rev-list --count origin/main..main 2>/dev/null || echo 0)"
+    case "$_lm_ahead" in ''|*[!0-9]*) _lm_ahead=0 ;; esac
+    _lm_behind="$(git -C "$FORK_REPO" rev-list --count main..origin/main 2>/dev/null || echo 0)"
+    case "$_lm_behind" in ''|*[!0-9]*) _lm_behind=0 ;; esac
+    _lm_main="$(git -C "$FORK_REPO" rev-parse --short main 2>/dev/null || echo '?')"
+    _lm_orig="$(git -C "$FORK_REPO" rev-parse --short origin/main 2>/dev/null || echo '?')"
+    if [ "$_lm_ahead" -gt 0 ] && [ "$_lm_behind" -gt 0 ]; then
+      journal "LEG3 LOCAL-MAIN-DIVERGED local-main=$_lm_main origin-main=$_lm_orig ahead=$_lm_ahead behind=$_lm_behind tip=$(printf '%s' "$TIP" | cut -c1-8) — the checkout's main and origin/main have each moved; the ff-merge failed on the CHECKOUT, not on the branch"
+      die "LOCAL-MAIN-DIVERGED (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main. The LOCAL fork checkout's main has DIVERGED from origin/main — it carries $_lm_ahead commit(s) origin/main does not have and is missing $_lm_behind of origin/main's. A fast-forward onto $BRANCH cannot apply to a diverged main, and no single git command reconciles it safely. Do NOT rebase $BRANCH: it is correctly based, and a rebase would rewrite a gated tip. Settle the checkout FIRST — with the owner of those $_lm_ahead commit(s): land them, or abandon them — then re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
+    fi
+    if [ "$_lm_ahead" -gt 0 ]; then
+      journal "LEG3 LOCAL-MAIN-AHEAD local-main=$_lm_main origin-main=$_lm_orig ahead=$_lm_ahead behind=0 tip=$(printf '%s' "$TIP" | cut -c1-8) — the checkout's main carries commits origin/main does not have; the ff-merge failed on the CHECKOUT, not on the branch"
+      die "LOCAL-MAIN-AHEAD (rc 5, NOT a rebase problem, and NOT a defect in $BRANCH): $BRANCH is correctly based on origin/main. The LOCAL fork checkout's main carries $_lm_ahead commit(s) that origin/main does NOT have, so a fast-forward onto $BRANCH cannot apply to it. Reconciling the checkout is a NO-OP in this state — main already contains origin/main — so a re-run reproduces this identical rc 5 until those commits reach origin/main. Do NOT rebase $BRANCH. WAIT for the lane that owns them: its own chain carries them to origin/main, and this chain lands once main is no longer ahead." 5
+    fi
+    # RESIDUAL, and honestly declared as such: with a clean tree and the
+    # checkout on main (both enforced by the rc-3 pre-flight above), a tip that
+    # descends from origin/main ALWAYS fast-forwards. So ahead=0 is not
+    # reachable within one run — it needs the tree to change DURING the ~26-min
+    # gate. The arm is kept so rc 5 can never be silent, its text names no
+    # cause it cannot prove, and NO selftest leg claims it: a leg for a state
+    # the fixture cannot build would be decoration (CODE.md item 3).
+    journal "LEG3 STALE-LOCAL-MAIN local-main=$_lm_main origin-main=$_lm_orig ahead=0 behind=$_lm_behind tip=$(printf '%s' "$TIP" | cut -c1-8) — tip descends from origin/main but the ff-merge was refused by the CHECKOUT's own state"
+    die "STALE-LOCAL-MAIN (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main, so the refusal is the LOCAL fork checkout's, not the branch's — its main is not ahead of origin/main ($_lm_main) yet the fast-forward was refused, which points at that working tree (an uncommitted change or a held index) rather than at the history. Do NOT rebase. Read why git refused (git -C $FORK_REPO status), clear that refusal — stash or commit it — then re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
   fi
   journal "LEG3 NON-FF — branch not fast-forwardable and tip is NOT a descendant of origin/main (real divergence)"
   die "NON-FF: rebase $BRANCH onto fork main (oc-rebase-safety) and re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
@@ -2052,43 +2150,98 @@ FGHEOF
   [ "$(git -C "$T/clone" rev-parse HEAD)" = "$MAIN_BEFORE" ] && ok "tip-moved-main-untouched" || bad "tip-moved-main-untouched"
   git -C "$T/clone" branch -f feat "$FSHA"   # restore for the tests that follow
 
-  # 4c. STALE-LOCAL-MAIN (Design E, #415 step 11): the SAME rc 5 as NON-FF but
-  #     the OPPOSITE remedy — the branch is correctly based and the LOCAL
-  #     checkout is the problem (v0.4.214: a sync force-pushed fork main, the
-  #     local checkout was left holding a commit origin no longer carries, and
-  #     the bare ff-merge against that stale main failed for a lane that needed
-  #     NO rebase). Fixture mechanic: `merge --ff-only` fails whenever local
-  #     main is NOT an ancestor of the tip, so local main gets a local-only
-  #     commit while the branch still descends from origin/main. The
-  #     discriminator must then name STALE-LOCAL-MAIN and must NOT say rebase.
+  # 4c. THE CHECKOUT-STATE ARMS (#55): the SAME rc 5 as NON-FF but the
+  #     OPPOSITE remedy — the branch is correctly based and the LOCAL checkout
+  #     is the problem, so a rebase would rewrite a good gated tip and burn the
+  #     gate for nothing.
+  #
+  #     WHY THIS SECTION EXISTS AT ALL. Pre-#55 the arm presumed the checkout
+  #     was "simply behind" and prescribed `git merge --ff-only origin/main`.
+  #     This fixture then built ahead=1/behind=0 and ASSERTED that remedy —
+  #     i.e. the leg encoded a command that provably cannot help in the state
+  #     it was given. Measured in a scratch repo and on the live box
+  #     (2026-10-25, ledger n=15480): `merge --ff-only origin/main` with main
+  #     AHEAD prints "Already up to date.", exits 0, moves nothing, and the
+  #     re-run reproduces the identical rc 5. A leg asserting a no-op is a leg
+  #     that can never go red on "the remedy reconciles the state", which is the
+  #     only property that matters. The assertions below therefore demand the
+  #     no-op's ABSENCE, and each arm names the mutant that kills it.
   #
   #     SELF-CONTAINED ON PURPOSE: test 4 force-pushed `diverge` to origin/main
   #     and never restored it, so `feat` is genuinely NOT based on origin/main
-  #     by the time this test runs — a fixture reusing `feat` would be a TRUE
-  #     NON-FF and would assert the wrong branch of the discriminator. Restore
-  #     origin/main first (as test 5 does), then base a dedicated branch on it.
+  #     by the time this runs — a fixture reusing `feat` would be a TRUE NON-FF
+  #     and would assert the wrong branch of the discriminator. Restore
+  #     origin/main first, then base a dedicated branch on it.
+
+  # ---- 4c-i. LOCAL-MAIN-AHEAD: the live shape that motivated #55 ----------
+  #     ahead=1, behind=0. The remedy must NOT be the ff-merge (it is a no-op
+  #     here), must forbid the rebase, and must say the wait is on the owning
+  #     lane. MUTANT KILLED: the pre-#55 text — it carried
+  #     "merge --ff-only origin/main", so the absence leg goes RED against it.
   rm -f "$T/journal.log"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" push -q -f origin "$FSHA:main"
   git -C "$T/clone" reset -q --hard origin/main
-  git -C "$T/clone" checkout -qb stale-feat origin/main
-  echo stale > "$T/clone/stale.txt"
-  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "stale-feat on current origin/main" --trailer "Session-Id: $FIXTURE_SESSION"
-  git -C "$T/clone" push -q origin stale-feat
-  STALE_TIP="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" checkout -qb ahead-feat origin/main
+  echo ahead > "$T/clone/ahead.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "ahead-feat on current origin/main" --trailer "Session-Id: $FIXTURE_SESSION"
+  git -C "$T/clone" push -q origin ahead-feat
+  AHEAD_TIP="$(git -C "$T/clone" rev-parse HEAD)"
   git -C "$T/clone" checkout -q main
   echo "local-only" > "$T/clone/local-only.txt"
-  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "local-only (origin force-pushed past it)"
-  STALE_MAIN="$(git -C "$T/clone" rev-parse HEAD)"
-  RC=0; OUT="$(run_chain --sha "$STALE_TIP" --branch stale-feat 2>&1)" || RC=$?
-  check_rc "stale-local-main-rc5" "$RC" 5
-  case "$OUT" in *"STALE-LOCAL-MAIN (rc 5, NOT a rebase problem)"*) ok "stale-local-main-message" ;; *) bad "stale-local-main-message: $OUT" ;; esac
-  case "$OUT" in *"Do NOT rebase"*) ok "stale-local-main-forbids-rebase" ;; *) bad "stale-local-main-forbids-rebase: $OUT" ;; esac
-  case "$OUT" in *"NON-FF: rebase"*) bad "stale-local-main-misclassified-as-non-ff" ;; *) ok "stale-local-main-not-non-ff" ;; esac
-  case "$OUT" in *"merge --ff-only origin/main"*) ok "stale-local-main-remedy-names-the-reconcile" ;; *) bad "stale-local-main-remedy-names-the-reconcile: $OUT" ;; esac
-  grep -q "LEG3 STALE-LOCAL-MAIN" "$T/journal.log" && ok "stale-local-main-journal" || bad "stale-local-main-journal"
-  [ "$(git -C "$T/clone" rev-parse HEAD)" = "$STALE_MAIN" ] && ok "stale-local-main-main-untouched" || bad "stale-local-main-main-untouched"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "local-only (unpushed peer commit)"
+  AHEAD_MAIN="$(git -C "$T/clone" rev-parse HEAD)"
+  # sanity: this fixture must BE the ahead=1/behind=0 state, or it tests nothing
+  [ "$(git -C "$T/clone" rev-list --count origin/main..main)" = "1" ] && ok "ahead-fixture-is-ahead-1" || bad "ahead-fixture-is-ahead-1"
+  [ "$(git -C "$T/clone" rev-list --count main..origin/main)" = "0" ] && ok "ahead-fixture-is-behind-0" || bad "ahead-fixture-is-behind-0"
+  RC=0; OUT="$(run_chain --sha "$AHEAD_TIP" --branch ahead-feat 2>&1)" || RC=$?
+  check_rc "local-main-ahead-rc5" "$RC" 5
+  case "$OUT" in *"LOCAL-MAIN-AHEAD (rc 5, NOT a rebase problem"*) ok "local-main-ahead-message" ;; *) bad "local-main-ahead-message: $OUT" ;; esac
+  case "$OUT" in *"Do NOT rebase"*) ok "local-main-ahead-forbids-rebase" ;; *) bad "local-main-ahead-forbids-rebase: $OUT" ;; esac
+  # THE #55 LEG: the no-op remedy must be GONE. This is the assertion the old
+  # fixture inverted, and the one that goes RED if the no-op ever returns.
+  case "$OUT" in *"merge --ff-only origin/main"*) bad "local-main-ahead-must-not-prescribe-the-noop-ff-merge" ;; *) ok "local-main-ahead-no-noop-remedy" ;; esac
+  # and it must SAY the reconcile is a no-op, so a lane is not left guessing
+  # why the obvious command did nothing
+  case "$OUT" in *"NO-OP"*) ok "local-main-ahead-names-the-noop" ;; *) bad "local-main-ahead-names-the-noop: $OUT" ;; esac
+  case "$OUT" in *"NON-FF: rebase"*) bad "local-main-ahead-misclassified-as-non-ff" ;; *) ok "local-main-ahead-not-non-ff" ;; esac
+  grep -q "LEG3 LOCAL-MAIN-AHEAD" "$T/journal.log" && ok "local-main-ahead-journal" || bad "local-main-ahead-journal"
+  # the journal line must carry the COUNTS, because the counts are the evidence
+  grep -q "ahead=1" "$T/journal.log" && ok "local-main-ahead-journal-carries-counts" || bad "local-main-ahead-journal-carries-counts"
+  [ "$(git -C "$T/clone" rev-parse HEAD)" = "$AHEAD_MAIN" ] && ok "local-main-ahead-main-untouched" || bad "local-main-ahead-main-untouched"
+
+  # ---- 4c-ii. LOCAL-MAIN-DIVERGED: both sides moved -----------------------
+  #     ahead=1, behind=1. Neither a wait nor a no-op settles it; the text must
+  #     say so and must not send the lane at a rebase of the BRANCH.
+  #     MUTANT KILLED: an arm that only tests ahead>0 would call this AHEAD and
+  #     claim "main already contains origin/main", which is false here.
+  rm -f "$T/journal.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  git -C "$T/clone" checkout -qb div-feat origin/main
+  echo div > "$T/clone/div.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "div-feat on current origin/main" --trailer "Session-Id: $FIXTURE_SESSION"
+  git -C "$T/clone" push -q origin div-feat
+  DIV_TIP="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" checkout -q main
+  echo "div-local" > "$T/clone/div-local.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "div-local (main moves independently)"
+  DIV_MAIN="$(git -C "$T/clone" rev-parse HEAD)"
+  # move origin/main to the tip, so main is ahead 1 AND behind 1
+  git -C "$T/clone" push -q origin div-feat:main
+  [ "$(git -C "$T/clone" rev-list --count origin/main..main)" = "1" ] && ok "diverged-fixture-is-ahead-1" || bad "diverged-fixture-is-ahead-1"
+  [ "$(git -C "$T/clone" rev-list --count main..origin/main)" = "1" ] && ok "diverged-fixture-is-behind-1" || bad "diverged-fixture-is-behind-1"
+  RC=0; OUT="$(run_chain --sha "$DIV_TIP" --branch div-feat 2>&1)" || RC=$?
+  check_rc "local-main-diverged-rc5" "$RC" 5
+  case "$OUT" in *"LOCAL-MAIN-DIVERGED (rc 5, NOT a rebase problem"*) ok "local-main-diverged-message" ;; *) bad "local-main-diverged-message: $OUT" ;; esac
+  case "$OUT" in *"Do NOT rebase"*) ok "local-main-diverged-forbids-rebase" ;; *) bad "local-main-diverged-forbids-rebase: $OUT" ;; esac
+  case "$OUT" in *"NO-OP"*) bad "local-main-diverged-must-not-claim-a-noop-wait" ;; *) ok "local-main-diverged-not-a-noop-wait" ;; esac
+  case "$OUT" in *"merge --ff-only origin/main"*) bad "local-main-diverged-must-not-prescribe-the-noop-ff-merge" ;; *) ok "local-main-diverged-no-noop-remedy" ;; esac
+  grep -q "LEG3 LOCAL-MAIN-DIVERGED" "$T/journal.log" && ok "local-main-diverged-journal" || bad "local-main-diverged-journal"
+  grep -q "behind=1" "$T/journal.log" && ok "local-main-diverged-journal-carries-counts" || bad "local-main-diverged-journal-carries-counts"
+  [ "$(git -C "$T/clone" rev-parse HEAD)" = "$DIV_MAIN" ] && ok "local-main-diverged-main-untouched" || bad "local-main-diverged-main-untouched"
   # restore for the tests that follow
+  git -C "$T/clone" push -q -f origin "$FSHA:main"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
 
@@ -2148,8 +2301,12 @@ FGHEOF
   rm -f "$T/journal.log"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
-  git -C "$T/clone" branch -q -D stale-feat
-  git -C "$T/clone" push -q origin --delete stale-feat
+  # NOTE (#55): the stale-feat branch cleanup that used to live here is GONE with
+  # the leg that created it. The old 4c fixture built an AHEAD main on `stale-feat`
+  # and then asserted the ff-merge no-op as its remedy; 4c-i/4c-ii now build
+  # ahead-feat / div-feat and assert the no-op's ABSENCE. Deleting a branch that
+  # no longer exists aborts the whole battery under `set -e` -- which is exactly
+  # how this was found (battery died at 109 legs, not on an assertion).
 
   # 5. gated-sha with fake gh shim
   cat > "$T/fake-gh" <<'EOF'
@@ -2527,6 +2684,39 @@ EOF
     run_chain_inflight --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
   check_rc "wake-nowake-exit-code-unchanged" "$RC" 7
   [ -s "$T/wake.log" ] && bad "wake-nowake-suppressed" || ok "wake-nowake-suppressed"
+
+  # 11d1. #55: the wake must carry the chain's OWN die text, not the rc legend.
+  # The legend is keyed on the CODE, and rc 5 covers EIGHT causes with opposite
+  # remedies, so a legend can contradict the very run that armed it. Measured
+  # 2026-10-25 (ledger n=15480): the wake said "rebase onto fork main and
+  # re-gate" while the same run's journal said "Do NOT rebase" -- following the
+  # wake would have rewritten a correctly-based gated tip and burned a ~26-min
+  # gate. MUTANT KILLED: reverting _rem to chain_remedy-only turns the first
+  # leg RED, because the legend has no die text to carry.
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-55" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" CHAIN_INTENT=1 \
+    CHAIN_DIE_MSG="LOCAL-MAIN-AHEAD (rc 5): sentinel-die-text" \
+    _chain_wake_arming_lane 5 ) >/dev/null 2>&1 || true
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"sentinel-die-text"*) ok "wake-carries-the-die-text" ;;
+    *) bad "wake-carries-the-die-text: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
+  # #55 MUTANT: make _rem fall back to chain_remedy unconditionally -> this leg
+  # must go RED. It forbids the LEGEND's own marker ("EIGHT causes"), not the
+  # pre-#55 wording "rebase onto fork main": that string no longer exists in the
+  # legend at all, so forbidding it could never fail and the leg would have been
+  # decoration (CODE.md item 3). Caught by running the mutant, not by reading.
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"EIGHT causes"*) bad "wake-must-not-carry-the-legend-when-a-die-text-exists" ;;
+    *) ok "wake-prefers-die-text-over-legend" ;; esac
+  # ...and with NO die text (a signal, or a wrapped tool's own rc) the legend is
+  # still the fallback: the disclosure must not become a silence.
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-55b" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" CHAIN_INTENT=1 \
+    _chain_wake_arming_lane 5 ) >/dev/null 2>&1 || true
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"EIGHT causes"*) ok "wake-falls-back-to-legend-without-a-die-text" ;;
+    *) bad "wake-falls-back-to-legend-without-a-die-text: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
 
   # 11d2. #695: the wake's STATE CLAIM must be READ, not asserted. rc is not the
   # swap verdict -- the deployed.sha marker is. Measured 2026-09-28: a lane was
