@@ -757,6 +757,13 @@ ROSTER_TIMEOUT_SECS = _env_positive_int("OC_DISPATCH_ROSTER_TIMEOUT", 120)
 #: of waiting a week.
 STALE_CLAIM_H = _env_positive_int("OC_DISPATCH_STALE_CLAIM_H", 168)  # 7 days
 
+#: #54 TREE leg: a dirty worktree whose NEWEST entry is older than this is
+#: ABANDONED, not busy. A count cannot be aged -- the entries it counts can --
+#: so oc-roster reports the age and this is the bound applied to it. Kept equal
+#: to the roster's own default (OC_ROSTER_STALE_DIRTY_H) so the two cannot
+#: disagree about the same tree; overridable for the same selftest reason.
+STALE_DIRTY_H = _env_positive_int("OC_DISPATCH_STALE_DIRTY_H", 168)  # 7 days
+
 #: How long to keep re-reading the journal for a receipt after the send.
 #: Overridable (#451) for the same reason as NOTIFY_TIMEOUT_SECS.
 RECEIPT_GRACE_SECS = _env_positive_int("OC_DISPATCH_RECEIPT_GRACE", 30)
@@ -1186,6 +1193,19 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
         c_info = classify_rows.get(uuid, {})
         c_class = c_info.get("class")  # ACTIVE, IDLE, UNKNOWN
         dirty_trees = c_info.get("dirty", 0)
+        # #54 TREE leg: `dirty` is a COUNT and a count cannot be aged -- only the
+        # entries it counts can. oc-roster now reports the NEWEST dirty entry's
+        # age, and a tree whose newest entry is past the bound is abandoned, not
+        # busy (measured 2026-10-27: a worktree holding one untracked note from
+        # 2026-10-05 read busy 22 days after its branch merged).
+        # ABSENT or None means UNDECIDABLE -- an older roster, or a tree git
+        # could not read -- and it stays BUSY. Fail closed: the one direction
+        # that must never happen is un-busying a lane we merely could not read.
+        dirty_age = c_info.get("dirty_age_h")
+        dirty_live = c_info.get("dirty_live")
+        if dirty_live is None:
+            dirty_live = dirty_trees > 0      # no age read available: assume work
+        dirty_live = bool(dirty_live)
         c_worktrees = c_info.get("worktrees", "-")
         c_claims = c_info.get("claims", "-")
 
@@ -1194,10 +1214,11 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
         # to avoid misrouting or colliding with busy lanes.
         claim_age = None
         stale_claim = None
+        stale_tree = None
         if not classify_ok:
             is_busy = True
         else:
-            # Busy if: has open claims in classify, or dirty trees > 0
+            # Busy if: has open claims in classify, or a LIVE dirty tree.
             # Note: Stale/inactive worktrees on disk (without open claims or dirty files) do NOT make a lane busy.
             has_open_claims = c_claims not in ("-", "", None)
             # #54: a claim whose ISSUE stays open never expires (`claim_is_closed`
@@ -1217,7 +1238,21 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
                       "its issue stays open; the issue still holds the reservation."
                       % (uuid[:8], c_claims, claim_age, STALE_CLAIM_H),
                       file=sys.stderr)
-            is_busy = has_open_claims or (dirty_trees > 0)
+            # #54 TREE leg, disclosed separately from the claim leg: this one is
+            # the tree's own age, and it fires on a lane with no claim at all --
+            # which is exactly the abandoned-worktree case. Named so a reader can
+            # audit the judgement instead of inferring it from a quiet lane.
+            if dirty_trees and not dirty_live:
+                stale_tree = (c_worktrees, dirty_age)
+                print("NOTE(#54): lane %s has DIRTY worktree(s) %s whose newest "
+                      "entry is %s (>= %g h) -- NOT treated as busy. An abandoned "
+                      "tree cannot collide; a count cannot be aged, the entries "
+                      "it counts can."
+                      % (uuid[:8], c_worktrees,
+                         "UNDECIDABLE" if dirty_age is None else "%.1f h old" % dirty_age,
+                         STALE_DIRTY_H),
+                      file=sys.stderr)
+            is_busy = has_open_claims or dirty_live
 
         # Check topic and feature for domain affinity. Topic is optional in
         # workers-ledger.json; keep it explicit so a later topic cannot bypass
@@ -1238,6 +1273,14 @@ def get_worker_roster(ledger_data, mock_classify=None, mock_sessions=None, db_pa
             # reads, so the effect alone cannot tell the two apart.
             "claim_age_h": claim_age,
             "claim_stale": bool(stale_claim),
+            # #54 TREE leg, exposed for the same reason as the claim pair above:
+            # "not busy" is also what a CLEAN lane reads, so the effect alone
+            # cannot tell a stale tree from an absent one. A leg must be able to
+            # assert the OVERRIDE itself.
+            "dirty_age_h": dirty_age,
+            "dirty_live": dirty_live,
+            "dirty_stale": bool(stale_tree),
+            "stale_worktrees": stale_tree[0] if stale_tree else "-",
             # Whether is_busy is a REAL reading. When classify fails every lane
             # defaults to busy (conservative safety, above); that unknown state must
             # not be read by the surface-owner override in select_best_lane as
@@ -4398,6 +4441,58 @@ def run_selftest():
     _sel54 = select_best_lane(_p54, _lanes54)
     assert_eq("#54 #792 selects the provider lane, not the telegram tie",
               _sel54["uuid"] if _sel54 else None, _u54)
+
+    # ---- #54 TREE leg: a dirty COUNT cannot be aged -------------------------
+    # The claim leg above excuses a CLAIM; this one excuses the TREE, and it is
+    # the leg that ends the 22-day case: /root/opencrabs-wt/1930-compaction-budget
+    # held ONE untracked note dated 2026-10-05 while its branch head had already
+    # merged into origin/main -- busy 22 days on work that had shipped. A count
+    # cannot be aged; the entries it counts can.
+    def _tree54(age_h, dirty=1, claims="-"):
+        """One lane, no open claim, one dirty worktree aged `age_h` hours."""
+        _l, _c = _led54(1, dirty=dirty, claims=claims)
+        _c["rows"][0]["dirty_age_h"] = age_h
+        _c["rows"][0]["dirty_live"] = age_h is not None and age_h < STALE_DIRTY_H
+        _c["rows"][0]["worktrees"] = "1930-compaction-budget"
+        return _l, _c
+
+    _l54, _c54 = _tree54(STALE_DIRTY_H + 100)
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a worktree past STALE_DIRTY_H does NOT read busy",
+                _lane54["is_busy"] is False)
+    # Observable, not merely applied: "not busy" is also what a CLEAN lane reads,
+    # so the effect alone cannot tell an abandoned tree from an absent one.
+    assert_true("#54 ...and the override is DISCLOSED on the lane (dirty_stale)",
+                _lane54["dirty_stale"] is True
+                and _lane54["stale_worktrees"] == "1930-compaction-budget"
+                and _lane54["dirty_age_h"] > STALE_DIRTY_H)
+    # MUTANT: the same tree INSIDE the window stays busy. Without it, code that
+    # never set is_busy at all would pass the leg above.
+    _l54, _c54 = _tree54(1)
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a FRESH dirty tree still reads busy (mutant for the leg above)",
+                _lane54["is_busy"] is True and _lane54["dirty_stale"] is False)
+    # FAIL CLOSED, both shapes of "we could not tell". An older roster carries no
+    # age at all; a roster that tried and failed carries None. Neither may buy an
+    # un-busy -- that is the one direction that silently routes work into a live
+    # tree. Two separate legs because they arrive through different keys.
+    _l54, _c54 = _led54(1, dirty=1, claims="-")
+    _c54["rows"][0]["worktrees"] = "1930-compaction-budget"
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a dirty tree with NO age read stays busy (older roster)",
+                _lane54["is_busy"] is True and _lane54["dirty_stale"] is False)
+    _c54["rows"][0]["dirty_age_h"] = None
+    _c54["rows"][0]["dirty_live"] = True      # roster tried, tree UNDECIDABLE
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a dirty tree whose age is UNDECIDABLE stays busy",
+                _lane54["is_busy"] is True and _lane54["dirty_stale"] is False)
+    # The tree override must not become a free pass for a CLAIMED lane: the claim
+    # leg only ever fires on a clean tree, and a claimed lane with an abandoned
+    # worktree is still a lane holding the issue's reservation.
+    _l54, _c54 = _tree54(STALE_DIRTY_H + 100, claims="479")
+    _lane54 = get_worker_roster(_l54, mock_classify=_c54, mock_sessions={_u54})[0]
+    assert_true("#54 a stale tree does NOT excuse an open claim",
+                _lane54["is_busy"] is True and _lane54["claim_stale"] is False)
 
     # =====================================================================
     # 19. #56 -- the VISION tool path, and the tokens measured and REJECTED.

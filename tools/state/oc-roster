@@ -100,8 +100,16 @@ def env(k, d=""):
 
 DB, LEDGER = env("OC_ROSTER_DB"), env("OC_ROSTER_LEDGER")
 WT, WT_REPO = env("OC_ROSTER_WT"), env("OC_ROSTER_WT_REPO")
+GIT = env("GIT_BIN", "git")     # #54 tree leg: ages dirty entries via `git status`
 FORUM = env("OC_ROSTER_FORUM_CHAT", "-1003936827469")
 NOW = int(env("OC_ROSTER_NOW", str(int(time.time()))))
+#: #54 tree leg: a dirty worktree whose NEWEST entry is older than this is
+#: abandoned, not busy. Overridable so a selftest can move the threshold
+#: instead of waiting a week.
+try:
+    STALE_DIRTY_H = float(env("OC_ROSTER_STALE_DIRTY_H", "168"))
+except ValueError:
+    STALE_DIRTY_H = 168.0
 
 def die(rc, msg):
     sys.stderr.write("oc-roster: %s\n" % msg)
@@ -160,6 +168,62 @@ def claims_index(events):
                               "t": claim["t"], "what": claim["what"]})
     return opens, issues
 
+def newest_dirty_epoch(path):
+    """Newest mtime among the entries `git status` reports, or None (#54 tree leg).
+
+    `oc-wt list` reports a dirty COUNT and no timestamp, so a caller cannot tell
+    a worktree being edited right now from one abandoned weeks ago. Measured
+    2026-10-27: /root/opencrabs-wt/1930-compaction-budget carried ONE untracked
+    note dated 2026-10-05 while its branch head had already merged into
+    origin/main -- the lane read busy for ever on work that shipped 22 days
+    earlier. A count cannot be aged; the entries it counts can.
+    """
+    try:
+        # -uall expands untracked DIRECTORIES into their files: a directory's own
+        # mtime does not move when a file deep inside it is edited, so the default
+        # `-unormal` would read live work as stale -- the dangerous direction.
+        r = subprocess.run([GIT, "-C", path, "status", "--porcelain", "-z", "-uall"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:                # not a repo / git refused: UNDECIDABLE
+        return None
+    newest = None
+    toks = (r.stdout or "").split("\0")
+    i = 0
+    while i < len(toks):
+        entry = toks[i]
+        i += 1
+        if len(entry) < 4:               # "XY <path>"
+            continue
+        xy, rel = entry[:2], entry[3:]
+        if "R" in xy or "C" in xy:
+            # Under -z a rename emits the SOURCE path as the NEXT bare token with
+            # no status prefix; the `" -> "` separator belongs to the non -z
+            # output and can never appear here. The destination is the live one,
+            # so consuming the source is correct -- statting it would hit a path
+            # that no longer exists.
+            i += 1
+        try:
+            m = os.stat(os.path.join(path, rel)).st_mtime
+        except OSError:
+            continue
+        if newest is None or m > newest:
+            newest = m
+    return newest
+
+def dirty_age_h(path):
+    """Age in hours of a worktree's newest dirty entry, or None (#54 tree leg).
+
+    None means UNDECIDABLE (git failed, or nothing stat-able), never "fresh" --
+    the caller must fail closed on it. A caller that reads None as 0 would
+    silently un-busy a lane whose tree it simply could not read.
+    """
+    newest = newest_dirty_epoch(path)
+    if newest is None:
+        return None
+    return max(0.0, (NOW - newest) / 3600.0)
+
 def worktrees():
     if not WT or not os.path.exists(WT):
         die(3, "worktree tool missing: %s" % (WT or "<unset>"))
@@ -180,7 +244,12 @@ def worktrees():
         except ValueError:
             dn = 0
         rows.append({"task": task, "path": path, "branch": branch,
-                     "dirty": dn, "issue": m.group(1) if m else None})
+                     "dirty": dn, "issue": m.group(1) if m else None,
+                     # #54 tree leg: a dirty COUNT cannot be aged -- only the
+                     # entries it counts can. Computed ONLY when dirty, so a
+                     # clean worktree costs no extra `git status` (there are
+                     # 30+ worktrees on this box).
+                     "dirty_age_h": dirty_age_h(path) if dn > 0 else None})
     return rows
 
 def roles(led):
@@ -299,6 +368,7 @@ for u in issues_by_uuid:
 universe |= {u for u in issues_by_uuid if open_by_uuid.get(u)}
 
 rows = []
+stale_trees = []            # #54 tree leg: dirty trees whose newest entry is OLD
 for u in sorted(universe):
     if u not in known_ids:
         continue
@@ -306,6 +376,18 @@ for u in sorted(universe):
     in_forum = u in forum
     my_wt = wts_for(u)
     dirty = sum(w["dirty"] for w in my_wt)
+    # #54 TREE leg: `dirty` is a COUNT, and a count cannot be aged -- only the
+    # entries it counts can. Take the NEWEST entry across the lane's dirty
+    # worktrees (that is the one saying someone is still in there), and fail
+    # CLOSED when any of them is UNDECIDABLE: the one direction that must never
+    # happen is silently un-busying a lane whose tree we merely could not read.
+    ages = [w["dirty_age_h"] for w in my_wt if w["dirty"] > 0]
+    dage = None
+    if ages:
+        dage = None if any(a is None for a in ages) else min(ages)
+    dirty_live = dirty > 0 and (dage is None or dage < STALE_DIRTY_H)
+    if dirty and not dirty_live:
+        stale_trees.append((u, dage))
     cl = open_by_uuid.get(u, [])
     upd = live[u][1] if is_live else 0
     ah = age_h(upd) if is_live else None
@@ -320,10 +402,10 @@ for u in sorted(universe):
         else:
             continue
     elif not in_forum:
-        klass = "UNKNOWN" if (cl or dirty) else None
+        klass = "UNKNOWN" if (cl or dirty_live) else None
         if klass is None:
             continue
-    elif cl or dirty or recent:
+    elif cl or dirty_live or recent:
         klass = "ACTIVE"
     else:
         klass = "IDLE"
@@ -332,6 +414,12 @@ for u in sorted(universe):
                  "claims": ",".join(sorted(set(cl), key=int)) or "-",
                  "worktrees": ",".join(sorted(w["task"] for w in my_wt)) or "-",
                  "dirty": dirty,
+                 # #54 tree leg: the age read, exposed so a caller can assert the
+                 # OVERRIDE and not merely its effect -- "not busy" is also what a
+                 # CLEAN lane reads, so the effect alone cannot tell the two apart.
+                 "dirty_age_h": None if dage is None else round(dage, 1),
+                 "dirty_live": dirty_live,
+                 "dirty_stale": bool(dirty and not dirty_live),
                  "age_h": "%.1f" % ah if ah is not None else "-"})
 
 tallies = {}
@@ -340,14 +428,27 @@ for r in rows:
 
 if "--json" in opts:
     print(json.dumps({"rows": rows, "tallies": tallies, "phantoms": phantoms,
-                      "forum_chat": FORUM, "now": NOW}, indent=1))
+                      "forum_chat": FORUM, "now": NOW,
+                      "stale_dirty_h": STALE_DIRTY_H}, indent=1))
 else:
     for r in rows:
         print("\t".join([r["class"], r["uuid"], r["role"], r["forum"],
-                         r["claims"], r["worktrees"], str(r["dirty"]), r["age_h"]]))
+                         r["claims"], r["worktrees"], str(r["dirty"]), r["age_h"],
+                         "-" if r["dirty_age_h"] is None else "%.1f" % r["dirty_age_h"]]))
 report_phantoms(phantoms)
-sys.stderr.write("oc-roster: rows=%d %s phantoms=%d\n" % (
-    len(rows), " ".join("%s=%d" % kv for kv in sorted(tallies.items())), len(phantoms)))
+# #54 tree leg: disclosure is mandatory. This override SHRINKS a safety margin --
+# an abandoned worktree stops counting as busy -- and an override that does that
+# in silence is the failure class this fleet keeps re-learning. Name every tree
+# whose age bought it, so a reader can audit the judgement rather than infer it.
+for u, a in stale_trees:
+    sys.stderr.write(
+        "NOTE(#54): lane %s has a DIRTY worktree whose newest entry is %s "
+        "(>= %g h) -- NOT treated as busy. An abandoned tree cannot collide; a "
+        "count cannot be aged, the entries it counts can.\n"
+        % (u[:8], "UNDECIDABLE" if a is None else "%.1f h old" % a, STALE_DIRTY_H))
+sys.stderr.write("oc-roster: rows=%d %s phantoms=%d stale_dirty=%d\n" % (
+    len(rows), " ".join("%s=%d" % kv for kv in sorted(tallies.items())), len(phantoms),
+    len(stale_trees)))
 PY
     ;;
   --selftest|selftest) "$SELF_DIR/tests/oc-roster-selftest" ;;

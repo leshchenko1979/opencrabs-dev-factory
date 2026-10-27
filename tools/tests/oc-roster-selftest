@@ -117,9 +117,11 @@ chk "classify-rows"  "$(wc -l < "$D/class.out")" "5"
 sort "$D/live.out" > "$D/live.got"
 if diff -q "$D/live.expected" "$D/live.got" >/dev/null; then ok "live-set-equality"; else bad "live-set-equality" "$(diff "$D/live.expected" "$D/live.got" | head -3)"; fi
 
-python3 - "$D" "$U1" "$U2" "$U3" "$U4" "$P1" "$TOOL" <<'PY'
+python3 - "$D" "$U1" "$U2" "$U3" "$U4" "$P1" "$TOOL" "$NOW" "$FORUM" <<'PY'
 import json, os, re, sys
 D, U1, U2, U3, U4, P1, TOOL_PATH = sys.argv[1:8]
+NOW = int(sys.argv[8])
+FORUM = sys.argv[9]
 ok = fail = 0
 def chk(name, cond, detail=""):
     global ok, fail
@@ -261,6 +263,160 @@ chk("#424 claims delegates to the canonical predicate", _live == [502, 504],
     repr(_live))
 chk("#424 negative control: foreign prose mention stays open", 502 in _live, repr(_live))
 chk("#424 discriminating: foreign addressed sweep closes", 501 not in _live, repr(_live))
+# ---- #54 TREE leg: a dirty COUNT cannot be aged -----------------------------
+# The pre-fix roster read `dirty` as a bare integer, so a worktree abandoned
+# weeks ago read busy for ever: measured 2026-10-27,
+# /root/opencrabs-wt/1930-compaction-budget held ONE untracked note dated
+# 2026-10-05 while its branch head had already merged into origin/main -- busy
+# 22 days on work that had shipped. A count cannot be aged; the entries it
+# counts can.
+#
+# THREE arms, each built to fail a DIFFERENT wrong reading:
+#   204-abandoned  real git repo, one untracked file 400 h old -> must go IDLE
+#   205-live       real git repo, one untracked file   1 h old -> must stay ACTIVE
+#   206-unreadable a path that does not exist (git refuses)    -> must stay ACTIVE
+# The unreadable arm is the FAIL-CLOSED control: None means UNDECIDABLE, and a
+# reader that treats it as 0 silently un-busies a lane whose tree it merely could
+# not read. Then the threshold is MOVED over byte-identical fixtures (run B),
+# which is the only thing that proves the AGE is actually read rather than the
+# lane merely looking clean.
+import sqlite3 as _sq
+import subprocess as _sp
+import tempfile as _tf
+
+_T = _tf.mkdtemp(prefix="fx54-")
+LA = "cc000001-0000-4000-8000-000000000001"
+LB = "cc000002-0000-4000-8000-000000000002"
+LC = "cc000003-0000-4000-8000-000000000003"
+
+def _mk54(name, age_h):
+    d = os.path.join(_T, name)
+    os.makedirs(d)
+    _sp.run(["git", "-C", d, "init", "-q"], check=True,
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    f = os.path.join(d, "note.txt")
+    with open(f, "w") as fh:
+        fh.write("work\n")
+    ts = NOW - age_h * 3600
+    os.utime(f, (ts, ts))       # untracked (git status reports it) + its MTIME is the age
+    return d
+
+_WT_OLD = _mk54("wt-old", 400)
+_WT_NEW = _mk54("wt-new", 1)
+_WT_GONE = os.path.join(_T, "wt-missing")      # deliberately never created
+
+_DB54 = os.path.join(_T, "db.sqlite")
+_c54 = _sq.connect(_DB54)
+_c54.executescript(
+    "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, updated_at INTEGER, archived_at INTEGER);"
+    "CREATE TABLE session_bindings (session_id TEXT PRIMARY KEY, channel TEXT, chat_id TEXT, thread_id INTEGER);")
+for _i, _u in enumerate((LA, LB, LC), 1):
+    # updated_at is OLD on purpose: `recent` would otherwise make every lane
+    # ACTIVE regardless of its tree, and the dirty age would decide nothing.
+    _c54.execute("INSERT INTO sessions VALUES (?,?,?,NULL)",
+                 (_u, "lane54-%d" % _i, NOW - 100 * 3600))
+    _c54.execute("INSERT INTO session_bindings VALUES (?,?,?,?)",
+                 (_u, "telegram", FORUM, _i))
+_c54.commit()
+_c54.close()
+
+# Claims CLOSED for all three (claim + confirm), so `cl` is empty and the dirty
+# tree is the ONLY busy signal left. A lane that still carried an open claim
+# would read ACTIVE through `cl` and the leg would test nothing.
+_LED54 = os.path.join(_T, "ledger54.json")
+with open(_LED54, "w") as _fh:
+    json.dump({"workers": [{"uuid": LA, "role": "editor"},
+                           {"uuid": LB, "role": "editor"},
+                           {"uuid": LC, "role": "editor"}],
+               "events": [
+                   {"n": 1, "t": "t1", "by": "editor " + LA, "kind": "claim",
+                    "what": "CLAIM #204 - abandoned tree"},
+                   {"n": 2, "t": "t2", "by": "editor " + LA, "kind": "confirm",
+                    "what": "confirm #204 shipped"},
+                   {"n": 3, "t": "t3", "by": "editor " + LB, "kind": "claim",
+                    "what": "CLAIM #205 - live tree"},
+                   {"n": 4, "t": "t4", "by": "editor " + LB, "kind": "confirm",
+                    "what": "confirm #205 shipped"},
+                   {"n": 5, "t": "t5", "by": "editor " + LC, "kind": "claim",
+                    "what": "CLAIM #206 - unreadable tree"},
+                   {"n": 6, "t": "t6", "by": "editor " + LC, "kind": "confirm",
+                    "what": "confirm #206 shipped"},
+               ]}, _fh)
+
+_SHIM54 = os.path.join(_T, "oc-wt54")
+with open(_SHIM54, "w") as _fh:
+    _fh.write("#!/usr/bin/env bash\ncat <<'EOT'\n")
+    _fh.write("204-abandoned\t" + _WT_OLD + "\tfeat/204\t1\n")
+    _fh.write("205-live\t" + _WT_NEW + "\tfeat/205\t1\n")
+    _fh.write("206-unreadable\t" + _WT_GONE + "\tfeat/206\t1\n")
+    _fh.write("EOT\n")
+os.chmod(_SHIM54, 0o755)
+
+def _run54(stale_h=None):
+    e = dict(os.environ, OC_ROSTER_DB=_DB54, OC_ROSTER_LEDGER=_LED54,
+             OC_ROSTER_WT=_SHIM54, OC_ROSTER_WT_REPO=_T + "/repo",
+             OC_ROSTER_FORUM_CHAT=FORUM, OC_ROSTER_NOW=str(NOW),
+             OC_TOOLS_NOLOG="1")
+    e.pop("OC_ROSTER_STALE_DIRTY_H", None)
+    if stale_h is not None:
+        e["OC_ROSTER_STALE_DIRTY_H"] = str(stale_h)
+    p = _sp.run([TOOL_PATH, "classify", "--json"], capture_output=True,
+                text=True, env=e)
+    try:
+        rows_by = {r["uuid"]: r for r in json.loads(p.stdout)["rows"]}
+    except Exception as exc:
+        return p, {}, repr(exc)
+    return p, rows_by, None
+
+# --- run A: the DEFAULT threshold (168 h) -----------------------------------
+_pA, _rA, _eA = _run54()
+chk("#54 run A rc", _pA.returncode == 0,
+    "rc=%d err=%s" % (_pA.returncode, _pA.stderr[:200]))
+chk("#54 run A parses", _eA is None, str(_eA))
+chk("#54 run A sees all three lanes", len(_rA) == 3, repr(sorted(_rA)))
+# THE positive control: without the age read this lane reads ACTIVE on a
+# 400-hour-old untracked note, which is the exact 22-day bug.
+chk("#54 stale tree (400 h) is NOT busy", _rA.get(LA, {}).get("class") == "IDLE",
+    repr(_rA.get(LA)))
+chk("#54 stale row still REPORTS its dirty count", _rA.get(LA, {}).get("dirty") == 1,
+    repr(_rA.get(LA, {}).get("dirty")))
+chk("#54 stale row carries the age", isinstance(_rA.get(LA, {}).get("dirty_age_h"), float)
+    and 399.0 <= _rA[LA]["dirty_age_h"] <= 401.0, repr(_rA.get(LA, {}).get("dirty_age_h")))
+chk("#54 stale row is flagged stale", _rA.get(LA, {}).get("dirty_stale") is True,
+    repr(_rA.get(LA, {}).get("dirty_stale")))
+chk("#54 fresh tree (1 h) is busy", _rA.get(LB, {}).get("class") == "ACTIVE",
+    repr(_rA.get(LB)))
+chk("#54 fresh row is not flagged stale", _rA.get(LB, {}).get("dirty_stale") is False,
+    repr(_rA.get(LB, {}).get("dirty_stale")))
+# The fail-closed control: git cannot read this tree at all, so the age is
+# UNDECIDABLE -- and UNDECIDABLE must never buy an un-busy.
+chk("#54 unreadable tree stays busy", _rA.get(LC, {}).get("class") == "ACTIVE",
+    repr(_rA.get(LC)))
+chk("#54 unreadable tree reports NO age", _rA.get(LC, {}).get("dirty_age_h") is None,
+    repr(_rA.get(LC, {}).get("dirty_age_h")))
+chk("#54 unreadable tree is not flagged stale", _rA.get(LC, {}).get("dirty_stale") is False,
+    repr(_rA.get(LC, {}).get("dirty_stale")))
+# Disclosure is mandatory: an override that shrinks a safety margin in silence
+# is the failure class this fleet keeps re-learning.
+chk("#54 stale override is disclosed on stderr", "NOTE(#54)" in _pA.stderr
+    and LA[:8] in _pA.stderr, _pA.stderr[:200])
+chk("#54 undecidable tree is NOT disclosed as stale", LC[:8] not in _pA.stderr,
+    _pA.stderr[:200])
+
+# --- run B: SAME bytes, threshold moved to 100000 h -------------------------
+# This is the discriminating leg. If the tool ignored the age and simply read
+# `dirty > 0`, run A would already read ACTIVE and this would prove nothing;
+# because run A reads IDLE, an ACTIVE here can ONLY come from the age being
+# compared against the threshold.
+_pB, _rB, _eB = _run54(100000)
+chk("#54 run B rc", _pB.returncode == 0,
+    "rc=%d err=%s" % (_pB.returncode, _pB.stderr[:200]))
+chk("#54 run B parses", _eB is None, str(_eB))
+chk("#54 threshold moved: the SAME 400 h tree is now busy",
+    _rB.get(LA, {}).get("class") == "ACTIVE", repr(_rB.get(LA)))
+chk("#54 threshold moved: no stale disclosure", "NOTE(#54)" not in _pB.stderr,
+    _pB.stderr[:200])
+
 with open(D + "/pycnt", "w") as fh:
     fh.write("%d %d\n" % (ok, fail))
 sys.exit(1 if fail else 0)
