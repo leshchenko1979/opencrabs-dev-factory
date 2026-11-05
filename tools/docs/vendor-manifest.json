@@ -1,152 +1,283 @@
 {
- "_": "Vendored-file manifest for oc-vendor-drift (issue #700). Each entry names a file this repo carries a copy of, the upstream revision it was flattened from, and the ONLY differences permitted. A delta entry matches OUR form via `match` and THEIR form via `match_upstream` (defaulting to `match`), because a delta line must be droppable from both sides or the comparison shifts. Anything else is drift and fails the guard.",
- "upstream_repo": "/root/agent-factories",
- "vendor": [
-  {
-   "local": "tools/state/oc-questions",
-   "upstream_path": "TEMPLATE/tools/questions",
-   "ref": "c2856ad09abb251feb237336a0892c7da9496a81",
-   "why": "Vendored copy of the Open Questions register. The delta below is the DEPLOYMENT difference only. Re-flattened at c2856ad (#44): the #497 vocabulary widening is now declared as BLOCK deltas because its lines are not unique (a bare '#' and blank lines recur), and a per-line pattern broad enough to name them would strip unrelated lines and stop the guard discriminating -- the #41 trap. A block is an EXACT contiguous run stripped from its OWN side only; zero or two occurrences is DRIFTED, never a silent pass (#343).",
-   "delta": [
+  "_": "Vendored-file manifest for oc-vendor-drift (issue #700). Each entry names a file this repo carries a copy of, the upstream revision it was flattened from, and the ONLY differences permitted. A delta entry matches OUR form via `match` and THEIR form via `match_upstream` (defaulting to `match`), because a delta line must be droppable from both sides or the comparison shifts. Anything else is drift and fails the guard.",
+  "upstream_repo": "/root/agent-factories",
+  "vendor": [
     {
-     "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
-     "match_upstream": "^PROG\\ =\\ \"questions\"$",
-     "why": "Deployment name: derives from the invoked program so the unified-log 'tool' field and every die() remedy name the command that actually exists here. Upstream ask: the same one line."
+      "local": "tools/state/oc-questions",
+      "upstream_path": "TEMPLATE/tools/questions",
+      "ref": "f02eebe5a3991b817d2a55d4a9a0a5443bd5fe6e",
+      "why": "Vendored copy of the Open Questions register. The delta below is the DEPLOYMENT difference only, re-flattened against f02eebe5 (#613) and every entry named by what it contains. Three block declarations were RETIRED here, not added: the #497 vocabulary-widening deltas and the 36-line `8e. #497` selftest block they guarded are gone because upstream now carries `resolved_mechanically` in CLOSED_STATUSES itself, so the divergence they described no longer exists -- a declaration of a divergence upstream has since absorbed is drift of the DECLARATION, and leaving it would have made the guard report a defect that was already fixed. The remaining blocks are comment rewraps declared in PAIRS (one `local`, one `upstream` half each) plus the deployment-only 8b3 battery. A block is an EXACT contiguous run stripped from its OWN side only; zero or two occurrences is DRIFTED, never a silent pass (#343), and each new block was widened with context until it occurred exactly once.",
+      "delta": [
+        {
+          "match": "^PROG\\ =\\ os\\.path\\.basename\\(sys\\.argv\\[0\\]\\)\\ or\\ \"questions\"$",
+          "match_upstream": "^PROG\\ =\\ \"questions\"$",
+          "why": "Deployment name: derives from the invoked program so the unified-log 'tool' field and every die() remedy name the command that actually exists here. Upstream ask: the same one line."
+        },
+        {
+          "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ PROG\\ \\+\\ \"\\-render\\.mjs\"\\)$",
+          "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"questions\\-render\\.mjs\"\\)$",
+          "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
+        },
+        {
+          "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+          "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+          "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
+        },
+        {
+          "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ \\(os\\.environ\\.get\\(\"OC_ACTOR\"\\)\\ or\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\"\\)\\ or\\ \"unknown\"\\),$",
+          "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\",\\ \"unknown\"\\),$",
+          "why": "Fleet actor contract (#749): tools/lib/oc-log.sh resolves the log actor as OC_ACTOR first, falling back to OPENCRABS_SESSION_ID -- and the owner rule of 2026-08-30 requires every oc-* invocation to set OC_ACTOR. This copy read the session id ALONE, so every such caller was logged as actor=\"unknown\" and could not be traced to a lane. Upstream ask: the same one line."
+        },
+        {
+          "match": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\\-dev\\-factory\"$",
+          "match_upstream": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\"$",
+          "why": "The C6 mechanical-closure probe's default tracker. A factory question's work unit is filed on the FACTORY tracker, so probing the fork for it answers about a repo that unit is not filed on -- a confident, WRONG 'still open'. Defaults to the factory tracker; OC_QUESTIONS_TRACKER still overrides. (The fork is a real tracker again since the 2026-10-08 re-scope, but only for FORK-ONLY defects -- never the default for a factory question.) UPSTREAM ASK: flip the same default in TEMPLATE/tools/questions."
+        },
+        {
+          "match": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
+          "match_upstream": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
+          "why": "Close REASON: it hardcoded the word 'fork' while the probe now asks the factory tracker, so the message a lane reads would name the wrong repo. Interpolating the constant makes the reason state its own scope -- '<slug>#N is CLOSED' (rule: a number travels with its predicate and scope). UPSTREAM ASK: same fix in TEMPLATE/tools/questions."
+        },
+        {
+          "match": "^# rc vocabulary \\(tools/docs/RC-CONTRACT\\.md\\): 0 ok / 1 finding-or-not-found /$",
+          "match_upstream": "^# rc vocabulary, printed by --help: 0 ok / 1 finding-or-not-found /$",
+          "why": "Documentation pointer: this fleet keeps the rc vocabulary in tools/docs/RC-CONTRACT.md and the comment names that home; upstream keeps it inline in --help. Behaviour-identical (a comment), but it is a real byte difference and it was UNDECLARED until 2026-10-17, when the re-flatten to a67a7dd surfaced it as drift (measured: the only two undeclared lines in the 14-line diff). UPSTREAM ASK: none -- upstream's form is correct for upstream."
+        },
+        {
+          "match": "^# Unified tools log \\(schema per RC-CONTRACT\\)$",
+          "match_upstream": "^# Unified tools log \\(entry: ts, tool, actor, args, exit, secs, extra\\)$",
+          "why": "Same class as the rc-vocabulary line: this fleet points at RC-CONTRACT.md for the unified-log schema instead of restating the field list, so the two copies cannot drift apart on a schema the doc already owns. Undeclared until the 2026-10-17 re-flatten surfaced it. UPSTREAM ASK: none."
+        },
+        {
+          "block": [
+            "import shutil"
+          ],
+          "side": "local",
+          "why": "`import shutil` -- the local 8b3 battery provisions a scratch render dir and removes it, so the deployment imports shutil where upstream does not. LOCAL only: upstream's selftest never creates that directory."
+        },
+        {
+          "block": [
+            "# The renderer's DEPENDENCY MANIFEST, shipped BESIDE it (#520, ruling n=3863,",
+            "# adopted here under #50). Node resolves a bare ESM import by walking up from the",
+            "# importing module's own directory, so the five packages oc-questions-render.mjs",
+            "# imports must be installed in render_dir() -- the directory the renderer is",
+            "# copied into and run from. Until this file existed the kit declared `node` on",
+            "# PATH and nothing else, so nothing tracked told a reader WHICH packages to",
+            "# install: the provisioning lived in an evidence directory no member reads, and",
+            "# on this box it was a hand-made untracked file in the build dir. The manifest is",
+            "# copied into the build dir as `package.json` by render_via_node() so the one",
+            "# step is `npm install` in that directory; the install itself stays MANUAL",
+            "# because it is a network operation and no gate may depend on network access."
+          ],
+          "side": "local",
+          "why": "Dependency-manifest doctrine, deployment wording: names the adoption under this factory's #50 and keeps the local PROG-derived renderer name. The subject is the same declaration; the sentence says WHO adopted it."
+        },
+        {
+          "block": [
+            "# The renderer's DEPENDENCY MANIFEST, shipped BESIDE it (#520, ruling n=3863). Node",
+            "# resolves a bare ESM import by walking up from the importing module's own directory,",
+            "# so the five packages questions-render.mjs imports must be installed in render_dir()",
+            "# -- the directory the renderer is copied into and run from. Until this file existed",
+            "# the kit declared `node` on PATH and nothing else, so a member who adopted the tool",
+            "# had no tracked artifact telling it which packages to install: the provisioning lived",
+            "# in OUR evidence directory, which no member reads, and on this box it was a hand-made",
+            "# untracked file. The manifest is copied into the build dir as `package.json` by",
+            "# render_page() so the member's ONE step is `npm install` in that directory; the",
+            "# install itself stays MANUAL because it is a network operation and no gate may",
+            "# depend on network access."
+          ],
+          "side": "upstream",
+          "why": "Dependency-manifest doctrine, upstream wording of the same paragraph -- declared as the UPSTREAM half so the guard sees an intentional rewrap rather than drift."
+        },
+        {
+          "block": [
+            "                                   PROG + \"-render.package.json\")"
+          ],
+          "side": "local",
+          "why": "The dependency manifest is placed beside a PROG-derived renderer name, so it follows the invoked program like its sibling (#520)."
+        },
+        {
+          "block": [
+            "                                   \"questions-render.package.json\")"
+          ],
+          "side": "upstream",
+          "why": "Upstream's hardcoded `questions-render.package.json` -- the UPSTREAM half of the PROG-derived rename above."
+        },
+        {
+          "block": [
+            "    if not os.path.isfile(RENDER_SRC):",
+            "        return None, \"renderer source missing\""
+          ],
+          "side": "upstream",
+          "why": "Upstream's early `RENDER_SRC` existence check; the deployment resolves the renderer through PROG instead and reports a missing source from that path, so this pre-check has no local counterpart."
+        },
+        {
+          "block": [
+            "    # The renderer AND its dependency manifest land beside each other (#520):",
+            "    # node resolves the manifest's packages by walking up from the module's",
+            "    # directory, so placing package.json in the build dir is what makes a later",
+            "    # `npm install` run in the right place. A manifest that fails to place is a",
+            "    # fault like any other -- an install nobody can discover is the defect."
+          ],
+          "side": "local",
+          "why": "Placement doctrine, deployment wording: 'the build dir' / 'a fault like any other'. Same rule, this factory's voice."
+        },
+        {
+          "block": [
+            "    # The renderer AND its dependency manifest land beside each other (#520): node",
+            "    # resolves the manifest's packages by walking up from the module's directory, so",
+            "    # placing package.json in the build dir is what makes the member's `npm install`",
+            "    # run in the right place. A manifest that fails to place is a fault like any",
+            "    # other -- an install nobody can discover is the defect this fixes."
+          ],
+          "side": "upstream",
+          "why": "Placement doctrine, upstream wording of the same comment -- the UPSTREAM half of the rewrap above."
+        },
+        {
+          "block": [
+            "        # A DECLARATION A READER CANNOT DISCOVER IS HALF A REMEDY (#520, n=3863).",
+            "        # ERR_MODULE_NOT_FOUND is the one fault whose fix is a named, manual step,",
+            "        # so the reason names it: the packages are declared in the package.json",
+            "        # this function just placed beside the renderer, and `npm install` in that"
+          ],
+          "side": "local",
+          "why": "Discoverability doctrine, deployment wording: 'a reader cannot discover' and the local `npm install` step."
+        },
+        {
+          "block": [
+            "        # A DECLARATION A MEMBER CANNOT DISCOVER IS HALF A REMEDY (#520, n=3863).",
+            "        # ERR_MODULE_NOT_FOUND is the one fault whose fix is a named, manual step, so",
+            "        # the reason names it: the packages are declared in the package.json this",
+            "        # function just placed beside the renderer, and `npm install` in that"
+          ],
+          "side": "upstream",
+          "why": "Discoverability doctrine, upstream wording of the same comment -- the UPSTREAM half of the rewrap above."
+        },
+        {
+          "block": [
+            "        # -- 8b3. THE RENDERER'S DEPENDENCY MANIFEST (#520 / factory #50). A page",
+            "        # that cannot be provisioned by anyone reading the repo is a page whose",
+            "        # next render is a coin flip: the packages lived in an evidence dir no",
+            "        # reader consults, and on this box in a hand-made untracked build-dir",
+            "        # file. NUMBERED 8b3, NOT 8d: 8d already belongs to C6 below, and two",
+            "        # sections sharing a number make every \"see 8d\" reference ambiguous --",
+            "        # the same drift class as a citation nobody can resolve. 8b3 also sits",
+            "        # beside 8b2, the renderer section this one extends.",
+            "        # Four legs, each naming the mutant it kills:",
+            "        #   (i)   a fresh build dir receives BOTH render.mjs and package.json",
+            "        #         -- mutant: the single-source copy, which leaves no manifest",
+            "        #   (ii)  the placed manifest is byte-identical to the TRACKED one",
+            "        #         -- mutant: writing a stale or hand-rolled manifest",
+            "        #   (iii) every bare ESM specifier the renderer imports is DECLARED in",
+            "        #         the manifest -- mutant: a manifest that omits react-dom, the",
+            "        #         exact #520 defect (node resolves nothing, and the fault",
+            "        #         arrives as ERR_MODULE_NOT_FOUND with no remedy on disk)",
+            "        #   (iv)  an ERR_MODULE_NOT_FOUND reason NAMES the build dir and the",
+            "        #         `npm install` step -- mutant: the bare rc string, which tells",
+            "        #         a reader the render failed and nothing about the fix",
+            "        _fresh = tempfile.mkdtemp(prefix=\"oq-manifest-\")",
+            "        _saved_render = os.environ.get(\"OC_QUESTIONS_RENDER_DIR\")",
+            "        try:",
+            "            os.environ[\"OC_QUESTIONS_RENDER_DIR\"] = _fresh",
+            "            _m_html, _m_why = render_via_node({\"root\": \"page\", \"elements\": {}})",
+            "            ck(os.path.isfile(os.path.join(_fresh, \"render.mjs\")),",
+            "               \"(i) a render places render.mjs in a FRESH build dir (%r)\"",
+            "               % (sorted(os.listdir(_fresh)),))",
+            "            ck(os.path.isfile(os.path.join(_fresh, \"package.json\")),",
+            "               \"(i) ...and package.json BESIDE it, so `npm install` has a \"",
+            "               \"manifest in the directory node resolves from; a single-source \"",
+            "               \"copy leaves none and the page cannot be provisioned (%r)\"",
+            "               % (sorted(os.listdir(_fresh)),))",
+            "            ck(os.path.isfile(RENDER_MANIFEST_SRC),",
+            "               \"(ii) the manifest is TRACKED beside the tool (%s), not only \"",
+            "               \"hand-placed in a build dir\" % (os.path.basename(RENDER_MANIFEST_SRC),))",
+            "            _placed = open(os.path.join(_fresh, \"package.json\"),",
+            "                           encoding=\"utf-8\").read()",
+            "            _tracked = open(RENDER_MANIFEST_SRC, encoding=\"utf-8\").read()",
+            "            ck(_placed == _tracked,",
+            "               \"(ii) ...and the placed copy is byte-identical to the tracked one\")",
+            "            # (iii) STATIC sufficiency: no node, no network, no install -- the",
+            "            # manifest must simply name every package the renderer imports.",
+            "            _rsrc = open(RENDER_SRC, encoding=\"utf-8\").read()",
+            "            _bare = set()",
+            "            for _m in re.finditer(r\"\"\"(?:from|import)\\s*['\"]([^'\"]+)['\"]\"\"\", _rsrc):",
+            "                _spec = _m.group(1)",
+            "                if _spec.startswith(\".\") or _spec.startswith(\"/\"):",
+            "                    continue",
+            "                _bare.add(\"/\".join(_spec.split(\"/\")[:2])",
+            "                          if _spec.startswith(\"@\")",
+            "                          else _spec.split(\"/\")[0])",
+            "            _declared = set(json.loads(_tracked).get(\"dependencies\", {}))",
+            "            ck(bool(_bare),",
+            "               \"(iii) the renderer's bare imports were actually EXTRACTED \"",
+            "               \"(%r) -- an empty set would make the coverage leg vacuous\"",
+            "               % (sorted(_bare),))",
+            "            ck(not (_bare - _declared),",
+            "               \"(iii) every bare ESM specifier the renderer imports is DECLARED \"",
+            "               \"in the manifest (missing: %r)\"",
+            "               % (sorted(_bare - _declared),))",
+            "            # (iv) The remedy is composed from the RUN's own stderr, so the leg",
+            "            # drives a synthetic ERR_MODULE_NOT_FOUND rather than depending on",
+            "            # whether this box happens to have node_modules installed.",
+            "            _Proc = type(\"_Proc\", (object,), {",
+            "                \"returncode\": 1, \"stdout\": \"\",",
+            "                \"stderr\": \"Error [ERR_MODULE_NOT_FOUND]: Cannot find package \"",
+            "                          \"'react-dom' imported from render.mjs\"})",
+            "            _real_run = subprocess.run",
+            "            try:",
+            "                subprocess.run = lambda *a, **kw: _Proc()",
+            "                _r_html, _r_why = render_via_node({\"root\": \"page\", \"elements\": {}})",
+            "            finally:",
+            "                subprocess.run = _real_run",
+            "            ck(_r_why and \"npm install\" in _r_why and _fresh in _r_why,",
+            "               \"(iv) an ERR_MODULE_NOT_FOUND reason names `npm install` AND the \"",
+            "               \"build dir it must run in -- a declaration a reader cannot \"",
+            "               \"discover is half a remedy (%r)\" % (_r_why,))",
+            "            # The remedy must be FAULT-SPECIFIC, not appended to every failure:",
+            "            # a non-module fault keeps its own reason. Driven from a synthetic",
+            "            # non-module stderr so the leg does not depend on this box having",
+            "            # node_modules installed.",
+            "            _Proc2 = type(\"_Proc2\", (object,), {",
+            "                \"returncode\": 1, \"stdout\": \"\",",
+            "                \"stderr\": \"Error: Cannot read properties of null (reading 'useMemo')\"})",
+            "            try:",
+            "                subprocess.run = lambda *a, **kw: _Proc2()",
+            "                _n_html, _n_why = render_via_node({\"root\": \"page\", \"elements\": {}})",
+            "            finally:",
+            "                subprocess.run = _real_run",
+            "            ck(_n_why and \"npm install\" not in _n_why,",
+            "               \"(iv) ...and the remedy is NOT bolted onto an unrelated fault: \"",
+            "               \"a non-module fault keeps its own reason (%r)\" % (_n_why,))",
+            "        finally:",
+            "            if _saved_render is None:",
+            "                os.environ.pop(\"OC_QUESTIONS_RENDER_DIR\", None)",
+            "            else:",
+            "                os.environ[\"OC_QUESTIONS_RENDER_DIR\"] = _saved_render",
+            "            shutil.rmtree(_fresh, ignore_errors=True)",
+            ""
+          ],
+          "side": "local",
+          "why": "THE LOCAL 8b3 BATTERY (#520 / factory #50): four selftest legs proving the dependency manifest is placed beside the renderer, that a failed placement is a named fault, and that the declared packages match the renderer's imports. Deployment-only -- it exercises the local PROG-derived placement, so it has no upstream counterpart."
+        }
+      ]
     },
     {
-     "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ PROG\\ \\+\\ \"\\-render\\.mjs\"\\)$",
-     "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \"questions\\-render\\.mjs\"\\)$",
-     "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
-    },
-    {
-     "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
-     "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
-     "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
-    },
-    {
-     "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ \\(os\\.environ\\.get\\(\"OC_ACTOR\"\\)\\ or\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\"\\)\\ or\\ \"unknown\"\\),$",
-     "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\",\\ \"unknown\"\\),$",
-     "why": "Fleet actor contract (#749): tools/lib/oc-log.sh resolves the log actor as OC_ACTOR first, falling back to OPENCRABS_SESSION_ID -- and the owner rule of 2026-08-30 requires every oc-* invocation to set OC_ACTOR. This copy read the session id ALONE, so every such caller was logged as actor=\"unknown\" and could not be traced to a lane. Upstream ask: the same one line."
-    },
-    {
-     "match": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\\-dev\\-factory\"$",
-     "match_upstream": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\"$",
-     "why": "The C6 mechanical-closure probe's default tracker. A factory question's work unit is filed on the FACTORY tracker, so probing the fork for it answers about a repo that unit is not filed on -- a confident, WRONG 'still open'. Defaults to the factory tracker; OC_QUESTIONS_TRACKER still overrides. (The fork is a real tracker again since the 2026-10-08 re-scope, but only for FORK-ONLY defects -- never the default for a factory question.) UPSTREAM ASK: flip the same default in TEMPLATE/tools/questions."
-    },
-    {
-     "match": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
-     "match_upstream": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
-     "why": "Close REASON: it hardcoded the word 'fork' while the probe now asks the factory tracker, so the message a lane reads would name the wrong repo. Interpolating the constant makes the reason state its own scope -- '<slug>#N is CLOSED' (rule: a number travels with its predicate and scope). UPSTREAM ASK: same fix in TEMPLATE/tools/questions."
-    },
-    {
-     "match": "^# rc vocabulary \\(tools/docs/RC-CONTRACT\\.md\\): 0 ok / 1 finding-or-not-found /$",
-     "match_upstream": "^# rc vocabulary, printed by --help: 0 ok / 1 finding-or-not-found /$",
-     "why": "Documentation pointer: this fleet keeps the rc vocabulary in tools/docs/RC-CONTRACT.md and the comment names that home; upstream keeps it inline in --help. Behaviour-identical (a comment), but it is a real byte difference and it was UNDECLARED until 2026-10-17, when the re-flatten to a67a7dd surfaced it as drift (measured: the only two undeclared lines in the 14-line diff). UPSTREAM ASK: none -- upstream's form is correct for upstream."
-    },
-    {
-     "match": "^# Unified tools log \\(schema per RC-CONTRACT\\)$",
-     "match_upstream": "^# Unified tools log \\(entry: ts, tool, actor, args, exit, secs, extra\\)$",
-     "why": "Same class as the rc-vocabulary line: this fleet points at RC-CONTRACT.md for the unified-log schema instead of restating the field list, so the two copies cannot drift apart on a schema the doc already owns. Undeclared until the 2026-10-17 re-flatten surfaced it. UPSTREAM ASK: none."
-    },
-    {
-     "block": [
-      "# A question is CLOSED once it is answered, withdrawn, expired, or closed by a",
-      "# predicate. \"clarifying\" is NOT closed: a Clarify request means the owner asked",
-      "# for more context and is still waiting. Counting it as closed archived the WHOLE",
-      "# set and silently removed it from the live register \u2014 the opposite of the",
-      "# contract (\"a Clarify request ... never silently closes the question\").",
-      "#",
-      "# \"resolved_mechanically\" BELONGS HERE and was missing (#497). The mechanical",
-      "# writer in `apply_mechanical_closures` stamps that status TOGETHER with",
-      "# `closed_at` and `closed_reason` \u2014 a CLOSED row by every other measure \u2014 while",
-      "# this tuple, which `question_is_closed` is a plain membership test on, did not",
-      "# name it. One omission, three readers wrong at once: the predicate said False,",
-      "# so `set_is_closed` could never archive a mechanically-resolved set (its last",
-      "# question never read as closed), and `cmd_answer`'s idempotent-by-contract guard",
-      "# never fired, letting a resolved question be FLIPPED to `answered` by a",
-      "# re-submit instead of being refused with rc 3. The law settles which side is",
-      "# wrong \u2014 `docs/instruments/open-questions.md` \u00a73: \"Closure is mechanical",
-      "# wherever it can be\" \u2014 so the vocabulary is widened, not the writer changed.",
-      "# ONE constant, because every reader derives from it: no reader-local special",
-      "# case, no second list (#494's class, applied to closure).",
-      "CLOSED_STATUSES = (\"answered\", \"withdrawn\", \"expired\", \"resolved_mechanically\")"
-     ],
-     "side": "local",
-     "why": "local-only patch at residual line 781 (20 lines, 0 context)"
-    },
-    {
-     "block": [
-      "# A question is CLOSED only once it is answered, withdrawn or expired.",
-      "# \"clarifying\" is NOT closed: a Clarify request means the owner asked for more",
-      "# context and is still waiting. Counting it as closed archived the WHOLE set and",
-      "# silently removed it from the live register \u2014 the opposite of the contract",
-      "# (\"a Clarify request ... never silently closes the question\").",
-      "CLOSED_STATUSES = (\"answered\", \"withdrawn\", \"expired\")"
-     ],
-     "side": "upstream",
-     "why": "upstream form replaced at residual line 781 (6 lines, 0 context)"
-    },
-    {
-     "block": [
-      "        # -- 8e. #497: the closed vocabulary NAMES the status the mechanical",
-      "        # writer writes. `apply_mechanical_closures` stamps `resolved_mechanically`",
-      "        # together with `closed_at` and `closed_reason` -- a closed row by every",
-      "        # other measure -- while CLOSED_STATUSES, which `question_is_closed` is a",
-      "        # plain membership test on, did not name it. One omission, three readers",
-      "        # wrong at once, so the legs below are the three readers plus the control.",
-      "        ck(question_is_closed({\"status\": \"resolved_mechanically\"}),",
-      "           \"question_is_closed reads a mechanically-resolved row as CLOSED (#497)\")",
-      "        # The set predicate is the second reader, and it is what `gc` consults",
-      "        # before it flips a fully-closed set. A set of ONE mechanically-resolved",
-      "        # question was never closed, so the set stayed `open` forever.",
-      "        ck(set_is_closed({\"questions\": [{\"status\": \"resolved_mechanically\"}]}),",
-      "           \"\\u2026and set_is_closed reads a mechanically-resolved set as CLOSED\")",
-      "        ck(get_set(mech_set).get(\"status\") == \"answered\",",
-      "           \"\\u2026so gc marks the set itself answered once every question is \"",
-      "           \"closed (status=%r)\" % (get_set(mech_set) or {}).get(\"status\"))",
-      "        # The third reader is `cmd_answer`'s idempotent-by-contract guard. It must",
-      "        # REFUSE (rc 3) and leave the row untouched -- not flip it to `answered`.",
-      "        rc, out, _ = run(\"answer\", mech_set, \"q1\", \"0\")",
-      "        ck(rc == 3, \"a re-submit on a mechanically-resolved question is REFUSED, \"",
-      "                    \"idempotent-by-contract (rc=%d)\" % rc)",
-      "        ck(get_set(mech_set)[\"questions\"][0][\"status\"] == \"resolved_mechanically\",",
-      "           \"\\u2026and the row keeps its status instead of being flipped to \"",
-      "           \"answered (%r)\" % get_set(mech_set)[\"questions\"][0][\"status\"])",
-      "        # THE POSITIVE CONTROL. A fix that widened the guard to refuse everything",
-      "        # would pass every leg above, so the three statuses that were ALREADY in",
-      "        # the vocabulary must keep reading closed, and the three that were never",
-      "        # closed must keep reading open. The vocabulary was WIDENED, not replaced.",
-      "        for _closed in (\"answered\", \"withdrawn\", \"expired\"):",
-      "            ck(question_is_closed({\"status\": _closed}),",
-      "               \"\\u2026and the pre-existing status %r still reads CLOSED\" % _closed)",
-      "        for _open in (\"open\", \"clarifying\", \"clarified\"):",
-      "            ck(not question_is_closed({\"status\": _open}),",
-      "               \"\\u2026while %r still reads NOT closed, so the guard was widened \"",
-      "               \"rather than made to refuse everything\" % _open)",
-      ""
-     ],
-     "side": "local",
-     "why": "local-only patch at residual line 5211 (36 lines, 0 context)"
+      "local": "tools/state/oc-questions-render.mjs",
+      "upstream_path": "TEMPLATE/tools/questions-render.mjs",
+      "ref": "c2856ad09abb251feb237336a0892c7da9496a81",
+      "why": "The json-render catalog the register renders its page through. Re-flattened 2026-10-06 at origin/main 7ead63d; the only upstream movement since ece0f4e is commit 6bc92ae (fix(template): no shipped file depends on the absent `oc-*` toolchain, #85), which genericised the two header comment lines so upstream names its own `questions` / `tools/questions`. Those names are WRONG for this fleet -- the copy here really is `tools/state/oc-questions-render.mjs`, invoked by `tools/state/oc-questions` -- so both lines are declared deltas, same class as the register's deployment-name deltas. Otherwise byte-identical.",
+      "delta": [
+        {
+          "match": "^// oc\\-questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
+          "match_upstream": "^// questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
+          "why": "Self-identification header: must name the file that exists here. Upstream names its own TEMPLATE file."
+        },
+        {
+          "match": "^// VERSIONED SOURCE\\. tools/state/oc\\-questions copies this file into the build directory$",
+          "match_upstream": "^// VERSIONED SOURCE\\. tools/questions copies this file into the build directory$",
+          "why": "Names the invoker: ours is tools/state/oc-questions, upstream's is tools/questions. A genericised name here would mislead."
+        }
+      ]
     }
-   ]
-  },
-  {
-   "local": "tools/state/oc-questions-render.mjs",
-   "upstream_path": "TEMPLATE/tools/questions-render.mjs",
-   "ref": "c2856ad09abb251feb237336a0892c7da9496a81",
-   "why": "The json-render catalog the register renders its page through. Re-flattened 2026-10-06 at origin/main 7ead63d; the only upstream movement since ece0f4e is commit 6bc92ae (fix(template): no shipped file depends on the absent `oc-*` toolchain, #85), which genericised the two header comment lines so upstream names its own `questions` / `tools/questions`. Those names are WRONG for this fleet -- the copy here really is `tools/state/oc-questions-render.mjs`, invoked by `tools/state/oc-questions` -- so both lines are declared deltas, same class as the register's deployment-name deltas. Otherwise byte-identical.",
-   "delta": [
-    {
-     "match": "^// oc\\-questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
-     "match_upstream": "^// questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
-     "why": "Self-identification header: must name the file that exists here. Upstream names its own TEMPLATE file."
-    },
-    {
-     "match": "^// VERSIONED SOURCE\\. tools/state/oc\\-questions copies this file into the build directory$",
-     "match_upstream": "^// VERSIONED SOURCE\\. tools/questions copies this file into the build directory$",
-     "why": "Names the invoker: ours is tools/state/oc-questions, upstream's is tools/questions. A genericised name here would mislead."
-    }
-   ]
-  }
- ]
+  ]
 }
