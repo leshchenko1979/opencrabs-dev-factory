@@ -69,31 +69,18 @@ NEGATIVE that reads exactly like "no cgroup, no limits, no problem". Use
 `XDG_RUNTIME_DIR=/run/user/0 systemctl --user show opencrabs-ops.service`, or read the
 cgroup files directly.
 
-**Measured 2026-10-15** (direct cgroup read, live):
-
-| Quantity | Value |
-|---|---|
-| `memory.current` / `memory.max` | 2136567808 / 2147483648 = **99.5 %** (headroom **10.4 MiB**) |
-| `memory.peak` vs `memory.max` | 2148098048 **>** 2147483648 (crossed by 614400 B) |
-| `memory.swap.current` / `memory.swap.max` | 1950273536 / 2684354560 = **72.7 %** |
-| `memory.high` vs `memory.max` | 2147483648 **==** 2147483648 — ONE wall, no throttle band |
-| `memory.events` | `high 6`, `max 769201`, `oom 0`, `oom_kill 0` |
-| load | 7.50 on 4 cores, 17 procs in the cgroup |
-
-The load was the cgroup's own children, not battery runs: `git log --numstat` 75.9 %
-CPU, the daemon 62.4 %, `python3 tests/test_ledger_index.py`, a 391 s
-`tools/audit.py --json`. **With `high == max` the two counters do not contradict**:
-`max` counts reclaim contact against the wall, `high` counts excursions past it.
+**Measured 2026-10-15** (direct cgroup read): `memory.current` sat at **99.5 %** of
+`memory.max` with **10.4 MiB** headroom, and `memory.high == memory.max` — ONE wall, no
+throttle band, so `max` counts reclaim contact while `high` counts excursions past it
+(the two counters do not contradict). Load was the cgroup's own children, not battery runs.
 
 **The structural closure is FILED, not assumed:** fork
 [#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached
 job in its own transient scope, at the harness's own spawn point. Until it lands, a lane
 that spawns heavy work is spending the daemon's memory budget, and #504 (8 h of jobs
-starved, silent) is the measured cost of forgetting it.
-
-Precedent that a fifth path will not converge: the same root cause was patched per-path
-at #720 (battery runner — the ONLY isolation that exists today), #727 (`oc-prchecks`),
-#504 (cron child) and #403 (`OOMPolicy`) — all CLOSED, each covering one path.
+starved, silent) is the measured cost of forgetting it. Per-path patching will not
+converge: #720 (battery runner — the ONLY isolation that exists today), #727
+(`oc-prchecks`), #504 (cron child) and #403 (`OOMPolicy`) each covered one path.
 
 ## Telegram surface — editor duties (delta of SKILL.md §Telegram surface law)
 
@@ -130,10 +117,8 @@ editor-facing duties:
 through an intermediary lane. Address by full uuid from a same-turn roster read;
 stamp the dispatch + receipt id via oc-ledger.
 
-1. **Detached execution & actor attribution:** follow `fleet-directives.md §CI-wait discipline & actor attribution` — W1 detached `background: true`, W6 automatic `$OPENCRABS_SESSION_ID` attribution.
-2. Re-running the same CI because the head moved is inherent to a fix loop, but
-   only via oc-prchecks re-dispatch — pr-checks.yml carries a concurrency group
-   (`cancel-in-progress: true`, owner fix) so the superseded run is auto-cancelled.
+1. **Detached execution, actor attribution & re-dispatch:** W1/W2/W6 of `fleet-directives.md §CI-wait discipline & actor attribution` bind unchanged; a re-run because the head moved is inherent to a fix loop but goes through `oc-prchecks` re-dispatch — `pr-checks.yml` carries a concurrency group (`cancel-in-progress: true`), so the superseded run auto-cancels.
+
 3. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only
    identifies the DISPATCH; the run's checkout log line identifies the TESTED
    TREE — only the checkout-ref is terminal truth for code-level verdicts.
@@ -273,8 +258,8 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
 0. **Claim-time fresh re-read & Goal Mandate (v0.4.14 / v0.4.149, owner order 2026-09-12)**:
    - **Fresh Re-read**: FIRST action after claiming/waking — re-read `SKILL.md` + `editor.md` + `fleet-directives.md` from disk (never from recalled memory) — SKILL.md and editor.md in FULL, fleet-directives at thematic-index minimum with every `[LANE]`-tagged section in FULL.
    - **Checkable Completion Formula**: DONE = all three files re-read THIS turn.
-   - **Design-gate precondition (owner order 2026-09-12)**: Issue the goal **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). While the design is unapproved the editor stays in the design/approval phase — an early `/goal` would carry it past the very gate that requires owner approval BEFORE code. Fixed sequence: design → owner confirms → `/goal` → continuous execution through Phase 6.
-   - **Autonomous Goal Mandate**: After the owner's design confirmation, the editor MUST execute `/goal follow the skill until the smoke test phase` (via `slash_command`). The Editor is mandated to drive autonomously and continuously from Phase 1 through Phase 6 smoke testing (claim → worktree → code → sign → ship via `oc-ship-chain` → live behavioral smoke test on swapped binary → record 4-leg smoke verdict in `smoke-verdicts.log`). **Editors MUST NOT stop or ask for confirmation after Phase 4 (writing code) or after intermediate ship legs.** The task is only complete once the live behavioral smoke test is recorded in `smoke-verdicts.log`.
+   - **Goal mandate**: design → owner confirms → `/goal follow the skill until the smoke test phase` → continuous execution through Phase 6 — MUST NOT halt after Phase 4 or after an intermediate ship leg. Full law (design-gate precondition, design-gated write scope): `§Autonomous Editor Goal & Continuous Phase Execution Law` (this file).
+
 1. **Uniqueness Gate**: Search existing issues first via `tools/issue/oc-issue-sweep '<query>'` (sweeps fork open/closed + upstream closed).
 2. **Issue Creation & Continuous Relationship Linking**: file a `fix(`/`bug(`-titled issue via `tools/issue/oc-issue-create` declaring its origin ON the creating command -- `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), `--no-parent "<reason>"` as the last resort. A declared root or orphan is legal; a silent one is a violation. **THE GATE HAS THREE LEGS, NOT ONE (owner order 2026-10-05, origin opencrabs/opencrabs#1932): ORIGIN, ASSIGNEE, NATIVE LINK.** Beyond declaring the origin, the creating command must carry **`--assignee <login>`** (fork binary tracker: `leshchenko1979`; factory tracker: `leshchenko1979` — each tracker's ONLY assignable account, measured 2026-10-10; the retired `adolfousier` constant no longer resolves on the fork, where an `--add-assignee` silently no-ops; a tracker's `auto-assign.yml` can otherwise assign the AUTHOR rather than the intended claimer), and where the declared origin resolves to a SAME-TRACKER issue the **native parent link is OBLIGATORY** — `--parent <N>` at creation or `gh issue edit <issue> --parent <N>` immediately after. For `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer (#1932's root `ede0763be` carries `Closes #737`). A comment-only `root:` satisfies declaredness, never the link when a same-tracker parent exists.
    - If no issue fits, open ONE issue on the tracker that OWNS the surface: binary behaviour (runtime, channels, providers, TUI, memory, tools) → `gh issue create -R leshchenko1979/opencrabs` (the fork is the binary tracker since 2026-10-09); factory tooling/CI/process → `-R leshchenko1979/opencrabs-dev-factory`. Upstream `opencrabs/opencrabs` takes NO new issues. Canonical routing: `SKILL.md` §Hard rules — ISSUE ROUTING.
@@ -412,8 +397,10 @@ systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
 4. **Leg 4 (Carrier Ship):** Dispatches `oc-deploy ship --sha <sha> --execute` to build on `ci/quick-build-linux`.
 5. **Leg 5 (Swap & Seal):** Bounded-polls carrier execution (`oc-deploy poll --execute --wait <sec>`) until the binary is live and swapped. The ship wait default is **2700 s** (`OC_SHIPCHAIN_SHIP_WAIT`, tool text: the `OC_SHIPCHAIN_SHIP_WAIT` default in `oc-ship-chain`) — raised from 900 s at #336 after 11 of 37 carrier successes exceeded 900 s (10 most recent: 942-1344 s, median 1062 s). A shorter budget mislabels a still-building run as INFRA rc 6.
 
-**Carrier Coalescence & Ancestry Matching (v0.4.148):**
-Editors do not serialize on a pre-dispatch carrier lock. `oc-deploy` and `oc-ship-chain` accept descendant carrier builds via ancestry verification (`git merge-base --is-ancestor "$SHA" "$CAND_SHA"`). If multiple editors push in quick succession, GitHub Actions concurrency coalesces the queued runs into a single descendant build. Once that build completes GREEN, all merged ancestors are recognized as deployed. Host swaps are strictly serialized and monotonic via `host-swap.lock` and lineage checks.
+**Carrier Coalescence & Ancestry Matching (v0.4.148):** editors do not serialize on a
+pre-dispatch carrier lock — descendant builds are accepted via ancestry matching, and
+host swaps stay serialized and monotonic via `host-swap.lock`. Full law + diagram:
+`§Carrier Concurrency & Coalescence Law` (this file).
 
 There is NO legitimate manual exit point between gate verdict and swap. The #134 orphan class (stopping at GREEN without swapping) is structurally closed.
 
@@ -443,7 +430,7 @@ When shipping features via `oc-ship-chain` or deploying via `oc-deploy`, failure
   ⚠️ **`oc-rebase-safety` is NOT the rebase engine** — it is a READ-ONLY safety auditor (`audit` / `overlap`). Use standard git commands to resolve conflicts, verify zero lost edits with `oc-rebase-safety audit`, and re-run `oc-ship-chain`.
   - **(b) TIP-MOVED** — the branch was force-pushed mid-gate, so `$TIP != $SHA`: LEG3 refuses rather than fast-forwarding fork main onto a tip NO GATE VALIDATED. Recovery: re-run the chain against the new tip — do NOT land the ungated tip.
   - **(c) REBASE-GATE** — `oc-deploy`'s in-tool auto-rebase refused the push (`OC_DEPLOY_GATE=rebase-conflict` / `rebase-audit-failed`). Recovery: rebase `$BRANCH` onto fork main yourself, verify with `oc-rebase-safety audit`, then re-run.
-- **Exit 6 — INFRA / ORDER-GATE:** dispatch or poll infrastructure failure (`oc-prchecks` rc 4/7/8, or ship rc other) — **or an ORDER-gate rejection post-push.** ⚠️ **The UNSIGNED case lands HERE, and it is NOT an infra fault:** a head commit carrying no `Session-Id` trailer is refused by ORDER gate 4 (`oc-order-validate: UNSIGNED … attribution mandatory`), and the chain exits 6. Read the message before you act — if it says UNSIGNED, do not go hunting for a network or carrier problem. Fix = land an empty trailer-signed marker commit on the head (tree-identical, forward-only; `upstream-merge-runbook.md` step 9) and re-run. Every synthesis/merge head is unsigned **by construction**, so this recurs on every sync. **A lineage-guard refusal ALSO exits 6:** `oc-deploy swap-execute` refusing a post-rewrite swap (`non-monotonic-swap`) surfaces here. Recovery = **re-run the same `oc-ship-chain` leg** — the guard is rebase-aware (v0.4.151) and accepts the swap as `rewrite-equivalent-swap`. **NEVER hand-edit `deployed.sha`** to re-point around a refusal (`§Post-Rewrite Swap Recovery`, this file).
+- **Exit 6 — INFRA / ORDER-GATE:** dispatch or poll infrastructure failure (`oc-prchecks` rc 4/7/8, or ship rc other) — **or an ORDER-gate rejection post-push.** ⚠️ **The UNSIGNED case lands HERE, and it is NOT an infra fault:** a head commit carrying no `Session-Id` trailer is refused by ORDER gate 4 (`oc-order-validate: UNSIGNED … attribution mandatory`), and the chain exits 6. Read the message before you act — if it says UNSIGNED, do not go hunting for a network or carrier problem. Fix = land an empty trailer-signed marker commit on the head (tree-identical, forward-only; `upstream-merge-runbook.md` step 9) and re-run. Every synthesis/merge head is unsigned **by construction**, so this recurs on every sync. **A lineage-guard refusal ALSO exits 6** (`non-monotonic-swap`): the guard is rebase-aware (v0.4.151) and accepts the swap as `rewrite-equivalent-swap` — recovery is **re-run the same leg** — **NEVER hand-edit `deployed.sha`** (`§Post-Rewrite Swap Recovery`).
 - **Exit 7 — GATE IN FLIGHT:** the gate was still running after the chain's budget and resume-polls (`oc-prchecks` rc 5, non-terminal). The run id is printed — do **NOT** re-dispatch (that concurrency-cancels the live run); wait for it and re-run with `--gated-run <id>`, which pre-verifies and skips dispatch.
 - **Exit 8 — SHIP-WAIT-TIMEOUT:** the carrier build did not reach a terminal state within the LEG4 `--wait` budget (default 2700 s; `oc-deploy ship` rc 5 with no rebase-gate token). ⚠️ **The run is still BUILDING — do NOT re-dispatch it** (a re-dispatch concurrency-cancels the live run). Wait for it, then resume with `oc-deploy poll --sha <sha> --execute --wait <sec>`, or re-run the chain with a larger `--wait`. This code exists precisely because the Exit 4/6 reflex ("re-run the chain") is the double-dispatch this arm prevents.
 
@@ -538,20 +525,12 @@ no-runtime-string finding) — never silent-skip. A verdict citing only legs 1�
 gets returned to the lane. (A stripped binary that compiles the fix but crashes on the path must
 FAIL — that is the exact hole this rule closes; origin: ship-38585459 smoke n=2036.)
 
-**Owner-dependent leg → PARK, never wait (v0.4.152, owner order 2026-09-12):**
-if the only remaining behavioral evidence needs the OWNER — a visual pass, a tap,
-an eye-confirm on a card — the leg is **NOT a blocking gate**. Stamp the legs you
-can prove (lineage, identity, CI, any agent-runnable probe), append a
-`PARKED-OWNER-EYE` row to `smoke-verdicts.log` naming the owner action required
-and the packaging sha, then **RELEASE the lane** and move to your next task. A
-lane idling on an owner leg is in violation; a lane that parks and moves on is
-compliant. Owner-absent windows (nights) are exactly when this binds. Owner
-verdicts must be explicit AND post-hoc — a passing remark made mid-flight is not
-a verdict (row 87 → row 90: the owner's "Smoke passed" landed 16 s after their
-own discard and 3 m 17 s before the review finished, so it certified a defect
-that did not yet exist; the PASS was revoked). If the remark is ambiguous, record
-`OWNER-REMARK (not a verdict)` and leave the leg OPEN/PARKED. Full law:
-`§Owner-Dependent Smoke Legs — Park, Don't Chase` (this file).
+**Owner-dependent leg → PARK, never wait (v0.4.152):** if the only remaining behavioral
+evidence needs the OWNER, the leg is **NOT a blocking gate** — stamp the legs you can
+prove, append a `PARKED-OWNER-EYE` row naming the owner action and the packaging sha,
+then **RELEASE the lane**. A lane idling on an owner leg is in violation; a lane that
+parks and moves on is compliant. Full law, incl. the explicit-and-post-hoc verdict test
+(L3): `§Owner-Dependent Smoke Legs — Park, Don't Chase` (this file).
 
 **Swap timing is NOT coordinated with smokes** (owner decision, closing editor
 proposal #8): NO advance announce, NO swap delay — deploys land whenever the
@@ -693,23 +672,16 @@ tools/git/oc-wt remove <task>
 
 ## Phase 7 + 7b — NOT the editor's → `harvest.md` (HARVEST lane)
 
-Upstream PR filing (Phase 7) and PR lifecycle / blocker routing (Phase 7b)
-**left the editor role** (owner order 2026-09-24 centralising harvest). Single
-home: **`harvest.md`**, owned by the HARVEST lane. The editor's part ends at
-smoke evidence — post it and hand the feature over. The PR SHIPMENT law's
-procedure reference resolves in `harvest.md` (law home: SKILL.md §Hard rules —
-ISSUE ROUTING bullet, PR SHIPMENT row).
-
-
+Upstream PR filing (7) and PR lifecycle / blocker routing (7b) left the editor role
+(owner order 2026-09-24 centralising harvest); single home **`harvest.md`**. The editor's
+part ends at smoke evidence — post it and hand the feature over.
 
 ## No auto-rollback on smoke FAIL (owner 2026-08-28 18:50Z)
 
-Post-swap smoke FAIL → rollback is the OWNER's call, never mechanical. The swap-chain auto-rollback on post-bounce verify fail (crash-integrity: disk==proc mismatch → restore backup) is UNCHANGED — that one stays automatic. With deploy consent eliminated the same day, this is the only human gate left near the deploy pipeline.
-
-
-
-
-
+Post-swap smoke FAIL → rollback is the OWNER's call, never mechanical. The swap-chain
+auto-rollback on post-bounce verify fail (crash-integrity: disk==proc mismatch → restore
+backup) is UNCHANGED — that one stays automatic, and with deploy consent eliminated the
+same day it is the only human gate left near the deploy pipeline.
 
 ## Autonomous Editor Goal & Continuous Phase Execution Law (v0.4.149, owner order 2026-09-12) [LANE]
 
@@ -726,7 +698,8 @@ Post-swap smoke FAIL → rollback is the OWNER's call, never mechanical. The swa
   state dir, journals, and run artifacts) and **MAY NOT** write project/source files or
   open the autonomous checklist. Two lanes resolved that ambiguity the same way by reading
   intent rather than law; this clause makes that reading the rule.
-- **An UNATTENDED session MUST NOT open a plan (v0.4.246, HQ ruling 2026-09-24; origin #510, raised by Triage n=10690).** A session with **no channel binding** — a cron worker or an A2A-origin session — has **no approval surface at all**: `plan init` returns its own *"ask the user to approve"* guidance, the model complies and ends its turn, and the plan sits `Editing` with `approved_at: null` forever, because no card exists to carry the tap. Measured on the `ops` profile 2026-09-24: **6** plans in that state, **every one with 0 `plan_cards` rows and 0 `session_bindings`** — four cron workers (`oc-harvest-344-resume` `0af22fbc`, `oc-harvest-421-resume` `b246ddbd`, `triage-hourly-issue-assignment` `41ca47a9`, `outreach-mining-tranche` `e8389c6b`), one **A2A** session (`9d163421`), and one orphan plan file with no session row. So the class is **not cron-only**, and it is **self-repeating**: a cron reuses its worker session, so every subsequent fire re-reads the stranded plan and re-reports a blocker no surface can clear — **three consecutive patrol cycles** closed with *"the plan card in this topic needs an Approve / /execute first"* while `plan_cards` held **zero** rows for that session AND that topic. Consequences: a cron/A2A prompt that could reach `plan init` must forbid it **explicitly**, and **the guidance telling an unattended session to use `checklist` instead is NOT a mitigation** — `init mode=checklist` ALSO returns to `Editing` pending approval, so the sanctioned choice strands the session too. Tool-side fix is **#510** (plan-tool lane, design-gated); this clause is the law-side stop. **A blocker claim is a status claim:** asserting a card exists, or naming the surface it lives on, requires the same-turn read — see the ops `AGENTS.md` §Execution Discipline bullet.
+- **An UNATTENDED session MUST NOT open a plan (v0.4.246, HQ ruling 2026-09-24; origin #510).** A session with no channel binding (a cron worker, an A2A-origin session) has **no approval surface at all**, so a plan sits `Editing` with `approved_at: null` forever — measured on `ops` 2026-09-24: **6** such plans, **every one with 0 `plan_cards` rows and 0 `session_bindings`**. The class is **not cron-only** and **self-repeats**: a cron reuses its worker session, so every fire re-reads the stranded plan and re-reports a blocker no surface can clear. A cron/A2A prompt that could reach `plan init` must forbid it **explicitly**; `init mode=checklist` ALSO returns to `Editing`, so it is **not** a mitigation. Tool-side fix is **#510**; this clause is the law-side stop. A blocker claim is a status claim — the same-turn read applies (`AGENTS.md` §Execution Discipline).
+
 - **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6 behavioral smoke testing.
 - **Completion Definition**: A task is complete ONLY when the live behavioral smoke test on the swapped binary has executed and its 4-leg receipt is recorded in `smoke-verdicts.log`.
 
@@ -740,9 +713,18 @@ Post-swap smoke FAIL → rollback is the OWNER's call, never mechanical. The swa
 
 - **The exclusion set is DERIVED BY THE TOOL at gate time — never by hand, never carried in a lane's context.** The 21 paths listed above are **illustrative, not normative**: that list rots the moment a template is added or removed, and a lane reproducing it by hand is the defect this clause exists to prevent (owner ruling 2026-09-12: *"that should be purely mechanical"*). The gate computes the set from the tree itself, at the moment it runs, by resolving the compiled-in `include_str!` targets against `src/**/*.rs`. **Mechanical evaluation (Finding J-2, v0.4.170):** Lanes must verify qualification directly using `tools/ship/oc-ship-chain --eval-docs-skip <sha>` instead of manual path inspection or hand-derived checks.
 - **Recording is MANDATORY — an absent gate is NEVER a passed gate.** A skipped LEG1 MUST be recorded in the ship journal **and** in a ledger row naming the sha (kind `shipchain`, the leg stated as SKIPPED). The v0.4.109 CI-run identity + verdict laws apply unchanged: GREEN may be stated only for a gate that actually ran and returned `completed success`; a skipped leg is cited as SKIPPED, never as GREEN, and is never counted as a passed leg in a smoke receipt.
-- **Upstream precedent — and why this law does NOT copy its shape.** Upstream `.github/workflows/ci.yml:23-27` already paths-ignores `**.md` / `docs/**` / `LICENSE*` / `.gitignore` on push ("Docs-only commits are skipped via paths-ignore so they don't burn the matrix"). That shape is **extension-based**, so it would happily skip a commit editing a compiled-in template. This law states the compiled-in exclusion EXPLICITLY rather than inheriting that hole.
-- **Enforcement split.** The law text is HQ's (this section). The mechanical LEG1 behavior in `tools/ship/oc-ship-chain` is Toolsmith's (defect #20). That change LANDED in `d6cb9b9a` — **the same tag as this law (v0.4.161)**, 24 min after this text — so the earlier "until it lands a docs-only commit still burns LEG1" is SUPERSEDED (v0.4.163): a pure-docs commit now SKIPS LEG1, the exclusion set is DERIVED at gate time (`shipchain_docs_only()` in `tools/ship/oc-ship-chain` — cite by function name, never by line: tool line numbers drift on every edit), the skip is recorded in the journal (`GATE-SKIPPED-DOCS`) plus a `shipchain` ledger row, it applies to a FRESH dispatch only (`--gated-run`/`--gated-sha` still gate), and the force flag `OC_SHIPCHAIN_NO_DOCS_SKIP=1` exists. Never claim a skip the tool has not recorded.
+- **Upstream precedent — and why this law does NOT copy its shape.** Upstream
+`.github/workflows/ci.yml` paths-ignores `**.md` / `docs/**`, an EXTENSION-based shape that
+would happily skip a commit editing a compiled-in template; this law states the
+compiled-in exclusion EXPLICITLY rather than inheriting that hole.
 
+- **Enforcement split.** The law text is HQ's (this section); the mechanical LEG1 behaviour
+is Toolsmith's and LANDED in `d6cb9b9a` (v0.4.161): a pure-docs commit SKIPS LEG1, the
+exclusion set is DERIVED at gate time (`shipchain_docs_only()` — cite by function name,
+never by line), the skip is recorded in the journal (`GATE-SKIPPED-DOCS`) plus a
+`shipchain` ledger row, it applies to a FRESH dispatch only (`--gated-run`/`--gated-sha`
+still gate), and `OC_SHIPCHAIN_NO_DOCS_SKIP=1` forces the gate. Never claim a skip the
+tool has not recorded.
 
 ## Owner-Dependent Smoke Legs — Park, Don't Chase (v0.4.152, owner order 2026-09-12) [LANE]
 
@@ -795,16 +777,6 @@ A rebase orphans the deployed sha (it stops being an ancestor of `main`), and th
 - **Host Swap Mutex & Monotonicity:** Host binary swaps remain strictly serialized and monotonic via `host-swap.lock` (`flock -x $STATE_DIR/host-swap.lock`) and lineage verification (`git merge-base --is-ancestor "$PREV_SHA" "$SHA"`), preventing stale binary overwrites.
 - **Merge Serialization:** `oc-ship-chain` serializes Leg 3 (fast-forward merge) via `ship.lock`.
 
-```mermaid
-flowchart TD
-    E1["Editor 1 (Push A)"] -->|Dispatches| R1["Carrier Build 1 (Active on A)"]
-    E2["Editor 2 (Push B)"] -->|Queues| R2["Carrier Build 2 (Pending on B)"]
-    E3["Editor 3 (Push C)"] -->|Replaces Pending| R3["Carrier Build 3 (Pending on C)"]
-    R1 -->|Build 1 Finishes| S1["Swap A to Host"]
-    R3 -->|Build 3 Finishes on C| S2["Swap C to Host (Coalesced B+C)"]
-    S2 -.->|Ancestry Match| ACK2["Editor 2 Acknowledged (B in C)"]
-    S2 -.->|Direct Match| ACK3["Editor 3 Acknowledged (C)"]
-```
 
 
 ## Features-compat gate — no silent feature-loss swaps (HQ ruling 2026-09-04, MANDATORY) [LANE]
