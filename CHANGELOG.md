@@ -10,6 +10,24 @@
 
 **Bundled commits.** `0fc1ba5c` — the `editor.md` shrink itself (812 → 784 lines). `be892b5a` — the follow-up renumber of the `§Direct dispatch & CI execution discipline` list, which the 1+2 collapse had left running `1.` then `3.` (this entry and the `SKILL.md` version line are the sync's own).
 
+### Bundled commits (C8) — the post-v0.4.300 range
+
+The sync's naming leg flagged this range as carrying work from other lanes that no entry names. Named here because the version record is the only place a bundled fix's ship date exists. All are `tools/**` (the Toolsmith's carve-out) except where noted:
+
+- `960204ad` — `oc-prchecks` bounded 5xx dispatch retry (`OC_PRECHECKS_5XX_BACKOFF`, default `10 30`; 4xx never retried) + per-attempt logging, so a `#809`-shaped streak is diagnosable from the JSONL. Selftest 89/89, mutation-tested. ([#809](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/809))
+- `8095bc95` — `run.sh` expects the reopened verb set in the `#709` schema leg; this was the leg that held the whole fleet's bump gate shut. ([#613](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/613))
+- `7e23a76e` — `oc-questions`: the set never closes — mirror the fix and re-flatten the vendor delta. **Note:** `reopen` is SET-level and touches zero question rows; it is not a question-revival path. ([#613](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/613))
+- `af7087e4` — a question's `#N` resolves against ITS OWN board. ([#59](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/59))
+- `6b591e00` — `oc-roster` ages a dirty COUNT, not the entries. ([#57](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/57))
+- `59cc18f9` — provider affinity has no token for the vision tool path. ([#56](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/56))
+- `965b346d` — `oc-ship-chain` LEG3 names the checkout state, not a presumed one: `LOCAL-MAIN-DIVERGED` / `LOCAL-MAIN-AHEAD` (a no-op) / `STALE-LOCAL-MAIN`, all three saying do NOT rebase. ([#55](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/55))
+- `58a8c9e7` — provider path token + age-bounded stale claim. ([#54](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/54))
+- `972e2bf7` — the battery reaps its own `oc-snap` mirrors, and a false zero is refused. ([#53](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/53))
+- `f75f40d1`, `c658cd6f` — `oc-issue-create` o28 asserts WHICH gate refused (not just `rc 3`), and states the MEASURED gate order. ([#52](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/52))
+- `1f891f85` — port #513 and #251 into the executing home.
+
+Also in range and named for completeness: `493dcc93`, `9c02e96b`, `c68d51fa` — three `docs(changelog)` commits that carried the v0.4.300 follow-up entries for the above, and `be892b5a` (this lane's renumber, named above).
+
 **Verification.** Heading census identical before and after: **31** real headings (fence-aware `^#{1,4} `; a fence-blind count reads 39, the extra 8 being issue refs like `#504`), text-for-text. Normative-gate-word census held: `MUST` 17→16 (the one delta is a phase-body restatement collapsed into a pointer whose target still carries the `MUST` — `§Autonomous Editor Goal`, design-gate precondition), `NEVER` 16→16, `MANDATORY` 5→5, `SKIPPED` 4→4. Two gate words the first pass had softened (`MUST NOT halt`, `NEVER hand-edit deployed.sha`) were restored to uppercase force before this tag. 50-string load-bearing fact sweep: 0 regressions. Pre-shrink bytes retained at `/tmp/editor.pre-shrink.md` for the whole session.
 
 ## v0.4.300 — a declared blocker is not a port dependency: the clearance must RESOLVE (#49, 2026-10-19)
