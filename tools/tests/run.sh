@@ -881,7 +881,7 @@ import json, sys
 d = json.load(sys.stdin)
 v = d["verbs"]
 assert set(v) == {"ask","answer","amend","withdraw","list","publish","lint",
-                  "gc","notify","redeliver"}, sorted(v)
+                  "gc","notify","redeliver","reopen"}, sorted(v)
 assert v["list"]["valued"].get("factory") == "--factory", v["list"]["valued"]
 assert v["amend"]["valued"].get("set_id") == "--set", v["amend"]["valued"]
 assert "set_id" not in v["publish"]["valued"], v["publish"]["valued"]
