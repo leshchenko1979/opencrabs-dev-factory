@@ -119,7 +119,7 @@ stamp the dispatch + receipt id via oc-ledger.
 
 1. **Detached execution, actor attribution & re-dispatch:** W1/W2/W6 of `fleet-directives.md §CI-wait discipline & actor attribution` bind unchanged; a re-run because the head moved is inherent to a fix loop but goes through `oc-prchecks` re-dispatch — `pr-checks.yml` carries a concurrency group (`cancel-in-progress: true`), so the superseded run auto-cancels.
 
-3. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only
+2. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only
    identifies the DISPATCH; the run's checkout log line identifies the TESTED
    TREE — only the checkout-ref is terminal truth for code-level verdicts.
    Verify the run checked out your head sha before reading any verdict as lane
@@ -127,7 +127,7 @@ stamp the dispatch + receipt id via oc-ledger.
    reported but never trusted; a mismatch is a carrier bug against the dispatch path — come
    straight to HQ with run id + checkout-ref + ledger incident
    stamp (suspect the single-flight dispatch lock adoption).
-4. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify
+3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify
    the run actually carries your head (job name embeds the head sha) before
    waiting on it — a dispatch that fired on the wrong ref wastes the whole
    wait. oc-prchecks headSha adoption enforces this for its own runs; the
@@ -138,10 +138,10 @@ stamp the dispatch + receipt id via oc-ledger.
    **JOB NAME**. Full clause and the general counter rule:
    `environment.md §Environment facts (all roles)` (it binds every role that
    checks a gate, not editors only).
-5. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
-6. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
-7. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated/lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
-8. **PR-state claims need a same-turn `gh pr view` receipt (Duty-6/#1431
+4. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
+5. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
+6. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated/lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
+7. **PR-state claims need a same-turn `gh pr view` receipt (Duty-6/#1431
    lesson, v0.4.91):** any claim that a PR was created, updated, re-pointed,
    or "auto-updated" by a push is UNVERIFIED until `gh pr view <n> --json
    headRefOid,headRefName,state` names the EXPECTED head sha and repo — a
