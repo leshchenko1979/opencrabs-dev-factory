@@ -361,6 +361,25 @@ YEOF
         case "\$*" in
           *no_cancel=true*) echo 'could not create workflow dispatch event: HTTP 422: Unexpected inputs provided: ["no_cancel"]' >&2; exit 1 ;;
         esac ;;
+      dispatch_500)
+        # Transient-server-error fixture (Toolsmith 2026-11-05, lane #809): the
+        # REAL stderr shape, so the 5xx classifier is exercised against the bytes
+        # it will actually see. Records the attempt BEFORE failing, so the
+        # bounded-retry count is observable rather than inferred.
+        echo "attempt \$*" >> "\${GHDISPATCH_LOG:-/dev/null}"
+        echo 'could not create workflow dispatch event: HTTP 500 (https://api.github.com/repos/leshchenko1979/opencrabs/actions/workflows/344154562/dispatches)' >&2
+        exit 1 ;;
+      dispatch_500_once)
+        # The window CLOSES: first attempt 500s, the next succeeds. Proves the
+        # retry RECOVERS the gate, not merely that it retries.
+        echo "attempt \$*" >> "\${GHDISPATCH_LOG:-/dev/null}"
+        if [ -e "\${GH500_FLAG:-/tmp/gh500.flag}" ]; then
+          rm -f "\${GH500_FLAG:-/tmp/gh500.flag}"
+          echo 'could not create workflow dispatch event: HTTP 500 (https://api.github.com/x)' >&2
+          exit 1
+        fi
+        echo "dispatched \$*" >> "\${GHDISPATCH_LOG:-/dev/null}"
+        exit 0 ;;
     esac
     echo "dispatched \$*" >> "${GHDISPATCH_LOG:-/dev/null}"
     exit 0 ;;
@@ -941,6 +960,57 @@ do_selftest() {
      && case "$ncl_hits" in *"-f ref=$SHA"*) true ;; *) false ;; esac; then
     t_ok "no_cancel: 422 on the flag -> auto-retry without it, gate survives (race guard)"
   else t_bad "no_cancel race guard (rc=$ncl_rc tries=$ncl_tries hits=$ncl_hits out=$ncl_out)"; fi
+
+  # 5xx RETRY (Toolsmith 2026-11-05, lane #809 QUIRK). A dispatch 500 is
+  # TRANSIENT: four of them inside one minute, then a byte-identical manual
+  # `gh workflow run` succeeded ~60s later — same binary, same endpoint, no
+  # override, so the payload was never the difference. Before this the tool
+  # retried ONLY when it had sent no_cancel, so a branch-ref 500 got zero
+  # retries while a sha-ref 500 got one for the wrong reason.
+  export OC_PRCHECKS_5XX_BACKOFF="0 0"   # selftest must not sleep out the real 10s/30s
+  ncl_leg_nosha dispatch_500
+  ncl_tries="$(grep -c 'attempt' "$NCL_LOG" 2>/dev/null || echo 0)"
+  if [ "$ncl_rc" -eq 4 ] && [ "$ncl_tries" -eq 3 ] \
+     && case "$ncl_out" in *"server error"*) true ;; *) false ;; esac; then
+    t_ok "dispatch 5xx: bounded retry (3 attempts) then rc 4 — a dead window is never swallowed"
+  else t_bad "dispatch 5xx bounded (rc=$ncl_rc attempts=$ncl_tries out=$ncl_out)"; fi
+  # ... and the window CLOSES: the retry must RECOVER the gate, not merely retry.
+  : > "$NCL_LOG"; _500f="$D/gh500.flag"; : > "$_500f"
+  mk_shim "$D/gh" dispatch_500_once
+  ncl_out="$(GH500_FLAG="$_500f" OC_PRCHECKS_5XX_BACKOFF="0 0" OC_GH="$D/gh" \
+    OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_TOOLS_NOLOG=1 "$SELF" "$SHA" 2>&1)" && ncl_rc=0 || ncl_rc=$?
+  ncl_tries="$(grep -c 'dispatched' "$NCL_LOG" 2>/dev/null || echo 0)"
+  if [ "$ncl_rc" -eq 0 ] && [ "$ncl_tries" -eq 1 ] \
+     && case "$ncl_out" in *"server error"*) true ;; *) false ;; esac; then
+    t_ok "dispatch 5xx: one failed attempt then success — the retry recovers the gate"
+  else t_bad "dispatch 5xx recovery (rc=$ncl_rc dispatched=$ncl_tries out=$ncl_out)"; fi
+  unset OC_PRCHECKS_5XX_BACKOFF
+
+  # THE LOG MUST BE ABLE TO TELL A MULTI-ATTEMPT STREAK FROM A SINGLE FAILURE.
+  # This is the half that made #809 undiagnosable: two invocations x two attempts
+  # left ONE row per invocation carrying only the invocation rc plus a bare
+  # `no_cancel_retry:1`, so the reporting lane could not say whether the retry
+  # had run at all or with what payload. Asserting on the emitted JSONL, not on
+  # the code that emits it.
+  _lg="$D/tools.log"; : > "$_lg"
+  mk_shim "$D/gh" dispatch_500
+  # OC_TOOLS_NOLOG=0 is LOAD-BEARING: the selftest parent exports NOLOG=1 into
+  # the shell (oc_log_init -> oc_is_selftest), so every child inherits silence
+  # and this leg would read an empty log. Every other log leg sets it too.
+  OC_PRCHECKS_5XX_BACKOFF="0 0" OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$_lg" OC_GH="$D/gh" \
+    OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    "$SELF" "$SHA" >/dev/null 2>&1 || true
+  _a1="$(jq -r 'select(.extra.dispatch_attempt1_rc != null) | .extra.dispatch_attempt1_rc' "$_lg" 2>/dev/null | tail -1)"
+  _a3="$(jq -r 'select(.extra.dispatch_attempt3_rc != null) | .extra.dispatch_attempt3_rc' "$_lg" 2>/dev/null | tail -1)"
+  _ap="$(jq -r 'select(.extra.dispatch_attempts != null) | .extra.dispatch_attempts' "$_lg" 2>/dev/null | tail -1)"
+  _ae="$(jq -r 'select(.extra.dispatch_attempt1_err != null) | .extra.dispatch_attempt1_err' "$_lg" 2>/dev/null | tail -1)"
+  if [ "${_a1:-}" = "1" ] && [ "${_a3:-}" = "1" ] && [ "${_ap:-}" = "3" ] \
+     && case "$_ae" in *"HTTP 500"*) true ;; *) false ;; esac; then
+    t_ok "log: every dispatch attempt carries its own rc+argv+stderr (3-attempt streak distinguishable from 1)"
+  else t_bad "log per-attempt (a1=${_a1:-none} a3=${_a3:-none} attempts=${_ap:-none} err=${_ae:0:40})"; fi
   unset GHDISPATCH_LOG
 
   # --test-threads N passthrough (factory #33, #1936 Stage 1 hang mitigation).
@@ -1593,11 +1663,47 @@ if [ -n "$TEST_THREADS" ]; then
 fi
 # stderr captured (stdout to /dev/null): the 422 body names the offending input,
 # which is the diagnostic a lane needs. `set -e` survival via explicit rc.
-set +e
-DISPATCH_ERR="$("$GH_BIN" workflow run pr-checks.yml --repo "$REPO" --ref "$CARRIER" "${DISPATCH_ARGS[@]}" 2>&1 >/dev/null)"
-DISPATCH_RC=$?
-set -e
-if [ "$DISPATCH_RC" -ne 0 ] && [ "$NO_CANCEL_SENT" -eq 1 ]; then
+#
+# EVERY ATTEMPT IS LOGGED (Toolsmith 2026-11-05, lane #809 QUIRK). Before this,
+# two invocations x two attempts produced ONE row per invocation carrying only
+# the invocation's rc and a bare `no_cancel_retry:1` — so after the fact a
+# 4-attempt HTTP-500 streak was indistinguishable from a single failed attempt,
+# and the reporting lane could not say whether the retry had even carried a
+# different payload. Each attempt now writes its own rc, argv and stderr.
+DISPATCH_ATTEMPT=0
+_dispatch_try() { # $@ = the -f pairs; sets DISPATCH_RC/DISPATCH_ERR, logs the attempt
+  DISPATCH_ATTEMPT=$((DISPATCH_ATTEMPT+1))
+  set +e
+  DISPATCH_ERR="$("$GH_BIN" workflow run pr-checks.yml --repo "$REPO" --ref "$CARRIER" "$@" 2>&1 >/dev/null)"
+  DISPATCH_RC=$?
+  set -e
+  oc_log_extra "dispatch_attempt${DISPATCH_ATTEMPT}_rc" "$DISPATCH_RC"
+  oc_log_extra "dispatch_attempt${DISPATCH_ATTEMPT}_args" "$*"
+  oc_log_extra "dispatch_attempt${DISPATCH_ATTEMPT}_err" "${DISPATCH_ERR:0:240}"
+  return 0
+}
+_is_5xx() { case "${1:-}" in *"HTTP 5"??*) return 0 ;; esac; return 1; }
+
+_dispatch_try "${DISPATCH_ARGS[@]}"
+
+# A 5xx on dispatch is TRANSIENT, and retrying it is the whole remedy (measured
+# 2026-11-05, lane #809: four HTTP 500s across two invocations, then a
+# byte-identical manual `gh workflow run` succeeded ~60s later — same binary,
+# same endpoint, no token or host override, so the payload was never the
+# difference). Bounded and backed off, never unbounded; a 4xx is a
+# payload/contract error and retrying it only hides the defect.
+if [ "$DISPATCH_RC" -ne 0 ] && _is_5xx "$DISPATCH_ERR"; then
+  for _bd in ${OC_PRCHECKS_5XX_BACKOFF:-10 30}; do
+    echo "$PROG: dispatch got a server error (rc=$DISPATCH_RC) — retrying in ${_bd}s: ${DISPATCH_ERR:-no stderr}" >&2
+    oc_log_extra "dispatch_5xx_retry" "$((DISPATCH_ATTEMPT+1))"
+    sleep "$_bd"
+    _dispatch_try "${DISPATCH_ARGS[@]}"
+    if [ "$DISPATCH_RC" -eq 0 ]; then break; fi
+    if ! _is_5xx "$DISPATCH_ERR"; then break; fi
+  done
+fi
+
+if [ "$DISPATCH_RC" -ne 0 ] && [ "$NO_CANCEL_SENT" -eq 1 ] && ! _is_5xx "$DISPATCH_ERR"; then
   # Race guard: the probe saw the input but the dispatch 422s on it anyway (yml
   # reverted/rolled between the two calls). Retry WITHOUT the flag rather than
   # failing a full-sha gate over an optimisation — the no_cancel benefit is lost
@@ -1611,17 +1717,16 @@ if [ "$DISPATCH_RC" -ne 0 ] && [ "$NO_CANCEL_SENT" -eq 1 ]; then
   # dispatch fails LOUD (rc 4) rather than silently losing the mitigation.
   [ -n "$TEST_THREADS" ] && DISPATCH_ARGS+=(-f "test_threads=$TEST_THREADS")
   NO_CANCEL_SENT=0
-  set +e
-  DISPATCH_ERR="$("$GH_BIN" workflow run pr-checks.yml --repo "$REPO" --ref "$CARRIER" "${DISPATCH_ARGS[@]}" 2>&1 >/dev/null)"
-  DISPATCH_RC=$?
-  set -e
+  _dispatch_try "${DISPATCH_ARGS[@]}"
 fi
 if [ "$DISPATCH_RC" -ne 0 ]; then
   echo "$PROG: dispatch failed (repo=$REPO carrier=$CARRIER)${DISPATCH_ERR:+ — $DISPATCH_ERR}" >&2
   oc_log_extra "dispatch" "failed"
+  oc_log_extra "dispatch_attempts" "$DISPATCH_ATTEMPT"
   flock -u 8
   exit 4
 fi
+oc_log_extra "dispatch_attempts" "$DISPATCH_ATTEMPT"
 oc_log_extra "dispatch" "ok"
 oc_log_extra "no_cancel_sent" "$NO_CANCEL_SENT"
 oc_log_extra "test_threads_sent" "$TEST_THREADS_SENT"
