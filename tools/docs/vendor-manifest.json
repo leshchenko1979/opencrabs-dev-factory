@@ -5,7 +5,7 @@
     {
       "local": "tools/state/oc-questions",
       "upstream_path": "TEMPLATE/tools/questions",
-      "ref": "f02eebe5a3991b817d2a55d4a9a0a5443bd5fe6e",
+      "ref": "dc957999c60097ce42c96f4d99b75d3a94be0502",
       "why": "Vendored copy of the Open Questions register. The delta below is the DEPLOYMENT difference only, re-flattened against f02eebe5 (#613) and every entry named by what it contains. Three block declarations were RETIRED here, not added: the #497 vocabulary-widening deltas and the 36-line `8e. #497` selftest block they guarded are gone because upstream now carries `resolved_mechanically` in CLOSED_STATUSES itself, so the divergence they described no longer exists -- a declaration of a divergence upstream has since absorbed is drift of the DECLARATION, and leaving it would have made the guard report a defect that was already fixed. The remaining blocks are comment rewraps declared in PAIRS (one `local`, one `upstream` half each) plus the deployment-only 8b3 battery. A block is an EXACT contiguous run stripped from its OWN side only; zero or two occurrences is DRIFTED, never a silent pass (#343), and each new block was widened with context until it occurred exactly once.",
       "delta": [
         {
@@ -19,24 +19,14 @@
           "why": "Sibling renderer name, derived so it follows PROG. Upstream ask: the same one line."
         },
         {
-          "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
-          "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ \u2014\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+          "match": "^USAGE\\ =\\ PROG\\ \\+\\ \"\"\"\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
+          "match_upstream": "^USAGE\\ =\\ \"\"\"questions\\ —\\ the\\ Open\\ Questions\\ register\\ \\(\\#547\\)$",
           "why": "The usage header must name the invoked program, not a hardcoded one, or --help prints a command this fleet does not have. Upstream ask: the same one line."
         },
         {
           "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ \\(os\\.environ\\.get\\(\"OC_ACTOR\"\\)\\ or\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\"\\)\\ or\\ \"unknown\"\\),$",
           "match_upstream": "^\\ \\ \\ \\ \\ \\ \\ \\ \"actor\":\\ os\\.environ\\.get\\(\"OPENCRABS_SESSION_ID\",\\ \"unknown\"\\),$",
           "why": "Fleet actor contract (#749): tools/lib/oc-log.sh resolves the log actor as OC_ACTOR first, falling back to OPENCRABS_SESSION_ID -- and the owner rule of 2026-08-30 requires every oc-* invocation to set OC_ACTOR. This copy read the session id ALONE, so every such caller was logged as actor=\"unknown\" and could not be traced to a lane. Upstream ask: the same one line."
-        },
-        {
-          "match": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\\-dev\\-factory\"$",
-          "match_upstream": "FORK_REPO\\ =\\ os\\.environ\\.get\\(\"OC_QUESTIONS_TRACKER\"\\)\\ or\\ \"leshchenko1979/opencrabs\"$",
-          "why": "The C6 mechanical-closure probe's default tracker. A factory question's work unit is filed on the FACTORY tracker, so probing the fork for it answers about a repo that unit is not filed on -- a confident, WRONG 'still open'. Defaults to the factory tracker; OC_QUESTIONS_TRACKER still overrides. (The fork is a real tracker again since the 2026-10-08 re-scope, but only for FORK-ONLY defects -- never the default for a factory question.) UPSTREAM ASK: flip the same default in TEMPLATE/tools/questions."
-        },
-        {
-          "match": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
-          "match_upstream": "\\ \\ \\ \\ \\ \\ \\ \\ return\\ \"%s\\#%s\\ is\\ CLOSED\"\\ %\\ \\(FORK_REPO,\\ number\\),\\ None$",
-          "why": "Close REASON: it hardcoded the word 'fork' while the probe now asks the factory tracker, so the message a lane reads would name the wrong repo. Interpolating the constant makes the reason state its own scope -- '<slug>#N is CLOSED' (rule: a number travels with its predicate and scope). UPSTREAM ASK: same fix in TEMPLATE/tools/questions."
         },
         {
           "match": "^# rc vocabulary \\(tools/docs/RC-CONTRACT\\.md\\): 0 ok / 1 finding-or-not-found /$",
@@ -258,6 +248,21 @@
           ],
           "side": "local",
           "why": "THE LOCAL 8b3 BATTERY (#520 / factory #50): four selftest legs proving the dependency manifest is placed beside the renderer, that a failed placement is a named fault, and that the declared packages match the renderer's imports. Deployment-only -- it exercises the local PROG-derived placement, so it has no upstream counterpart."
+        },
+        {
+          "match": "^    #   \\* entry\\[\"subject\"\\] is CREATION-ONLY \\(:1516\\): an immutable, set-level$",
+          "match_upstream": "^    #   \\* entry\\[\"subject\"\\] is CREATION-ONLY \\(:1505\\): an immutable, set-level$",
+          "why": "#627's rationale cites the line where the home REFUSES a second --subject. That line number is per-home by construction: the two trees carry different declaration layers above it, so the deployment's guard sits at :1516 where upstream's sits at :1505. Copying upstream's number into this home would be a false citation pointing at the wrong line of its own file, so the difference is DECLARED here rather than erased. Measured 2026-11-07 against agent-factories dc957999c600, the tip that adopted #627 on both homes."
+        },
+        {
+          "match": "^        # -- 8g\\. #627: the closing blob is the TITLE ONLY -+$",
+          "match_upstream": "^        # -- 8f\\. #627: the closing blob is the TITLE ONLY -+$",
+          "why": "#627's selftest heading NUMBER is per-home: this deployment already spends 8f on the #59 board-resolution arms, so the #627 block is numbered 8g here and 8f upstream. A shared number is impossible without renumbering a shipped section, and the label is a reader's map of the file, so each home carries its own. agent-factories' own questions-homes gate declares the same difference."
+        },
+        {
+          "match": "^        # `--subject` is CREATION-ONLY \\(:1516\\) and an uncorrectable field turns$",
+          "match_upstream": "^        # `--subject` is CREATION-ONLY \\(:1505\\) and an uncorrectable field turns$",
+          "why": "#627's SECOND citation of the same refusal line, in the selftest block's own comment. Pinned to the WHOLE line rather than a `.*CREATION-ONLY.*` wildcard: a wildcard would make an edit to the surrounding rationale invisible, which is the prefix-delta blindness LEG 2b exists to catch."
         }
       ]
     },
@@ -268,8 +273,8 @@
       "why": "The json-render catalog the register renders its page through. Re-flattened 2026-10-06 at origin/main 7ead63d; the only upstream movement since ece0f4e is commit 6bc92ae (fix(template): no shipped file depends on the absent `oc-*` toolchain, #85), which genericised the two header comment lines so upstream names its own `questions` / `tools/questions`. Those names are WRONG for this fleet -- the copy here really is `tools/state/oc-questions-render.mjs`, invoked by `tools/state/oc-questions` -- so both lines are declared deltas, same class as the register's deployment-name deltas. Otherwise byte-identical.",
       "delta": [
         {
-          "match": "^// oc\\-questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
-          "match_upstream": "^// questions\\-render\\.mjs \u2014 the Open Questions page renderer \\(#547\\)\\.$",
+          "match": "^// oc\\-questions\\-render\\.mjs — the Open Questions page renderer \\(#547\\)\\.$",
+          "match_upstream": "^// questions\\-render\\.mjs — the Open Questions page renderer \\(#547\\)\\.$",
           "why": "Self-identification header: must name the file that exists here. Upstream names its own TEMPLATE file."
         },
         {
