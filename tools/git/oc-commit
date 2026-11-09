@@ -105,9 +105,18 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
   # _latest_claim_issue still selects with contains($u), the substring
   # behaviour #441 kept by decision (shape 1), because the composed
   # role-plus-uuid form derive_by emits needs that substring to resolve.
-  cat > "$d/wl.json" <<'JSON'
+  # (#631) The fixture claim is stamped NOW, not on a fixed date. It used to
+  # read 2026-08-31T10:00:00Z, which by 2026-11-09 was 51 days old — the EXACT
+  # shape of the incident #631 fixes (HQ's editor.md fix derived #311 from a
+  # claim of 2026-09-19, 51 days stale, and the note landed on the unrelated
+  # open leshchenko1979/opencrabs#311). Once oc-commit started passing
+  # --max-age-d, that fixture made every derivation arm refuse, which is the
+  # bound working rather than a defect. A FIXED date silently re-rots: any
+  # fixture that asserts a derivation must date its claim relative to now. The
+  # stale cases are carried by the dedicated #631 arms below, not by this one.
+  cat > "$d/wl.json" <<JSON
 {"workers":[{"uuid":"f1c7c0de-0000-4000-8000-000000000149","role":"editor"}],"events":[
- {"t":"2026-08-31T10:00:00Z","kind":"claim","by":"editor f1c7c0de-0000-4000-8000-000000000149 (topic 29947)","what":"claimed Duty-6 fix for #149 trailer test"},
+ {"t":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","kind":"claim","by":"editor f1c7c0de-0000-4000-8000-000000000149 (topic 29947)","what":"claimed Duty-6 fix for #149 trailer test"},
  {"t":"2026-08-31T10:01:00Z","kind":"claim","by":"other worker","what":"unrelated"}]}
 JSON
   R="$d/repo"; git init -q -b main "$R"
@@ -267,6 +276,35 @@ JSON
   [ $? -eq 0 ] || { echo "selftest: closed-claim + --issue override != 0" >&2; exit 1; }
   git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#42" \
     || { echo "selftest: #45 closed-claim --issue override trailer missing the qualified form" >&2; exit 1; }
+  # 6b-bis. (#631) A CLAIM'S AGE IS A DERIVATION INPUT. An old claim must not
+  #     silently stamp a NEW commit. Measured incident: factory #311 was derived
+  #     from a claim made 51.1 days earlier, carried into the Issue-Ref trailer,
+  #     and the per-commit note then landed on leshchenko1979/opencrabs#311 — an
+  #     unrelated OPEN issue on the fork, because the two legs disagreed on the
+  #     repo. Bound is OC_COMMIT_CLAIM_MAX_AGE_D (default 7d / 168h, the same
+  #     number oc-issue-dispatch already uses for STALE_CLAIM_H).
+  cat > "$d/wl631-old.json" <<'JSON'
+{"workers":[{"uuid":"f1c7c0de-0000-4000-8000-000000000149","role":"editor"}],"events":[
+ {"t":"2020-01-01T00:00:00Z","kind":"claim","by":"editor f1c7c0de-0000-4000-8000-000000000149","what":"claim #311 — ancient"}]}
+JSON
+  printf '{"workers":[{"uuid":"f1c7c0de-0000-4000-8000-000000000149","role":"editor"}],"events":[{"t":"%s","kind":"claim","by":"editor f1c7c0de-0000-4000-8000-000000000149","what":"claim #311 — fresh"}]}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$d/wl631-new.json"
+  ( cd "$R" && echo a631 > a631 && git add a631 && OC_LEDGER="$d/wl631-old.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>"$d/631a.err"
+  _rc=$?; [ "$_rc" -eq 3 ] || { echo "selftest: #631 stale-claim derivation must REFUSE (want 3, got $_rc)" >&2; exit 1; }
+  grep -q 'older than' "$d/631a.err" || { echo "selftest: #631 refusal must say the claim is TOO OLD (got: $(tr '\n' ' ' < "$d/631a.err"))" >&2; exit 1; }
+  grep -q -- '--issue' "$d/631a.err" || { echo "selftest: #631 refusal must offer --issue as the escape hatch" >&2; exit 1; }
+  #     POSITIVE CONTROL: the SAME derivation on a FRESH claim must pass and
+  #     stamp #311. Without it the arm above would pass on a tool that simply
+  #     never derives, which is the failure mode of every "must refuse" leg.
+  ( cd "$R" && echo b631 > b631 && git add b631 && OC_LEDGER="$d/wl631-new.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>&1
+  _rc=$?; [ "$_rc" -eq 0 ] || { echo "selftest: #631 fresh-claim derivation must PASS (want 0, got $_rc)" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#311" \
+    || { echo "selftest: #631 fresh-claim derivation must still stamp the qualified ref" >&2; exit 1; }
+  #     KNOB: the bound is a knob, not a hard wall — 0 means unbounded, and it
+  #     must actually reach claim-ref. Otherwise the arm above could be passing
+  #     because SOME refusal fires, not because the age did.
+  ( cd "$R" && echo c631 > c631 && git add c631 && OC_LEDGER="$d/wl631-old.json" OC_COMMIT_CLAIM_MAX_AGE_D=0 OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>&1
+  _rc=$?; [ "$_rc" -eq 0 ] || { echo "selftest: #631 OC_COMMIT_CLAIM_MAX_AGE_D=0 must disable the bound (want 0, got $_rc)" >&2; exit 1; }
   # 6c. (#346) a message that ALREADY carries the trailers must not get them twice.
   #     git's trailer.ifexists default compares only the NEIGHBOURING trailer, so
   #     the second append (Issue-Ref) collides with a caller-supplied copy while
@@ -501,15 +539,28 @@ $G diff --cached --quiet 2>/dev/null \
 # post-commit implementation comment onto a FINISHED issue. An explicit --issue
 # still overrides — that is the lane taking the decision on the record.
 DERIVE_ERR=""
+# #631: bound the AGE of the claim this derivation may act on. An OPEN claim
+# never expires, so `--open` alone is unbounded in TIME as well as in choice:
+# measured 2026-11-09 on this very tree, the HQ lane's newest open claim was
+# n=8822 from 2026-09-19 (51 days, "RE-CLAIM #311 ... CI-143 kill storm") while
+# its two NEWER claims were closed — so a November editor.md doc fix was stamped
+# `Issue-Ref: #311` and the wrapper went looking for issue 311 on that claim's
+# tracker. A durable false provenance record in git history outlives the commit
+# that carries it, so the derivation REFUSES an over-age claim instead of
+# answering, and the lane names its issue with --issue or declares
+# --session-id-only. The bound is the fleet's existing stale-claim threshold
+# (168 h / 7 d, oc-issue-dispatch's OC_DISPATCH_STALE_CLAIM_H) rather than a
+# second number invented here; 0 disables it.
+CLAIM_MAX_AGE_D="${OC_COMMIT_CLAIM_MAX_AGE_D:-7}"
 # #728: --session-id-only skips the derivation ENTIRELY. It is not a fallback
 # for a failed derivation — it is the caller declaring the commit belongs to no
 # issue, so there is nothing to derive and no comment to post.
 if [ "$SESSION_ID_ONLY" = 0 ] && [ -z "$ISSUE" ]; then
   OC_LEDGER_BIN="$OC_TOOLS_DIR/state/oc-ledger"
-  if ! ISSUE="$("$OC_LEDGER_BIN" claim-ref "$OC_ACTOR" --open 2>/dev/null)"; then
+  if ! ISSUE="$("$OC_LEDGER_BIN" claim-ref "$OC_ACTOR" --open --max-age-d "$CLAIM_MAX_AGE_D" 2>/dev/null)"; then
     ISSUE=""
     # second call only on the failure path, to surface the verb's diagnostic
-    DERIVE_ERR="$("$OC_LEDGER_BIN" claim-ref "$OC_ACTOR" --open 2>&1 >/dev/null || true)"
+    DERIVE_ERR="$("$OC_LEDGER_BIN" claim-ref "$OC_ACTOR" --open --max-age-d "$CLAIM_MAX_AGE_D" 2>&1 >/dev/null || true)"
   fi
 fi
 if [ -n "$ISSUE" ]; then
@@ -520,7 +571,7 @@ elif [ "$SESSION_ID_ONLY" = 1 ]; then
   # be indistinguishable from the derivation having quietly failed.
   echo "issue-ref: NONE (--session-id-only: this commit carries Session-Id alone, no Issue-Ref, no comment)" >&2
 else
-  echo "gate-fail: no OPEN claim with #N by $OC_ACTOR and no --issue passed${DERIVE_ERR:+ — $DERIVE_ERR}" >&2
+  echo "gate-fail: no USABLE open claim with #N by $OC_ACTOR (none open, or the newest is older than ${CLAIM_MAX_AGE_D}d — #631) and no --issue passed${DERIVE_ERR:+ — $DERIVE_ERR}" >&2
   echo "          claim the issue first, or pass --issue <N> to commit against it explicitly" >&2
   echo "          (or --session-id-only if this commit belongs to no issue — #728)" >&2
   exit 3
@@ -677,10 +728,18 @@ if $G -c trailer.ifexists=replace commit "${_TRAILERS[@]}" "${MSGS[@]}"; then
   # the leg is skipped structurally rather than by a NO_COMMENT side effect.
   if [ "$SESSION_ID_ONLY" = 0 ] && [ "$NO_COMMENT" = 0 ] && [ "${OC_COMMIT_COMMENT:-1}" = 1 ]; then
     IL="${OC_ISSUE_LOG_BIN:-$OC_TOOLS_DIR/issue/oc-issue-log}"
-    if "$IL" "$ISSUE" "$CSHA" ${CSTATE:+--state "$CSTATE"} --repo "${OC_ISSUE_LOG_REPO:-$ISSUE_REPO}" --repo-path "$REPO" >/dev/null 2>&1; then
+    # #631: the comment leg's OWN stderr is captured, never discarded. It was
+    # `>/dev/null 2>&1`, so a failed post looked like a mystery (measured
+    # 2026-11-09: the derived #311 did not exist on the resolved factory board)
+    # and the operator fell back to the bare remediation hint below — which
+    # omitted --repo, so oc-issue-log used ITS default (the FORK) and posted the
+    # note onto leshchenko1979/opencrabs#311, an unrelated OPEN issue. Both legs
+    # now name the SAME resolved slug, and the reason is shown.
+    if _cl_err="$("$IL" "$ISSUE" "$CSHA" ${CSTATE:+--state "$CSTATE"} --repo "${OC_ISSUE_LOG_REPO:-$ISSUE_REPO}" --repo-path "$REPO" 2>&1 >/dev/null)"; then
       echo "implementation comment posted on #$ISSUE"
     else
-      echo "COMMENT FAILED after commit $CSHA — post it NOW: $IL $ISSUE $CSHA --state '<verification>'" >&2
+      echo "COMMENT FAILED after commit $CSHA — ${_cl_err:-oc-issue-log gave no diagnostic}" >&2
+      echo "post it NOW, with the SAME repo this wrapper resolved: $IL $ISSUE $CSHA --repo '${OC_ISSUE_LOG_REPO:-$ISSUE_REPO}' --repo-path '$REPO' --state '<verification>'" >&2
       exit 5
     fi
   fi

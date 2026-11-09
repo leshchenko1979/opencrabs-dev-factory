@@ -3343,6 +3343,60 @@ DOMEOF
   fi
   grep -q "older claim row(s) by $WO were also scanned and none is open" "$T/wo.err" \
     && ok || bad "claim-ref-open-none-left-diagnostic"
+  # #631: `claim-ref --open --max-age-d N` — an over-age claim is NOT a weaker
+  # answer, it is NOT AN ANSWER. Measured incident (factory #311, 2026-11-09):
+  # oc-commit derived an Issue-Ref from a claim made 51.1 days earlier and the
+  # per-commit note landed on leshchenko1979/opencrabs#311 — an unrelated OPEN
+  # issue on the fork, because the derivation and the comment leg disagreed on
+  # the repo. The bound is OPT-IN (default 0 = unbounded) so the plain read and
+  # every existing consumer keep their exact behaviour.
+  # Fixtures: WA claimed long ago and never closed, WB claimed just now, WD's
+  # claim stamp is unparseable.
+  local WA="aaaa6310-1111-4222-8333-444455556666"
+  local WB="bbbb6310-1111-4222-8333-444455556666"
+  local WD="dddd6310-1111-4222-8333-444455556666"
+  local L631="$T/wl631.json"
+  cat > "$L631" <<JSON
+{"workers":[{"uuid":"$WA","role":"editor"},{"uuid":"$WB","role":"editor"},{"uuid":"$WD","role":"editor"}],"events":[
+ {"t":"2020-01-01T00:00:00Z","kind":"claim","by":"editor $WA","what":"CLAIM #311 — abandoned long ago, never closed"},
+ {"t":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","kind":"claim","by":"editor $WB","what":"CLAIM #3110 — claimed just now"},
+ {"t":"not-a-timestamp","kind":"claim","by":"editor $WD","what":"CLAIM #3111 — undateable"}]}
+JSON
+  out="$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 7 2>"$T/a631.err")"; rc=$?
+  if [ "$rc" -eq 3 ] && [ -z "$out" ]; then ok; else bad "claim-ref-age-stale-rc3 (want rc=3 got rc=$rc, out=[$out])"; fi
+  grep -q 'STALE' "$T/a631.err" && ok || bad "claim-ref-age-stale-diagnostic (got: $(tr '\n' ' ' < "$T/a631.err"))"
+  grep -q -- '--issue' "$T/a631.err" && ok || bad "claim-ref-age-stale-offers-escape-hatch"
+  #     POSITIVE CONTROL: the SAME bound on a FRESH claim must still ANSWER. A
+  #     leg that only ever refuses passes on a verb that never derives at all.
+  chk "claim-ref-age-fresh-answers" "3110" "$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WB" --open --max-age-d 7 2>/dev/null)"
+  #     KNOB: --max-age-d 0 is unbounded, so the stale lane answers again. Without
+  #     this the arm above could be red for ANY refusal, not the age.
+  chk "claim-ref-age-zero-unbounded" "311" "$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 0 2>/dev/null)"
+  #     BACKWARD COMPAT: the bound is opt-in. An absent flag must behave exactly
+  #     as it did before #631 — this is the leg that reddens if the bound is ever
+  #     made the DEFAULT, which would silently change every existing consumer.
+  chk "claim-ref-age-absent-unbounded" "311" "$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open 2>/dev/null)"
+  #     UNDECIDABLE != FRESH: an unparseable stamp must REFUSE under a bound, not
+  #     be read as age 0. Same fail-closed direction as the rest of this family.
+  out="$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WD" --open --max-age-d 7 2>"$T/d631.err")"; rc=$?
+  if [ "$rc" -eq 3 ] && [ -z "$out" ]; then ok; else bad "claim-ref-age-undecidable-rc3 (want rc=3 got rc=$rc, out=[$out])"; fi
+  grep -q 'UNDECIDABLE' "$T/d631.err" && ok || bad "claim-ref-age-undecidable-diagnostic (got: $(tr '\n' ' ' < "$T/d631.err"))"
+  #     ARG VALIDATION: a flag that needs a value must say so, not read the next
+  #     token as one (an accepted-but-inert bound is indistinguishable from an
+  #     honoured one).
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WB" --open --max-age-d >/dev/null 2>&1; chk "claim-ref-age-missing-value-rc2" 2 $?
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WB" --open --max-age-d=7 >/dev/null 2>&1; chk "claim-ref-age-equals-form-rc0" 0 $?
+  #     NON-NUMERIC BOUND: `--max-age-d 7d` used to parse into max_age_d="7d"
+  #     and then be read by the helper as 0 = UNBOUNDED, so a caller who
+  #     believed the bound was on had none at all. Refuse rc 2 with a
+  #     diagnostic that names the offending value. POSITIVE CONTROL: the
+  #     numeric forms above still answer, so this cannot pass on a verb that
+  #     rejects every value.
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 7d >"$T/n631.out" 2>"$T/n631.err"
+  _rc=$?; if [ "$_rc" -eq 2 ] && [ -z "$(cat "$T/n631.out")" ]; then ok; else bad "claim-ref-age-nonnumeric-rc2 (want rc=2 got rc=$_rc, out=[$(cat "$T/n631.out")])"; fi
+  grep -q 'must be a number' "$T/n631.err" && ok || bad "claim-ref-age-nonnumeric-diagnostic (got: $(tr '\n' ' ' < "$T/n631.err"))"
+  grep -q '7d' "$T/n631.err" && ok || bad "claim-ref-age-nonnumeric-names-the-value (got: $(tr '\n' ' ' < "$T/n631.err"))"
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 1.2.3 >/dev/null 2>&1; chk "claim-ref-age-twodots-rc2" 2 $?
   # 46-50 (v0.4.97, #129 family): claims <N> — open claim-refs by issue.
   # Fixture: W2 claimed #999 above; W3's claim has no #N. Claim #777 as W4,
   # verify OPEN, close it via a later close event, verify GONE.
@@ -4222,8 +4276,28 @@ _latest_claim_issue() { # $1=uuid -> stdout: issue number (rc 0) or failure
   echo "$issue"
 }
 
-_latest_open_claim_issue() { # $1=uuid -> stdout: the lane's latest claim issue
-  # that is STILL OPEN (rc 0), else a diagnostic (rc 3).
+_latest_open_claim_issue() { # $1=uuid [$2=max_age_days] -> stdout: the lane's latest claim issue
+  # that is STILL OPEN and YOUNGER than $2 days (rc 0), else a diagnostic (rc 3).
+  #
+  # AGE BOUND (#631, measured 2026-11-09 by the HQ lane, commit e54c092d): an
+  # OPEN claim never expires, so `--open` alone is unbounded in TIME as well as
+  # in choice. The HQ lane's newest open claim was n=8822 from 2026-09-19
+  # ("RE-CLAIM #311 ... CI-143 kill storm") — 51 days old — while its two NEWER
+  # claims were both closed, so the newest-first scan walked past them and
+  # stamped a November editor.md doc fix with a September CI claim. The trailer
+  # was a durable false provenance record in git history, and the post-commit
+  # comment went looking for issue 311 on that claim's tracker.
+  #
+  # $2 = 0 or absent keeps the old unbounded behaviour (the plain read a human
+  # or a diagnostic verb wants); a positive value REFUSES rather than answering
+  # when the newest open claim is older, because a wrong Issue-Ref outlives the
+  # commit that carries it. The escapes are the ones the no-claim path already
+  # offers: `--issue <N>` (the lane names its issue) or `--session-id-only`
+  # (the commit belongs to none).
+  #
+  # An UNDECIDABLE age (missing/unparseable `t`) also refuses: a row whose age
+  # cannot be read is not evidence of freshness, and the fail-open direction
+  # here is the one that writes a false trailer into history.
   #
   # #335: the write-side counterpart of _latest_claim_issue, for callers that
   # must not ACT on a released claim. oc-commit derives Issue-Ref from here:
@@ -4239,11 +4313,40 @@ _latest_open_claim_issue() { # $1=uuid -> stdout: the lane's latest claim issue
   # one (oc_claims.claim_is_closed) — never re-inlined here: four inlined copies
   # of it had already drifted apart (#305).
   python3 -c '
-import sys, os, json
+import sys, os, json, datetime
 
 sys.dont_write_bytecode = True   # keep the shared checkout byte-identical
 sys.path.insert(0, os.path.join(sys.argv[2], "lib"))
 import oc_claims as oc
+
+def _age_days(ts):
+    """Days between the row stamp and now, or None when it cannot be READ.
+
+    None is UNDECIDABLE, never 0: a row whose age cannot be read is not
+    evidence of freshness (see the age-bound block above the function).
+    """
+    s = (ts or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds() / 86400.0
+
+# #631: an UNPARSEABLE bound must be refused, never silently read as 0
+# (unbounded). float("7d") raises, and the old default made a typo look like a
+# working bound — an accepted-but-inert flag is indistinguishable from an
+# honoured one, which is the exact failure class #631 is about. The SHELL side
+# validates first so the refusal carries the verb voice and rc 2.
+try:
+    max_age_d = float(sys.argv[4] or 0)
+except (IndexError, ValueError):
+    max_age_d = 0.0
 
 try:
     with open(sys.argv[1]) as f:
@@ -4278,6 +4381,26 @@ for idx in reversed(idxs):
     row = rows[idx]
     for tok in row["targets"]:
         if not oc.claim_is_closed(rows, idx, row["by"], tok):
+            # #631: the age bound. Rows are scanned newest-first, so the FIRST
+            # open candidate is also the YOUNGEST open one — if it is already
+            # over the bound, every older candidate is too, and the honest
+            # answer is a refusal rather than a walk down to an even staler row.
+            if max_age_d > 0:
+                age = _age_days(row["t"])
+                if age is None:
+                    sys.stderr.write(
+                        "cannot DATE the newest open claim (#%d by %s, t=%r), so its age is UNDECIDABLE and an Issue-Ref cannot be derived from it safely\n"
+                        % (tok, uuid, row["t"]))
+                    sys.stderr.write(
+                        "pass --issue <N> to name the intended issue, or --session-id-only if this commit belongs to none\n")
+                    sys.exit(3)
+                if age > max_age_d:
+                    sys.stderr.write(
+                        "the newest open claim is STALE — #%d was claimed %.1f days ago (bound %.1f d, %.0f h): %s\n"
+                        % (tok, age, max_age_d, max_age_d * 24.0, row["what"]))
+                    sys.stderr.write(
+                        "refusing to derive an Issue-Ref from an abandoned claim; pass --issue <N> to name the intended issue, or --session-id-only if this commit belongs to none\n")
+                    sys.exit(3)
             sys.stdout.write("%d\n" % tok)
             sys.exit(0)
 
@@ -4295,7 +4418,7 @@ if older:
         "%d older claim row(s) by %s were also scanned and none is open\n"
         % (older, uuid))
 sys.exit(3)
-' "$LEDGER" "$_OC_DIR" "$1"
+' "$LEDGER" "$_OC_DIR" "$1" "${2:-0}"
 }
 
 cmd_claim() { # oc-ledger claim [<uuid>] <issue-number|#N> [text...] | oc-ledger claim --issue <N> [--what <text>]
@@ -4361,16 +4484,29 @@ cmd_claim_ref() { # oc-ledger claim-ref <uuid> [--open] — print the #N from th
   # Without --open the verb answers with the latest claim row whether open or
   # closed.
   # Pure read: no existence check, no ledger mutation. rc 0 + "#N" | rc 3.
-  local open=0 uuid=""
+  local open=0 uuid="" max_age_d=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --open) open=1; shift ;;
-      -h|--help) echo "usage: oc-ledger claim-ref <uuid> [--open]   (--open = the lane's NEWEST claim row that is STILL OPEN; rc 3 = no claim row by that lane is open. The composed '<role> <uuid>' is also accepted; for an ISSUE number use: oc-ledger claims <N>)"; exit 0 ;;
+      # #631: bound the AGE of the claim the derivation may act on. 0/absent =
+      # unbounded (the plain read); a positive value refuses rather than
+      # answering when the newest open claim is older than that.
+      --max-age-d) max_age_d="${2:-}"; [ -n "$max_age_d" ] || die 2 "claim-ref: --max-age-d needs a value (days; 0 = unbounded)"; shift 2 ;;
+      --max-age-d=*) max_age_d="${1#--max-age-d=}"; shift ;;
+      -h|--help) echo "usage: oc-ledger claim-ref <uuid> [--open] [--max-age-d <days>]   (--open = the lane's NEWEST claim row that is STILL OPEN; --max-age-d > 0 additionally REFUSES when that claim is older than <days> (#631). rc 3 = no open claim, or one too old to act on. The composed '<role> <uuid>' is also accepted; for an ISSUE number use: oc-ledger claims <N>)"; exit 0 ;;
       --*) die 2 "claim-ref: unknown flag '$1'" ;;
       *) [ -z "$uuid" ] || die 2 "claim-ref: unexpected extra argument '$1'"; uuid="$1"; shift ;;
     esac
   done
   [ -n "$uuid" ] || die 2 "usage: oc-ledger claim-ref <uuid> [--open]"
+  # #631: the bound must be a NUMBER. A typo (`--max-age-d 7d`) used to be
+  # accepted by this parse and then read by the helper as 0 = UNBOUNDED, so a
+  # caller who believed they had a bound had none — an accepted-but-inert flag
+  # is indistinguishable from an honoured one, which is the exact class #631
+  # fixes. Refuse rc 2 instead of quietly answering without the bound.
+  case "$max_age_d" in
+    ''|*[!0-9.]*|*.*.*) die 2 "claim-ref: --max-age-d must be a number of days (got '$max_age_d'; 0 = unbounded)" ;;
+  esac
   # #441 / Design Q shape 1 (Decision 15, self-ruled): enforce the DOMAIN the
   # usage line declares. Only PRESENCE was checked before, so any non-empty
   # string was taken as the actor and _latest_claim_issue's free substring did
@@ -4395,9 +4531,12 @@ cmd_claim_ref() { # oc-ledger claim-ref <uuid> [--open] — print the #N from th
   local out
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
   if [ "$open" = 1 ]; then
-    out="$(_latest_open_claim_issue "$uuid")" || die 3 "claim-ref --open: $out"
+    # 2>&1: the helper writes its DIAGNOSTIC to stderr and nothing to stdout on
+    # failure, so a stdout-only capture made this die print a dangling
+    # "claim-ref --open:" with no reason after it. Merging keeps one message.
+    out="$(_latest_open_claim_issue "$uuid" "$max_age_d" 2>&1)" || die 3 "claim-ref --open: $out"
   else
-    out="$(_latest_claim_issue "$uuid")" || die 3 "claim-ref: $out"
+    out="$(_latest_claim_issue "$uuid" 2>&1)" || die 3 "claim-ref: $out"
   fi
   echo "$out"
 }

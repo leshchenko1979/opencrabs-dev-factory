@@ -88,6 +88,24 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDE
 die() { echo "oc-issue-log: $2" >&2; exit "$1"; }
 
 FORK="${OC_ISSUE_LOG_REPO:-leshchenko1979/opencrabs}"
+# #631: remember whether the board was NAMED or defaulted. A defaulted board
+# used to be invisible until the success line, so a caller that meant a factory
+# issue posted onto the fork's same-numbered issue instead (measured 2026-11-09:
+# oc-commit derived #311, its comment leg failed silently, the printed recovery
+# hint carried no --repo, and the operator's hand-run landed the note on
+# leshchenko1979/opencrabs#311 — an unrelated OPEN issue — instead of the
+# factory board the wrapper had resolved). The default still exists (it is the
+# documented contract for PR-time notes), but it now SAYS SO first.
+REPO_EXPLICIT=0
+# #631: three states, not two. `--repo` names the board, `OC_ISSUE_LOG_REPO`
+# names it from the environment, and only the ABSENT case is a true default.
+# Collapsing env into "default" would make the announcement below a LIE — it
+# would name the factory board and then say "no --repo given", which reads as
+# "this is the fork default" to the one reader who needs it to be true.
+case "${OC_ISSUE_LOG_REPO:-}" in
+  "") REPO_SOURCE="default" ;;
+  *)  REPO_SOURCE="env" ;;
+esac
 REPO_PATH="${OC_ISSUE_LOG_REPO_PATH:-$PWD}"
 ISSUE=""; SHA=""; STATE=""; DRY=0; FORCE=0
 # GH_BIN is overridable so the idempotency guard can be exercised hermetically
@@ -96,7 +114,7 @@ GH_BIN="${OC_ISSUELOG_GH:-gh}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --state) [ $# -ge 2 ] || { echo "oc-issue-log: --state needs a value" >&2; usage; exit 2; }; STATE=""$2""; shift 2 ;;
-    --repo) [ $# -ge 2 ] || { echo "oc-issue-log: --repo needs a value" >&2; usage; exit 2; }; FORK=""$2""; shift 2 ;;
+    --repo) [ $# -ge 2 ] || { echo "oc-issue-log: --repo needs a value" >&2; usage; exit 2; }; FORK=""$2""; REPO_EXPLICIT=1; REPO_SOURCE="flag"; shift 2 ;;
     --repo-path) REPO_PATH="${2:-}"; [ -n "$REPO_PATH" ] || usage; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --force) FORCE=1; shift ;;
@@ -276,6 +294,41 @@ FAKEGH
       [ "$m_rc" = 0 ] || { echo "selftest: foreign --force expected rc 0, got $m_rc: $m_out" >&2; exit 1; }
       [ -f "$d/sentinel" ] || { echo "selftest: --force did NOT bypass the foreign guard" >&2; exit 1; }
       case "$m_out" in *"idem=forced"*) : ;; *) echo "selftest: foreign --force did not emit idem=forced: $m_out" >&2; exit 1 ;; esac
+      # N. (#631) A DEFAULTED board is ANNOUNCED. Silent defaults are how a
+      #    factory issue's note landed on the fork's same-numbered issue: the
+      #    caller never learned which board it had addressed until AFTER the
+      #    post. Measured 2026-11-09 — oc-commit derived #311, its comment leg
+      #    failed with stderr discarded, the printed recovery hint carried no
+      #    --repo, and the operator's hand-run posted onto the unrelated OPEN
+      #    leshchenko1979/opencrabs#311 instead of the factory board.
+      rm -f "$d/sentinel"
+      n_out="$(OC_FAKE_VIEW_BODY="an unrelated existing comment" _il_run 2>&1)"; n_rc=$?
+      [ "$n_rc" = 0 ] || { echo "selftest: #631 defaulted-board expected rc 0, got $n_rc: $n_out" >&2; exit 1; }
+      case "$n_out" in *"DEFAULT — no --repo given"*) : ;; *) echo "selftest: #631 a DEFAULTED board must announce itself (got: $n_out)" >&2; exit 1 ;; esac
+      case "$n_out" in *"leshchenko1979/opencrabs#"*) : ;; *) echo "selftest: #631 the announcement must name the resolved board (got: $n_out)" >&2; exit 1 ;; esac
+      # N2. (#631) THREE states, not two: an env-named board must NOT claim to
+      #     be the default. The message is the only thing a caller can act on, so
+      #     a message that names the factory board and says "DEFAULT — no --repo
+      #     given" sends the reader to the wrong place — the same class of harm
+      #     this whole issue is about, one layer down. Found by mutating the
+      #     condition to `if true` and reading what the tool then printed.
+      rm -f "$d/sentinel"
+      n2_out="$(OC_ISSUE_LOG_REPO=leshchenko1979/opencrabs-dev-factory OC_FAKE_VIEW_BODY="an unrelated existing comment" _il_run 2>&1)"; n2_rc=$?
+      [ "$n2_rc" = 0 ] || { echo "selftest: #631 env-board expected rc 0, got $n2_rc: $n2_out" >&2; exit 1; }
+      case "$n2_out" in *"ENV — no --repo given"*) : ;; *) echo "selftest: #631 an env-named board must announce ENV, never DEFAULT (got: $n2_out)" >&2; exit 1 ;; esac
+      case "$n2_out" in *"DEFAULT"*) echo "selftest: #631 an env-named board must not be called DEFAULT (got: $n2_out)" >&2; exit 1 ;; esac
+      # O. (#631) POSITIVE CONTROL for N: an EXPLICIT --repo must NOT announce,
+      #    or the arm above passes on a tool that prints the line unconditionally
+      #    — which would be noise on every tool leg that does name its board.
+      rm -f "$d/sentinel"
+      o_out="$(OC_FAKE_VIEW_BODY="an unrelated existing comment" _il_run --repo leshchenko1979/opencrabs-dev-factory 2>&1)"; o_rc=$?
+      [ "$o_rc" = 0 ] || { echo "selftest: #631 explicit-board expected rc 0, got $o_rc: $o_out" >&2; exit 1; }
+      case "$o_out" in *"DEFAULT — no --repo given"*) echo "selftest: #631 an EXPLICIT --repo must not announce a default (got: $o_out)" >&2; exit 1 ;; esac
+      # P. (#631) --dry-run is a READ: it must not announce, because nothing is
+      #    being posted and a dry run is where a caller discovers the board.
+      p_out="$(OC_FAKE_VIEW_BODY="an unrelated existing comment" _il_run --dry-run 2>&1)"; p_rc=$?
+      [ "$p_rc" = 0 ] || { echo "selftest: #631 dry-run expected rc 0, got $p_rc: $p_out" >&2; exit 1; }
+      case "$p_out" in *"DEFAULT — no --repo given"*) echo "selftest: #631 --dry-run must stay silent (got: $p_out)" >&2; exit 1 ;; esac
       echo "selftest OK"; exit 0 ;;
     -h|--help) usage 0 ;;   # C-#3: help = 0 on STDOUT (usage takes the rc)
     *) if [ -z "$ISSUE" ]; then ISSUE="$1"; elif [ -z "$SHA" ]; then SHA="$1"; else usage; fi; shift ;;
@@ -335,6 +388,14 @@ _idem_emit() {
   oc_log_extra idem "$IDEM"
   printf 'idem=%s\n' "$IDEM"
 }
+
+# ---- board announcement (#631) ------------------------------------------
+# A DEFAULTED board is named out loud, before anything is posted. Silent
+# defaults are how a factory issue's note reached the fork's #311; the caller
+# that passes --repo (every tool leg does) stays quiet.
+if [ "$REPO_EXPLICIT" = "0" ] && [ "$DRY" = "0" ]; then
+  echo "oc-issue-log: board $FORK#${ISSUE:-?} (${REPO_SOURCE^^} — no --repo given; pass --repo <owner/repo> to name it)" >&2
+fi
 
 # ---- foreign-tracker guard (factory #30, Triage change request 530c29ec) ----
 # Our OWN boards: the fork (CI/PR host) and the factory. Anywhere else is
