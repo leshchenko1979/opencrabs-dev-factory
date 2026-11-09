@@ -28,59 +28,19 @@ harvest). An editor lane NEVER files an upstream PR.
 
 ## Box law — no local cargo, ever
 
-cargo/rustc/clippy are FORBIDDEN on this box in ANY form: PATH, login shell,
-`PATH="$HOME/.cargo/bin:$PATH"` prepends, explicit paths
-(`~/.cargo/bin/*`, `~/.rustup/toolchains/*/bin/*`), `source ~/.cargo/env`, any
-other bypass. The BLOCKED stubs in `/usr/local/bin` are the floor of the rule,
-not the rule — and there is nothing left to bypass to: `/root/.rustup` is gone
-from this host and the `rustfmt` wrapper was RETIRED 2026-09-19 (it exits 1
-`BLOCKED`). **There is NO sanctioned local Rust tool, fmt included**; a local
-invocation that WORKS would still be a ruling violation. CODE TESTS = CI gate (`pr-checks.yml`, run in
-Phase 5 via `oc-ship-chain`; `harvest.md §Phase 7 step 2c` reuses it on upstream PR heads).
-Everything
-else — build, test, clippy — is CI dispatch: `pr-checks.yml` or
-quick-build-linux dispatched via `oc-ship-chain`. Need
-`cargo test`? Dispatch CI.
-Iterating clippy fixes? Edit code, re-dispatch pr-checks, read the run log.
-Never compile locally.
+cargo/rustc/clippy are FORBIDDEN in ANY form — PATH prepends, explicit paths (`~/.cargo/bin/*`, `~/.rustup/toolchains/*/bin/*`), `source ~/.cargo/env`, any bypass. The `/usr/local/bin` BLOCKED stubs are the floor, not the rule: `/root/.rustup` is gone and the `rustfmt` wrapper RETIRED 2026-09-19, so **no sanctioned local Rust tool exists, fmt included — an invocation that WORKS is still a violation.**
 
-**`#[cfg(test)]` boundary — both directions, and the cost asymmetry is the point.**
-A test-only fn must NEVER be called from production code: when it performs the
-identical mutation it reads as the production API, and with no local cargo the
-error surfaces only at CI as `error[E0599]` — one full ~30 min gate cycle.
-**Before swapping a field assignment for a method call, confirm the method is not
-`cfg(test)`-gated.** The mirror direction: a fn used ONLY by `src/tests` needs a
-`#[cfg(test)]` gate, not deletion (clippy `dead_code` fires in the non-test lib
-target). Incidents: `war-stories.md §OpenCrabs fork ops — tooling lessons`.
+CODE TESTS = the CI gate (`pr-checks.yml`, Phase 5 via `oc-ship-chain`; `harvest.md §Phase 7 step 2c` reuses it on upstream PR heads). Everything else — build, test, clippy — is a CI dispatch: need `cargo test`? Dispatch CI. Iterating clippy? Edit, re-dispatch pr-checks, read the run log. Never compile locally.
+
+**`#[cfg(test)]` boundary — both directions, and the cost asymmetry is the point.** A test-only fn must never be called from production code: it reads as the production API and, with no local cargo, fails only at CI as `error[E0599]` — one ~30 min gate cycle. Mirror: a fn used ONLY by `src/tests` needs a `#[cfg(test)]` gate, not deletion (clippy `dead_code` fires in the non-test lib target). Incidents: `war-stories.md §OpenCrabs fork ops — tooling lessons`.
 
 ## Execution isolation — the cgroup boundary (declared 2026-10-15)
 
-**Declared boundary (opencrabs-dev ruling, 2026-10-15): cgroup isolation is a
-property of the BATTERY RUNNER only. Every other invocation a lane makes — a tool,
-a probe, a script — is KNOWINGLY UNISOLATED and lands in the daemon's own cgroup.**
-Do not assume isolation you were not given.
+**cgroup isolation is a property of the BATTERY RUNNER only** (opencrabs-dev ruling 2026-10-15). Every other invocation a lane makes — a tool, a probe, a script — is KNOWINGLY UNISOLATED and lands in the daemon's own cgroup. Do not assume isolation you were not given. Measured 2026-10-15: `memory.current` at **99.5 %** of `memory.max` with **10.4 MiB** headroom and `memory.high == memory.max` (one wall, no throttle band — `max` counts reclaim contact, `high` excursions past it); the load was the cgroup's own children, not battery runs.
 
-**The accounting domain is a USER unit — query the user manager.** The daemon runs
-as `opencrabs-ops.service` under `user@0.service`:
-`/user.slice/user-0.slice/user@0.service/app.slice/opencrabs-ops.service`. A plain
-`systemctl show opencrabs-ops.service` (the SYSTEM manager) answers
-`ActiveState=inactive SubState=dead ControlGroup=` and `MemoryMax=infinity` — a FALSE
-NEGATIVE that reads exactly like "no cgroup, no limits, no problem". Use
-`XDG_RUNTIME_DIR=/run/user/0 systemctl --user show opencrabs-ops.service`, or read the
-cgroup files directly.
+**The accounting domain is a USER unit — query the user manager.** The daemon runs as `opencrabs-ops.service` under `user@0.service` (`/user.slice/user-0.slice/user@0.service/app.slice/opencrabs-ops.service`). A plain `systemctl show opencrabs-ops.service` (SYSTEM manager) answers `ActiveState=inactive SubState=dead ControlGroup=` and `MemoryMax=infinity` — a FALSE NEGATIVE that reads exactly like "no cgroup, no limits, no problem". Use `XDG_RUNTIME_DIR=/run/user/0 systemctl --user show opencrabs-ops.service`, or read the cgroup files directly.
 
-**Measured 2026-10-15** (direct cgroup read): `memory.current` sat at **99.5 %** of
-`memory.max` with **10.4 MiB** headroom, and `memory.high == memory.max` — ONE wall, no
-throttle band, so `max` counts reclaim contact while `high` counts excursions past it
-(the two counters do not contradict). Load was the cgroup's own children, not battery runs.
-
-**The structural closure is FILED, not assumed:** fork
-[#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached
-job in its own transient scope, at the harness's own spawn point. Until it lands, a lane
-that spawns heavy work is spending the daemon's memory budget, and #504 (8 h of jobs
-starved, silent) is the measured cost of forgetting it. Per-path patching will not
-converge: #720 (battery runner — the ONLY isolation that exists today), #727
-(`oc-prchecks`), #504 (cron child) and #403 (`OOMPolicy`) each covered one path.
+**The structural closure is FILED, not assumed:** fork [#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached job in its own transient scope at the harness's own spawn point. Until it lands, a lane spawning heavy work spends the daemon's memory budget; #504 (8 h of jobs starved, silent) is the measured cost. Per-path patching will not converge — #720 (battery runner, the ONLY isolation today), #727 (`oc-prchecks`), #504 (cron child), #403 (`OOMPolicy`) each covered one path.
 
 ## Telegram surface — editor duties (delta of SKILL.md §Telegram surface law)
 
@@ -113,42 +73,15 @@ editor-facing duties:
 
 ## Direct dispatch & CI execution discipline (owner order 2026-09-10, fleet-directives §Direct dispatch)
 
-**Direct dispatch:** work orders go sender → resource-owner directly — never
-through an intermediary lane. Address by full uuid from a same-turn roster read;
-stamp the dispatch + receipt id via oc-ledger.
+**Direct dispatch:** work orders go sender → resource-owner directly, never through an intermediary lane. Address by full uuid from a same-turn roster read; stamp the dispatch + receipt id via `oc-ledger`.
 
 1. **Detached execution, actor attribution & re-dispatch:** W1/W2/W6 of `fleet-directives.md §CI-wait discipline & actor attribution` bind unchanged; a re-run because the head moved is inherent to a fix loop but goes through `oc-prchecks` re-dispatch — `pr-checks.yml` carries a concurrency group (`cancel-in-progress: true`), so the superseded run auto-cancels.
-
-2. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only
-   identifies the DISPATCH; the run's checkout log line identifies the TESTED
-   TREE — only the checkout-ref is terminal truth for code-level verdicts.
-   Verify the run checked out your head sha before reading any verdict as lane
-   evidence — `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity
-   reported but never trusted; a mismatch is a carrier bug against the dispatch path — come
-   straight to HQ with run id + checkout-ref + ledger incident
-   stamp (suspect the single-flight dispatch lock adoption).
-3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify
-   the run actually carries your head (job name embeds the head sha) before
-   waiting on it — a dispatch that fired on the wrong ref wastes the whole
-   wait. oc-prchecks headSha adoption enforces this for its own runs; the
-   check covers hand-dispatched `gh workflow run` uses.
-   **The two obvious queries are BLIND to a PR-lane sha by construction** —
-   `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a
-   `workflow_dispatch` run carries the CARRIER head. Read the sha out of the
-   **JOB NAME**. Full clause and the general counter rule:
-   `environment.md §Environment facts (all roles)` (it binds every role that
-   checks a gate, not editors only).
+2. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only identifies the DISPATCH; the run's checkout log line identifies the TESTED TREE — only the checkout-ref is terminal truth for code-level verdicts. Verify the run checked out your head sha before reading any verdict as lane evidence — `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity reported but never trusted; a mismatch is a carrier bug against the dispatch path — come straight to HQ with run id + checkout-ref + ledger incident stamp (suspect the single-flight dispatch lock adoption).
+3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify the run carries your head (job name embeds the head sha) before waiting — a dispatch on the wrong ref wastes the whole wait; `oc-prchecks` headSha adoption enforces this for its own runs. **The two obvious queries are BLIND to a PR-lane sha by construction** — `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a `workflow_dispatch` run carries the CARRIER head. Read the sha out of the **JOB NAME**. Full clause + the general counter rule: `environment.md §Environment facts (all roles)` (binds every role that checks a gate, not editors only).
 4. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
 5. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
-6. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated/lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
-7. **PR-state claims need a same-turn `gh pr view` receipt (Duty-6/#1431
-   lesson, v0.4.91):** any claim that a PR was created, updated, re-pointed,
-   or "auto-updated" by a push is UNVERIFIED until `gh pr view <n> --json
-   headRefOid,headRefName,state` names the EXPECTED head sha and repo — a
-   force-push to a fork branch does NOT move a PR whose head branch lives on
-   another repo (#1431, 2026-09-07: "PR head auto-updated" claim dissolved on
-   first-hand check; headRefOid was still the old rider sha). Check event +
-   branch + head sha ALL match before concluding PR state.
+6. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated or lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
+7. **PR-state claims need a same-turn `gh pr view` receipt (Duty-6/#1431 lesson, v0.4.91):** any claim that a PR was created, updated, re-pointed, or "auto-updated" by a push is UNVERIFIED until `gh pr view <n> --json headRefOid,headRefName,state` names the EXPECTED head sha and repo — a force-push to a fork branch does NOT move a PR whose head branch lives on another repo (#1431, 2026-09-07: "PR head auto-updated" dissolved on first-hand check; headRefOid was still the old rider sha). Check event + branch + head sha ALL match before concluding PR state.
 
 ## Mid-cycle skill drift — pull-check on every detached resume (v0.4.52)
 
@@ -214,10 +147,7 @@ When Triage announces a **Decision Rollcall**, follow `fleet-directives.md §Dec
 
 ## Tool reference — editor's daily table
 
-Canonical descriptions + selftest contracts: `tools/docs/RC-CONTRACT.md` (full
-inventory of tools) + SKILL.md tool table. The
-editor-relevant daily subset, invocation forms only (all paths relative to the skill
-dir; actor derived automatically from ambient `$OPENCRABS_SESSION_ID`):
+Canonical descriptions + selftest contracts: `tools/docs/RC-CONTRACT.md` (full inventory) + SKILL.md tool table. The editor-relevant daily subset, invocation forms only (paths relative to the skill dir; actor derived from ambient `$OPENCRABS_SESSION_ID`):
 
 | Tool | Invocation | For |
 |------|-----------|-----|
@@ -229,29 +159,17 @@ dir; actor derived automatically from ambient `$OPENCRABS_SESSION_ID`):
 | `oc-issue-sweep` | `tools/issue/oc-issue-sweep '<query>' [--fork R]` | Phase 1 uniqueness gate (fork open+closed + upstream closed) |
 | `oc-ledger` | `stamp claim --what "…"` · `ack <uuid> <0.N.N>` | Roster receipts + version ack |
 
-*Note: Underlying plumbing tools (`oc-wt`, `oc-deploy`, `oc-prchecks`, `oc-issue-log`, `oc-attrib`, `oc-pr-fault-scope`) are orchestrated internally by `oc-start`, `oc-ship-chain`, and `oc-smoke`.*
+*Plumbing (`oc-wt`, `oc-deploy`, `oc-prchecks`, `oc-issue-log`, `oc-attrib`, `oc-pr-fault-scope`) is orchestrated internally by `oc-start`, `oc-ship-chain` and `oc-smoke`.*
 
-Rules that outlive any table: journal read-back after every `oc-ledger`
-claim/stamp (Phase 1 step 4); terminal truth = `gh run view --json conclusion`, never
-a tool's exit code alone; the ≥30s detached-poll floor (fleet-directives.md §CI-wait discipline & actor attribution).
+Rules that outlive any table: journal read-back after every `oc-ledger` claim/stamp (Phase 1 step 4); terminal truth = `gh run view --json conclusion`, never a tool's exit code alone; the ≥30s detached-poll floor (`fleet-directives.md §CI-wait discipline & actor attribution`).
 
 ## Phase 0 — Fresh base
 
-```bash
-git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
-```
+Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier`.
 
-- Branch off fresh `origin/main`; merge-sync RETIRED (canonical REBASE model 2026-09-11 —
-  SKILL.md §Upstream relations): NEVER `merge --ff-only adolfousier/main` into
-  the shared checkout.
-- **The shared `~/opencrabs` checkout is NEVER evidence** (v0.4.5): it may sit on any
-  session's leftover branch. Verify shipped behavior against `origin/main`
-  explicitly (`git fetch origin && git show origin/main:<path>`) or in a fresh
-  worktree cut from `origin/main` (lens B F2, v0.4.79 — completed truncated rule).
-- Before building on an existing branch: diff it against its merge-base to confirm no
-  foreign WIP rode along from parallel agents. Take a backup branch ref before any
-  `rebase --onto`. *(SKILL.md §Shared war stories)*
-- **Checkable Completion Formula**: DONE = Remotes origin and adolfousier fetched + origin/main tip verified.
+- Branch off fresh `origin/main`; merge-sync RETIRED (canonical REBASE model 2026-09-11 — SKILL.md §Upstream relations): NEVER `merge --ff-only adolfousier/main` into the shared checkout.
+- **The shared `~/opencrabs` checkout is NEVER evidence** (v0.4.5): it may sit on any session's leftover branch — verify shipped behavior against `origin/main` explicitly (`git fetch origin && git show origin/main:<path>`) or in a fresh worktree cut from `origin/main`. Before building on an existing branch, diff it against its merge-base to confirm no foreign WIP rode along, and take a backup ref before any `rebase --onto` (SKILL.md §Shared war stories).
+- **Checkable Completion Formula**: DONE = origin and adolfousier fetched + `origin/main` tip verified.
 
 ## Phase 1 — Claim & Worktree Setup (`oc-start`)
 
@@ -261,9 +179,9 @@ git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch adolfousier
    - **Goal mandate**: design → owner confirms → `/goal follow the skill until the smoke test phase` → continuous execution through Phase 6 — MUST NOT halt after Phase 4 or after an intermediate ship leg. Full law (design-gate precondition, design-gated write scope): `§Autonomous Editor Goal & Continuous Phase Execution Law` (this file).
 
 1. **Uniqueness Gate**: Search existing issues first via `tools/issue/oc-issue-sweep '<query>'` (sweeps fork open/closed + upstream closed).
-2. **Issue Creation & Continuous Relationship Linking**: file a `fix(`/`bug(`-titled issue via `tools/issue/oc-issue-create` declaring its origin ON the creating command -- `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), `--no-parent "<reason>"` as the last resort. A declared root or orphan is legal; a silent one is a violation. **THE GATE HAS THREE LEGS, NOT ONE (owner order 2026-10-05, origin opencrabs/opencrabs#1932): ORIGIN, ASSIGNEE, NATIVE LINK.** Beyond declaring the origin, the creating command must carry **`--assignee <login>`** (fork binary tracker: `leshchenko1979`; factory tracker: `leshchenko1979` — each tracker's ONLY assignable account, measured 2026-10-10; the retired `adolfousier` constant no longer resolves on the fork, where an `--add-assignee` silently no-ops; a tracker's `auto-assign.yml` can otherwise assign the AUTHOR rather than the intended claimer), and where the declared origin resolves to a SAME-TRACKER issue the **native parent link is OBLIGATORY** — `--parent <N>` at creation or `gh issue edit <issue> --parent <N>` immediately after. For `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer (#1932's root `ede0763be` carries `Closes #737`). A comment-only `root:` satisfies declaredness, never the link when a same-tracker parent exists.
+2. **Issue Creation & Continuous Relationship Linking**: file a `fix(`/`bug(`-titled issue via `tools/issue/oc-issue-create` declaring its origin ON the creating command -- `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), `--no-parent "<reason>"` as the last resort. `--assignee leshchenko1979` (the ONLY assignable account on both live trackers — an `--add-assignee adolfousier` silently no-ops on the fork), and the **native parent link** where the origin resolves to a same-tracker issue. A declared root or orphan is legal; a SILENT one is a violation. Full law (three legs, per-tracker assignee, `Closes #N` parent derivation): `SKILL.md` §Hard rules — Continuous Issue Relationship Linking.
    - If no issue fits, open ONE issue on the tracker that OWNS the surface: binary behaviour (runtime, channels, providers, TUI, memory, tools) → `gh issue create -R leshchenko1979/opencrabs` (the fork is the binary tracker since 2026-10-09); factory tooling/CI/process → `-R leshchenko1979/opencrabs-dev-factory`. Upstream `opencrabs/opencrabs` takes NO new issues. Canonical routing: `SKILL.md` §Hard rules — ISSUE ROUTING.
-   - **Continuous Relationship Linking Mandate (owner order 2026-09-16)**: Whenever parent subsystem relationships, blocker dependencies, or child sub-issues are known at creation or discovered in-flight during implementation, the editor MUST establish native links in the same turn via `gh issue edit <issue> --parent <parent-issue>` and/or `gh issue edit <issue> --add-blocked-by <blocker-issue>`.
+   - **Continuous Relationship Linking Mandate (owner order 2026-09-16)**: establish native links in the same turn a relationship is known or discovered — `gh issue edit <issue> --parent <parent-issue>` and/or `--add-blocked-by <blocker-issue>`.
 3. **Atomic Claim & Worktree (Milestone 1 — `oc-start`)**:
    ```bash
    tools/git/oc-start <issue-N> --branch <type>/<slug>
@@ -706,25 +624,13 @@ same day it is the only human gate left near the deploy pipeline.
 
 ## Docs-Only LEG1 Gate Skip (v0.4.161, owner ruling 2026-09-12 11:04Z) [LANE]
 
-**Owner ruling (verbatim, 2026-09-12 11:04Z):** *"We don't need the pure docs commits to pass through ci on our side."* Origin: lane `6630dc9a`'s docs commit `eee36027` (ONTOLOGY.md + CONTRIBUTING.md, zero code) burned LEG1 run `34688939568` in full before the ruling landed.
+**Owner ruling (verbatim, 2026-09-12 11:04Z):** *"We don't need the pure docs commits to pass through ci on our side."* Origin: a lane's docs-only commit burned LEG1 in full before the ruling landed.
 
-- **The law.** A commit whose changed paths are ALL **pure docs** SKIPS the LEG1 CI gate on the fork ship chain. A skip is neither PASS nor RED — it is a **SKIP**, and it MUST be recorded as one — the SKIP is recorded in the ship chain journal, never left implicit.
-- **"Pure docs" is DEFINED HERE, in the law — never left to a tool's discretion.** A commit is pure docs iff **every** changed path (a) ends in `.md`, **and** (b) is **NOT compiled into the binary** via `include_str!` / `include_bytes!`. Clause (b) is load-bearing: a `.md` compiled into the binary changes COMPILED OUTPUT, so a commit touching it is a code change and MUST run the gate. When a chain ships a RANGE rather than a single commit, every commit in the range must be pure docs for the skip to apply.
-
-- **The exclusion set is DERIVED BY THE TOOL at gate time — never by hand, never carried in a lane's context.** Any such path list is **illustrative, not normative**: it rots the moment a template is added or removed, and a lane reproducing it by hand is the defect this clause exists to prevent (owner ruling 2026-09-12: *"that should be purely mechanical"*). The gate computes the set from the tree itself, at the moment it runs, by resolving the compiled-in `include_str!` targets against `src/**/*.rs`. **Mechanical evaluation (Finding J-2, v0.4.170):** Lanes must verify qualification directly using `tools/ship/oc-ship-chain --eval-docs-skip <sha>` instead of manual path inspection or hand-derived checks.
-- **Recording is MANDATORY — an absent gate is NEVER a passed gate.** A skipped LEG1 MUST be recorded in the ship journal **and** in a ledger row naming the sha (kind `shipchain`, the leg stated as SKIPPED). The v0.4.109 CI-run identity + verdict laws apply unchanged: GREEN may be stated only for a gate that actually ran and returned `completed success`; a skipped leg is cited as SKIPPED, never as GREEN, and is never counted as a passed leg in a smoke receipt.
-- **Upstream precedent — and why this law does NOT copy its shape.** Upstream
-`.github/workflows/ci.yml` paths-ignores `**.md` / `docs/**`, an EXTENSION-based shape that
-would happily skip a commit editing a compiled-in template; this law states the
-compiled-in exclusion EXPLICITLY rather than inheriting that hole.
-
-- **Enforcement split.** The law text is HQ's (this section); the mechanical LEG1 behaviour
-is Toolsmith's and LANDED in `d6cb9b9a` (v0.4.161): a pure-docs commit SKIPS LEG1, the
-exclusion set is DERIVED at gate time (`shipchain_docs_only()` — cite by function name,
-never by line), the skip is recorded in the journal (`GATE-SKIPPED-DOCS`) plus a
-`shipchain` ledger row, it applies to a FRESH dispatch only (`--gated-run`/`--gated-sha`
-still gate), and `OC_SHIPCHAIN_NO_DOCS_SKIP=1` forces the gate. Never claim a skip the
-tool has not recorded.
+- **The law.** A commit whose changed paths are ALL **pure docs** SKIPS the LEG1 CI gate on the fork ship chain. A skip is neither PASS nor RED — it is a **SKIP**, and it MUST be recorded as one in the ship chain journal, never left implicit.
+- **"Pure docs" is DEFINED HERE, never left to a tool's discretion.** A commit is pure docs iff **every** changed path (a) ends in `.md` **and** (b) is **NOT compiled into the binary** via `include_str!` / `include_bytes!`. Clause (b) is load-bearing: a `.md` compiled into the binary changes COMPILED OUTPUT, so touching it is a code change and MUST run the gate. A chain shipping a RANGE needs every commit in the range to be pure docs.
+- **The exclusion set is DERIVED BY THE TOOL at gate time — never by hand, never carried in a lane's context.** Any such path list is **illustrative, not normative**: it rots the moment a template is added or removed, and a lane reproducing it by hand is the defect this clause prevents (owner: *"that should be purely mechanical"*). The gate resolves the compiled-in `include_str!` targets against `src/**/*.rs` at run time; lanes verify with `tools/ship/oc-ship-chain --eval-docs-skip <sha>` (Finding J-2, v0.4.170).
+- **Recording is MANDATORY — an absent gate is NEVER a passed gate.** A skipped LEG1 MUST be recorded in the ship journal **and** in a `shipchain` ledger row naming the sha, the leg stated as SKIPPED. GREEN may be stated only for a gate that actually ran and returned `completed success`; a skip is cited as SKIPPED, never GREEN, and never counted as a passed leg in a smoke receipt.
+- **Enforcement split.** The law text is HQ's (this section); the mechanical LEG1 behaviour is Toolsmith's and LANDED in `d6cb9b9a` (v0.4.161): pure-docs commit SKIPS LEG1, the exclusion set is DERIVED at gate time (`shipchain_docs_only()` — cite by function name, never by line), the skip is journalled (`GATE-SKIPPED-DOCS`) plus a `shipchain` ledger row, it applies to a FRESH dispatch only (`--gated-run`/`--gated-sha` still gate), and `OC_SHIPCHAIN_NO_DOCS_SKIP=1` forces the gate. Upstream's `**.md` / `docs/**` paths-ignore shape is deliberately NOT copied — it would skip a commit editing a compiled-in template. Never claim a skip the tool has not recorded.
 
 ## Owner-Dependent Smoke Legs — Park, Don't Chase (v0.4.152, owner order 2026-09-12) [LANE]
 
@@ -771,14 +677,12 @@ A rebase orphans the deployed sha (it stops being an ancestor of `main`), and th
 
 ## Carrier Concurrency & Coalescence Law (v0.4.148, Toolsmith brief 2026-09-12) [LANE]
 
-- **Workflow Concurrency Semantics:** The GitHub Actions carrier workflow `ci/quick-build-linux` uses `concurrency: group: quick-build-linux` with default queuing semantics (1 active run, 1 pending run; additional dispatches cancel and replace the pending run).
-- **Non-blocking Push:** Editors pushing to `origin/main` do not serialize on a pre-dispatch carrier lock; they push their fast-forwarded commits immediately.
-- **Ancestry Matching & Coalescence:** `oc-deploy` and `oc-ship-chain` accept descendant builds via ancestry matching (`git merge-base --is-ancestor "$SHA" "$CAND_SHA"`). If Editor B pushes while Editor A's carrier build is running, and Editor C pushes right after, GitHub Actions coalesces B and C into a single build. When that build succeeds, both Editor B and Editor C recognize their commits as deployed without running redundant builds.
-- **Host Swap Mutex & Monotonicity:** Host binary swaps remain strictly serialized and monotonic via `host-swap.lock` (`flock -x $STATE_DIR/host-swap.lock`) and lineage verification (`git merge-base --is-ancestor "$PREV_SHA" "$SHA"`), preventing stale binary overwrites.
-- **Merge Serialization:** `oc-ship-chain` serializes Leg 3 (fast-forward merge) via `ship.lock`.
-
-
+- **Concurrency semantics:** `ci/quick-build-linux` runs under `concurrency: group: quick-build-linux` with default queuing (1 active + 1 pending; further dispatches cancel and replace the pending run). Editors push to `origin/main` immediately — no pre-dispatch carrier lock.
+- **Coalescence:** `oc-deploy` and `oc-ship-chain` accept descendant builds by ancestry matching (`git merge-base --is-ancestor "$SHA" "$CAND_SHA"`), so pushes landing while a build runs coalesce into one build and every contributing editor recognises its commit as deployed without a redundant dispatch.
+- **Host swap mutex:** host binary swaps stay strictly serialized and monotonic via `host-swap.lock` (`flock -x $STATE_DIR/host-swap.lock`) plus lineage verification — a stale binary cannot overwrite a newer one.
+- **Merge serialization:** `oc-ship-chain` serializes Leg 3 (fast-forward merge) via `ship.lock`.
 
 ## Features-compat gate — no silent feature-loss swaps (HQ ruling 2026-09-04, MANDATORY) [LANE]
 
-`oc-deploy swap-execute` **refuses** any artifact whose feature set drops a feature present in `deployed.meta.json` (exit 4, journal `features-drop-gate`, markers untouched) unless the operator passes `--allow-features-drop` explicitly. Feature *additions* pass freely; *drops* are the failure class. Enforced in-code (selftest 17p/17q). Rationale: the 06:36:06Z rogue swap (run `33844429519`, `features="telegram"` over a live `telegram,code-graph` binary) killed structural memory for 12h — and the 18:57Z f3c03269 swap was the same class (no-tests artifact, auto-consumed). The gate would have refused both.
+`oc-deploy swap-execute` **refuses** any artifact whose feature set drops a feature present in `deployed.meta.json` (exit 4, journal `features-drop-gate`, markers untouched) unless `--allow-features-drop` is passed explicitly. Feature *additions* pass freely; *drops* are the failure class. Enforced in-code (selftest 17p/17q). Rationale: the 06:36:06Z rogue swap (run `33844429519`, `features="telegram"` over a live `telegram,code-graph` binary) killed structural memory for 12h, and the 18:57Z f3c03269 swap was the same class. The gate would have refused both.
+
