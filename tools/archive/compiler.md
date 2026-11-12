@@ -330,7 +330,7 @@ bounds above).
    no-ops — expected, not an error.
 3. Conflict on ANY merge → `git merge --abort`, log ref + reason, continue the
    train. NO improvised hand-resolutions mid-sweep: resolution is Editor work
-   under the conflict-quality gate (`editor.md` Phase 6). The Compiler classifies,
+   under the conflict-quality gate (`editor-ship.md`). The Compiler classifies,
    merges clean, aborts, logs.
 4. Push `main` ONCE at train end → ONE dispatch over the merged tip (Step 1,
    full-sha rule above).

@@ -1,5 +1,46 @@
 # Changelog — opencrabs-dev
 
+## v0.4.305 — `editor.md` split: Phase 5 and Phase 6 bodies move to lazily-loaded appendices
+
+**What forced it.** `editor.md` cost **21,878 tokens (10.9%)** on every editor session while the skill budget is **5% (~10,000 tokens)**. Phase 5 (Ship) and Phase 6 (Smoke) are **phase-scoped** — an editor reads them on entering the phase, not at claim time — yet both bodies were paid for on every turn. Nothing was wrong with their content; they were simply in the wrong file.
+
+**What changed.**
+
+1. **Two appendices created, both explicitly subordinate.** `editor-ship.md` (121 lines) owns the `oc-ship-chain` trap stack: the failure-mode / rc register, the EIGHT exit-5 causes, the conflict-quality gate, the post-landing-lock ancestor re-check, the docs-only LEG1 skip, post-rewrite swap recovery, carrier coalescence, and the features-compat gate. `editor-smoke.md` (217 lines) owns the verdict stack: presence-is-not-behaviour, the live-verification stamp, leg-4 probe hygiene, the L1–L4 owner-dependent legs, and no-auto-rollback. Each header states **"an APPENDIX to `editor.md`, never a second role file"** and **"where the two disagree, `editor.md` wins"**.
+
+2. **`editor.md` keeps the role, the phase sequence, and every cross-cutting law**, plus a compressed stub for each phase that retains the parts a lane must not get wrong — the single-ship-path rule, the `systemd-run` launch surface (never `background:true`), `--test-threads 2`, FAST ≠ the CI-gate leg, the `oc-smoke` identity receipt, and both **Checkable Completion Formulas**. Each stub ends by naming its appendix and telling the lane to read it before shipping / before writing a verdict.
+
+3. **Every inbound pointer rewired in the same change** — `SKILL.md` (Phase 5/6 rows + the role-file inventory), `fleet-directives.md` routing table, `harvest.md`, `triage.md`, `war-stories.md`, `README.md`, `tools/archive/compiler.md`, `upstream-merge-runbook.md`, and `tools/docs/RC-CONTRACT.md`.
+
+**Two defects fixed while rewiring** (both pre-existing, both from the earlier `editor.md` shrink):
+
+- `tools/docs/RC-CONTRACT.md` cited `(editor.md:96)` and `(editor.md:691)` — the second was **impossible**, since `editor.md` was already down to 694 lines and is now 401. Both are now section pointers (`editor.md §Direct dispatch & CI execution discipline`, `editor-ship.md §Docs-Only LEG1 Gate Skip`), which survive future splits. **Line-numbered cross-refs are the defect class here, not the symptom.**
+- `upstream-merge-runbook.md:333` pointed at `editor.md §Phase 6 (d)` for the FIRING-RECEIPT clause; that clause lives in `editor-smoke.md §Smoke-verdict rules (d)`. Repointed.
+
+**Content-preservation proof.** Line-multiset diff of `git show HEAD:editor.md` against the concatenation of the three new files: **0 lines missing, 0 occurrences**. The 28 new-only lines are the two stub headers and their pointer sentences. Nothing was paraphrased in transit — the moved prose is byte-identical.
+
+**LOC metric (owner order 2026-09-19).**
+
+| file | before | after | delta |
+|---|---|---|---|
+| `editor.md` | 694 | 401 | -293 |
+| `editor-ship.md` | NEW | 121 | +121 |
+| `editor-smoke.md` | NEW | 217 | +217 |
+| `SKILL.md` | 525 | 526 | +1 |
+| `README.md` | 82 | 82 | +0 |
+| `fleet-directives.md` | 576 | 576 | +0 |
+| `harvest.md` | 513 | 513 | +0 |
+| `triage.md` | 602 | 602 | +0 |
+| `upstream-merge-runbook.md` | 521 | 521 | +0 |
+| `war-stories.md` | 113 | 113 | +0 |
+| `tools/docs/RC-CONTRACT.md` | 121 | 121 | +0 |
+| `tools/archive/compiler.md` | 391 | 391 | +0 |
+| **TOTAL** | **4138** | **4184** | **+46** |
+
+`editor.md` drops **694 → 401 lines (-42%)**; the editor's at-claim read cost falls by the two appendices' weight, which are now loaded only when their phase opens.
+
+**Lint:** pending `oc-lint-laws` run on this change.
+
 ## v0.4.304 — the finish line is behaviour on the live binary; upstream filing is an EXCEPTION (owner ruling 2026-11-12)
 
 **What forced it.** The owner's ruling: *"I want to replace mentions of degraded with something else so that other lanes understand that we don't have pushing changes upstream as our end goal. However, I may ask explicitly to push certain changes upstream, the currently existing rules for that should apply."* The corpus did not merely imply the wrong finish line — it **codified** it. `triage.md:580` read *"the closure law deliberately keeps DONE work **OPEN** until its own upstream PR files"*, i.e. a filed PR was a **precondition for closing an issue**. `harvest.md` carried `DONE =` formulas ending in a filing, and headings made "feature complete → upstream PR" an arrow. A lane reading the corpus learned that its work was not finished until the upstream took it — the opposite of the standing truth that **fork-standing is the normal, finished state**.

@@ -8,7 +8,7 @@
 |---|---|
 | sync model & rebase, seam resolution, harvest cadence / HARVEST LAW / NO-HOLD, PHOP | `upstream-merge-runbook.md` |
 | full-gate pre-PR testing, upstream PR filing pre-claim, upstream PR lifecycle, deep-core heads-up gate, dependent PRs law, cross-fork PR inspection | `harvest.md` |
-| editor phases, smoke procedure, carrier concurrency & coalescence, features-compat gate, no auto-rollback, docs-only LEG1 gate skip, owner-dependent smoke legs, post-rewrite swap recovery, autonomous editor goal | `editor.md` |
+| editor phases, smoke procedure, carrier concurrency & coalescence, features-compat gate, no auto-rollback, docs-only LEG1 gate skip, owner-dependent smoke legs, post-rewrite swap recovery, autonomous editor goal | `editor.md` core; Phase 5 ship material in `editor-ship.md`, Phase 6 smoke material in `editor-smoke.md` |
 | intake & assignment, dispatch hygiene, dispatch eligibility (the 4-bucket predicate), out-of-feature-set issues, parked issues, creating new editors, night-shift cadence (Phase 3, Idle-Lane Issue Triage) | `triage.md` |
 | tool-problem reports | `toolsmith.md` |
 | HQ duties, cadence boundary, rule-text provenance | `hq.md` |

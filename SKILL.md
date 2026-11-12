@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.304
+version: 0.4.305
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -31,7 +31,8 @@ metadata:
 
 **Owns:** everything touching `~/opencrabs` source, its GitHub Actions runs, or the
 installed `opencrabs` binary. This file = shared facts + role router only. Actual
-procedures live in FIVE role files (`editor.md` / `hq.md` / `triage.md` / `toolsmith.md` / `harvest.md`);
+procedures live in FIVE role files (`editor.md` / `hq.md` / `triage.md` / `toolsmith.md` / `harvest.md`),
+with the editor's Phase 5 and Phase 6 appendices split out as `editor-ship.md` / `editor-smoke.md`;
 load ONLY the one matching the session's role.
 
 **Binding owner directives** (sync policy, upstream PR law, carriers/builds, cargo
@@ -94,7 +95,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/ship/oc-artifact-verify <artifact-path> [--source <sha>] [--run-id <id>] [--markers m1,m2] [--expect-sha <sha256>] [--expect-version <v>] [--repo R] [--json]` | EXECUTION SANITY SIGNAL + FEATURE-PRESENCE CHECK |
 | `./tools/ship/oc-seal-state [--sha S] [...]` | baseline/orders seal (flag-based interface — no positional `<sha>`) |
 | `./tools/state/oc-attrib --repo <path> (--range <A..B> or --deployed) [--ledger <f>] [--contributors] [--novel\|--no-novel]` | commit-range → worker-lane attribution; `--contributors` projects the 3-col TSV (SINGLE SHAPE); `--deployed` composes the range from `deployed.sha` + `prev_sha` (fan-out compute backend for [issue #24](https://github.com/leshchenko1979/opencrabs/issues/24)) and IMPLIES `--novel` (#407: drops re-sha'd + empty commits; `--no-novel` restores the raw range) |
-| `./tools/ship/oc-deploy <mode>` | the ship path itself (mode list, verdict codes + wait semantics: `tools/docs/RC-CONTRACT.md`; Editor S3 path: `editor.md` §Phase 5 — Ship). |
+| `./tools/ship/oc-deploy <mode>` | the ship path itself (mode list, verdict codes + wait semantics: `tools/docs/RC-CONTRACT.md`; Editor S3 path: `editor-ship.md`). |
 | `./tools/ship/oc-deploy fanout --run <id> [--dry-run]` | mechanical notify fan-out for one carrier run ([#24](https://github.com/leshchenko1979/opencrabs/issues/24)); auto-fired at `swap_execute` tail + on `poll` RED-scan; `OC_DEPLOY_NOFANOUT=1` suppresses — mechanics + journal vocabulary in `s2-swap-journal-spec.md` §Fan-out legs |
 | `./tools/ship/oc-carrier-features [--fetch] [--repo <path>] [--ref <branch>]` | reads the carrier-yml `features` default at `origin/<ref>`; `oc-deploy ship/poll` resolves EMPTY `--features` through this — carrier read failure aborts the ship loudly |
 | `./tools/issue/oc-issue-sweep '<query>' [--fork R] [--upstream R] [--limit N]` | closed-issue hygiene sweep (HQ duty) |
@@ -219,7 +220,7 @@ to another session, another role's topic, the forum General area, an unrelated c
 | Answers | does my feature WORK for a user right now? | is the code correct by analysis standards? | is the feature actually INSIDE the artifact we are about to deploy? |
 | What | behavioral drive of ONE shipped feature | compile/run verification: cargo fmt, clippy, cargo test | static markers: binary strings/symbols, sha256 identity vs artifact, source-tree grep |
 | Where | live `opencrabs-ops` unit, its real surfaces (Telegram, cron, MCP) | GitHub Actions ONLY — the CI gate (`pr-checks.yml`; upstream's own checks on PRs). Carrier build COMPILES the artifact but runs NO test leg (removed 2026-08-31, `e71dba58`) | this box, against the DOWNLOADED artifact + its source tree — nothing running |
-| When | after a swap notify (`editor.md` Phase 6) | pre-flight gate before PRs/ff-merge (Phase 7 step 2c) — `pr-checks.yml` is the ONLY CODE-TESTS locus | pre-swap, every cycle (`oc-deploy` swap path) |
+| When | after a swap notify (`editor-smoke.md`) | pre-flight gate before PRs/ff-merge (Phase 7 step 2c) — `pr-checks.yml` is the ONLY CODE-TESTS locus | pre-swap, every cycle (`oc-deploy` swap path) |
 | Who | owning Editor | Editor dispatches the gate and reads conclusions; `oc-deploy` reads build conclusions | `oc-deploy` swap path (pre-S3; Compiler role RETIRED 2026-08-28) |
 | Toolchain | none — local cargo FORBIDDEN in any form (binaries disabled 2026-08-28; editor.md §Box law — canonical, other files reference "(box law)") | CI's own — never local | `strings`, `sha256sum`, `git grep` — none compile anything |
 | Evidence | one line: drove X, observed Y (+ run id / sha) | job/step conclusions read via API | marker found/not-found + checksum line in baseline.json |
@@ -228,8 +229,8 @@ to another session, another role's topic, the forum General area, an unrelated c
 The table above carries the ontology. **The smoke-verdict rules and their incident history —
 presence-is-not-behaviour, the live-verification stamp for live-testable UX, bookkeeping-legs-are-not-a-pass,
 the owner-dependent leg's PARK disposition, the no-log-probe rule for tool-description changes, leg-4
-probe hygiene, and the single-sided-probe sufficiency ruling — are canonical at `editor.md`
-§Phase 6 (Smoke-verdict rules).** Read them there before writing or judging a verdict.
+probe hygiene, and the single-sided-probe sufficiency ruling — are canonical at `editor-smoke.md`
+§Smoke-verdict rules.** Read them there before writing or judging a verdict.
 
 ## Glossary — official terms (v0.4.62; one concept = one name)
 

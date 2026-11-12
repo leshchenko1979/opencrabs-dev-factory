@@ -291,259 +291,39 @@ the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
 
 ## Phase 5 — Ship (`oc-ship-chain`)
 
-**`oc-ship-chain` IS the single, exclusive ship path from commit to swapped binary (v0.4.126; manual push-to-main, manual issue-log, and manual oc-deploy sediment retired v0.4.132).**
-The Editor runs `oc-ship-chain` in one detached invocation under one chain-id — **armed in its OWN transient systemd unit, never via the harness's `background:true` auto-detach**:
+**The ship path is ONE tool.** `oc-ship-chain` runs the whole commit-to-swapped stretch — LEG1 CI gate -> LEG2 issue comment -> LEG3 fast-forward into fork `main` -> LEG4 carrier build -> LEG5 swap+seal. **There is NO legitimate manual exit point between gate verdict and swap** (the #134 orphan class — stopping at GREEN without swapping — is structurally closed).
 
-```bash
-# 1. Push your branch first
-git -C ~/opencrabs-wt/<task> push -u origin <branch>
+**THE LAUNCH SURFACE IS LOAD-BEARING.** Arm the chain in its OWN transient unit. The harness's `background:true` auto-detach is KILLED ~75 s after the wrapper exits, even though the chain re-execs itself into a user scope — measured 2026-09-26, lane 63d775f9: two consecutive chains died `rc=143` (`gate infra rc=143`), leaving two full gates `in_progress` with nobody polling them. The `--unit=... --collect` form survives and polls:
 
-# 2. Arm the chain in its OWN unit (resumes the session on finish)
-systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
-  tools/ship/oc-ship-chain --sha <commit-sha> --branch <branch> [--issue <issue-n>] \
-    --test-threads 2
-```
+    systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
+      tools/ship/oc-ship-chain --sha <commit-sha> --branch <branch> [--issue <n>] --test-threads 2
 
-**`--test-threads 2` IS LAW ON THE SHIP INVOCATION UNTIL #1936 IS FIXED (HQ ruling 2026-10-15, on the proposal of lane 2fbfb2f8).** Upstream #1936's four-slot deadlock hangs the gate, so a default chain re-rolls a 45-minute wall: measured fork run `38799188468` (`--full`, default threads, gate input `466e7dfb3`) was **CANCELLED** at **2722 s** against the workflow's own `timeout-minutes: 45` (**2700 s**), wedged with **zero** `test result:` lines — and `fmt` + `clippy` both read `success` on that run, so the wedge is **not** the diff. The same gate input re-dispatched with `--test-threads 2` (fork run `38806046232`) came back **GREEN in 31.4 min (1884 s)**. Tool leg: factory #39, `d514000c` — `--test-threads N` / `OC_SHIPCHAIN_TEST_THREADS=2`, forwarded to the LEG1 `oc-prchecks` dispatch. **SCOPE — read before relying on it:** the flag rides the **fresh-dispatch** path only and is **INERT on `--gated-run`** (the chain now warns loudly instead of silently dropping it, `oc-ship-chain:1145`), and it bites **only when the test leg runs** — a `--fast` gate skips tests, so the flag is a no-op there. **EXPIRY IS KEYED ON THE SYMPTOM, NEVER ON #1936's ISSUE STATE — do NOT remove this line because #1936 reads CLOSED.** Upstream closed #1936 COMPLETED on 2026-10-07 (`468711dfa`) on the **stall watchdog alone**; its own close note states *"the deadlock root cause itself is still under investigation"*. The wedge **recurred 2026-10-15** — fork run `38799188468` CANCELLED at **2722 s** with **4** tests wedged, the stuck set (`hot_write_paths_retry_test`×1 + `loop_break_test`×2 + `memory_archive_index_test`×1) **character-identical** to the 2026-10-04 21:50Z run quoted in #1936's own body. Live home for the recurrence: fork #781. **Remove this line only when a default-threads full gate completes with a real test verdict** (no `has been running for over 60 seconds` wedge).
+**`--test-threads 2` IS LAW on the ship invocation until the wedge symptom clears** (fork #781): upstream #1936's four-slot deadlock wedges the gate at the workflow's own 45-min wall, while the SAME gate input re-dispatched at `--test-threads 2` came back GREEN in 31.4 min. It is INERT on `--gated-run` and a no-op on `--fast`. **Expiry is keyed on the SYMPTOM, never on #1936's issue state — it reads CLOSED while the wedge recurs.**
 
-**THE LAUNCH SURFACE IS LOAD-BEARING (measured 2026-09-26, lane 63d775f9).** Two consecutive chains armed via the harness's background mode died `rc=143` (SIGTERM) ~75 s after the wrapper exited 6 — **even though LAW 17's re-exec had already placed each in its own user scope** (`run-r02937f26c50b43bea91cb45c7ca6dc58`, `run-rd0e1dd4e3b404e09b861bb58a87a3e0a`; detached logs `747586` / `758792`, both ending `gate infra rc=143`). Swap, a peer's broad `pkill` and a ship-lock wait were each ruled out by same-turn reads. The identical chain armed with `--unit=… --collect` survives and polls. **The CAUSE is NOT established** — the discriminator is. And the cost of getting it wrong is not just a lost chain: the killed run leaves its gate **`in_progress` with nobody polling it**. Measured the same hour: `36277623534` and `36277682621`, both `status=in_progress` / `conclusion=null` — two wasted full gates.
+**The chain's DEFAULT gate is FAST, and FAST is not the CI-gate leg of the 4-Leg Smoke Rubric** — `--fast` runs fmt + clippy only, tests `skipped`, so citing it leaves the smoke receipt with no all-features test evidence. Pass `--full` when the receipt needs the test leg. A pure-docs commit SKIPS LEG1: record it as SKIPPED, never as GREEN, and never count it as a passed leg.
 
-`oc-ship-chain` executes the entire 5→swapped stretch mechanically:
-1. **Leg 1 (CI Gate):** Dispatches and watches `oc-prchecks` (`pr-checks.yml` on your branch: fmt + clippy + `cargo test --locked --profile ci --all-features`). ⚠️ **The chain's DEFAULT gate is FAST, and FAST is NOT the CI-gate leg of the 4-Leg Smoke Rubric** (finding `127429e6`, cycle `20260919-c21`): `oc-ship-chain` passes `--fast` to `oc-prchecks` unless `--full`/`--no-fast` is given (the `oc-ship-chain` fast-default, its `--fast` pass-through to `oc-prchecks`), and `--fast` runs **fmt + clippy only, tests skipped** (`oc-prchecks --help`, `:704`). A FAST run's job name carries the only visible marker (`… — FAST`) and its `Run tests` step reads `skipped` — citing that run as your CI-gate evidence leaves the smoke receipt with **no all-features test evidence at all**, the exact leg the "Presence and bookkeeping legs are never a smoke PASS" law protects. Pass `--full` when the receipt needs the test leg, or dispatch `oc-prchecks` yourself without `--fast`. **Exception — a pure-docs commit SKIPS this leg** (owner ruling 2026-09-12: *"We don't need the pure docs commits to pass through ci on our side."*). "Pure docs" is defined in the law, not by the tool: every changed path ends `.md` **and** is not `include_str!`-compiled into the binary — the 21-path compiled-in exclusion set lives in `§Docs-Only LEG1 Gate Skip` (this file). A skip is recorded as **SKIPPED** and is never a passed gate: do not cite a skipped leg as GREEN, and do not count it as a passed leg in a smoke receipt.
-2. **Leg 2 (Issue Log):** If `--issue <N>` is supplied, posts the per-commit implementation comment via `oc-issue-log` automatically.
-3. **Leg 3 (Fast-Forward Merge):** Fetches fork `main`, verifies fast-forwardability, and pushes `<branch>:main` (serialized via `ship.lock`).
-4. **Leg 4 (Carrier Ship):** Dispatches `oc-deploy ship --sha <sha> --execute` to build on `ci/quick-build-linux`.
-5. **Leg 5 (Swap & Seal):** Bounded-polls carrier execution (`oc-deploy poll --execute --wait <sec>`) until the binary is live and swapped. The ship wait default is **2700 s** (`OC_SHIPCHAIN_SHIP_WAIT`, tool text: the `OC_SHIPCHAIN_SHIP_WAIT` default in `oc-ship-chain`) — raised from 900 s at #336 after 11 of 37 carrier successes exceeded 900 s (10 most recent: 942-1344 s, median 1062 s). A shorter budget mislabels a still-building run as INFRA rc 6.
+**Everything else about Phase 5 is in `editor-ship.md`** — the failure-mode / rc register, the EIGHT exit-5 causes with the rebase recipe, the conflict-quality gate, the post-landing-lock ancestor re-check, the gate-idle question sweep, the docs-only LEG1 skip definition, post-rewrite swap recovery, carrier coalescence and the features-compat gate. **Read it before shipping: a chain run without it is a chain run without its traps.**
 
-**Carrier Coalescence & Ancestry Matching (v0.4.148):** editors do not serialize on a
-pre-dispatch carrier lock — descendant builds are accepted via ancestry matching, and
-host swaps stay serialized and monotonic via `host-swap.lock`. Full law + diagram:
-`§Carrier Concurrency & Coalescence Law` (this file).
-
-There is NO legitimate manual exit point between gate verdict and swap. The #134 orphan class (stopping at GREEN without swapping) is structurally closed.
-
-### Failure Modes, Tool Automations & Agent Recovery Protocol (v0.4.145)
-
-When shipping features via `oc-ship-chain` or deploying via `oc-deploy`, failures and interruptions follow the mechanical automation vs. manual resolution contract below:
-
-| Failure Mode | Return Code / Signal | What is Mechanical (Automated by Tool) | What Requires Agent (Semantic Fix) | Tool Output & Communication |
-|---|---|---|---|---|
-| **1. Non-Fast-Forward Push** | `rc=5` — **any** NON-FF, clean *or* conflicted | **Mechanical only on `oc-deploy`'s own push path** (cause (c) below, v0.4.145): it auto-fetches `origin/main`, rebases, audits with `oc-rebase-safety audit`, and retries the push in 3s. **`oc-ship-chain` does NOT rebase** — LEG3 is a bare `git merge --ff-only` that dies `rc 5` **unconditionally** on any non-FF, so LEG4 (and with it the auto-rebase) is never reached. | The **LANE** rebases `$BRANCH` onto fork main and force-pushes **before** re-running the chain — a **clean** non-FF still needs this; the table does NOT mean "wait for auto". A **semantic conflict** additionally needs hand adjudication. | `NON-FF: rebase <branch> onto fork main (oc-rebase-safety) and re-run` (chain) OR `REBASE_CLEAN` / `REBASE_CONFLICT` (**only** on `oc-deploy`'s push path). Canonical rc register: `tools/docs/RC-CONTRACT.md`. |
-| **2. Carrier Compilation Failure** | `rc=4` (`CARRIER-RED`) | **Auto-log extraction**: Tool automatically runs `gh run view <id> --log-failed`, parses `error[E...]` and rustc diagnostic lines, and prints the exact compiler error and file:line in tool stderr. | Agent fixes the Rust syntax, borrow checker, or missing module error in the worktree, commits, and re-runs `oc-ship-chain`. | `CARRIER-RED: the carrier build concluded RED` (rc 4) followed by the extracted compiler error block |
-| **3. Daemon Boot Panic / Swap Failure** | `rc=6` (swap/poll failure) | **Auto-rollback & Auto-diag**: `oc-deploy swap-execute` **automatically rolls back** to the previous binary (`/usr/local/bin/opencrabs.bak`), restarts the service, and automatically extracts the panic backtrace from `journalctl -u opencrabs-ops.service -n 30` into tool output. | Agent inspects the auto-extracted panic trace, reproduces/fixes the startup bug or bad unwrap in the worktree, commits, and re-chains. Host remains 100% healthy. | `swap poll failed rc=<n>` / `swap not confirmed after 12 polls` (rc 6) with the extracted panic trace |
-| **4. Daemon Bounce Task Interruption** | Restart signal / `[BACKGROUND TASK INTERRUPTED]` | **State file + recovery re-run** (⚠️ there is **no `--resume` flag** — `oc-ship-chain` dies `rc=2` on an unknown arg): `oc-deploy swap-execute` writes the deployment result to `/root/.opencrabs/profiles/ops/opencrabs-dev/deployed.sha`. Only the `poll --execute` path hands Phase B to a transient `systemd-run` unit, so a **direct** `swap-execute` runs in the caller's cgroup and can be killed by the very restart it performs. | **Recover by state, not by resume**: read `deployed.sha`; if the swap landed, confirm `disk==proc MATCH` and go to Phase 6. If the chain died before the swap, **re-run the same chain with `--gated-run <id>`** (reuses the GREEN gate run whose job name pins your sha) — see `upstream-merge-runbook.md`. | `SWAP_SUCCESSFUL: running binary matches deployed SHA. Ready for Phase 6 smoke.` |
-
-**Exit codes & Lane action:**
-- **Exit 0 — SWAPPED:** The new binary is running live on the host (`opencrabs-ops` user unit). Worktree can now be removed (`tools/git/oc-wt remove <task>`). Proceed immediately to Phase 6 (Smoke-test-on-notify).
-- **Exit 2 — USAGE:** Bad or missing arguments (`--sha`/`--branch` are required; malformed flag). Correct the invocation and re-run — no lane state to resolve.
-- **Exit 3 — DIRTY CHECKOUT:** The fork checkout has uncommitted changes (pre-flight refusal). Clean or stash it, then re-run.
-- **Exit 4 — GATE-RED / CARRIER-RED:** The CI gate failed or the carrier build failed. Start a fix round (Phase 6-Fix): keep the same branch, fix in a new worktree, commit, push, and re-run `oc-ship-chain`. Triage heuristics live in `editor.md §Red-run triage heuristics` (below). **Also the `--gated-run` / `--gated-sha` pre-verify failure:** the supplied run was not `completed success` on a job pinned to the sha, or `--gated-sha` did not match `--sha`. Do NOT re-dispatch the run — re-verify it with `gh run view <id> --json status,conclusion,jobs` and re-supply the correct id.
-- **Exit 5 — NON-FF / MERGE CONFLICT · TIP-MOVED · REBASE-GATE:** EIGHT distinct causes share this code, enumerated in `oc-ship-chain`'s own header from `grep -c 'die ".*" 5$'` (NON-FF, STALE-BASE, TIP-MOVED, REBASE-GATE, ALREADY-LANDED, LOCAL-MAIN-DIVERGED, LOCAL-MAIN-AHEAD, STALE-LOCAL-MAIN); full register in `tools/docs/RC-CONTRACT.md`. Three are detailed below; the other five name themselves in the tool's message. **(a) NON-FF / MERGE CONFLICT** — `oc-ship-chain` LEG3 ran `git merge --ff-only` and refused. A **clean** non-FF and a **conflicted** one are the SAME code from the chain's side: the chain performs **no rebase of its own**, so the LANE rebases `$BRANCH` onto fork main and force-pushes first; a **semantic conflict** additionally requires hand adjudication. (The automatic in-tool rebase belongs to `oc-deploy`'s own push path — that is cause **(c)**, not this one. Do not wait for an auto-rebase that the chain never runs.)
-  ```bash
-  git -C ~/opencrabs-wt/<task> fetch origin
-  git -C ~/opencrabs-wt/<task> rebase origin/main
-  # resolve conflicts in working tree
-  git -C ~/opencrabs-wt/<task> push --force-with-lease origin <branch>
-  ```
-  ⚠️ **`oc-rebase-safety` is NOT the rebase engine** — it is a READ-ONLY safety auditor (`audit` / `overlap`). Use standard git commands to resolve conflicts, verify zero lost edits with `oc-rebase-safety audit`, and re-run `oc-ship-chain`.
-  - **(b) TIP-MOVED** — the branch was force-pushed mid-gate, so `$TIP != $SHA`: LEG3 refuses rather than fast-forwarding fork main onto a tip NO GATE VALIDATED. Recovery: re-run the chain against the new tip — do NOT land the ungated tip.
-  - **(c) REBASE-GATE** — `oc-deploy`'s in-tool auto-rebase refused the push (`OC_DEPLOY_GATE=rebase-conflict` / `rebase-audit-failed`). Recovery: rebase `$BRANCH` onto fork main yourself, verify with `oc-rebase-safety audit`, then re-run.
-- **Exit 6 — INFRA:** dispatch or poll infrastructure failure (`oc-prchecks` rc 4/7/8, or ship rc other). ⚠️ **NOT the UNSIGNED case, and NOT a post-push ORDER-gate rejection:** an unsigned head commit is caught **BEFORE the merge** and exits **3**; a post-push ORDER-gate rejection exits **4**. Both are this section's neighbours, not infra: a head commit carrying no `Session-Id` trailer is refused by ORDER gate 4 (`oc-order-validate: UNSIGNED … attribution mandatory`). Read the message before you act — if it says UNSIGNED, do not go hunting for a network or carrier problem. Fix = land an empty trailer-signed marker commit on the head (tree-identical, forward-only; `upstream-merge-runbook.md` step 9) and re-run. Every synthesis/merge head is unsigned **by construction**, so this recurs on every sync. **A lineage-guard refusal ALSO exits 6** (`non-monotonic-swap`): the guard is rebase-aware (v0.4.151) and accepts the swap as `rewrite-equivalent-swap` — recovery is **re-run the same leg** — **NEVER hand-edit `deployed.sha`** (`§Post-Rewrite Swap Recovery`).
-- **Exit 7 — GATE IN FLIGHT:** the gate was still running after the chain's budget and resume-polls (`oc-prchecks` rc 5, non-terminal). The run id is printed — do **NOT** re-dispatch (that concurrency-cancels the live run); wait for it and re-run with `--gated-run <id>`, which pre-verifies and skips dispatch.
-- **Exit 8 — SHIP-WAIT-TIMEOUT:** the carrier build did not reach a terminal state within the LEG4 `--wait` budget (default 2700 s; `oc-deploy ship` rc 5 with no rebase-gate token). ⚠️ **The run is still BUILDING — do NOT re-dispatch it** (a re-dispatch concurrency-cancels the live run). Wait for it, then resume with `oc-deploy poll --sha <sha> --execute --wait <sec>`, or re-run the chain with a larger `--wait`. This code exists precisely because the Exit 4/6 reflex ("re-run the chain") is the double-dispatch this arm prevents.
-
-**Conflict-quality gate — MANDATORY after any rebase with hand-resolved code:**
-*(A hand-resolved merge shipping a crate-alias mismatch is five E0308s and a red CI round-trip)*:
-1. Re-read every hand-merged function END-TO-END — not just the conflict hunk.
-2. Match crate-wide type aliases: open the alias definition; the error type is usually locked by the alias.
-3. Grep the tree for duplicate imports and doubled tests the resolution may have left behind.
-4. **Prove nothing was lost** (finding `6cd8175f`, cycle `20260919-c21`): `git diff <new-base> HEAD --stat` must list ONLY files this branch changed. `oc-rebase-safety audit` cannot settle this after a rebase onto a MOVED main — every file both sides touched reports `CHANGED` (main's own edits sit inside `C..B`, where `C = merge-base(A,B)`), so their patch-ids can never match `C..A`, and the SUMMARY line then reads `LOSSES FOUND — full re-gate required` even when zero content was lost. Read the audit's **`DROPPED`** rows as the loss signal; treat **`CHANGED`** as indeterminate and confirm with the diff. A lane that trusts the summary hunts a loss that does not exist.
-
-**Post-landing-lock ancestor re-check — MANDATORY before LEG3 lands (finding `127429e6`, cycle `20260919-c21`):** the gate (LEG1) runs BEFORE the landing lock is taken, so the window between "gate green" and "lock acquired" is unprotected — and LEG3 is a bare `git merge --ff-only` that performs **no rebase of its own**. Any lane landing on fork `main` inside that window makes your branch a non-fast-forward and LEG3 dies `rc 5` (cause **(a)** above). **A chain queued on `ship.lock` is already doomed if `origin/main` moved while it waited** — it will take the lock and then refuse. After acquiring the lock, re-check ancestry against the CURRENT remote tip:
-
-```bash
-git -C ~/opencrabs-wt/<task> fetch origin
-git -C ~/opencrabs-wt/<task> merge-base --is-ancestor <branch> origin/main || {
-  git -C ~/opencrabs-wt/<task> rebase origin/main      # hand-resolve any conflicts
-  git -C ~/opencrabs-wt/<task> push --force-with-lease origin <branch>
-}
-```
-
-⚠️ **Distinguish this from the v0.4.214 local-main reconcile — same `rc 5`, opposite fixes.** v0.4.214 covers LOCAL `main` being stale while the branch is *correctly* based on `origin/main`: that is a FALSE alarm and the fix is **do not rebase**. This check covers `origin/main` having genuinely MOVED during the gate: the rebase is **real and necessary**. The v0.4.214 diagnostic (`git merge-base --is-ancestor main origin/main`) does not separate the two — test against `origin/main`, never against local `main`. Automating the re-check inside the chain (pre-LEG3) is a Toolsmith call; until it lands, the LANE owes the check.
-
-**Gate-idle question sweep:** CI gate and carrier build waits are idle time — do not sit silent on open questions. Circle back to the user in your topic with anything unresolved (scope doubts, naming, approach forks) while the chain runs; waiting is never a reason to hold a question or to guess.
 - **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
+
 
 ## Phase 6 — Smoke Verification (oc-smoke)
 
-A post-swap notify announcing a new binary (mechanical fan-out — `oc-deploy
-fanout`, [#24](https://github.com/leshchenko1979/opencrabs/issues/24) LIVE
-since v0.4.37; `[session-notify from=<uuid>]` header) means your
-commits are in it — prove the FEATURE works. This phase produces SMOKE TEST
-evidence (SKILL.md Test ontology): behavioral, against the RUNNING binary,
-zero cargo. CODE TESTS (fmt/clippy/cargo test) are a different kind, CI-only —
-Phase 5 (`harvest.md §Phase 7 step 2c` reuses it on upstream PR heads). The binary is live
-right here (`opencrabs-ops` user unit).
+A post-swap notify announcing a new binary means your commits are in it — prove the FEATURE works, behaviourally, against the RUNNING binary, zero cargo. CODE TESTS (fmt/clippy/cargo test) are a different kind and CI-only.
 
-```bash
-# Unified 4-leg smoke verification & verdict row logging:
-~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<command-to-verify-behavior>"
-```
+    # Unified 4-leg smoke verification & verdict row logging:
+    ~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<command-to-verify-behavior>"
 
-1. Read run id + built sha from the notification body. **If the daemon bounced**
-   (any restart since your last turn), RE-SURFACE lazy tool schemas via
-   `tool_search` BEFORE any smoke invocation — a restart kills activated schemas
-   and intents misfire onto wrong tools.
-2. **IDENTITY RECEIPT & BEHAVIORAL PROBE:** Run `tools/smoke/oc-smoke <issue-N> --probe "<cmd>"`
-   (or manual `oc-smoke-evidence`). It verifies unit exe identity vs deployed sha,
-   executes the probe command, and writes the canonical row to `smoke-verdicts.log`.
-   MISMATCH → STOP: you would be smoking a binary that is not the one that was
-   built — report the mismatch to the sender, do not smoke on a stale unit.
-3. Drive your feature end-to-end against the RUNNING unit on its normal
-   surfaces (Telegram, cron, MCP — whatever the feature touches).
-   - **Checkable Completion Formula**: DONE = Mechanical proof demonstrating target feature execution against the running binary (command output, log line with PID/timestamp match, or API receipt); confirmed via `tools/smoke/oc-smoke` (exit 0) and recorded in `smoke-verdicts.log`.
-   **Receipt surface for a channel-RENDERING defect is the DELIVERED message, never a stored row
-   (finding `1a63f103`, cycle `20260919-c21`):** the `pending_followups` row (`host_html` /
-   `host_markdown`) is written BEFORE `normalize_rich_markdown_with_media` → `enforce_button_fit`,
-   so it is the PRE-enforcement source and cannot witness a defect that stage introduces or
-   repairs. Read the delivered text instead: `tg_get_messages` on the host message id (own topic
-   only), or the daemon telemetry line `Telegram send ok: … msg=<id> len=<n> hash8=<h>`. A render
-   verdict resting on a stored row is `UNPROVEN`, never PASS — and the `smoke-verdicts.log` row
-   must name the delivered message id.
-4. PASS → reply to the sender (`session_notify`, `target_session` = the `from`
-   header): feature OK + one line of evidence + the oc-smoke
-   IDENTITY-MATCH receipt. Running `oc-smoke <issue-N>` on PASS automatically
-   executes `oc-ledger stamp done` (suppressible via `--no-ledger`), mechanically
-   closing the worker's in-flight claim in `workers-ledger.json` and unblocking
-   `oc-harvest-census` and Triage intake. On a behavioural PASS, record
-   the row, reply to the sender, and hand the port to HARVEST — the handoff is the
-   last *editor* step, but the lane's obligation is discharged by the recorded
-   behavioural verdict, not by the post
-   (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
-5. FAIL → FILE THE ISSUE FIRST (Phase 1 procedure: symptom + evidence — you
-   found it, you file it). Then send raw evidence + the issue link directly to
-   the owning editor or Triage lane (`session_notify`) — do NOT attribute, do NOT fix another
-   editor's feature; attribution via Session-Id trailers is MECHANICAL
-   (`oc-attrib`; decision 2026-08-25 2a, mechanical fan-out above).
-6. SHIPPED UPSTREAM notice (v0.4.0): if HQ (or the post-swap
-   fan-out) reports your feature was
-   absorbed by upstream (maintainer merged or reimplemented it), your fork-side
-   duty for it ENDS — no further fork maintenance, no fix rounds. Future work
-   on that feature happens upstream only: new claim via Phase 1, normal rules.
+1. Read run id + built sha from the notify body. **If the daemon bounced, re-surface lazy tool schemas via `tool_search` BEFORE any smoke invocation** — a restart kills activated schemas and intents misfire onto wrong tools.
+2. **IDENTITY RECEIPT:** `oc-smoke` verifies unit exe identity against the deployed sha and writes the canonical row to `smoke-verdicts.log`. MISMATCH -> STOP: you would be smoking a binary that is not the one that was built. Report it to the sender; never smoke a stale unit.
+3. **BEHAVIOURAL PROBE:** drive the feature end-to-end against the RUNNING unit on its real surfaces (Telegram, cron, MCP — whatever the feature touches). Lineage, identity and the CI gate are BOOKKEEPING LEGS — **a verdict citing only those three is `UNPROVEN`, never GREEN.** A fix with no observable runtime surface records `UNPROVEN (no-runtime-surface)`, names the surface that would have to exist, and is a documented gap rather than a discharged obligation.
+4. PASS -> `session_notify` the sender with one line of evidence plus the IDENTITY-MATCH receipt (`oc-smoke` auto-stamps `oc-ledger stamp done`, closing the claim), then hand the port to HARVEST. **The lane's obligation is discharged by the recorded behavioural verdict, not by the post.**
+5. FAIL -> FILE THE ISSUE FIRST (symptom + evidence — you found it, you file it), then send raw evidence + the issue link to the owning editor or Triage. Never attribute, never fix another editor's feature.
 
-**Presence and bookkeeping legs are never a smoke PASS (owner order 2026-09-08):**
-lineage (is-ancestor), identity (`oc-smoke-evidence` MATCH / artifact==exe sha) and CI gate
-evidence are BOOKKEEPING LEGS — all three passing still does not constitute a successful smoke
-test. Presence evidence (strings marker hit, sha match, `deployed.meta` identity) proves only
-that the artifact shipped; it says nothing about behavior. A smoke PASS requires step 3 to have
-TRIGGERED the fix's actual runtime path on the live box and observed it execute (real message
-round-trip, real interrupt, real stamp — not CI test counts). If only presence evidence exists,
-the verdict is `UNPROVEN (presence-only)` — never GREEN. If the fix has no observable runtime
-surface, record `UNPROVEN (no-runtime-surface)` with the structural reason and name the surface
-that would have to exist to prove it (precedent: #92 no-runtime-string finding) — a declared
-N/A is a documented gap, never a discharged obligation, and never a silent skip. A verdict citing only legs 1–3 is INCOMPLETE and
-gets returned to the lane. (A stripped binary that compiles the fix but crashes on the path must
-FAIL — that is the exact hole this rule closes; origin: ship-38585459 smoke n=2036.)
+**Everything else about Phase 6 is in `editor-smoke.md`** — the full verdict rules, the presence-is-not-behaviour incident history, the live-verification stamp required for UX features, leg-4 probe hygiene, `PARKED-OWNER-EYE` with the L1–L4 owner-dependent-leg law, swap-timing non-coordination, and no-auto-rollback. **Read it before writing any verdict row.**
 
-**Owner-dependent leg → PARK, never wait (v0.4.152):** if the only remaining behavioral
-evidence needs the OWNER, the leg is **NOT a blocking gate** — stamp the legs you can
-prove, append a `PARKED-OWNER-EYE` row naming the exact owner action, the packaging sha
-and the pre-fix control, then release the lane — **leaving the behavioural leg OPEN on the
-issue until an owner verdict lands (L3).** The park releases the LANE, never the obligation.
-A lane idling on an owner leg is in violation; a lane that parks and moves on is compliant. Full law, incl. the explicit-and-post-hoc verdict test
-(L3): `§Owner-Dependent Smoke Legs — Park, Don't Chase` (this file).
+- **Checkable Completion Formula**: DONE = mechanical proof of the target feature executing against the running binary (command output, log line with PID/timestamp match, or API receipt), confirmed via `tools/smoke/oc-smoke` (exit 0) and recorded in `smoke-verdicts.log`.
 
-**Swap timing is NOT coordinated with smokes** (owner decision, closing editor
-proposal #8): NO advance announce, NO swap delay — deploys land whenever the
-pipeline is ready, even mid-smoke; loss of in-flight in-memory state is ACCEPTED
-until Alexey fixes it otherwise. If a bounce kills your smoke mid-run: re-arm tool
-schemas (step 1), re-run from scratch — NEVER report the bounce itself as a feature
-FAIL.
-
-
-### Smoke-verdict rules
-
-The ontology (the three kinds + the sanity signal) stays in `SKILL.md §Test ontology`; the verdict
-rules live here, on the load path of the role that actually produces smoke evidence.
-
-The ontology table lives in `SKILL.md §Test ontology`; what remains prose here:
-
-- **SMOKE TEST** is the ONLY evidence that may back an upstream PR approval
-  request (hard rule + `harvest.md` Phase 7 step 0).
-- **EXECUTION SANITY SIGNAL** — the swap-path `--version` run (`oc-deploy` swap
-  path; archived anchor: `tools/archive/compiler.md` Step 3) — is NONE of the three kinds: it proves only "this file is a
-  runnable opencrabs binary". Not behavioral, not analytical, not presence
-  evidence; never cite it as any kind of test result.
-
-Rule: never write "tests pass" without naming the kind. A green Lint run is NOT
-a smoke pass; a smoke pass says nothing about clippy; a presence hit says
-nothing about behavior.
-
-- **A VERDICT TOKEN MUST BE REACHABLE AT THE TOOL THAT WRITES IT (v0.4.243,
-  cycle `20260922-c22`).** The sanctioned verdict vocabulary and the vocabulary
-  the verdict WRITER can actually emit are not the same set, and nothing in the
-  corpus checks the gap. Measured 2026-09-22: `oc-smoke` — the tool the
-  procedure names for writing verdict rows — accepts `--verdict PASS|FAIL` and
-  nothing else (`tools/smoke/oc-smoke`, the `--verdict` vocabulary), while these laws mandate
-  tokens such as `UNPROVEN (presence-only)` and `PARKED-OWNER-EYE`. A lane
-  ordered to stamp a mandated token through that writer therefore CANNOT: the
-  row it produces says PASS or FAIL and the nuance is silently lost. So before
-  citing a verdict token as *recorded* evidence, confirm the writer can emit it;
-  when the mandated token is outside the writer's set, record it in the row's
-  free text and STATE which form was used — never present a token the tool
-  cannot produce as tool-emitted.
-
-**Live verification stamp required for live-testable UX features (owner order 2026-09-16):**
-For any UX, UI, card rendering, button interaction, or user-facing feature that is
-live-testable on the running binary, static binary string probes or symbol searches alone
-are STRICTLY FORBIDDEN as proof of a smoke PASS. Binary strings prove only compilation
-presence, not runtime UI correctness or execution. A smoke PASS for live-testable UX
-features requires an explicit live behavioral execution receipt stamped into the stamp system
-(`smoke-verdicts.log` / `workers-ledger.json`). If behavioral verification cannot be fully
-automated and requires the owner's visual inspection, the lane MUST record `PARKED-OWNER-EYE`
-naming the exact owner action and packaging sha — never substitute a binary string probe for a
-live UX verification.
-
-
-**Tool-description changes have no log-based probe (lane 1a63f103, 2026-09-12):** the
-daemon's provider log records tool ARGS only (`[TOOL_ACCUM] name=bash`) and NEVER tool
-schemas — so no log line can prove a description string was served. Smoking a
-`Tool::description()`/`input_schema()` change CANNOT be proven from the log, and
-**binary strings + source constants are presence evidence, never a behavioural PASS**:
-they prove the bytes shipped, not that the schema was served to a model. Record such a
-change as `UNPROVEN (no-runtime-surface)` with the structural reason and name the surface
-that would have to exist to prove it — a documented gap, never a discharged obligation.
-Any description fragment found in the log is self-contamination from the prober's own
-commands; a "live schema served" receipt from the log is a FALSE receipt.
-
-**Leg-4 probe hygiene (lane 212b3c83, Duty-4 cycle `20260919-c21`, 2026-09-19) — three ways a leg-4 probe measures
-nothing and still reports PASS.** (a) **ARTIFACT BINDING:** a criterion binds to a NAMED artifact —
-rendering bytes and delivered bytes are different artifacts, because the delivery path re-encodes
-(Telegram converts renders to JPEG) and a re-encode destroys fine-stroke measurements, so a criterion
-that holds on the lossless render (colour type, alpha, contrast across a 1 px stroke) is **not**
-thereby valid on the delivered artifact. Where both are needed, state **two legs with distinct
-criteria** — the renderer leg proves the wire form is right, the delivered leg proves the user
-receives the corrected output and binds on a **coarse, codec-surviving discriminator** (a large
-contiguous fill region, a presence/absence inversion against a pre-fix control message) — and a
-verdict resting on both must say which criterion binds to which artifact. (b) **MEASURE FROM THE
-ARTIFACT, NOT THE CONSTANTS:** if every argument to the metric is a literal declared beside the
-threshold, the metric measures the source file, not the artifact, and passes on any input — measure
-from the loaded bytes. A **bucketing/matching tolerance must be strictly smaller than the separation
-between the buckets it distinguishes**: with references `d` apart, any tolerance `>= d` merges them
-and the metric silently becomes a count of the union — assign each sample to its NEAREST reference
-rather than testing a radius (a merged bucket shows as a ratio that cannot exist, e.g. two bucket
-counts summing past the population). (c) **SPILL-DIRECTORY COMPLETENESS:** a probe consuming tool
-output must not read the spill directory as if it were complete — results under the inline threshold
-are returned inline and produce **no spill file**, so a spill-only harvest has a hole exactly where
-the newest evidence sits; force the spill by raising the result size, or parse the tool result inline
-in the same turn. Because **expired attachment URLs are skipped silently and the skip reads as
-absence**, report the skipped count beside the found count — "0 found, 13 skipped as expired" is a
-different verdict from "0 found". **Corollary binding all three: a leg-4 probe reports PASS only if
-it would FAIL on the pre-fix artifact — state the input on which it fails.**
-**Two more ways a leg-4 probe measures nothing (Duty-4 `20260927-c25`, 2026-09-27).** **(d) AN ABSENCE-SHAPED FIX NEEDS A FIRING RECEIPT, NOT A CRITERION.** Where the fix's observable IS an absence (a message that must no longer appear, a path that must no longer be hit), a leg that checks 'it is absent' passes on a pre-fix artifact too — it cannot fail, so it proves nothing. The leg must instead show the condition FIRING on the pre-fix artifact and NOT firing after: drive the input that used to produce it and carry both readings (lane a5b34466). **(e) A PROBE OVER A MUTATING ARTIFACT OWES AN INSTANT AND AN IDENTITY RE-READ.** When the artifact can change between the probe and the report — a live store, a churning log, a page that re-renders — a bare PASS is unanchored: state the instant the probe read, and re-read the artifact's IDENTITY (hash / mtime / rowid) at report time so a later reader can tell whether they are looking at the same object. Measured 2026-09-25 on a re-rendered page: the same probe returned different results 20 minutes apart with no code change, and neither reading was wrong (lane 2ed8adeb). **Duty-5 ruling 2026-09-19 (answering lane 4b0990b7, issue #295): for a SINGLE-SIDED probe the corollary IS the sufficiency test -- the discriminating negative half need not be OBTAINED, only NAMED and mechanically shown absent from the pre-fix tree.** A positive half alone backs PASS when all three hold: (1) the falsifying input is STATED explicitly; (2) its absence on the pre-fix artifact is established by a MECHANICAL discriminator run that turn -- `git log -S <string> <fix-sha> -- <pathspec>` returning exactly ONE introduction (the fix's own commit), or the string absent from `git grep` over the pre-fix tree -- never by assertion, never by reasoning about the code; (3) the probe observes the RUNNING artifact's OWN output (a live session's rendered prompt, a real call), and the observing session itself exercises the path under test (a Telegram-bound session, for a Telegram-delivery feature) -- a `strings` dump of the binary stays presence-only and cannot back PASS for a live-testable UX feature. What the corollary forbids is a probe that cannot NAME any input it would fail on: that probe measures its own constants. Where the negative half is STRUCTURALLY unobtainable -- prompts are rendered per turn and never persisted, so a non-Telegram session's prompt cannot be read back -- the mechanical discriminator of (2) stands in for it. **Carry the discriminator's command in the row.** **And state WHICH SHAPE the fix is, because only one form applies to each:** form 1 ('exactly ONE introduction') is a claim about an ADDITION — it can only be satisfied where the fix ADDS the token. A REMOVAL-shaped fix has no introduction to find, so form 1 returns EMPTY for the correct pre-fix answer and a lane reading that empty as 'the discriminator failed' withdraws a sound probe; form 2 (absence from the pre-fix tree) is the applicable form there. Recorded 2026-09-27 (lane c6b1a539, Duty-4 `20260927-c25`): the law named both forms but never said which fix shape each covers. **Scope it, or it proves nothing:** both sanctioned forms silently assume the token is GLOBALLY UNIQUE, which this law never stated. A non-unique token -- `MAX_ATTEMPTS`, `TIMEOUT`, `retry`, `attempts` -- makes form 1 return FOREIGN introductions and form 2 a false PRESENT. Measured on `96b474e` (lane c6b1a539, verified first-hand): `git grep -nEi 'max_attempts|backoff' 96b474e -- src/cli src/a2a` returns rc=1 with ZERO hits -- the correct pre-fix answer, the retry path is absent -- while the SAME grep UNSCOPED returns rc=0 with 265 hits, including a foreign `const MAX_ATTEMPTS: u32 = 3;` at `src/brain/agent/service/compaction.rs:348`. A CORRECT fix therefore FAILS its own discriminator, and the lane may wrongly conclude its probe is unsound. So the discriminator token MUST be PATHSPEC-SCOPED to the subtree the fix changes, the row MUST carry the pathspec, and "exactly ONE introduction" is a claim about a SCOPE -- never about the tree. **Anchor it too, or it proves nothing on a pre-merge tree:** form 1's revision defaults to HEAD, and a lane runs this discriminator on a PRE-MERGE tree where the fix's own commit is not yet reachable from HEAD -- so the bare form returns EMPTY, and empty reads as "no introduction exists": a FALSE NEGATIVE on the one tree the law is about. Form 1 is therefore ANCHORED at the fix's own commit -- `git log -S <string> <fix-sha> -- <pathspec>`. Measured on #450 (lane 2ed8adeb, verified first-hand; HEAD=main, fix `b6389c892` unmerged -- `git merge-base --is-ancestor b6389c892 HEAD` rc=1): the bare form returns EMPTY, the anchored form returns exactly ONE introduction, `b6389c892`. Form 2 is unaffected by this gap and is what established the negative half for #450 -- scoped, `git grep -c 'ProgressEvent::TokenCount' 33b7aecdd -- src/channels/telegram/resume.rs` returns rc=1 with ZERO hits (the correct pre-fix answer), while the SAME grep UNSCOPED returns 19 hits across 6 files, including the fresh-turn twin at `src/channels/telegram/progress.rs:1` -- a false PRESENT.
-
-
-**An UNRECOVERABLE smoke gap is a THIRD terminal state — annotate it, never dress it as a verdict (OC DEV HQ ruling 2026-10-10, answering Infra Factory Triage).** A swap whose smoke window closed with no verdict row, on a binary that has since been SUPERSEDED, can never be smoked again: the gap is **PERMANENT, not pending** — the artifact the row would cite is retired. The two terminal states above (RECEIPTED / PARKED, §Owner-Dependent Smoke Legs L2) do not cover it, so it is closed by an **explicit append-only annotation on the owning ledger subject** — L2's *"equivalently named park, with its reason"* — naming (a) the sha that went un-smoked, (b) the sha that superseded it **and the instant**, (c) the cause, and (d) that the next-cycle action is **NONE**, because no binary is left to probe. **The issue filed off the FAIL (Phase 6 step 5) does NOT discharge it:** filing records a *defect*, the row records a *verdict*, and a filing cited as coverage makes the log's silence read as coverage — the false-negative class this shop has a clause about. **FORBIDDEN: a PASS or FAIL row for the un-smoked sha.** A PASS is false, because no clean probe of the feature's own path was ever recorded; a FAIL is false *and* misattributing — it charges the defect that was filed to the feature under test, reading as a regression in a fix that is in the tree. The writer cannot carry the nuance anyway (`oc-smoke --verdict` accepts `PASS|FAIL` only — see the token-reachability clause above), which is why the annotation's home is the ledger, whose free text can. **The FEATURE, however, may not be lost — establish which, never assume:** where the un-smoked sha is still an **ancestor of the DEPLOYED binary**, the live box IS running the fix, so the feature can be probed against the **current** binary and recorded in a row citing **the sha actually under test** (L4). That cures the feature; it does NOT resurrect the gap row, and the annotation must state which of the two was done.
 
 ## Red-run triage heuristics (shared core, v0.4.10)
 
@@ -600,13 +380,6 @@ Upstream PR filing (7) and PR lifecycle / blocker routing (7b) left the editor r
 (owner order 2026-09-24 centralising harvest); single home **`harvest.md`**. The editor's
 part ends at smoke evidence — post it and hand the feature over.
 
-## No auto-rollback on smoke FAIL (owner 2026-08-28 18:50Z)
-
-Post-swap smoke FAIL → rollback is the OWNER's call, never mechanical. The swap-chain
-auto-rollback on post-bounce verify fail (crash-integrity: disk==proc mismatch → restore
-backup) is UNCHANGED — that one stays automatic, and with deploy consent eliminated the
-same day it is the only human gate left near the deploy pipeline.
-
 ## Autonomous Editor Goal & Continuous Phase Execution Law (v0.4.149, owner order 2026-09-12) [LANE]
 
 - **Autonomous Goal Mandate**: Every editor claiming or waking on an issue MUST issue `/goal follow the skill until the smoke test phase` (or set its session goal) to ensure unbroken continuous execution across all lifecycle phases.
@@ -626,69 +399,3 @@ same day it is the only human gate left near the deploy pipeline.
 
 - **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6 behavioral smoke testing.
 - **Completion Definition**: A task is complete ONLY when the live behavioral smoke test on the swapped binary has executed and its 4-leg receipt is recorded in `smoke-verdicts.log`.
-
-
-## Docs-Only LEG1 Gate Skip (v0.4.161, owner ruling 2026-09-12 11:04Z) [LANE]
-
-**Owner ruling (verbatim, 2026-09-12 11:04Z):** *"We don't need the pure docs commits to pass through ci on our side."* Origin: a lane's docs-only commit burned LEG1 in full before the ruling landed.
-
-- **The law.** A commit whose changed paths are ALL **pure docs** SKIPS the LEG1 CI gate on the fork ship chain. A skip is neither PASS nor RED — it is a **SKIP**, and it MUST be recorded as one in the ship chain journal, never left implicit.
-- **"Pure docs" is DEFINED HERE, never left to a tool's discretion.** A commit is pure docs iff **every** changed path (a) ends in `.md` **and** (b) is **NOT compiled into the binary** via `include_str!` / `include_bytes!`. Clause (b) is load-bearing: a `.md` compiled into the binary changes COMPILED OUTPUT, so touching it is a code change and MUST run the gate. A chain shipping a RANGE needs every commit in the range to be pure docs.
-- **The exclusion set is DERIVED BY THE TOOL at gate time — never by hand, never carried in a lane's context.** Any such path list is **illustrative, not normative**: it rots the moment a template is added or removed, and a lane reproducing it by hand is the defect this clause prevents (owner: *"that should be purely mechanical"*). The gate resolves the compiled-in `include_str!` targets against `src/**/*.rs` at run time; lanes verify with `tools/ship/oc-ship-chain --eval-docs-skip <sha>` (Finding J-2, v0.4.170).
-- **Recording is MANDATORY — an absent gate is NEVER a passed gate.** A skipped LEG1 MUST be recorded in the ship journal **and** in a `shipchain` ledger row naming the sha, the leg stated as SKIPPED. GREEN may be stated only for a gate that actually ran and returned `completed success`; a skip is cited as SKIPPED, never GREEN, and never counted as a passed leg in a smoke receipt.
-- **Enforcement split.** The law text is HQ's (this section); the mechanical LEG1 behaviour is Toolsmith's and LANDED in `d6cb9b9a` (v0.4.161): pure-docs commit SKIPS LEG1, the exclusion set is DERIVED at gate time (`shipchain_docs_only()` — cite by function name, never by line), the skip is journalled (`GATE-SKIPPED-DOCS`) plus a `shipchain` ledger row, it applies to a FRESH dispatch only (`--gated-run`/`--gated-sha` still gate), and `OC_SHIPCHAIN_NO_DOCS_SKIP=1` forces the gate. Upstream's `**.md` / `docs/**` paths-ignore shape is deliberately NOT copied — it would skip a commit editing a compiled-in template. Never claim a skip the tool has not recorded.
-
-## Owner-Dependent Smoke Legs — Park, Don't Chase (v0.4.152, owner order 2026-09-12) [LANE]
-
-### L1 — An owner-dependent leg is NEVER a blocking gate (park, don't chase)
-
-A smoke leg that only the OWNER can satisfy (a visual pass, a tap, an eye-confirm on a Telegram card) MUST NOT block a lane. The owning lane:
-
-1. stamps the legs it CAN prove — lineage, identity, CI gate, and any agent-runnable behavioral probe (a live call, a forced trigger, an observed output through the new code);
-2. appends a **`PARKED-OWNER-EYE`** row to `smoke-verdicts.log` naming the exact owner action required AND the packaging sha;
-3. **RELEASES the lane** and moves to its next task.
-
-`PARKED-OWNER-EYE` is a lane-release, NOT a hold: the lane goes idle and claimable, the candidate is deferred. This does not contradict the NO-HOLD law (`upstream-merge-runbook.md §Upstream-merge cadence`) — NO-HOLD forbids a *waiting state*; parking is the mechanism that keeps a lane OUT of one. A lane idling on an owner leg is in violation; a lane that parks and moves on is compliant.
-
-### L2 — Shift exit condition: receipts or an explicit park
-
-A shift (night or day) is COMPLETE only when every workstream sits in exactly one of two terminal states:
-
-- **RECEIPTED** — the work is behaviourally verified: a `smoke-verdicts.log` row from a live probe of the feature's own path (plus ledger row and swap identity). A PR or issue filing is bookkeeping and never substitutes for it; or
-- **PARKED** — an explicit `PARKED-OWNER-EYE` row (or an equivalently named park, with its reason) exists, naming the next-cycle action and the owner — with the behavioural leg still **OPEN** on the issue, not discharged by the park.
-
-A workstream in state "waiting for X" is NOT terminal and blocks any completion claim. Candidates not closed inside the window **roll to the next cycle** — never chased across it. Report format: `receipted=N · parked=M · waiting=0`; any non-zero `waiting` means the shift is not done.
-
-### L3 — An owner verdict must be explicit AND post-hoc
-
-An owner verdict on a behavioral leg counts ONLY when it is (a) an explicit confirmation and (b) given AFTER the behaviour has finished. A passing remark made mid-flight is NOT a verdict — the behaviour may still be in progress, or about to fail in a way not yet visible.
-
-Worked example (row 87 → row 90, 2026-09-12): the owner's "Smoke passed" landed **16 s AFTER** their own discard and **3 m 17 s BEFORE** the review subagent finished — the defect (headerless card after discard) did not yet exist on screen. The PASS was stamped, then revoked. **Rule:** if the owner's remark is not unambiguously a verdict, record `OWNER-REMARK (not a verdict)` and leave the leg OPEN/PARKED — never convert a passing remark into a PASS row.
-
-### L4 — Smoke stamps cite the PACKAGING sha
-
-Every `smoke-verdicts.log` verdict row's `sha=` MUST be the sha actually under test — for a harvest candidate that is the **packaging tip** (the branch head being filed), never an ancestor it was built from. A row citing an ancestor does not cover the packaging sha and cannot back a PR filing. For `CORRECTION` or `RETRACTION` rows (proposal n=4175), `sha=` names the sha of the row under correction/retraction (or the refreshed packaging sha if a fresh smoke was performed), and the retracted row identity is documented explicitly in `evidence=`.
-
-When the packaging sha moves, the row is SUPERSEDED: append a new row, never edit the old one.
-
-
-## Post-Rewrite Swap Recovery (v0.4.151, Toolsmith brief 2026-09-12) [LANE]
-
-**After a fork-main rebase, RE-RUN the same `oc-ship-chain` leg — never hand-edit `deployed.sha` to re-point around a refusal.**
-
-A rebase orphans the deployed sha (it stops being an ancestor of `main`), and the pre-v0.4.151 guard refused **every** such swap with `non-monotonic-swap`. The guard is now rebase-aware: when the incoming lineage carries the deployed change under a new sha (patch-id match) it journals `rewrite-equivalent-swap` with the twin sha and admits the swap. A guard refusal surfaces as **`rc 6`** from `oc-ship-chain`; the recovery is a re-run, not a marker edit.
-
-`oc-deploy lineage-check --prev <deployed> --sha <incoming>` returns the verdict (`ok` / `rewritten` / `absent`) read-only, without touching gate state. Re-pointing `deployed.sha` by hand leaves a false audit trail for a sha that was never built as a run and is **prohibited** (HQ ruling 2026-09-12, lane `2fbfb2f8` incident). A genuinely-absent change refuses until the audited `--allow-rewritten-lineage` override is passed with a mandatory justification.
-
-
-## Carrier Concurrency & Coalescence Law (v0.4.148, Toolsmith brief 2026-09-12) [LANE]
-
-- **Concurrency semantics:** `ci/quick-build-linux` runs under `concurrency: group: quick-build-linux` with default queuing (1 active + 1 pending; further dispatches cancel and replace the pending run). Editors push to `origin/main` immediately — no pre-dispatch carrier lock.
-- **Coalescence:** `oc-deploy` and `oc-ship-chain` accept descendant builds by ancestry matching (`git merge-base --is-ancestor "$SHA" "$CAND_SHA"`), so pushes landing while a build runs coalesce into one build and every contributing editor recognises its commit as deployed without a redundant dispatch.
-- **Host swap mutex:** host binary swaps stay strictly serialized and monotonic via `host-swap.lock` (`flock -x $STATE_DIR/host-swap.lock`) plus lineage verification — a stale binary cannot overwrite a newer one.
-- **Merge serialization:** `oc-ship-chain` serializes Leg 3 (fast-forward merge) via `ship.lock`.
-
-## Features-compat gate — no silent feature-loss swaps (HQ ruling 2026-09-04, MANDATORY) [LANE]
-
-`oc-deploy swap-execute` **refuses** any artifact whose feature set drops a feature present in `deployed.meta.json` (exit 4, journal `features-drop-gate`, markers untouched) unless `--allow-features-drop` is passed explicitly. Feature *additions* pass freely; *drops* are the failure class. Enforced in-code (selftest 17p/17q). Rationale: the 06:36:06Z rogue swap (run `33844429519`, `features="telegram"` over a live `telegram,code-graph` binary) killed structural memory for 12h, and the 18:57Z f3c03269 swap was the same class. The gate would have refused both.
-

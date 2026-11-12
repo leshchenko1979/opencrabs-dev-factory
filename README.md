@@ -12,7 +12,7 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 | Path | What it is |
 |---|---|
 | `SKILL.md` | Main entry: roles, hard rules, tool register, ship path, glossary |
-| `editor.md` | EDITOR role procedure — Phases 0–6b (issue claim → worktree → edit → gate → commit → ship → smoke) + a Phase-7 pointer; the editor's obligation ends at a PASS demonstrated on the running binary — the evidence is the record of that PASS, not the finish line |
+| `editor.md` | EDITOR role procedure — Phases 0–6b (Phase 5 body in `editor-ship.md`, Phase 6 body in `editor-smoke.md`) (issue claim → worktree → edit → gate → commit → ship → smoke) + a Phase-7 pointer; the editor's obligation ends at a PASS demonstrated on the running binary — the evidence is the record of that PASS, not the finish line |
 | `harvest.md` | HARVEST role procedure — Phases 7 / 7b / 7c (feature complete → owner-ordered upstream PR, if any → PR lifecycle → mechanized harvest) |
 | `hq.md` | HQ role — worker roster, duty cadence, review lenses, issue triage |
 | `triage.md` | TRIAGE role procedure — intake & assignment, dispatch hygiene, hygiene patrols, upstream lifecycle tracking |
