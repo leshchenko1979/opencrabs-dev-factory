@@ -1296,7 +1296,8 @@ EOF
 # An ABSENT file hashes as ABSENT, so a rename or deletion is a law change too:
 # an absent file is a state, not a no-op.
 LAW_FILES=(
-  SKILL.md editor.md hq.md triage.md toolsmith.md harvest.md
+  SKILL.md editor.md editor-ship.md editor-smoke.md hq.md triage.md
+  toolsmith.md harvest.md
   fleet-directives.md upstream-merge-runbook.md review-lenses.md
   session-notify.md environment.md war-stories.md s2-swap-journal-spec.md
 )

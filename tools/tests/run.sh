@@ -3841,7 +3841,7 @@ case "$_law_real" in
     _law_phant="$(printf '%s\n' "$_law_real" | sed -n 's/^PHANTOM://p')"
     _law_cnt="$(printf '%s\n' "$_law_real" | sed -n 's/^COUNT://p')"
     [ -n "$_law_cnt" ] && [ "$_law_cnt" -ge 10 ] && ok "#47 LAW_FILES declares $_law_cnt law files (read from the tool)" \
-      || bad "#47 LAW_FILES declares '$_law_cnt' law files — expected the 13-file law set"
+      || bad "#47 LAW_FILES declares '$_law_cnt' law files — expected the full law set (>=10; the set grows as law files split)"
     if [ -z "$_law_miss" ]; then ok "#47 every top-level .md is declared or in the documented exclusions"
     else bad "#47 UNDECLARED law file(s) would be invisible to the digest: $_law_miss — add to LAW_FILES in oc-ledger"; fi
     if [ -z "$_law_phant" ]; then ok "#47 no phantom entry in LAW_FILES (every declared name exists)"
