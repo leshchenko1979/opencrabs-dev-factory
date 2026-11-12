@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.303
+version: 0.4.304
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -49,7 +49,7 @@ Ask the operator which role this session employs before doing anything:
 
 | Role | Owns | Procedure file |
 |------|------|----------------|
-| **EDITOR** | Commits + error fixes: claim issue → worktree → code → CI gate → sign → push → ff-merge into fork `main` → `oc-deploy ship` → smoke on notify. **The editor's obligation ENDS at smoke evidence** — feature COMPLETE means the evidence is posted and the feature is handed to the HARVEST lane | `editor.md` |
+| **EDITOR** | Commits + error fixes: claim issue → worktree → code → CI gate → sign → push → ff-merge into fork `main` → `oc-deploy ship` → smoke on notify. **The editor's obligation ends at a PASS demonstrated on the running binary** — feature COMPLETE means the behaviour was observed and the verdict row recorded; the post and the hand-off to the HARVEST lane are handoffs, not the completion | `editor.md` |
 | **HQ** | Skill set maintenance, worker ledger, Duty 4 worker polls, Duty 6 periodic lens reviews — count derived from the catalog at gate time (details in `hq.md` and `review-lenses.md`) | `hq.md` |
 | **TRIAGE** | Intake & hygiene: issue assignment, repo hygiene patrols, rebase/merge execution delegated from HQ, upstream lifecycle tracking (delta watch, PR census, dependency tracking folded from Harvester v0.4.176) | `triage.md` |
 | **TOOLSMITH** | CLI tools author & maintainer: owns `tools/` code, test battery stewardship, direct recipient of tool quirks/defects (v0.4.176) | `toolsmith.md` |
@@ -72,7 +72,7 @@ No lane settles protocol disputes — rulings are HQ Duty 5.
 | TRIAGE | interrupt lane: fix routing, enforcement (`triage.md`) | edits skill files (single-writer law: HQ is the sole author) · executes builds/swaps (strict routing) |
 | TOOLSMITH | `tools/` CODE only (v0.4.87 carve-out) | skill markdown + `fleet-directives` (HQ-only) · daemon/carrier source (Editor territory) |
 | HARVEST | the upstream PR lifecycle only (`harvest.md`) | edits skill markdown (HQ-only) · installs/swaps binaries · restarts daemons · dispatches builds |
-- **The EDITOR's obligation ends at smoke evidence.** Harvest census, porting, upstream branch creation, PR filing and upstream lifecycle belong to the HARVEST lane — an editor lane that finds itself harvesting has taken work it does not own.
+- **The EDITOR's obligation ends at a behavioural PASS on the running binary.** Harvest census, porting, upstream branch creation, PR filing and upstream lifecycle belong to the HARVEST lane — an editor lane that finds itself harvesting has taken work it does not own.
 - **PRIORITY AUTHORITY (owner order 2026-09-15):** ALL lanes (Editor, HQ, Triage, Toolsmith, Harvest) have complete, independent authority over priorities, sequencing, and task ordering within their codified scopes — never ask the human operator about priorities.
 
 If the request mixes roles (e.g. "fix X and deploy it"), split into separate
@@ -415,7 +415,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 | PR body = detailed what/why. `Closes #N` is **VALID same-repo** (a FORK binary issue, closed by the fork commit that fixes it) and **FORBIDDEN across trackers** (a fork or factory issue has no upstream number space) — the upstream PR body ends `Original issue: <full URL>` naming the FORK issue, EXACTLY one | `opencrabs/opencrabs` PR bodies | owner 2026-10-09 (supersedes the 2026-10-03 form) |
 | A binary issue on the FORK closes via `Closes #N` on the fork commit that fixes it; the fork is a LIVE tracker — never READ-ONLY, never a historical portfolio | trackers | owner 2026-10-09 |
 | Claiming = **assignment on the tracker** (the PUBLIC claim signal, owner order 2026-10-03) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row (kind `claim`, v1.1 vocabulary since v0.4.48). **THE ASSIGNMENT LEG IS ATTEMPTED AND VERIFIED, NEVER ASSUMED:** since the 2026-10-09 two-stream order the binary tracker is the FORK `leshchenko1979/opencrabs`, where the account holds `admin`, so **assignment WORKS on both live trackers** (fork + factory). The upstream TRIAGE grant (2026-10-04: `opencrabs/opencrabs` `pull:true, triage:true`) is now HISTORICAL — upstream receives PRs only, so no issue claim happens there. Where the platform denies an assignment, RECORD the denial and let the `claim` row + `Issue-Ref` trailer BE the claim — a SILENT skip is a violation, because it is indistinguishable from a permission limit. NO tackling/status comments or labels; uniqueness sweeps stay read-only search. **CARVE-OUT:** the item-7 approved-design comment and `oc-issue-log`'s per-commit implementation note (owner 2026-08-28) are sanctioned — the prohibition governs CLAIMING chatter, not the design/implementation record | tracker assignment (attempted + verified) + ledger | owner 2026-10-03; fork-admin leg owner 2026-10-09 |
-| PR SHIPMENT — **PR SHIPMENT LAW (single home): feature COMPLETE + smoke PASS (v0.4.104 4-Leg Smoke Rubric) → the EDITOR posts smoke evidence to its forum topic and its obligation ENDS there; the HARVEST lane ports, gates and files the upstream PR. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
+| PR SHIPMENT — **PR SHIPMENT LAW (single home): the feature BEHAVES CORRECTLY on the live binary with a smoke PASS (v0.4.104 4-Leg Smoke Rubric) → the EDITOR records that behavioural evidence — that IS the finish line. Upstream filing happens only for groups the owner names (UPSTREAM FILING REGISTER) and is never the terminus of any lane's work. All other references to this law are pointers to THIS row — procedure: `harvest.md` Phase 7; upstream-merge-runbook.md §Upstream-merge cadence (harvest census); triage.md T4.** | mechanical gates | standing process |
 | APPROVAL = Alexey's reply or a positive Telegram reaction to the explicit request in the forum topic; silence is NOT consent; spontaneous / ad-hoc PRs remain forbidden | owner word | v0.4.1 |
 
 *Pre-2026-08-27 upstream issues stay readable for uniqueness sweeps and legacy
@@ -424,19 +424,21 @@ links; development-time upstream contact is PR-comments only (supersedes the
 - CONSENT REGISTER — **Never rule from codified memory — grep the live record
   (chat / ledger) before denying any permission** (v0.4.17 lesson, 2026-08-26).
   Deploy consent RETIRED 2026-08-28 (owner 18:50Z): GREEN carrier run + artifact
-  verify IS the authorization. Upstream-PR filing follows the PR SHIPMENT law (PR SHIPMENT row, the ISSUE ROUTING bullet above), GATED BY THE MODE REGISTER below. APPROVAL
+  verify IS the authorization. Upstream-PR filing follows the PR SHIPMENT law (PR SHIPMENT row, the ISSUE ROUTING bullet above), GATED BY THE UPSTREAM FILING REGISTER below. APPROVAL
   definition above governs everything that is owner-gated (silence is NOT consent).
-  - **MODE REGISTER — the upstream-PR filing gate is a MODE SWITCH (owner ruling 2026-09-20).** Two modes, ONE declared current, and the switch is the OWNER's alone. Owner's words: *"we basically have two modes: 1. High-trust mode, when I'm sure that the factory is working so that the quality allows autonomous harvesting. 2. Degraded, like now, when I want to gate every PR group."*
+  - **UPSTREAM FILING REGISTER — filing upstream is an EXCEPTION, never a goal (owner ruling 2026-11-12, superseding the 2026-09-20 two-mode ruling).** This factory's fork has diverged from upstream `opencrabs/opencrabs` and will keep diverging. **Keeping a change on the fork is the normal, healthy, finished state — it is NOT "degraded", NOT a backlog, NOT debt.** A cycle is finished when the feature BEHAVES CORRECTLY on the live binary; never when something is filed upstream. The retired vocabulary called the default state "DEGRADED" and the filing state "HIGH-TRUST", which taught every lane that unfinished business was piling up — **that framing is RETIRED and must not be reintroduced**, in a report, a ruling or a commit message.
 
-    | Dimension | HIGH-TRUST MODE | DEGRADED MODE |
+    Two states, ONE declared current, and the switch is the OWNER's alone:
+
+    | Dimension | FORK-STANDING (default) | UPSTREAM-ON-REQUEST |
     |---|---|---|
-    | Condition (owner's words) | "the factory is working ... quality allows autonomous harvesting" | "I want to gate every PR group" |
-    | Upstream PR filing | lane files on the 4-leg smoke PASS; filing NOTICE to its own topic | **the PR GROUP is HELD for explicit owner approval before the PR leaves the lane** |
-    | Approval form | not required — SMOKE PASS is the gate | owner reply, or a positive Telegram reaction to the explicit request; **silence is NOT consent** |
-    | Filing unit | one feature PR, per lane | **PR GROUP** — related PRs approved together |
-    | Smoke rubric / CI gate / rollback | 4 legs / unchanged / owner's call | 4 legs / unchanged / owner's call |
+    | Condition | normal operation — the fork is the product | the owner has explicitly named changes to push upstream |
+    | Upstream PR filing | **none.** Not filing is the normal state, not a deficiency | **only the NAMED groups** are filed; everything else stays FORK-STANDING |
+    | Approval form | n/a | the owner's request names the group (reply or a positive reaction); **silence is NOT consent**; an unnamed change is never filed |
+    | Filing unit | n/a | PR GROUP — the named changes filed together |
+    | Smoke rubric / CI gate / atomicity / rollback | unchanged | unchanged — the existing filing rules apply in full |
 
-    **CURRENT MODE: DEGRADED.** Resolution is LIVE, never remembered: read the newest `MODE:` row via `oc-ledger events --n 2000 --kind note` — **`--n` is MANDATORY, because `events` is a TAIL whose default window is ~21 rows, so a bare `events --kind note` returns an EMPTY result that is INDISTINGUISHABLE from "no `MODE:` row exists"** (the sole MODE row sat ~590 rows back and was invisible to the bare form; measured 2026-09-22T20:1xZ, and it had already produced two "no MODE row, therefore DEGRADED" findings in durable records that were RIGHT only because the law fails closed). **If NO `MODE:` row exists the default is DEGRADED** (fail closed — holding a filing costs nothing, an unapproved filing is a public act). **Under DEGRADED the harvest hold is GLOBAL**: it supersedes the retired per-group Owner Push Freeze register (removed by owner order 2026-09-24 21:04Z — see `fleet-directives.md` §Owner Push Freeze — RETIRED), so no PR group of ANY feature is filed without explicit owner approval. A feature's soak maturing, a green census, or an idle editor is never a release. The owner switches by word, receipted by `oc-ledger stamp note "MODE: <HIGH-TRUST|DEGRADED> — <provenance>" --by "hq <uuid>"`. Procedure: `harvest.md` §Phase 7 step 0a.
+    **CURRENT STATE: FORK-STANDING.** Resolution is LIVE, never remembered: read the newest `MODE:` row via `oc-ledger events --n 2000 --kind note` — **`--n` is MANDATORY, because `events` is a TAIL whose default window is ~21 rows, so a bare `events --kind note` returns an EMPTY result that is INDISTINGUISHABLE from "no `MODE:` row exists"** (the sole MODE row sat ~590 rows back and was invisible to the bare form; measured 2026-09-22T20:1xZ). **If NO `MODE:` row exists the default is FORK-STANDING** — fail closed, because the closed direction is "nothing is filed" and an unapproved filing is a public act. **A legacy row reads FORWARD, never backwards:** `MODE: DEGRADED` = FORK-STANDING; `MODE: HIGH-TRUST` = UPSTREAM-ON-REQUEST with NO named groups, i.e. still nothing filed until a group is named. The owner switches by word, receipted by `oc-ledger stamp note "MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>" --by "hq <uuid>"`. Procedure: `harvest.md` §Phase 7 step 0a.
   (Deleted-tool history: CHANGELOG.md.)
 - ROLE-SCOPED BROADCASTS: messages reach non-owning roles ONLY when tagged
   [ALL]; otherwise send strictly to the owning role. CC-everyone is noise.
@@ -461,9 +463,9 @@ links; development-time upstream contact is PR-comments only (supersedes the
   harvest.md §Phase 7 step 2c. One red = fix cycle, not a filed
   PR ("PRs that fail CI will not be reviewed" — their words). Receipts ride
   the PR prep beside smoke evidence. Gate covers shipworthiness only;
-  the SMOKE pass remains a required condition in BOTH modes, and owner approval
-  is required under **DEGRADED MODE** and waived under **HIGH-TRUST MODE**
-  (§Hard rules — CONSENT REGISTER / MODE REGISTER).
+  the SMOKE pass remains a required condition in BOTH states, and a filing
+  happens only on the owner's explicit request naming the group
+  (§Hard rules — CONSENT REGISTER / UPSTREAM FILING REGISTER).
 - Issue-first, no exceptions (2026-08-25; routing revised 2026-10-09): a DISCOVERED problem
   gets its issue FILED before any fix work starts — on the FORK `leshchenko1979/opencrabs`
   for ALL opencrabs binary defects (runtime behaviour, channels, providers, TUI, memory, tools),

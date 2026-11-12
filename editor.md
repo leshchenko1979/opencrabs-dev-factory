@@ -17,11 +17,11 @@ watches build runs, and NEVER touches binaries — all automation territory via
 `oc-deploy` (NO dispatch exceptions: BUILD TRIGGERS = exactly TWO — SKILL.md §Hard rules).
 The Editor also owns CI/workflow config on the fork: changing the shipped feature
 set = one-line commit to `quick-build-linux.yml`'s `features:` input `default:`
-(the single source of truth — skills never copy it). When a feature is COMPLETE
-(merged to fork `main`, shipped green, smoke test PASS). **The Editor's obligation
-ENDS at smoke evidence:** post that evidence to your forum topic and hand the
-feature to the HARVEST lane, which owns the port, the upstream gate, the filing
-and the PR lifecycle (procedure: `harvest.md`; owner order 2026-09-24 centralising
+(the single source of truth — skills never copy it). A feature is COMPLETE only
+when its behaviour has been demonstrated against the live binary and the verdict
+row is recorded (Phase 6; `§Completion Definition`). Posting that evidence and
+handing the feature to the HARVEST lane — which owns the port, the upstream gate,
+the filing when the owner asks for one, and the PR lifecycle (procedure: `harvest.md`; owner order 2026-09-24 centralising
 harvest). An editor lane NEVER files an upstream PR.
 
 **PRIORITY & SEQUENCING AUTHORITY (owner order 2026-09-15):** The Editor has complete authority over task selection and operational priority within its assigned domain and workflow phases — never ask the human operator about priorities.
@@ -372,7 +372,7 @@ git -C ~/opencrabs-wt/<task> merge-base --is-ancestor <branch> origin/main || {
 ⚠️ **Distinguish this from the v0.4.214 local-main reconcile — same `rc 5`, opposite fixes.** v0.4.214 covers LOCAL `main` being stale while the branch is *correctly* based on `origin/main`: that is a FALSE alarm and the fix is **do not rebase**. This check covers `origin/main` having genuinely MOVED during the gate: the rebase is **real and necessary**. The v0.4.214 diagnostic (`git merge-base --is-ancestor main origin/main`) does not separate the two — test against `origin/main`, never against local `main`. Automating the re-check inside the chain (pre-LEG3) is a Toolsmith call; until it lands, the LANE owes the check.
 
 **Gate-idle question sweep:** CI gate and carrier build waits are idle time — do not sit silent on open questions. Circle back to the user in your topic with anything unresolved (scope doubts, naming, approach forks) while the chain runs; waiting is never a reason to hold a question or to guess.
-- **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with new binary running live on `opencrabs-ops` unit and worktree cleaned.
+- **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
 
 ## Phase 6 — Smoke Verification (oc-smoke)
 
@@ -415,9 +415,10 @@ right here (`opencrabs-ops` user unit).
    IDENTITY-MATCH receipt. Running `oc-smoke <issue-N>` on PASS automatically
    executes `oc-ledger stamp done` (suppressible via `--no-ledger`), mechanically
    closing the worker's in-flight claim in `workers-ledger.json` and unblocking
-   `oc-harvest-census` and Triage intake. If the feature is COMPLETE,
-   this same evidence goes to your forum topic and your obligation ENDS there —
-   the HARVEST lane takes the port, the upstream gate and the filing
+   `oc-harvest-census` and Triage intake. On a behavioural PASS, record
+   the row, reply to the sender, and hand the port to HARVEST — the handoff is the
+   last *editor* step, but the lane's obligation is discharged by the recorded
+   behavioural verdict, not by the post
    (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
 5. FAIL → FILE THE ISSUE FIRST (Phase 1 procedure: symptom + evidence — you
    found it, you file it). Then send raw evidence + the issue link directly to
@@ -438,16 +439,18 @@ that the artifact shipped; it says nothing about behavior. A smoke PASS requires
 TRIGGERED the fix's actual runtime path on the live box and observed it execute (real message
 round-trip, real interrupt, real stamp — not CI test counts). If only presence evidence exists,
 the verdict is `UNPROVEN (presence-only)` — never GREEN. If the fix has no observable runtime
-surface, declare the probe N/A with the structural reason in the smoke evidence (precedent: #92
-no-runtime-string finding) — never silent-skip. A verdict citing only legs 1–3 is INCOMPLETE and
+surface, record `UNPROVEN (no-runtime-surface)` with the structural reason and name the surface
+that would have to exist to prove it (precedent: #92 no-runtime-string finding) — a declared
+N/A is a documented gap, never a discharged obligation, and never a silent skip. A verdict citing only legs 1–3 is INCOMPLETE and
 gets returned to the lane. (A stripped binary that compiles the fix but crashes on the path must
 FAIL — that is the exact hole this rule closes; origin: ship-38585459 smoke n=2036.)
 
 **Owner-dependent leg → PARK, never wait (v0.4.152):** if the only remaining behavioral
 evidence needs the OWNER, the leg is **NOT a blocking gate** — stamp the legs you can
-prove, append a `PARKED-OWNER-EYE` row naming the owner action and the packaging sha,
-then **RELEASE the lane**. A lane idling on an owner leg is in violation; a lane that
-parks and moves on is compliant. Full law, incl. the explicit-and-post-hoc verdict test
+prove, append a `PARKED-OWNER-EYE` row naming the exact owner action, the packaging sha
+and the pre-fix control, then release the lane — **leaving the behavioural leg OPEN on the
+issue until an owner verdict lands (L3).** The park releases the LANE, never the obligation.
+A lane idling on an owner leg is in violation; a lane that parks and moves on is compliant. Full law, incl. the explicit-and-post-hoc verdict test
 (L3): `§Owner-Dependent Smoke Legs — Park, Don't Chase` (this file).
 
 **Swap timing is NOT coordinated with smokes** (owner decision, closing editor
@@ -505,10 +508,13 @@ live UX verification.
 **Tool-description changes have no log-based probe (lane 1a63f103, 2026-09-12):** the
 daemon's provider log records tool ARGS only (`[TOOL_ACCUM] name=bash`) and NEVER tool
 schemas — so no log line can prove a description string was served. Smoking a
-`Tool::description()`/`input_schema()` change uses **binary strings on the running exe +
-the shipped constants in source**; any description fragment found in the log is
-self-contamination from the prober's own commands. A "live schema served" receipt from
-the log is a FALSE receipt.
+`Tool::description()`/`input_schema()` change CANNOT be proven from the log, and
+**binary strings + source constants are presence evidence, never a behavioural PASS**:
+they prove the bytes shipped, not that the schema was served to a model. Record such a
+change as `UNPROVEN (no-runtime-surface)` with the structural reason and name the surface
+that would have to exist to prove it — a documented gap, never a discharged obligation.
+Any description fragment found in the log is self-contamination from the prober's own
+commands; a "live schema served" receipt from the log is a FALSE receipt.
 
 **Leg-4 probe hygiene (lane 212b3c83, Duty-4 cycle `20260919-c21`, 2026-09-19) — three ways a leg-4 probe measures
 nothing and still reports PASS.** (a) **ARTIFACT BINDING:** a criterion binds to a NAMED artifact —
@@ -585,7 +591,7 @@ tools/git/oc-wt remove <task>
 ```
 
 **Per-commit laws live in their phases:** branch-attached HEAD + signing → §Phase 4; worktree-writer exclusivity → §Phase 2. They bind EVERY commit in ANY phase — read them there.
-- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + tools/ship/oc-ship-chain exits 0 (SWAPPED) + worktree removed — **UNLESS the unit carries an open `not-upstreamable` row, in which case the worktree is RETAINED (§Phase 2 teardown exemption) and the row's release condition is the remaining gate.**
+- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + `oc-ship-chain` exits 0 (SWAPPED) + **Phase 6 smoke re-test PASSED on the swapped binary** + worktree removed — **UNLESS the unit carries an open `not-upstreamable` row, in which case the worktree is RETAINED (§Phase 2 teardown exemption) and the row's release condition is the remaining gate.**
 
 
 ## Phase 7 + 7b — NOT the editor's → `harvest.md` (HARVEST lane)
@@ -648,8 +654,8 @@ A smoke leg that only the OWNER can satisfy (a visual pass, a tap, an eye-confir
 
 A shift (night or day) is COMPLETE only when every workstream sits in exactly one of two terminal states:
 
-- **RECEIPTED** — the work landed and its receipts are stamped (PR filed, swap verified, ledger row, smoke row); or
-- **PARKED** — an explicit `PARKED-OWNER-EYE` row (or an equivalently named park, with its reason) exists, naming the next-cycle action and the owner.
+- **RECEIPTED** — the work is behaviourally verified: a `smoke-verdicts.log` row from a live probe of the feature's own path (plus ledger row and swap identity). A PR or issue filing is bookkeeping and never substitutes for it; or
+- **PARKED** — an explicit `PARKED-OWNER-EYE` row (or an equivalently named park, with its reason) exists, naming the next-cycle action and the owner — with the behavioural leg still **OPEN** on the issue, not discharged by the park.
 
 A workstream in state "waiting for X" is NOT terminal and blocks any completion claim. Candidates not closed inside the window **roll to the next cycle** — never chased across it. Report format: `receipted=N · parked=M · waiting=0`; any non-zero `waiting` means the shift is not done.
 

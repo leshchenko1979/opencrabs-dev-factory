@@ -232,11 +232,11 @@ below needs a regular cadence to be worth anything.
      **The naming commit's changed files must INTERSECT the issue's own surface** —
      the same identity requirement Duty T4 item 1 states for the VET leg (v0.4.218).
      Without it the verdict is POISONED: a false `landed` routes already-shipped work
-     to the harvest queue, or marks live backlog as done. Under the harvest-gated closure law
-     a DONE issue stays OPEN until its upstream PR files, so without this term
-     every landed-but-unharvested issue reads as dispatchable backlog.
-     **Landed-and-unharvested ⇒ route to the HARVEST QUEUE, never to an editor
-     lane** — such an issue waits on a PR, not on code. Canon (the one home):
+     to the smoke queue, or marks live backlog as done. Under the closure law
+     a DONE issue is closed on its behavioural receipt, so without this term a
+     landed-but-unclosed issue reads as dispatchable backlog.
+     **Landed-and-unclosed ⇒ close it on the smoke receipt, never re-dispatch an
+     editor lane** — such an issue waits on a verdict, not on a PR. Canon (the one home):
      `§Dispatch Eligibility — the 4-bucket predicate` (this file).
 4. For each unclaimed issue: route to the owning editor, or if
    none is obvious, surface the unclaimed set to HQ for
@@ -269,8 +269,8 @@ ONLY when it meets one of:
     newer one, cite the survivor);
 (c) **owner-confirmed-withdrawn** — the owner explicitly said the work is
     dropped (cite the board/topic message; never infer).
-Everything else stays open: harvest-gated closure law unchanged (done-work
-issues close only after their upstream PR files). Every autonomous close:
+Everything else stays open: closure is gated on a behavioural receipt
+(done-work issues close on the smoke verdict; an upstream PR never gates it). Every autonomous close:
 one ledger stamp per issue (`oc-ledger stamp note "T5 auto-close #N <test>"
 `), and the close comment names the test class (a)/(b)/(c). Reversible by
 owner word (reopen + note).
@@ -288,17 +288,18 @@ git grep -c "<S>" adolfousier/main        # 0  =>  the subject is fork-only
 
 - **Subject PRESENT upstream** → standalone `fix/*`; zero soak per HARVEST LAW
   (`upstream-merge-runbook.md §Upstream-merge cadence · HARVEST LAW · NO-HOLD`); the
-  fork issue closes right after **ITS OWN** upstream PR files.
+  fork issue closes on its own behavioural receipt — no upstream PR is owed.
 - **Subject ABSENT upstream** → the fix is a **CHILD** of the fork-only parent:
   link it (`gh issue edit <n> --parent <parent>`), it is barred from standalone
-  harvest by the Native Sub-Issue Pre-flight Gate (issue #188 refusal), and it
-  stays **OPEN** until the PARENT's upstream PR files, then closes WITH it — a
-  child has no own PR to wait on.
-- **Corollary, both branches: LANDING IS NEVER THE CLOSE TRIGGER.** Not for a
-  standalone fix either — the trigger is the upstream PR filing. A close stamped
-  on landing is a process breach, not a judgement call.
+  harvest by the Native Sub-Issue Pre-flight Gate (issue #188 refusal); it closes
+  on its own behavioural receipt like any other fix — a parent's PR status neither
+  gates nor delays that close.
+- **Corollary, both branches: THE CLOSE TRIGGER IS BEHAVIOUR VERIFIED ON THE LIVE
+  BINARY**, receipted in `smoke-verdicts.log`. An upstream PR, when the owner asks
+  for one, is a handoff that does not gate closure — keeping the fix on the fork is
+  the normal, finished state.
 
-This is a **clarification of the harvest-gated closure law**, not a fourth
+This is a **clarification of the closure law**, not a fourth
 autonomous-close class: neither branch satisfies (a) superseded-by,
 (b) duplicate, or (c) owner-confirmed-withdrawn. Receipts for the ruling:
 #253 **reopened** (child of unharvested #246 — `FlowEvent` is fork-only:
@@ -380,7 +381,7 @@ and smokes. Raised to HQ by the Lifecycle: Restarts lane 2026-09-29.
 
 **Close identity guard — the cited artifact must touch the issue's own surface
 (HQ ruling 2026-09-19, v0.4.216).** Every close resting on a commit or PR
-reference — autonomous (a)/(b)/(c) and harvest-gated alike — MUST confirm the
+reference — every close class, autonomous (a)/(b)/(c) included — MUST confirm the
 cited artifact touches the issue's OWN surface (the path/module the issue names)
 before closing. A trailer or auto-link naming `#N` is an **ATTRIBUTION, not
 identity**: `oc-commit` derives `Issue-Ref` from the actor's latest OPEN claim,
@@ -521,7 +522,7 @@ Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absen
 
 ### F3 — Harvest stays blocked; the lane parks and releases
 
-A smoke PASS is required to file upstream (PR shipment law). `UNPROVEN (structural N/A)` is not a PASS for a live-testable UX feature, so the issue **stays OPEN** under the harvest-gated closure law, and its upstream filing is blocked on the carrier set. **The set stays as-is — owner ruling 2026-09-18 ("Leave the carrier set as-is")**, which answers the widening question this section originally left open: the ceiling is **permanent and intentional**, not a pending decision. A lane therefore NEVER chases a widening request or re-raises the question — the blocker is a STANDING CONSTRAINT. The lane stamps the legs it can prove, names the blocker, and **RELEASES** (`editor.md` §Owner-Dependent Smoke Legs L1, applied to a non-owner blocker). It never idles on the blocker.
+A smoke PASS is required to file upstream (PR shipment law). `UNPROVEN (structural N/A)` is not a PASS for a live-testable UX feature, so the issue **stays OPEN** — waiting on a behavioural verdict it cannot yet reach, not on a filing. Its upstream filing, if the owner ever orders one, is separately blocked on the carrier set. **The set stays as-is — owner ruling 2026-09-18 ("Leave the carrier set as-is")**, which answers the widening question this section originally left open: the ceiling is **permanent and intentional**, not a pending decision. A lane therefore NEVER chases a widening request or re-raises the question — the blocker is a STANDING CONSTRAINT. The lane stamps the legs it can prove, names the blocker, and **RELEASES** (`editor.md` §Owner-Dependent Smoke Legs L1, applied to a non-owner blocker). It never idles on the blocker.
 
 ### F4 — Dispatch carries the ceiling label and the native blocker link
 
@@ -576,11 +577,13 @@ Discipline this clause adds:
 
 ### D2 — Landed-but-unharvested issues are HARVEST QUEUE, not editor dispatch
 
-The closure law (`triage.md §Duty T5` — Autonomous closure) deliberately keeps DONE work **OPEN** until its own upstream PR files. Without the landed term every such issue reads `unclaimed AND vetted` → DISPATCHABLE, so the sweep re-wires exactly the issues the closure law forbids closing. **With the term present the two sets are disjoint by construction:** an OPEN issue whose work already landed in fork `main` waits on a PR, not on code — it routes to the harvest queue and NEVER to an editor lane.
+The landed term exists to keep **already-built** work out of editor dispatch — NOT to gate closure on a filing. Without it every such issue reads `unclaimed AND vetted` → DISPATCHABLE, and the sweep re-wires work that is already built. **With the term present the two sets are disjoint by construction:** an issue whose work already landed in fork `main` is never dispatched for implementation.
+
+**What closes it (owner ruling 2026-11-12):** behaviour verified on the live binary — the same finish line as everywhere else (`editor.md §Completion Definition`). A landed-but-**unverified** issue is a **SMOKE queue** item: it waits on a behavioural probe, never on an editor lane and never on an upstream PR. Fork-standing is the normal finished state; an upstream merge is an exception the owner names explicitly (`SKILL.md` §UPSTREAM FILING REGISTER), so it is never a closure precondition and never a reason an issue reads OPEN.
 
 ### D3 — Live instance, receipted (2026-09-18)
 
-One T5 sweep (ledger n=8331–8341) wired 8 issues; **5 of the 8 were OPEN AND carried a ledger `done` row** — #330 (n=8317), #324 (n=8192), #302 (n=8267), #299 (n=8325), #297 (n=8266). GitHub state OPEN for all five, verified the same turn. #302's `done` row is Triage's own and says verbatim: *"Issue STAYS OPEN under the harvest-gated closure law until its own upstream PR files"* — and the sweep wired #302 anyway. A second surface, the `oc-harvest-dispatch-4h` cron (session c32f43ee), wired the same issue from the same root cause: `done` + zero claims satisfies the old predicate. Editor 127429e6 claimed #297 (n=8345) then stood it down (n=8353, "dispatch was stale, no work owed") — one wasted claim, real churn.
+One T5 sweep (ledger n=8331–8341) wired 8 issues; **5 of the 8 were OPEN AND carried a ledger `done` row** — #330 (n=8317), #324 (n=8192), #302 (n=8267), #299 (n=8325), #297 (n=8266). GitHub state OPEN for all five, verified the same turn. #302's `done` row is Triage's own and says verbatim: *"Issue STAYS OPEN under the harvest-gated closure law until its own upstream PR files"* — and the sweep wired #302 anyway. *(That row's rationale is superseded by the 2026-11-12 ruling above: the receipt stands as measured history, the harvest-gated closure it cites is RETIRED — closure is behaviour verified, not a filing.)* A second surface, the `oc-harvest-dispatch-4h` cron (session c32f43ee), wired the same issue from the same root cause: `done` + zero claims satisfies the old predicate. Editor 127429e6 claimed #297 (n=8345) then stood it down (n=8353, "dispatch was stale, no work owed") — one wasted claim, real churn.
 
 ### D4 — AUTHORSHIP — a defect in another's feature/fix is never dispatched for implementation (owner order 2026-10-04) [LANE]
 

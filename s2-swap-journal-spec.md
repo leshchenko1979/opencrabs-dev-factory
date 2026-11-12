@@ -69,11 +69,16 @@ Every swap attempt (success OR rollback) ends with a workers-ledger stamp:
 UNSEALED regardless of binary health; the next cron/human check treats UNSEALED
 as an incident. No receipt post before the stamp lands.
 
-## Reconstruction test (acceptance criterion)
+## Acceptance criteria
 
-`kill -9` a staging swap mid-flight. From journal + deployed.* markers ALONE an
-operator must answer: which binary is on disk, which step crashed, and whether
-auth (auto-swap) covered the attempt. Any answer requiring chat history = spec not met.
+**(1) PRIMARY — behaviour after the swap:** the running unit answers as the target
+build (`oc-deploy status` matches disk) AND a live probe of the swapped feature's
+own path passes. A swap is not accepted on journal completeness alone.
+
+**(2) SECONDARY — reconstruction:** `kill -9` a staging swap mid-flight; from
+journal + deployed.* markers ALONE an operator must answer which binary is on
+disk, which step crashed, and whether auth (auto-swap) covered the attempt. Any
+answer requiring chat history = the reconstruction leg is not met.
 
 ## Fan-out legs (re-homed from SKILL.md §Session-notify loop, v0.4.80 — lens B F4)
 

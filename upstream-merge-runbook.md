@@ -365,7 +365,7 @@ Standing order (owner override 2026-09-08 13:51Z): file PRs AS SOON AS tests are
 A set is **READY** iff (a) the most recent swap among its ready members is >24 h ago AND (b) it has **no unready members**, where a ready member = swapped + smoked + **closed**.
 
 - **THE TARGET IS EXCLUDED FROM ITS OWN READINESS SET.** The issue being harvested never gates itself; its **gh relatives** do. Including it was **circular**, and the circle is mechanical, not theoretical:
-  - closure is the harvest's **OUTPUT** — `triage.md:236` (`:242` for the corollary), a standalone `src/**` fix "closes right after **ITS OWN** upstream PR files", and "LANDING IS NEVER THE CLOSE TRIGGER… the trigger is the upstream PR filing";
+  - closure is the unit's **BEHAVIOUR VERIFIED ON THE LIVE BINARY** — the fork issue closes on the smoke receipt; an upstream PR, when the owner asks for one, is a handoff that does not gate closure;
   - the PR files only through the harvest lane;
   - and the harvest lane's pre-flight gate **is** this census.
   So "open own-issue holds its own set" makes closure a precondition of the act that produces it. Measured on the live tool at the ruling instant: `oc-harvest-census clusters` printed **`HELD: 58 of 58 open fix-titled`** (`own issue open: 5`, `open gh relative: 29`) — **zero** open fix-titled cluster was harvestable. Independently reproduced from the other side by Triage (`n=11670`): #199 and #548 were both harvested **while open** and would be refused under that reading.
@@ -376,7 +376,7 @@ A set is **READY** iff (a) the most recent swap among its ready members is >24 h
 
 ## Harvest patrol suspension — patrol **RETIRED 2026-09-24**; the suspension record below is history
 
-> **RETIRED — do not create or re-arm a per-lane `oc-harvest-<issue>-resume` job.** The owner ordered harvest centralised on 2026-09-24 (OC DEV Factory): harvesting left the editor lanes, and the per-lane daily resume idiom went with it. **The population is the 16 rows matching `name like 'oc-harvest-%-resume'`; ALL 16 are disabled (enabled=0)** (ledger `n=10828`: 12 clock-driven re-askers disabled that day, `oc-harvest-18/396/402-resume` already off, and `oc-harvest-403-resume` left ARMED because it is event-driven — it reads the MODE register and exits 0 silently while DEGRADED, waking only on a mode change). **The replacement is `tools/harvest/oc-harvest-census`** (Triage's mechanised tier/cluster surfacer) plus the HARVEST lane, which owns port → gate → file → follow (`harvest.md`). The suspension record below is retained as history. **The resume-job law itself is LIVE and has moved to `§Resume-job law (any job, not only harvest)` immediately below** — it applies to ANY resume job, harvest or not, and a reader who obeys this heading and stops here would miss in-force law.
+> **RETIRED — do not create or re-arm a per-lane `oc-harvest-<issue>-resume` job.** The owner ordered harvest centralised on 2026-09-24 (OC DEV Factory): harvesting left the editor lanes, and the per-lane daily resume idiom went with it. **The population is the 16 rows matching `name like 'oc-harvest-%-resume'`; ALL 16 are disabled (enabled=0)** (ledger `n=10828`: 12 clock-driven re-askers disabled that day, `oc-harvest-18/396/402-resume` already off, and `oc-harvest-403-resume` left ARMED because it is event-driven — it reads the MODE register and exits 0 silently while FORK-STANDING, waking only on a mode change). **The replacement is `tools/harvest/oc-harvest-census`** (Triage's mechanised tier/cluster surfacer) plus the HARVEST lane, which owns port → gate → file → follow (`harvest.md`). The suspension record below is retained as history. **The resume-job law itself is LIVE and has moved to `§Resume-job law (any job, not only harvest)` immediately below** — it applies to ANY resume job, harvest or not, and a reader who obeys this heading and stops here would miss in-force law.
 
 
 - **Patrol suspended (owner order 2026-09-18T20:41:30Z, still standing).** In *Opencrabs Dev Factory*, in the same breath as "Until I lift the freeze" and "We are drowning in slop", the owner ordered: **"Turn off all of your pacemakers for now"**. Executed the same evening -- every ops-profile pacemaker OFF, the consolidated harvest patrol `oc-harvest-dispatch-4h` (id `73158e43-3b04-4464-bf82-8d9065a191bb`) included. **The order has not been lifted. Do not re-enable it on a lane's own initiative** -- a re-enable is an owner decision.
@@ -430,14 +430,14 @@ Live ledger / smoke-verdict row hygiene. Cited from outside as `§Ledger hygiene
 | Role | Owner | Scope |
 |---|---|---|
 | **Editors build** | Editor lanes | All port commits (`port(fork→merge)` re-lands per the Seam-resolution shape above) and harvest-port adaptations — ports are code, editors write code |
-| **Triage queues** | Triage | Disposition census (drop/port/ask vs upstream stance), port-work backlog, commissioning port lanes |
+| **Triage queues** | Triage | Disposition census (drop/port/ask vs upstream stance), owner-requested port work, commissioning port lanes |
 | **HQ gates** | HQ | Overlay-disposition classification ruling + port-commit approval gate; owner remains the ask-decider where upstream stance is ambiguous |
 
 No single role "owns ports" alone — the law names the chain explicitly (owner 17:00Z: "We need to decide who owns ports"). The button pick supersedes HQ's 17:02Z three-class board proposal and Triage's 16:50Z three-hand answer wherever they differed.
 
 ## Upstream PR law (owner 2026-08-27, tightened 2026-08-26)
 
-Canonical text: SKILL.md §Upstream relations + §Hard rules rows ("Upstream receives PRs ONLY", "PR SHIPMENT LAW"). Core: PRs-only upstream, never `Closes #N`, fork-issue link at body end, autonomous filing on smoke PASS (v0.4.104 4-Leg Smoke Rubric; PR SHIPMENT law — SKILL.md §Hard rules ISSUE ROUTING bullet, no owner pre-wait), no ad-hoc PRs, branch namespace `leshchenko1979/<slug>` (SKILL.md §Upstream relations item 7). **Kept here (unique) — #1255 exception (owner 2026-08-28 13:59Z):** the compaction-stall / gateway-timeout class is owner-sanctioned for direct upstream REPORTING — adolfo is actively working that area (#1247, fix `a0954b63` on `fix/session-routing-and-fallback-chain`); field report filed as opencrabs/opencrabs#1255 (ledger 1280); follow-ups on that thread may continue upstream. Nightly cron pulls repo only — never pushes brain changes.
+Canonical text: SKILL.md §Upstream relations + §Hard rules rows ("Upstream receives PRs ONLY", "PR SHIPMENT LAW"). Core: PRs-only upstream, never `Closes #N`, fork-issue link at body end, filing only for groups the owner has named, on a smoke PASS (v0.4.104 4-Leg Smoke Rubric; PR SHIPMENT law — SKILL.md §Hard rules ISSUE ROUTING bullet); nothing is filed in FORK-STANDING, no ad-hoc PRs, branch namespace `leshchenko1979/<slug>` (SKILL.md §Upstream relations item 7). **Kept here (unique) — #1255 exception (owner 2026-08-28 13:59Z):** the compaction-stall / gateway-timeout class is owner-sanctioned for direct upstream REPORTING — adolfo is actively working that area (#1247, fix `a0954b63` on `fix/session-routing-and-fallback-chain`); field report filed as opencrabs/opencrabs#1255 (ledger 1280); follow-ups on that thread may continue upstream. Nightly cron pulls repo only — never pushes brain changes.
 
 ## Parallel Harvest Orchestration Protocol (PHOP) (v0.4.136, 2026-09-10)
 
@@ -450,7 +450,7 @@ Standard protocol for parallel harvesting of downstream fork commits to upstream
 | **1. Candidate Vetting** | Triage | **Upstream Absence Proof**: Confirm commit delta is non-empty on upstream tip (`git diff adolfousier/main -- <files>`), patch-id is not an ancestor/merged, upstream PR settling authority confirms unharvested, and candidate is not superseded. | `tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` |
 | **2. Lane Availability** | Triage | **Verify-Unclaimed & Idle Law**: Scan `workers-ledger.json` for active `claim` rows. Target lane must have status `idle` and zero unfinished claims. Never dispatch to a busy lane (e.g. active plan or in-flight gate). | `tools/harvest/oc-harvest-dispatch dispatch <issue> <commits> [--to <uuid>]` (enforces rc 4 on busy lanes) |
 | **3. Dispatch Envelope** | Triage | **Atomic Dispatch**: Deliver standard payload via `session_notify` (`delivery.mode="turn-end"`). Zero Telegram noise to worker topics. Mandatory wire footer: `Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.` Receiving lanes do NOT ack via notify. | Standard wire envelope `[HARVEST DISPATCH: #N]` |
-| **4. Mechanized Ship & Ack** | HARVEST | **Ship Gate (v0.4.146)**: Dedicated worktree off `adolfousier/main`, cherry-pick with trailers, `oc-harvest-sweep`, push, `oc-prchecks`. On GREEN gate AND verified 4-leg smoke pass in `smoke-verdicts.log` → file upstream PR citing smoke receipt, link fork issue, notify Triage. Never file unsmoked PRs. **Owner order 2026-09-24 centralising harvest: this stage is the HARVEST lane's; the EDITOR's obligation ends at smoke evidence.** | `harvest.md` Phase 7c |
+| **4. Mechanized Ship & Ack** | HARVEST | **Ship Gate (v0.4.146)**: Dedicated worktree off `adolfousier/main`, cherry-pick with trailers, `oc-harvest-sweep`, push, `oc-prchecks`. On GREEN gate AND verified 4-leg smoke pass in `smoke-verdicts.log` → file the upstream PR **only for groups the owner named**; otherwise the stage ends at the smoke receipt. Never file unsmoked PRs. **Owner order 2026-09-24 centralising harvest: this stage is the HARVEST lane's; the EDITOR's obligation ends at smoke evidence.** | `harvest.md` Phase 7c |
 
 ### 2. Standard Dispatch Wire Envelope
 
@@ -467,10 +467,11 @@ Commands:
   4. Verify 4-leg smoke pass in smoke-verdicts.log
   5. git push origin {branch}
   6. tools/harvest/oc-prchecks {branch}
-Mode: {HIGH-TRUST|DEGRADED}   (read live from the ledger; fail-closed to DEGRADED)
-Contract: {MODE-CONDITIONAL} — under HIGH-TRUST: SHIP on GREEN CI gate + verified 4-leg smoke pass,
-file PR on opencrabs/opencrabs:main citing gate run ID + smoke evidence, link fork #{issue}, notify
-Triage. Under DEGRADED: hold the PR group for explicit owner approval; smoke first, file only on the word.
+Mode: {FORK-STANDING|UPSTREAM-ON-REQUEST}   (read live from the ledger; fail-closed to FORK-STANDING = file nothing)
+Contract: {MODE-CONDITIONAL} — under FORK-STANDING: file NOTHING; keeping the change on the fork is the
+normal, finished state, not a backlog. Under UPSTREAM-ON-REQUEST: only the groups the OWNER NAMED are
+filed, on a GREEN CI gate + verified 4-leg smoke pass; file the PR on opencrabs/opencrabs:main citing the
+gate run ID + smoke evidence, link fork #{issue}, notify Triage.
 Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.
 ```
 
@@ -497,11 +498,13 @@ sequenceDiagram
     Note over Harvest: Cut worktree off adolfousier/main<br/>Cherry-pick + oc-harvest-sweep
     Harvest->>ForkCI: Push branch + dispatch pr-checks
     ForkCI-->>Harvest: Gate verdict: SUCCESS
-    Note over Harvest: HIGH-TRUST: AUTO-SHIP on dispatch.<br/>DEGRADED: hold for the owner's word.
+    alt UPSTREAM-ON-REQUEST (owner-named group)
     Harvest->>Upstream: File upstream PR (gh pr create)
     Harvest->>Triage: session_notify: PR filed + fork issue linked
+    end
+    Note over Harvest: FORK-STANDING: file nothing (the normal state).<br/>UPSTREAM-ON-REQUEST: file only the named groups.
     Triage->>Alexey: Report PR receipt in topic 42487
-    Note over Harvest: The EDITOR's obligation ends at smoke evidence (owner order 2026-09-24).
+    Note over Harvest: The EDITOR's obligation ends at a behavioural PASS on the running binary (owner order 2026-09-24).
 ```
 
 **OpenCrabs source work** (`~/opencrabs`): any code edit, CI build, or binary swap follows the **`/opencrabs-dev`** skill (`skills/opencrabs-dev/SKILL.md`) — fresh-base fetch, fork issue claim via `Issue-Ref` trailer + `oc-ledger claim` row (NO tackling comments on fork issues — owner ban 2026-08-27), per-task worktree, CI gate (pr-checks), CI-only evidence gates, sha-verified run, backup + atomic swap, ops-only user-unit restart. Upstream stays PRs-only; this section is just the pointer (procedure canonical in the skill).

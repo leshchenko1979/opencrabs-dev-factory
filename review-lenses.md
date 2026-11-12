@@ -98,7 +98,10 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      edits, whether a file should split (e.g. per-phase reference pages) or
      regroup. Every STEP in a role file must end on a CHECKABLE completion
      criterion (can the agent tell done from not-done? vague criteria invite
-     premature completion). Before any split verdict, test the cheaper
+     premature completion). **A completion criterion must be BEHAVIOURAL** — it
+     names an observation of the running artifact, not an artifact produced
+     (a PR filed, a doc updated, a row stamped); an artifact-only formula is the
+     shape that lets a lane report DONE on work nobody has seen behave. Before any split verdict, test the cheaper
      ladder moves first: disclose reference behind a context pointer, regroup
      for CO-LOCATION (a concept's definition, rules, and caveats under one
      heading). Findings must weigh the cost of a split (cross-refs, worker

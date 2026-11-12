@@ -1,5 +1,44 @@
 # Changelog — opencrabs-dev
 
+## v0.4.304 — the finish line is behaviour on the live binary; upstream filing is an EXCEPTION (owner ruling 2026-11-12)
+
+**What forced it.** The owner's ruling: *"I want to replace mentions of degraded with something else so that other lanes understand that we don't have pushing changes upstream as our end goal. However, I may ask explicitly to push certain changes upstream, the currently existing rules for that should apply."* The corpus did not merely imply the wrong finish line — it **codified** it. `triage.md:580` read *"the closure law deliberately keeps DONE work **OPEN** until its own upstream PR files"*, i.e. a filed PR was a **precondition for closing an issue**. `harvest.md` carried `DONE =` formulas ending in a filing, and headings made "feature complete → upstream PR" an arrow. A lane reading the corpus learned that its work was not finished until the upstream took it — the opposite of the standing truth that **fork-standing is the normal, finished state**.
+
+**Two changes, one doctrine.**
+
+1. **Vocabulary RETIRED, not renamed.** `MODE: DEGRADED` / `MODE: HIGH-TRUST` are dead tokens. The states are now **`FORK-STANDING`** (default; healthy; **nothing is filed**) and **`UPSTREAM-ON-REQUEST`** (the owner names the groups; the unchanged CI-gate + 4-leg-smoke + atomicity rules then apply). Fail-closed default is `FORK-STANDING` — the closed direction is "nothing filed". Legacy `MODE:` rows read **FORWARD**: `DEGRADED` → FORK-STANDING; `HIGH-TRUST` → UPSTREAM-ON-REQUEST **with no named groups**, i.e. still nothing filed. Ledger stamp syntax unchanged: `oc-ledger stamp note "MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>"`. Canonical home: `SKILL.md` §UPSTREAM FILING REGISTER; `harvest.md`, `fleet-directives.md` and `upstream-merge-runbook.md` point at it.
+
+2. **The finish line, corrected at every site that stated or implied it.** Four read-only audits swept the corpus in disjoint partitions and returned **76 findings — 16 class A** (explicitly wrong finish line), **27 class B** (implied by formula/arrow/heading), **33 class C** (vocabulary). Every replacement was written against the corpus's own already-correct anchor, `editor.md §Completion Definition` ("complete ONLY when the live behavioral smoke test on the swapped binary has executed") — the wrong belief was never a thesis, it was distributed across `DONE =` formulas containing PR terms and arrows making filing the successor of "complete".
+
+The structural repairs, by shape:
+
+- **`DONE =` formulas** that ended in a filing or omitted the smoke leg (`harvest.md:306`, `:365`; `editor.md:592` fix-loop now names the Phase 6 smoke re-test).
+- **Closure made conditional on a PR** — `triage.md:580` rewritten: the landed term exists to keep *already-built* work out of editor dispatch, **not** to gate closure on a filing. A landed-but-unverified issue is a **SMOKE queue** item. The historical #302 receipt is kept verbatim and annotated as superseded, never falsified.
+- **Ship-phase `DONE` read as the whole job** — `editor.md:375` now states it closes the SHIP phase only, with Phase 6 behavioural smoke on that binary the outstanding obligation.
+- **N/A used as a discharge** — `editor.md` now requires `UNPROVEN (no-runtime-surface)` **plus the name of the surface that would have to exist**; a declared N/A is a documented gap, never a discharged obligation.
+- **Parks read as completion** — the park releases the LANE, never the obligation; the behavioural leg stays **OPEN** until an owner verdict (L3).
+- **Framing** — `README.md:16` row, `README.md:76` ("fully journaled is not the same as done"), `upstream-merge-runbook.md:379` stale `DEGRADED` → `FORK-STANDING`, `:433` "port-work backlog" → "owner-requested port work", `review-lenses.md` (a completion criterion must be BEHAVIOURAL), `s2-swap-journal-spec.md` (live probe PRIMARY, reconstruction SECONDARY), `toolsmith.md:84`.
+
+**LOC metric (owner order 2026-09-19).**
+
+| file | before | after | delta |
+|---|---|---|---|
+| `README.md` | 82 | 82 | 0 |
+| `SKILL.md` | 522 | 524 | +2 |
+| `editor.md` | 688 | 694 | +6 |
+| `fleet-directives.md` | 576 | 576 | 0 |
+| `harvest.md` | 508 | 513 | +5 |
+| `review-lenses.md` | 331 | 334 | +3 |
+| `s2-swap-journal-spec.md` | 118 | 123 | +5 |
+| `toolsmith.md` | 165 | 165 | 0 |
+| `triage.md` | 599 | 602 | +3 |
+| `upstream-merge-runbook.md` | 517 | 520 | +3 |
+| **TOTAL** | **4106** | **4133** | **+27** |
+
+Net **+27 lines / +4,282 bytes**. The growth is deliberate: each repair ADDS the sentence that names the real finish line, where the old text merely omitted it. The 500-line budget remains breached by `SKILL.md` 524, `editor.md` 694, `harvest.md` 513, `triage.md` 602, `upstream-merge-runbook.md` 520 (and `fleet-directives.md` 576 under its own exemption) — the corpus cannot both gain a correction at every wrong site and lose lines in the same pass; the shrink is a separate, measured job.
+
+**Lint:** `oc-lint-laws` clean (3 documented-absent citations skipped).
+
 ## v0.4.303 — editor.md shrink: 785→688 lines, duplication cut to pointers (owner order 2026-11-09)
 
 **What forced it.** The owner asked for a cleanup report on `editor.md` and then ordered the cut directly: *"Shrink cgroup to 8 lines and take all 95."* v0.4.301 had already taken 812→784 and v0.4.302 fixed five defects; what was left was restatement.

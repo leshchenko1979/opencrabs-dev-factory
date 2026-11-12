@@ -1,4 +1,6 @@
-# HARVEST — upstream PR lane: port → gate → file → follow
+# HARVEST — owner-requested upstream PR lane: port → gate → file → follow
+
+> Filing is never the finish line. A fork-side behavioural PASS is.
 
 **Load only after SKILL.md confirmed the role is HARVEST.**
 
@@ -6,31 +8,34 @@
 
 > Single home for the upstream-PR phases. Loaded when Triage dispatches a
 > READY cluster (Phase 7 trigger) or an owned PR needs lifecycle action
-> (Phase 7b). Editors do NOT load this file — the editor's obligation ends at
-> smoke evidence; Triage surfaces and counts, never ports or files.
+> (Phase 7b). Editors do NOT load this file — the editor's obligation ends at a
+> behavioural PASS on the running binary; Triage surfaces and counts, never ports or files.
 
-## Phase 7 — Feature complete → upstream PR
+## Phase 7 — Owner-requested upstream filing (only for groups the owner names)
 
 Trigger: the feature is COMPLETE — merged into fork `main`, shipped inside a
-green swapped build, smoke test PASS (v0.4.104 4-Leg Smoke Rubric). With tests green
-and smoke confirmed, the HARVEST lane prepares the harvested PR branch, posts the smoke
-evidence, and files the upstream PR. Development-time contact stays issues-only;
-this PR is the ONE sanctioned exception (completed features only).
+green swapped build, smoke test PASS (v0.4.104 4-Leg Smoke Rubric). **That PASS is
+the finish line; nothing is owed upstream.** Only when the owner has named this group
+for upstream (UPSTREAM-ON-REQUEST, step 0a) does the HARVEST lane prepare the branch,
+post the smoke evidence, and file. Development-time contact stays issues-only;
+this PR is the ONE sanctioned exception (owner-named groups only).
 
 ```bash
-# 0a. MODE GATE (v0.4.226) — resolve the current mode LIVE, never from memory:
+# 0a. FILING GATE (v0.4.226) — resolve the current state LIVE, never from memory:
 #       tools/state/oc-ledger events --n 2000 --kind note | grep -o 'MODE: [A-Z-]*' | head -1
-#     NO `MODE:` row => DEGRADED (fail closed).
-#     Resolution law + fail-closed default: SKILL.md §Hard rules — MODE REGISTER.
-#       DEGRADED   -> HOLD the PR GROUP. Request owner approval in YOUR forum topic
-#                     (reply or a positive reaction = approval; silence is NOT consent).
-#                     File only on that approval.
-#       HIGH-TRUST -> proceed to step 0b; the 4-leg smoke PASS is the gate.
+#     NO `MODE:` row => FORK-STANDING (fail closed: nothing is filed).
+#     Resolution law + fail-closed default: SKILL.md §Hard rules — UPSTREAM FILING REGISTER.
+#       FORK-STANDING        -> upstream filing is NOT a goal. Do NOT file. The work is
+#                               FINISHED at a behavioural (smoke) PASS on the fork; stop here.
+#       UPSTREAM-ON-REQUEST  -> only the groups the OWNER NAMED are filed; proceed to step
+#                               0b for those, under the existing 4-leg smoke + CI gate rules.
+#     A legacy `MODE: DEGRADED` row means FORK-STANDING; `MODE: HIGH-TRUST` means
+#     UPSTREAM-ON-REQUEST with NO named groups — still nothing filed.
 #
 #     AN APPROVAL IS STAMPED, THEN READ — it does not live in the chat scroll
 #     (owner order 2026-09-26T23:50:45Z, landed 2026-09-27). A Telegram reply or
 #     reaction is the approval FORM; a ledger row is its DURABLE RECORD, and only
-#     the row is what another lane can find. Before filing under DEGRADED:
+#     the row is what another lane can find. Before filing under UPSTREAM-ON-REQUEST:
 #       READ FIRST (note the --n, see below):
 #         tools/state/oc-ledger events --n 3000 --kind note --full | grep -o 'FILING APPROVED[^—]*'
 #       An approval covering YOUR group => file, do NOT re-ask.
@@ -40,7 +45,7 @@ this PR is the ONE sanctioned exception (completed features only).
 #     a member never needs its own tap. Prefix is canonical FOR STAMPING: `FILING APPROVED: group ` — but the READ must NOT depend on it (see the PREFIX clause below).
 #
 #     --n IS LOAD-BEARING ON THIS READ TOO, for the tail-window reason stated in
-#     SKILL.md §Hard rules — MODE REGISTER: a bare `events --kind note` returns ZERO
+#     SKILL.md §Hard rules — UPSTREAM FILING REGISTER: a bare `events --kind note` returns ZERO
 #     FILING APPROVED rows even when they exist, and an empty read is INDISTINGUISHABLE
 #     from "no approval exists" — which makes a lane re-ask the owner, the exact defect
 #     this clause exists to remove.
@@ -208,8 +213,8 @@ Rules:
 - **FINAL-PR STANDARD (v0.4.93):** file a PR only when it is genuinely final —
   tests green at push, no known gaps, no planned follow-ups. Force-pushes on
   filed PRs are the rare exception (~1-in-10), never procedure. All iteration
-  happens fork-side BEFORE filing (fork = workspace, upstream PR = one-way
-  handoff).
+  happens fork-side BEFORE filing (the fork is the product; an upstream PR is an
+  optional one-way handoff the owner may request, never the destination of the work).
 - Fork-only commits means EXACTLY that: no adolfousier sync merges, no other
   feature's commits, no bare CI-config churn unless it IS the feature.
 - Cherry-pick conflicts → resolve, re-run the Phase 5 gate (pr-checks), continue. NEVER merge fork
@@ -301,7 +306,7 @@ Rules:
   fork `main` — and NOT deleted while their PR is still open (GitHub needs the
   head alive).
 
-- **Checkable Completion Formula**: `DONE = Upstream PR created + fork issue closed with pointer comment + harvest worktree removed via oc-wt.`
+- **Checkable Completion Formula**: `DONE = the feature behaves correctly on the live binary (4-leg smoke PASS receipted in smoke-verdicts.log) + the fork issue records the outcome.` Filing is a separate, owner-requested act and is never part of DONE.
 
 ## Phase 7b — PR lifecycle (monitor & unblock, v0.4.0)
 
@@ -360,7 +365,7 @@ Contract:
      `--fast` is strictly prohibited for pre-PR testing; upstream PRs require 100% full test suite verification.
 4. **Ship Execution**: When gate run exits GREEN (SUCCESS) AND 4-leg smoke pass is confirmed in `smoke-verdicts.log` (and ≥24h post-swap soak completed for `feat/*` or dependent fix bundles, counted strictly from the latest live deployment timestamp `deployed.ts` of ANY related node in the relationship graph — parent, sub-issues, and blockers, per 24h Feature Soak Harvest Law), the HARVEST lane verifies upstream baseline state (`git diff origin/main...adolfousier/main`) and files the upstream PR (`gh pr create --repo opencrabs/opencrabs --base main --head leshchenko1979:leshchenko1979/fix/<slug> [--draft]`) citing the gate run ID, quoting the 4-leg smoke receipt, and linking the fork issue. If the underlying issue was already clean or resolved in upstream `main`, frame the PR narrative accurately as a clean helper extraction / refactoring / hardening rather than asserting an upstream regression (Upstream Baseline & Narrative Verification Law v0.4.198). (Note: Use `--draft` if the PR depends on another in-flight upstream PR per Staged Upstream Draft PR Mandate). **A PR number is not FILED until a same-turn `gh pr create` (or `gh pr view <N>`) output names it** — if a guard flags the claim (`phantom_blocked`) or the output was not witnessed, the PR is UNFILED: re-verify and re-dispatch (v0.4.152 §Guard-Flag Escalation Law; worked example: an announced PR #1514 that never existed cost ~3 h).
 5. **Ack & Cleanup**: Remove harvest worktree, stamp completion in ledger, and notify Triage via `session_notify`.
-   - **Checkable Completion Formula**: `DONE = 4-leg smoke pass in smoke-verdicts.log + full oc-prchecks green + upstream PR filed + harvest worktree cleaned up.`
+   - **Checkable Completion Formula**: `DONE = 4-leg smoke pass in smoke-verdicts.log + full oc-prchecks green on the branch`; filing upstream is an owner-requested follow-on and not a completion condition.
 
 ## Phase 7 Reference Rules (Harvest Verification & Qualified Fork Refs)
 

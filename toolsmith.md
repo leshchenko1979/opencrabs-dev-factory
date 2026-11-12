@@ -81,7 +81,7 @@ Hard discipline for every change:
   receipts do not cover doc/behavior skew. Skill markdown (SKILL.md,
   CHANGELOG.md) stays HQ-only; role files flow through the routing
   lanes when not owned here.
-- **Checkable Completion Formula**: `DONE = tool code edited under tools/ + tools/tests/run.sh battery PASS (all tests pass) + tools/docs/RC-CONTRACT.md updated (if rc changed) + dual-pushed.`
+- **Checkable Completion Formula**: `DONE = tool code edited under tools/ + tools/tests/run.sh battery PASS (all tests pass) + the tool DRIVEN against a real invocation (the behaviour it exists to produce, not only its unit arms) + tools/docs/RC-CONTRACT.md updated (if rc changed) + dual-pushed.`
 
 ### Explore & DRY gate — before the first edit (mandatory, same intent as editor.md Phase 3)
 
