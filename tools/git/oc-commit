@@ -67,6 +67,11 @@
 #   --issue-repo <owner>/<repo>    raw override, WINS over --tracker
 #   --tracker factory|binary|fork  house vocabulary (oc-issue-create's)
 #   OC_ISSUE_REPO / OC_COMMIT_TRACKER   env equivalents
+# With NO explicit choice the slug is VERIFIED against the tracker (#65): gh is
+# asked which board actually holds #N, and the stderr line says which of
+# `verified` / `explicit` / `AMBIGUOUS` / `DEFAULT, unverified` applies. A tie
+# keeps the factory default and names both boards; a failed lookup keeps the
+# default and declares itself unverified — a lookup must never fail a commit.
 # Default: factory. The slug is VALIDATED (rc 2 if malformed) and the trailer is
 # built from it, so a BARE ref is unreachable — not "avoided by convention".
 # The comment leg follows the same slug unless OC_ISSUE_LOG_REPO overrides it.
@@ -82,6 +87,7 @@
 #             contradicts the branch or subject) · 4
 #             git-commit failure · 5 commit landed but comment FAILED
 # Env: OC_ACTOR (required) · OC_LEDGER (ledger override) · OC_TOOLS_LOG
+#      OC_COMMIT_GH (gh binary for the #65 probe) · OC_COMMIT_NO_PROBE=1 (skip it)
 # =============================================================================
 set -u
 set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
@@ -122,6 +128,10 @@ JSON
   R="$d/repo"; git init -q -b main "$R"
   git -C "$R" -c user.email=t@t -c user.name=T commit -q --allow-empty -m seed
   OC="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"; export OC_LEDGER="$d/wl.json"
+  # (#65) the probe shells out to gh. Every arm below is HERMETIC, so it is off
+  # by default here and the probe arms turn it back on against a STUB binary —
+  # a selftest that hits the network is a selftest that reddens when GitHub does.
+  export OC_COMMIT_NO_PROBE=1
   # 1. unset OC_ACTOR and OPENCRABS_SESSION_ID -> 3
   STUB_OK="$d/il-ok"; printf '#!/usr/bin/env bash
 echo "posted on $1"
@@ -248,6 +258,68 @@ exit 3
   [ $? -eq 0 ] || { echo "selftest: #45-comment-repo-control rc want 0" >&2; exit 1; }
   grep -q '^leshchenko1979/opencrabs-dev-factory$' "$STUB_ARGS" \
     || { echo "selftest: #45-comment-repo-control the DEFAULT must be the factory slug" >&2; exit 1; }
+  # 5e. (#65) an UNNAMED board is resolved by ASKING the tracker, not by
+  #     defaulting. Each stub answers for ONE slug, so these arms discriminate:
+  #     under the old hardcoded default the fork-only case still stamped the
+  #     factory slug and the note went to a nonexistent issue (measured
+  #     2026-11-12 on fork issue 824).
+  mk_gh() { # $1 = path, $2 = fork rc, $3 = factory rc ; records each call
+    printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in\n  leshchenko1979/opencrabs) echo "call $*" >> "%s"; exit %s ;;\n  leshchenko1979/opencrabs-dev-factory) echo "call $*" >> "%s"; exit %s ;;\nesac; done\nexit 1\n' \
+      "$GH_LOG" "$2" "$GH_LOG" "$3" > "$1"; chmod +x "$1"
+  }
+  GH_LOG="$d/gh-calls"
+  GH_FORK="$d/gh-fork";      mk_gh "$GH_FORK" 0 1
+  GH_FACTORY="$d/gh-factory"; mk_gh "$GH_FACTORY" 1 0
+  GH_BOTH="$d/gh-both";      mk_gh "$GH_BOTH" 0 0
+  GH_DEAD="$d/gh-dead";      mk_gh "$GH_DEAD" 1 1
+
+  # (a) fork-only -> the FORK slug, and the probe must have RUN.
+  rm -f "$GH_LOG"
+  ( cd "$R" && echo p1 > p1 && git add p1 && OC_COMMIT_NO_PROBE=0 OC_COMMIT_GH="$GH_FORK" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: probe fork" --issue 42 --no-comment --repo "$R" ) >/dev/null 2>"$d/65a.err"
+  [ $? -eq 0 ] || { echo "selftest: #65-probe-fork rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs#42" \
+    || { echo "selftest: #65-probe-fork must stamp the board the issue actually lives on" >&2; exit 1; }
+  grep -q "verified: #42 exists on the fork" "$d/65a.err" \
+    || { echo "selftest: #65-probe-fork must announce the EVIDENCE, not just the verdict" >&2; exit 1; }
+  [ -s "$GH_LOG" ] || { echo "selftest: #65-probe-fork POSITIVE CONTROL — the probe never ran, so this arm proves nothing" >&2; exit 1; }
+
+  # (b) factory-only -> the FACTORY slug (the mirror image, so (a) cannot pass on
+  #     a resolver that simply always answers "fork").
+  ( cd "$R" && echo p2 > p2 && git add p2 && OC_COMMIT_NO_PROBE=0 OC_COMMIT_GH="$GH_FACTORY" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: probe factory" --issue 42 --no-comment --repo "$R" ) >/dev/null 2>"$d/65b.err"
+  [ $? -eq 0 ] || { echo "selftest: #65-probe-factory rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#42" \
+    || { echo "selftest: #65-probe-factory must stamp the factory board" >&2; exit 1; }
+  grep -q "verified: #42 exists on the factory board" "$d/65b.err" \
+    || { echo "selftest: #65-probe-factory must announce the evidence" >&2; exit 1; }
+
+  # (c) BOTH boards hold #42 (independent number spaces) -> a tie is not
+  #     evidence: keep the default and SAY it is ambiguous.
+  ( cd "$R" && echo p3 > p3 && git add p3 && OC_COMMIT_NO_PROBE=0 OC_COMMIT_GH="$GH_BOTH" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: probe ambiguous" --issue 42 --no-comment --repo "$R" ) >/dev/null 2>"$d/65c.err"
+  [ $? -eq 0 ] || { echo "selftest: #65-probe-ambiguous rc want 0" >&2; exit 1; }
+  grep -q "AMBIGUOUS" "$d/65c.err" \
+    || { echo "selftest: #65-probe-ambiguous a tie must be reported, never resolved silently" >&2; exit 1; }
+
+  # (d) neither board answers (offline / gh absent / foreign repo) -> the commit
+  #     still lands on the default and the stderr says UNVERIFIED. A lookup must
+  #     never gate a commit.
+  ( cd "$R" && echo p4 > p4 && git add p4 && OC_COMMIT_NO_PROBE=0 OC_COMMIT_GH="$GH_DEAD" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: probe dead" --issue 42 --no-comment --repo "$R" ) >/dev/null 2>"$d/65d.err"
+  [ $? -eq 0 ] || { echo "selftest: #65-probe-dead rc want 0 — a failed probe must never fail the commit" >&2; exit 1; }
+  grep -q "DEFAULT, unverified" "$d/65d.err" \
+    || { echo "selftest: #65-probe-dead must declare the fallback unverified" >&2; exit 1; }
+
+  # (e) DISCRIMINATOR: an EXPLICIT board is never probed, even when the probe
+  #     would disagree. The factory-only stub would move a fork commit to the
+  #     factory board if the probe overrode the caller — so the stub's log must
+  #     stay EMPTY and the trailer must keep the named board.
+  rm -f "$GH_LOG"
+  ( cd "$R" && echo p5 > p5 && git add p5 && OC_COMMIT_NO_PROBE=0 OC_COMMIT_GH="$GH_FACTORY" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: explicit board" --issue 42 --tracker binary --no-comment --repo "$R" ) >/dev/null 2>"$d/65e.err"
+  [ $? -eq 0 ] || { echo "selftest: #65-explicit-not-probed rc want 0" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs#42" \
+    || { echo "selftest: #65-explicit-not-probed --tracker must survive the probe" >&2; exit 1; }
+  [ ! -s "$GH_LOG" ] \
+    || { echo "selftest: #65-explicit-not-probed the probe ran on an EXPLICIT choice (calls: $(tr '\n' ' ' < "$GH_LOG"))" >&2; exit 1; }
+  grep -q "explicit" "$d/65e.err" \
+    || { echo "selftest: #65-explicit-not-probed must say the slug was explicit" >&2; exit 1; }
   # 5e. (#45) --session-id-only refuses the tracker flags for the same reason it
   #     refuses --issue: a commit with no ref has no tracker to name, and an
   #     accepted-but-inert flag is indistinguishable from an honoured one.
@@ -614,7 +686,7 @@ if [ "$ISSUE_EXPLICIT" = 0 ] && [ "$SESSION_ID_ONLY" = 0 ]; then
   fi
 fi
 
-# --- #45: resolve the TRACKER slug the Issue-Ref must name -------------------
+# --- #45 / #65: resolve the TRACKER slug the Issue-Ref must name -------------
 # Precedence (later wins): built-in factory default -> OC_COMMIT_TRACKER env ->
 # --tracker -> OC_ISSUE_REPO env -> --issue-repo. One slug feeds BOTH the
 # trailer and the post-commit comment, so they cannot disagree.
@@ -627,12 +699,62 @@ case "${TRACKER:-${OC_COMMIT_TRACKER:-factory}}" in
   binary|fork) _tr_slug="leshchenko1979/opencrabs" ;;
   *) echo "usage: --tracker must be 'factory' or 'binary' ('fork' is accepted as an alias of 'binary') (got '${TRACKER:-$OC_COMMIT_TRACKER}')" >&2; exit 2 ;;
 esac
+# #65: the built-in default is a GUESS, and a WELL-FORMED slug naming the wrong
+# board passes every check #45 added — #45 made a malformed slug fail closed, it
+# never made a wrong one detectable. Measured 2026-11-12: a fork commit for fork
+# issue 824 resolved `…/opencrabs-dev-factory`, the implementation note failed
+# against a nonexistent issue, and the note had to be posted by hand. The ledger
+# carries no repo per claim (844 claim rows: n/t/by/kind/what/issues), so no
+# local source can answer this — only the tracker itself can.
+#
+# So when the caller names NO board, ASK. An explicit choice is never probed:
+# a caller who said which board meant it.
+_REPO_EXPLICIT=0
+if [ -n "$ISSUE_REPO" ] || [ -n "${OC_ISSUE_REPO:-}" ] || [ "$TRACKER_EXPLICIT" = 1 ] || [ -n "${OC_COMMIT_TRACKER:-}" ]; then
+  _REPO_EXPLICIT=1
+fi
+if [ -z "$ISSUE" ]; then
+  # --session-id-only: no Issue-Ref is emitted, so the slug decides nothing.
+  _REPO_NOTE="unused: this commit carries no Issue-Ref"
+elif [ "$_REPO_EXPLICIT" = 1 ]; then
+  _REPO_NOTE="explicit"
+elif [ "${OC_COMMIT_NO_PROBE:-0}" = 1 ]; then
+  _REPO_NOTE="DEFAULT, unverified (probing disabled)"
+else
+  # rc 0 iff issue $ISSUE exists on $1. A 404, an offline box and a missing gh
+  # are deliberately INDISTINGUISHABLE here: every one of them degrades to the
+  # same safe outcome — keep the default and declare it unverified. Never fail
+  # the commit over a probe; this is a lookup, not a gate.
+  _gh_has() {
+    command -v "${OC_COMMIT_GH:-gh}" >/dev/null 2>&1 || return 1
+    "${OC_COMMIT_GH:-gh}" issue view "$ISSUE" --repo "$1" --json number >/dev/null 2>&1
+  }
+  _on_fork=0; _on_factory=0
+  _gh_has "leshchenko1979/opencrabs" && _on_fork=1
+  _gh_has "leshchenko1979/opencrabs-dev-factory" && _on_factory=1
+  if [ "$_on_fork" = 1 ] && [ "$_on_factory" = 0 ]; then
+    _tr_slug="leshchenko1979/opencrabs"
+    _REPO_NOTE="verified: #$ISSUE exists on the fork"
+  elif [ "$_on_factory" = 1 ] && [ "$_on_fork" = 0 ]; then
+    _tr_slug="leshchenko1979/opencrabs-dev-factory"
+    _REPO_NOTE="verified: #$ISSUE exists on the factory board"
+  elif [ "$_on_fork" = 1 ] && [ "$_on_factory" = 1 ]; then
+    # Independent number spaces: both boards can hold a #N. A tie is NOT
+    # evidence for either, so the default stands and the caller is told to
+    # name the board rather than being handed a coin flip as a verification.
+    _REPO_NOTE="AMBIGUOUS: #$ISSUE exists on BOTH boards; kept the factory default — pass --tracker"
+  else
+    _REPO_NOTE="DEFAULT, unverified: #$ISSUE resolved on neither board (gh unavailable, offline, or a number from another repo) — pass --tracker if this is the wrong board"
+  fi
+fi
 ISSUE_REPO="${ISSUE_REPO:-${OC_ISSUE_REPO:-$_tr_slug}}"
 printf '%s' "$ISSUE_REPO" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' \
   || { echo "usage: --issue-repo must be '<owner>/<repo>' (got '$ISSUE_REPO')" >&2; exit 2; }
 # Announced on stderr: a resolution that prints nothing is a claim without a
-# receipt, and the whole defect was a silent wrong default.
-echo "issue-repo: $ISSUE_REPO (Issue-Ref + comment target)" >&2
+# receipt, and the whole defect was a silent wrong default. #65 adds the
+# PROVENANCE — "verified" and "defaulted" are different claims and the caller
+# must be able to tell them apart without reading this script.
+echo "issue-repo: $ISSUE_REPO (Issue-Ref + comment target; $_REPO_NOTE)" >&2
 
 # --- #428 close-keyword hazard scan — ADVISORY: it warns, it never gates -----
 # GitHub's default-branch commit parser closes an issue when the body carries a
