@@ -39,7 +39,7 @@
 
 `editor.md` drops **694 → 401 lines (-42%)**; the editor's at-claim read cost falls by the two appendices' weight, which are now loaded only when their phase opens.
 
-**Lint:** pending `oc-lint-laws` run on this change.
+**Lint:** oc-lint-laws clean (3 documented-absent citations skipped).
 
 ## v0.4.304 — the finish line is behaviour on the live binary; upstream filing is an EXCEPTION (owner ruling 2026-11-12)
 
