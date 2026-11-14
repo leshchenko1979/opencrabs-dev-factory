@@ -711,6 +711,13 @@ do_selftest() {
   if [ "$T_RC" -eq 0 ] && case "$T_OUT" in *"VERDICT GREEN"*) true ;; *) false ;; esac; then
     t_ok "#631: adopted run pinning OUR sha -> GREEN (pin does not block the own-run path)"
   else t_bad "#631 own-sha adoption (rc=$T_RC out=$T_OUT)"; fi
+  # #66: the pinned sha must reach the TERMINAL, not only the log. The operator
+  # watching a gate cannot open tools.log, and "which sha did I actually adopt?"
+  # is the exact question whose absence produced #66's misdiagnosis. Log-only
+  # would have satisfied every other leg here, so this needs its own assertion.
+  if [ "$T_RC" -eq 0 ] && case "$T_OUT" in *"adoption pin ok — run="*"pins sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"*) true ;; *) false ;; esac; then
+    t_ok "#66: pinned sha echoed to the terminal (not log-only)"
+  else t_bad "#66 pinned-sha echo missing (rc=$T_RC out=$T_OUT)"; fi
   # C-A1 (lens C2 A1): the mismatch rc-4 carries a machine-readable SUPERSEDED
   # token so callers (and humans) never retry this id — 35-row retry storm
   # evidence, tools.log 2026-09-07. Retry cannot fix an identity mismatch.
@@ -1818,10 +1825,16 @@ RUN_URL="${RUN_URL:-}"; RUN_URL="https://github.com/$REPO/actions/runs/$RUN_ID"
     if [ -n "$_pin_sha" ]; then
       oc_log_extra "adoption_job_sha" "$_pin_sha"
       oc_log_extra "adoption_pin" "ok"
+      # #66: the pin was recorded only to the log, so an operator watching the
+      # terminal could not see WHICH sha was pinned — the one fact that settles
+      # "did I adopt my own run?". Echo it. Log first, echo second: the durable
+      # record must never depend on a stream a caller may redirect.
+      echo "$PROG: adoption pin ok — run=$RUN_ID pins sha $_pin_sha${SHA:+ (armed $SHA)}" >&2
     else
       # queued run: jobs not materialised yet. Cannot discriminate — DISCLOSE,
       # never a silent clean. (#631: this is the residual window.)
       oc_log_extra "adoption_pin" "unpinned"
+      echo "$PROG: adoption pin UNPINNED — run=$RUN_ID has no materialised job name yet, so its tested sha cannot be verified; watching a run whose identity is UNCONFIRMED (#631/#66)" >&2
     fi
   else
     oc_log_extra "adoption_pin" "unpinned"
