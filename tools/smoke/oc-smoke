@@ -12,7 +12,14 @@
 #   an elif used to drop the whole --evidence argument whenever a probe was
 #   supplied — i.e. on exactly the rows the 4-leg rubric requires).
 #                         [--target <name>] [--unit <unit>]
-#                         [--no-ledger] [--selftest]
+#                         [--no-ledger] [--no-close]
+#                         [--close-repo <owner/repo>] [--selftest]
+#   --close is the DEFAULT on a PASS (#68): the issue is closed on the
+#   behavioural receipt (class (d) behavioural-smoke-landed), because a `done`
+#   row alone closes the CLAIM — the dispatch predicate then reads the issue as
+#   landed and no sweep ever looks at it again, so it stayed OPEN forever.
+#   --no-close suppresses it for a multi-leg issue (§D1 LEG-SCOPE) or a probe
+#   run that is not the feature's closing verification.
 #
 # Exit codes:
 #   0 Smoke PASS (identity match + probe pass + verdict row recorded)
@@ -54,6 +61,19 @@ TARGET=""
 UNIT="opencrabs-ops"
 NO_LEDGER=0
 SELFTEST=0
+# #68: the close-on-PASS mechanism (class (d) behavioural-smoke-landed). ON by
+# default — the owner's 2026-11-15 order is close-on-confirmation, and an opt-in
+# flag reproduces exactly the discipline-not-trigger failure this fixes: the
+# `done` row closes the CLAIM, the dispatch predicate then reads the issue as
+# landed, and NO sweep ever looks at it again, so it stays OPEN forever
+# (triage.md §D3: #330/#324/#302/#299/#297 all OPEN while already carrying a
+# done row). `--no-close` is the suppression for the two legitimate cases where
+# a PASS is not a closing receipt.
+CLOSE_MODE=1
+CLOSE_REPO="leshchenko1979/opencrabs"
+# #68: the gh seam. Mirrors OC_LEDGER_BIN / OC_SMOKE_EVIDENCE_BIN so the
+# selftest drives a fake and never touches the real tracker.
+GH_BIN="${OC_GH:-gh}"
 LINEAGE="unverified"
 LINEAGE_DECLARED=0
 # #598: the behavioral leg (leg 4). Empty means "caller did not declare";
@@ -85,7 +105,8 @@ usage: $PROG <issue> [--verdict PASS|FAIL] [--probe <cmd>]
                  [--markers m1,m2] [--evidence <text>]
                  [--lineage verified|failed|unverified]
                  [--behavioral verified|failed|absent|na]
-                 [--target <name>] [--unit <unit>] [--no-ledger] | --selftest
+                 [--target <name>] [--unit <unit>] [--no-ledger]
+                 [--close|--no-close] [--close-repo <owner/repo>] | --selftest
 
 Options:
   <issue>             Issue number or slug (e.g. 235 or #235)
@@ -110,6 +131,16 @@ Options:
   --target <name>     Deployment unit the verdict is about (default: live-ops)
   --unit <unit>       Systemd user unit to check (default: opencrabs-ops)
   --no-ledger         Skip automatic done stamp in workers-ledger.json on PASS
+  --close             Close the issue on a PASS receipt (DEFAULT). Class (d)
+                      behavioural-smoke-landed: the close cites BOTH receipts —
+                      the verdict row and the done row written in THIS run.
+  --no-close          Suppress the close. For a MULTI-LEG issue whose done row
+                      covers only one leg (triage.md §D1 LEG-SCOPE), or a probe
+                      run that is not the feature's closing verification.
+  --close-repo <slug> Tracker holding the issue (default: leshchenko1979/opencrabs).
+                      Factory issues pass leshchenko1979/opencrabs-dev-factory.
+                      Every gh call carries -R, because gh inside ~/opencrabs
+                      defaults to UPSTREAM.
   --selftest          Run internal test battery
 
 Exit codes:
@@ -632,6 +663,161 @@ MBEOF
     t_bad "--behavioral domain check (rc=$rc out=$out)"
   fi
 
+  # ---- #68: close on a PASS receipt (class (d) behavioural-smoke-landed) ----
+  # The `done` row closes the CLAIM; the dispatch predicate then reads the issue
+  # as landed and no sweep ever looks at it again, so before this step the issue
+  # stayed OPEN forever (triage.md §D3: #330/#324/#302/#299/#297 all OPEN while
+  # already carrying a done row). The arms below are a SET — one POSITIVE
+  # CONTROL that the close actually runs, then four that it is suppressed for a
+  # stated reason, then one that a gh failure cannot touch the verdict. Without
+  # the control, every "never closes" arm would pass on a tool whose close block
+  # never runs at all.
+  cat > "$d/fake-gh" <<'FAKEGHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_GH_LOG:-/dev/null}"
+case "${1:-}" in
+  issue)
+    case "${2:-}" in
+      view)
+        if [ "${FAKE_GH_VIEW_RC:-0}" != "0" ]; then
+          echo "gh: could not resolve to an issue" >&2
+          exit "${FAKE_GH_VIEW_RC}"
+        fi
+        printf '%s\n' "${FAKE_GH_STATE:-OPEN}"
+        exit 0 ;;
+      close)
+        if [ "${FAKE_GH_CLOSE_RC:-0}" != "0" ]; then
+          echo "HTTP 500: could not close" >&2
+          exit "${FAKE_GH_CLOSE_RC}"
+        fi
+        echo "closed"
+        exit 0 ;;
+    esac ;;
+esac
+exit 0
+FAKEGHEOF
+  chmod +x "$d/fake-gh"
+
+  # (1) POSITIVE CONTROL: PASS + a done row written in this run closes, with the
+  # selected repo and BOTH receipts named in the comment.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 260 --probe "echo probe-ok" --evidence "close on pass" \
+    --close-repo leshchenko1979/opencrabs-dev-factory 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] \
+     && grep -q 'issue close 260 -R leshchenko1979/opencrabs-dev-factory' "$d/gh.calls" \
+     && grep -q 'class (d) behavioural-smoke-landed' "$d/gh.calls" \
+     && grep -q 'done #260 smoke PASS verified' "$d/gh.calls" \
+     && grep -q 'smoke verdict: PASS' "$d/gh.calls"; then
+    t_ok "PASS closes the issue on the selected repo, comment citing BOTH receipts (#68)"
+  else
+    t_bad "close on PASS (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null))"
+  fi
+
+  # (2) FAIL never closes — guard 1.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 261 --probe "exit 1" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; }; then
+    t_ok "a FAIL verdict never closes the issue (#68 guard 1)"
+  else
+    t_bad "FAIL must not close (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null))"
+  fi
+
+  # (3) --no-close never closes — the multi-leg / non-closing-probe escape.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 262 --probe "echo probe-ok" --no-close 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; }; then
+    t_ok "--no-close suppresses the close and still exits 0 (#68)"
+  else
+    t_bad "--no-close (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null))"
+  fi
+
+  # (4) --no-ledger implies no close — guard 3, and the skip is STATED so it
+  # cannot be mistaken for "ran and found it already closed".
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 263 --probe "echo probe-ok" --no-ledger 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; } \
+     && case "$out" in *"--no-ledger means no done row"*) true ;; *) false ;; esac; then
+    t_ok "--no-ledger writes no done row, so class (d) cannot close — and says so (#68 guard 3)"
+  else
+    t_bad "--no-ledger close (rc=$rc out=$out)"
+  fi
+
+  # (5) Already CLOSED: idempotent — a state read, no second close, rc unchanged.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(FAKE_GH_STATE=CLOSED OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 264 --probe "echo probe-ok" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q 'issue view 264' "$d/gh.calls" \
+     && ! grep -q 'issue close' "$d/gh.calls" \
+     && case "$out" in *"already CLOSED"*) true ;; *) false ;; esac; then
+    t_ok "an already-CLOSED issue gets no second close and keeps rc 0 (#68 guard 4)"
+  else
+    t_bad "already-closed idempotency (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null))"
+  fi
+
+  # (6) A gh close FAILURE must not touch the verdict or the exit code — guard
+  # 7. The verdict row is already durable; a close failure is a separate defect,
+  # never a retroactive smoke failure.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(FAKE_GH_CLOSE_RC=1 OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 265 --probe "echo probe-ok" 2>&1)" || rc=$?
+  row265="$(grep 'issue=#265' "$d/state/smoke-verdicts.log" | tail -n 1)"
+  if [ "$rc" -eq 0 ] && case "$out" in *"WARNING: close of"*) true ;; *) false ;; esac \
+     && grep -q 'issue close 265' "$d/gh.calls" \
+     && grep -q 'PASS' <<< "$row265"; then
+    t_ok "a failed close keeps rc 0, warns, and leaves the PASS row intact (#68 guard 7)"
+  else
+    t_bad "close failure must not change the verdict (rc=$rc row=$row265 out=$out)"
+  fi
+
+  # (7) An UNREADABLE state is not a licence to write: skip, warn, never blind
+  # close. This is the fail-closed arm — a tool that closed on a guess would
+  # satisfy (6) and still be wrong.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(FAKE_GH_VIEW_RC=1 OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 266 --probe "echo probe-ok" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && ! grep -q 'issue close' "$d/gh.calls" \
+     && case "$out" in *"cannot read state"*) true ;; *) false ;; esac; then
+    t_ok "an unreadable tracker state SKIPs the close instead of guessing (#68)"
+  else
+    t_bad "unreadable state must not close blind (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null))"
+  fi
+
+  # (8) --close-repo rejects a malformed slug before any tracker call.
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 267 --close-repo not-a-slug 2>&1)" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    t_ok "--close-repo rejects a non owner/repo value -> 2 (#68 guard 6)"
+  else
+    t_bad "--close-repo domain check (rc=$rc out=$out)"
+  fi
+
   echo "selftest: $pass passed, $fail failed"
   [ "$fail" -eq 0 ] && exit 0 || exit 1
 }
@@ -709,6 +895,25 @@ while [ $# -gt 0 ]; do
     --no-ledger)
       NO_LEDGER=1
       shift
+      ;;
+    --close)
+      CLOSE_MODE=1
+      shift
+      ;;
+    --no-close)
+      CLOSE_MODE=0
+      shift
+      ;;
+    --close-repo)
+      [ $# -ge 2 ] || die 2 "--close-repo requires an owner/repo slug"
+      # Mechanical shape check: a bare owner or a path is not a slug, and a
+      # malformed one would reach gh as a -R value that resolves nowhere.
+      case "$2" in
+        */*/*|/*|*/|*' '*) die 2 "--close-repo wants owner/repo (got: $2)" ;;
+        */*) CLOSE_REPO="$2" ;;
+        *) die 2 "--close-repo wants owner/repo (got: $2)" ;;
+      esac
+      shift 2
       ;;
     --issue)
       [ $# -ge 2 ] || die 2 "--issue requires an issue number"
@@ -908,6 +1113,11 @@ append_log_safe "$CANON_LOG" "$ROW"
 echo "$PROG: recorded verdict row ($VERDICT) for #$ISSUE in $CANON_LOG"
 
 # 5. On PASS: optionally stamp workers-ledger.json done
+#    #68: LEDGER_RC is the RECEIPT the close step gates on, so it must be
+#    defined on EVERY path — 1 means "no done row was written in this run".
+#    Left unset it would be a `set -u` crash on the FAIL and --no-ledger paths,
+#    and worse, a stale 0 from a previous shell would read as a receipt.
+LEDGER_RC=1
 if [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 0 ]; then
   ACTUAL_LEDGER_BIN="${OC_LEDGER_BIN:-$LEDGER_TOOL}"
   if [ -x "$ACTUAL_LEDGER_BIN" ] && [ -f "$STATE_DIR/workers-ledger.json" ]; then
@@ -929,6 +1139,72 @@ if [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 0 ]; then
       echo "$PROG: WARNING: oc-ledger stamp done exited $LEDGER_RC: $LEDGER_OUT" >&2
     fi
   fi
+fi
+
+# 6. On PASS with a done row written IN THIS RUN: close the issue (#68).
+#    Owner order 2026-11-15: a fork issue is closed the moment a working
+#    behavioural smoke is confirmed (triage.md §Autonomous closure, class (d)
+#    behavioural-smoke-landed).
+#
+#    Class (d) requires BOTH receipts, so this gates on LEDGER_RC=0 — the done
+#    row was written by THIS run, not inherited. That also makes `--no-ledger`
+#    mechanically close-free: no done row, no receipt pair.
+#
+#    GUARD 7 — a gh failure NEVER changes the verdict or the exit code. The
+#    verdict row is already on disk and the PASS stands; a close failure is a
+#    separate defect, not a retroactive smoke failure.
+#
+#    An UNREADABLE state is not a licence to write. `gh issue view` failing
+#    means CLOSED cannot be told from OPEN, and closing blind is the
+#    fabricate-on-a-guess shape the fleet refuses everywhere else — so it SKIPs
+#    with a warning rather than guessing, and says the close is owed.
+if [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$LEDGER_RC" -eq 0 ]; then
+  case "$ISSUE" in
+    ''|*[!0-9]*)
+      # ISSUE is documented as "issue number or slug". A slug cannot be closed
+      # by gh, and resolving one would be a guess about which tracker to ask.
+      echo "$PROG: NOTE --close skipped: '$ISSUE' is not a numeric ref, so there is no issue to close" >&2
+      ;;
+    *)
+      CLOSE_STATE=""
+      set +e
+      CLOSE_STATE="$("$GH_BIN" issue view "$ISSUE" -R "$CLOSE_REPO" --json state --jq .state 2>&1)"
+      CLOSE_VRC=$?
+      set -e
+      CLOSE_STATE="$(printf '%s' "$CLOSE_STATE" | tr -d '[:space:]')"
+      if [ "$CLOSE_VRC" -ne 0 ]; then
+        echo "$PROG: WARNING: --close skipped — cannot read state of $CLOSE_REPO#$ISSUE (gh rc=$CLOSE_VRC): $CLOSE_STATE" >&2
+        echo "$PROG:          the PASS verdict row stands and the exit code is unchanged (guard 7);" >&2
+        echo "$PROG:          close $CLOSE_REPO#$ISSUE by hand once the tracker is reachable" >&2
+      elif [ "$CLOSE_STATE" = "CLOSED" ]; then
+        # Idempotent (guard 4): a second close is noise on the tracker and a
+        # second receipt on the record, so say it and stop.
+        echo "$PROG: NOTE $CLOSE_REPO#$ISSUE is already CLOSED — no second close" >&2
+      else
+        # printf, never a heredoc: FULL_EVIDENCE carries PROBE OUTPUT, and an
+        # unquoted heredoc would expand `$(...)`/backticks out of a probe that
+        # merely printed them. printf takes its arguments literally.
+        CLOSE_COMMENT="$(printf '%s\n\n- smoke verdict: PASS %s sha=%s run=%s — %s\n- ledger: done #%s smoke PASS verified\n' \
+          "Closed on behavioural receipt (class (d) behavioural-smoke-landed)." \
+          "$TS" "$DEPLOYED_SHA" "$RUN_ID" "$FULL_EVIDENCE" "$ISSUE")"
+        set +e
+        CLOSE_OUT="$("$GH_BIN" issue close "$ISSUE" -R "$CLOSE_REPO" --comment "$CLOSE_COMMENT" 2>&1)"
+        CLOSE_RC=$?
+        set -e
+        if [ "$CLOSE_RC" -eq 0 ]; then
+          echo "$PROG: closed $CLOSE_REPO#$ISSUE on the behavioural receipt (class (d) behavioural-smoke-landed)"
+        else
+          echo "$PROG: WARNING: close of $CLOSE_REPO#$ISSUE failed (gh rc=$CLOSE_RC): $CLOSE_OUT" >&2
+          echo "$PROG:          the PASS verdict row stands and the exit code is unchanged (guard 7)" >&2
+        fi
+      fi
+      ;;
+  esac
+elif [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 1 ]; then
+  # Stated, not silent: a PASS with --no-ledger has no receipt PAIR, so class
+  # (d) does not apply and nothing closes. A quiet skip would look identical to
+  # a close that ran and found the issue already closed.
+  echo "$PROG: NOTE --close skipped: --no-ledger means no done row, and class (d) needs both receipts" >&2
 fi
 
 if [ "$VERDICT" = "PASS" ]; then
