@@ -268,11 +268,22 @@ ONLY when it meets one of:
 (b) **duplicate** — an earlier open issue tracks the same work (close the
     newer one, cite the survivor);
 (c) **owner-confirmed-withdrawn** — the owner explicitly said the work is
-    dropped (cite the board/topic message; never infer).
+    dropped (cite the board/topic message; never infer);
+(d) **behavioural-smoke-landed (owner order 2026-11-15)** — the issue carries a
+    `done`/`close` row in `LANDED_KINDS` AND a PASS row for it in
+    `smoke-verdicts.log`, i.e. the work landed and behaviour was observed on the
+    live binary. Close on the receipt, cite both in the close comment, and never
+    wait for a filing. **A `done` row ALONE is not (d)** — `oc-smoke` stamps
+    `done` on PASS, so the two normally arrive together, but a `done` row written
+    by any other path is a bookkeeping claim and closure still needs the
+    behavioural row beside it. This class exists because the 2026-09-18 sweep
+    found `#330/#324/#302/#299/#297` sitting OPEN **while already carrying a
+    `done` row** (`§D3`): the defect was never that a filing gated closure, it
+    was that a passing smoke never pulled the trigger.
 Everything else stays open: closure is gated on a behavioural receipt
 (done-work issues close on the smoke verdict; an upstream PR never gates it). Every autonomous close:
 one ledger stamp per issue (`oc-ledger stamp note "T5 auto-close #N <test>"
-`), and the close comment names the test class (a)/(b)/(c). Reversible by
+`), and the close comment names the test class (a)/(b)/(c)/(d). Reversible by
 owner word (reopen + note).
 
 **Closure predicate for fork-only base-fault fixes (HQ ruling 2026-09-18,
@@ -410,7 +421,7 @@ bounded expansion, under the overnight design-gate contract (a dispatched
 editor designs and PARKS at the owner gate; it does NOT open `/goal`). Exit
 line: `triaged=N · dispatched=M · expanded=K · parked=P · waiting=0`.
 
-- **Checkable Completion Formula**: `DONE = open fork issues queried via gh issue list + diffed against open ledger claim rows (oc_claims.open_claims / oc-ledger claims <N>) + all unclaimed issues routed via wire envelope or escalated to HQ.`
+- **Checkable Completion Formula**: `DONE = open fork issues queried via gh issue list + diffed against open ledger claim rows (oc_claims.open_claims / oc-ledger claims <N>) + all unclaimed issues routed via wire envelope or escalated to HQ + every OPEN issue carrying BOTH a LANDED_KINDS row and a PASS row in smoke-verdicts.log CLOSED on that receipt (class (d)).`
 - **Cohort accounting is a PREDICATE, not a hand-list** (HQ ruling 2026-09-24, v0.4.245 — THREE consecutive cycles, Triage n=10686). Build the claimed cohort from the canonical predicate (`oc_claims.open_claims`, `tools/lib/oc_claims.py`) and the dispatched cohort from the dispatcher's own dedup memory — never from recollection, and never by hand. **Every in-scope issue lands in EXACTLY ONE bucket, and the bucket total MUST equal the coverage list**; when the two disagree the LIST is wrong, not the buckets. Print the reconciliation line beside the cohorts, so a reader can tell an accounted omission from a forgotten one. Origin: the 2026-09-24 cycle reported 24 in-scope against a 20-row coverage list, with three live-claim issues absent from the claimed cohort entirely.
 
 ## Duty T6 — Registry writes: schema + seed rules (moved from hq.md Duty 2, lens B-F10 v0.4.96)
@@ -579,7 +590,7 @@ Discipline this clause adds:
 
 The landed term exists to keep **already-built** work out of editor dispatch — NOT to gate closure on a filing. Without it every such issue reads `unclaimed AND vetted` → DISPATCHABLE, and the sweep re-wires work that is already built. **With the term present the two sets are disjoint by construction:** an issue whose work already landed in fork `main` is never dispatched for implementation.
 
-**What closes it (owner ruling 2026-11-12):** behaviour verified on the live binary — the same finish line as everywhere else (`editor.md §Completion Definition`). A landed-but-**unverified** issue is a **SMOKE queue** item: it waits on a behavioural probe, never on an editor lane and never on an upstream PR. Fork-standing is the normal finished state; an upstream merge is an exception the owner names explicitly (`SKILL.md` §UPSTREAM FILING REGISTER), so it is never a closure precondition and never a reason an issue reads OPEN.
+**What closes it (owner ruling 2026-11-12):** behaviour verified on the live binary — the same finish line as everywhere else (`editor.md §Completion Definition`). A landed-but-**unverified** issue is a **SMOKE queue** item: it waits on a behavioural probe, never on an editor lane and never on an upstream PR. **And the moment that probe PASSES it is CLOSED under class (d)** — the SMOKE queue drains by probe, never by filing, and a probe that passed without a close leaves the item in the queue it just proved empty. Fork-standing is the normal finished state; an upstream merge is an exception the owner names explicitly (`SKILL.md` §UPSTREAM FILING REGISTER), so it is never a closure precondition and never a reason an issue reads OPEN.
 
 ### D3 — Live instance, receipted (2026-09-18)
 

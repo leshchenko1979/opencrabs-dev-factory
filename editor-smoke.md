@@ -48,10 +48,16 @@ right here (`opencrabs-ops` user unit).
    executes `oc-ledger stamp done` (suppressible via `--no-ledger`), mechanically
    closing the worker's in-flight claim in `workers-ledger.json` and unblocking
    `oc-harvest-census` and Triage intake. On a behavioural PASS, record
-   the row, reply to the sender, and hand the port to HARVEST — the handoff is the
-   last *editor* step, but the lane's obligation is discharged by the recorded
-   behavioural verdict, not by the post
+   the row, reply to the sender, **CLOSE THE FORK ISSUE on that receipt in the
+   same turn**, and hand the port to HARVEST — the handoff is the last *editor*
+   step, but the lane's obligation is discharged by the recorded behavioural
+   verdict, not by the post and not by any filing
    (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
+   **Closing is part of PASS, not a follow-up (owner order 2026-11-15):** the
+   `done` row the stamp writes plus the PASS row in `smoke-verdicts.log` are the
+   closure authority (`triage.md §Autonomous closure`, class (d)) — the issue is
+   closed with a comment naming both, and an issue left OPEN behind a recorded
+   PASS is an UNFINISHED task. Nothing is ever waiting on an upstream PR.
 5. FAIL → FILE THE ISSUE FIRST (Phase 1 procedure: symptom + evidence — you
    found it, you file it). Then send raw evidence + the issue link directly to
    the owning editor or Triage lane (`session_notify`) — do NOT attribute, do NOT fix another

@@ -306,7 +306,7 @@ Rules:
   fork `main` — and NOT deleted while their PR is still open (GitHub needs the
   head alive).
 
-- **Checkable Completion Formula**: `DONE = the feature behaves correctly on the live binary (4-leg smoke PASS receipted in smoke-verdicts.log) + the fork issue records the outcome.` Filing is a separate, owner-requested act and is never part of DONE.
+- **Checkable Completion Formula**: `DONE = the feature behaves correctly on the live binary (4-leg smoke PASS receipted in smoke-verdicts.log) + the fork issue is CLOSED on that receipt (triage.md §Autonomous closure, class (d)).` Filing is a separate, owner-requested act and is never part of DONE.
 
 ## Phase 7b — PR lifecycle (monitor & unblock, v0.4.0)
 

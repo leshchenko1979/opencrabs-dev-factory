@@ -1,5 +1,25 @@
 # Changelog — opencrabs-dev
 
+## v0.4.306 — closure fires on the behavioural receipt: class (d)
+
+**What forced it.** The owner reviewed the process against the fork tracker: **187 open / 640 closed** on `leshchenko1979/opencrabs`, with **148 of the open set dated 2026-09** — and his assumption was that issues wait for an upstream PR. The law had already stopped saying that (`a1818bff` retired the harvest-gated closure), so the written rule was not the defect. The defect was that **nothing pulled the trigger**: `triage.md §D3` records the 2026-09-18 sweep finding `#330 / #324 / #302 / #299 / #297` sitting **OPEN while already carrying a `done` row**. A passing smoke stamped `done`, closed the claim, and left the issue open — permanently, because `done` is a `LANDED_KIND`, so the dispatch predicate reads it as landed and no sweep ever visits it again. The autonomous-close authority enumerated only (a) superseded-by, (b) duplicate, (c) owner-confirmed-withdrawn — **there was no class for "the work landed and behaviour was observed"**, which is the ordinary case.
+
+**What changed.**
+
+1. **`triage.md §Autonomous closure` gains class (d) — behavioural-smoke-landed.** An issue carrying a `LANDED_KINDS` row AND a PASS row in `smoke-verdicts.log` is closed on that receipt, citing both. **A `done` row alone is not (d)** — `oc-smoke` writes it on PASS so the two normally travel together, but a `done` row from any other path is a bookkeeping claim and closure still needs the behavioural row beside it. Close-comment test-class list becomes `(a)/(b)/(c)/(d)`.
+2. **`triage.md §D2`** states the SMOKE queue drains by probe: the moment the probe passes, class (d) closes the item — never by filing.
+3. **`editor.md §Completion Definition`** — completion now requires the issue CLOSED on the receipt in the same turn. An issue left OPEN behind a recorded PASS is an unfinished task, not a handoff.
+4. **`editor-smoke.md` Phase 6 step 4** — closing is part of PASS, not a follow-up; the `done` + PASS rows are the closure authority.
+5. **`SKILL.md` §Hard rules PR SHIPMENT row** — the finish line now reads "records that behavioural evidence AND closes the fork issue on it", so the single home every other file points at cannot be read as ending at the post.
+6. **`harvest.md` Phase 7 DONE** — "the fork issue records the outcome" becomes "is CLOSED on that receipt".
+7. **`triage.md §Duty T5` DONE formula** — the sweep gains a closing leg: every OPEN issue carrying both a `LANDED_KINDS` row and a PASS row is closed on that receipt. The formula is what the cron actually executes, so a law without it in the formula is a law that never runs.
+
+**Why (d) is a class and not a loosening.** Classes (a)–(c) dispose of issues whose work is NOT done. (d) disposes of one whose work IS done and recorded — the same distinction the two existing harvest-gate exemptions (v0.4.232, v0.4.239) draw, and for the same reason: the gate has nothing to gate when no filing is owed. It is not a licence to close on presence evidence: (d) requires a PASS row, and `editor-smoke.md §Smoke-verdict rules` still forbids a PASS built from lineage/identity/CI legs alone (`UNPROVEN (presence-only)`, never GREEN).
+
+**Not mechanized — stated so it is not over-read.** No tool enforces (d) yet: `oc-smoke` stamps `done` but does not close the issue, and `oc-ledger` has no close verb. Until a tool leg lands (Toolsmith's `tools/**` decision, not a law edit), closure is a LANE act performed in the same turn as the PASS. The measured cost of that gap is the 148 September issues.
+
+**Lint:** `tools/audit/oc-lint-laws` run on the edited set; findings recorded in the commit message.
+
 ## v0.4.305 — `editor.md` split: Phase 5 and Phase 6 bodies move to lazily-loaded appendices
 
 **What forced it.** `editor.md` cost **21,878 tokens (10.9%)** on every editor session while the skill budget is **5% (~10,000 tokens)**. Phase 5 (Ship) and Phase 6 (Smoke) are **phase-scoped** — an editor reads them on entering the phase, not at claim time — yet both bodies were paid for on every turn. Nothing was wrong with their content; they were simply in the wrong file.
