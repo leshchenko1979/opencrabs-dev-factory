@@ -153,7 +153,7 @@ Canonical descriptions + selftest contracts: `tools/docs/RC-CONTRACT.md` (full i
 |------|-----------|-----|
 | `oc-start` | `tools/git/oc-start <issue-N> --branch <branch>` | Milestone 1: atomic issue claim + branch + worktree setup |
 | `oc-ship-chain` | `tools/ship/oc-ship-chain --sha <sha> --branch <branch>` | Milestone 2: single-invocation gate → comment → ff-merge → carrier build → live swap |
-| `oc-smoke` | `tools/smoke/oc-smoke <issue-N> [--probe "<cmd>"]` | Milestone 3: unified 4-leg smoke verification & verdict logging |
+| `oc-smoke` | `tools/smoke/oc-smoke <issue-N> [--probe "<cmd>"] [--no-close] [--close-repo <owner/repo>]` | Milestone 3: unified 4-leg smoke verification & verdict logging; **closes the issue on PASS by default** |
 | `oc-commit` | `tools/git/oc-commit -m "<msg>" [--issue N]` | Gated SIGNED commit: Session-Id + Issue-Ref trailers derived from session ID + ledger claim |
 | `oc-drift-check` | `tools/state/oc-drift-check <your-uuid> [--ack]` | §Mid-cycle skill drift pull-check on detached resume |
 | `oc-issue-sweep` | `tools/issue/oc-issue-sweep '<query>' [--fork R]` | Phase 1 uniqueness gate (fork open+closed + upstream closed) |
@@ -314,15 +314,17 @@ A post-swap notify announcing a new binary means your commits are in it — prov
     # Unified 4-leg smoke verification & verdict row logging:
     ~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<command-to-verify-behavior>"
 
+**`--close` is ON by default:** a PASS closes the issue with a comment citing BOTH receipts — the verdict row and the `done` row written in that same run (class (d) behavioural-smoke-landed). It is gated on both, so `--no-ledger` is close-free by construction. `--no-close` suppresses it: use it for a MULTI-LEG issue whose `done` row covers only one leg (`triage.md §D1 LEG-SCOPE`) or for a probe that is not the feature's closing verification. **`--close-repo` defaults to the FORK `leshchenko1979/opencrabs` — a FACTORY issue smoked without `--close-repo leshchenko1979/opencrabs-dev-factory` closes the FORK issue of the same number, and both boards hold low numbers, so that is a live wrong-close path.** A skipped close (tracker unreadable, `--no-ledger`, non-numeric ref) leaves the close OWED by hand; the PASS verdict still stands and the exit code is unaffected.
+
 1. Read run id + built sha from the notify body. **If the daemon bounced, re-surface lazy tool schemas via `tool_search` BEFORE any smoke invocation** — a restart kills activated schemas and intents misfire onto wrong tools.
 2. **IDENTITY RECEIPT:** `oc-smoke` verifies unit exe identity against the deployed sha and writes the canonical row to `smoke-verdicts.log`. MISMATCH -> STOP: you would be smoking a binary that is not the one that was built. Report it to the sender; never smoke a stale unit.
 3. **BEHAVIOURAL PROBE:** drive the feature end-to-end against the RUNNING unit on its real surfaces (Telegram, cron, MCP — whatever the feature touches). Lineage, identity and the CI gate are BOOKKEEPING LEGS — **a verdict citing only those three is `UNPROVEN`, never GREEN.** A fix with no observable runtime surface records `UNPROVEN (no-runtime-surface)`, names the surface that would have to exist, and is a documented gap rather than a discharged obligation.
-4. PASS -> `session_notify` the sender with one line of evidence plus the IDENTITY-MATCH receipt (`oc-smoke` auto-stamps `oc-ledger stamp done`, closing the claim), then hand the port to HARVEST. **The lane's obligation is discharged by the recorded behavioural verdict, not by the post.**
+4. PASS -> `session_notify` the sender with one line of evidence plus the IDENTITY-MATCH receipt (`oc-smoke` auto-stamps `oc-ledger stamp done`, closing the claim, and closes the ISSUE by default), then hand the port to HARVEST. **The lane's obligation is discharged by the recorded behavioural verdict, not by the post — but a PASS behind an OPEN issue is unfinished: confirm the close landed, or close by hand where the tool skipped it.**
 5. FAIL -> FILE THE ISSUE FIRST (symptom + evidence — you found it, you file it), then send raw evidence + the issue link to the owning editor or Triage. Never attribute, never fix another editor's feature.
 
 **Everything else about Phase 6 is in `editor-smoke.md`** — the full verdict rules, the presence-is-not-behaviour incident history, the live-verification stamp required for UX features, leg-4 probe hygiene, `PARKED-OWNER-EYE` with the L1–L4 owner-dependent-leg law, swap-timing non-coordination, and no-auto-rollback. **Read it before writing any verdict row.**
 
-- **Checkable Completion Formula**: DONE = mechanical proof of the target feature executing against the running binary (command output, log line with PID/timestamp match, or API receipt), confirmed via `tools/smoke/oc-smoke` (exit 0) and recorded in `smoke-verdicts.log`.
+- **Checkable Completion Formula**: DONE = mechanical proof of the target feature executing against the running binary (command output, log line with PID/timestamp match, or API receipt), confirmed via `tools/smoke/oc-smoke` (exit 0), recorded in `smoke-verdicts.log`, **and the issue CLOSED on that receipt** — `oc-smoke --close` does it by default; a PASS behind an OPEN issue is an UNFINISHED task (`triage.md §Autonomous closure`, class (d)).
 
 
 ## Red-run triage heuristics (shared core, v0.4.10)

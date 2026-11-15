@@ -273,13 +273,19 @@ ONLY when it meets one of:
     `done`/`close` row in `LANDED_KINDS` AND a PASS row for it in
     `smoke-verdicts.log`, i.e. the work landed and behaviour was observed on the
     live binary. Close on the receipt, cite both in the close comment, and never
-    wait for a filing. **A `done` row ALONE is not (d)** — `oc-smoke` stamps
+    wait for a filing. **The MECHANISM is `oc-smoke --close`, DEFAULT ON (tool #68):** it closes on
+    the receipt and posts a comment naming both rows, so a lane VERIFIES the close
+    instead of performing it — a hand close is owed only where the tool skipped
+    (`--no-ledger`, unreadable tracker, non-numeric ref). A **factory** issue needs
+    `--close-repo leshchenko1979/opencrabs-dev-factory`; the default is the fork and
+    both boards hold low numbers. **A `done` row ALONE is not (d)** — `oc-smoke` stamps
     `done` on PASS, so the two normally arrive together, but a `done` row written
     by any other path is a bookkeeping claim and closure still needs the
     behavioural row beside it. This class exists because the 2026-09-18 sweep
     found `#330/#324/#302/#299/#297` sitting OPEN **while already carrying a
     `done` row** (`§D3`): the defect was never that a filing gated closure, it
-    was that a passing smoke never pulled the trigger.
+    was that a passing smoke never pulled the trigger — and until #68 the trigger
+    was still a lane's memory.
 Everything else stays open: closure is gated on a behavioural receipt
 (done-work issues close on the smoke verdict; an upstream PR never gates it). Every autonomous close:
 one ledger stamp per issue (`oc-ledger stamp note "T5 auto-close #N <test>"

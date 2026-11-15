@@ -18,8 +18,10 @@ Phase 5 (`harvest.md §Phase 7 step 2c` reuses it on upstream PR heads). The bin
 right here (`opencrabs-ops` user unit).
 
 ```bash
-# Unified 4-leg smoke verification & verdict row logging:
+# Unified 4-leg smoke verification & verdict row logging + CLOSE ON PASS (default):
 ~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<command-to-verify-behavior>"
+# FACTORY issue (not the fork)? The tracker MUST be named, or it closes the FORK's #N:
+~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<cmd>" --close-repo leshchenko1979/opencrabs-dev-factory
 ```
 
 1. Read run id + built sha from the notification body. **If the daemon bounced**
@@ -29,6 +31,7 @@ right here (`opencrabs-ops` user unit).
 2. **IDENTITY RECEIPT & BEHAVIORAL PROBE:** Run `tools/smoke/oc-smoke <issue-N> --probe "<cmd>"`
    (or manual `oc-smoke-evidence`). It verifies unit exe identity vs deployed sha,
    executes the probe command, and writes the canonical row to `smoke-verdicts.log`.
+   On PASS it also stamps the `done` row and **closes the issue** (default; see step 4).
    MISMATCH → STOP: you would be smoking a binary that is not the one that was
    built — report the mismatch to the sender, do not smoke on a stale unit.
 3. Drive your feature end-to-end against the RUNNING unit on its normal
@@ -47,17 +50,23 @@ right here (`opencrabs-ops` user unit).
    IDENTITY-MATCH receipt. Running `oc-smoke <issue-N>` on PASS automatically
    executes `oc-ledger stamp done` (suppressible via `--no-ledger`), mechanically
    closing the worker's in-flight claim in `workers-ledger.json` and unblocking
-   `oc-harvest-census` and Triage intake. On a behavioural PASS, record
-   the row, reply to the sender, **CLOSE THE FORK ISSUE on that receipt in the
-   same turn**, and hand the port to HARVEST — the handoff is the last *editor*
+   `oc-harvest-census` and Triage intake, **and closes the ISSUE itself** (default
+   `--close`; suppress with `--no-close`). On a behavioural PASS, record
+   the row, reply to the sender, **CONFIRM THE FORK ISSUE IS CLOSED — the tool did
+   it; close by hand only where it skipped** (a `--no-ledger` run, an unreadable
+   tracker, or a non-numeric ref), and hand the port to HARVEST — the handoff is the last *editor*
    step, but the lane's obligation is discharged by the recorded behavioural
    verdict, not by the post and not by any filing
    (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
    **Closing is part of PASS, not a follow-up (owner order 2026-11-15):** the
    `done` row the stamp writes plus the PASS row in `smoke-verdicts.log` are the
-   closure authority (`triage.md §Autonomous closure`, class (d)) — the issue is
-   closed with a comment naming both, and an issue left OPEN behind a recorded
-   PASS is an UNFINISHED task. Nothing is ever waiting on an upstream PR.
+   closure authority (`triage.md §Autonomous closure`, class (d)) — `oc-smoke`
+   performs the close and posts a comment naming both, so the lane VERIFIES it
+   rather than re-doing it, and an issue left OPEN behind a recorded
+   PASS is an UNFINISHED task. **A FACTORY issue needs
+   `--close-repo leshchenko1979/opencrabs-dev-factory`:** the default is the FORK,
+   and both boards hold low numbers, so omitting it closes the fork's issue of
+   that number. Nothing is ever waiting on an upstream PR.
 5. FAIL → FILE THE ISSUE FIRST (Phase 1 procedure: symptom + evidence — you
    found it, you file it). Then send raw evidence + the issue link directly to
    the owning editor or Triage lane (`session_notify`) — do NOT attribute, do NOT fix another

@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.306
+version: 0.4.307
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -118,7 +118,7 @@ the TOOLSMITH lane's scope, v0.4.87). This section is the register; archived com
 | `./tools/state/oc-roster --selftest` | hermetic test runner for roster generation and classification |
 | `./tools/audit/oc-watcher-audit [--json] [--notify-orphans]` | detached watcher compliance and sleep-loop audit across active sessions |
 | `./tools/git/oc-start <issue-N> --branch <branch>` | unified entry: claim + branch + worktree initialization |
-| `./tools/smoke/oc-smoke <issue-N> [--probe <cmd>] [--no-ledger]` | unified 4-leg smoke verification & verdict row logging + automatic ledger done stamp on PASS |
+| `./tools/smoke/oc-smoke <issue-N> [--probe <cmd>] [--no-ledger] [--no-close] [--close-repo <owner/repo>]` | unified 4-leg smoke verification & verdict row logging + automatic ledger done stamp on PASS + **issue CLOSE on PASS, DEFAULT ON** (class (d) behavioural-smoke-landed). `--no-close` suppresses it (multi-leg issue, non-closing probe). `--close-repo` defaults to the FORK — a FACTORY issue MUST pass `leshchenko1979/opencrabs-dev-factory`, else it closes the fork issue of the same number |
 | `./tools/issue/oc-issue-dispatch [--auto]` · `<issue-number> [--to <uuid>] [--force] [--allow-landed] [--redispatch] [--budget-secs N]` | mechanized issue triage dispatch to idle editor lanes; the issue is POSITIONAL and `--to` names the target session — there is NO `--issue` or `--lane` flag (verified live 2026-09-25 against the tool's own `--help` and `tools/docs/RC-CONTRACT.md` row `oc-issue-dispatch`). `--force` overrides the claim gate, `--allow-landed` disables the landed filter, `--redispatch` disables the 7-day dedup window |
 | `./tools/state/oc-questions <verb>` | the Open Questions register — the sanctioned blocked-on-you channel. Verbs, rc and the ask/answer contract: `tools/docs/RC-CONTRACT.md` row `oc-questions` · canon: `docs/instruments/open-questions.md` **in the meta-factory repo (`/root/agent-factories/`) — NOT resolvable from this skill tree** |
 | `./tools/audit/oc-lint-laws [--strict]` | mechanical syntax & tool-existence lint of skill markdown. Read findings from the tool itself, never from this row. Register: `tools/docs/RC-CONTRACT.md` |

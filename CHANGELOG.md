@@ -1,5 +1,25 @@
 # Changelog — opencrabs-dev
 
+## v0.4.307 — class (d) gains its MECHANISM: `oc-smoke --close` (tool #68)
+
+**What forced it.** v0.4.306 added closure class (d) and closed by admitting the gap in the same breath: *"No tool enforces (d) yet — `oc-smoke` stamps `done` but does not close the issue."* A law that depends on a lane remembering is the exact failure that produced the 148 September issues, one level up. The owner ordered the tool leg: **dispatch Toolsmith for `oc-smoke --close`.**
+
+**What shipped (`d48b6338`, Toolsmith lane).** `--close` is **ON by default**, and that is the load-bearing choice: an opt-in flag reproduces the discipline-not-trigger failure it exists to fix. On PASS it closes the issue and posts a comment naming **both** receipts — the verdict row and the `done` row written in **that same run**. `--no-close` suppresses (multi-leg issue per `§D1 LEG-SCOPE`, or a probe that is not the feature's closing verification). `--close-repo <owner/repo>` defaults to the FORK.
+
+**Guards, and the two that are not obvious.** Close is gated on **PASS AND `LEDGER_RC=0`**, which makes "`--no-ledger` implies no close" mechanical rather than a rule to remember: no done row, no receipt pair, nothing to close — and the tool says so instead of skipping quietly. An **unreadable tracker state SKIPs with a warning** rather than closing blind: CLOSED cannot be told from OPEN, and a tool that closed on a failed state read would still satisfy the already-closed guard and be wrong. A gh failure never changes the verdict or the exit code — the PASS row is already on disk, and a close failure is a separate defect, not a retroactive smoke failure.
+
+**Verification.** Selftest **30 → 38** arms, run here: **38 passed, 0 failed**, rc 0 — a POSITIVE CONTROL that the close actually fires, four suppression arms (FAIL / `--no-close` / `--no-ledger` / already-CLOSED), a gh-failure arm, a fail-closed arm, and the `--close-repo` shape guard. Without the control, every "never closes" arm would pass on a tool whose close block never executes at all. Mutation-verified by the Toolsmith: neutering the verdict+ledger gate, dropping `-R`, treating CLOSED as closable, and closing on a failed state read turn exactly those 5 arms red. Battery **PASS 398 / FAIL 0** on a quiet tree (`tools/tests/battery-last.json`, 2026-11-15T18:30:07Z).
+
+**What changed in the law (single-writer: HQ).** `SKILL.md:121` tool row and `editor.md` tools-table row carry the full flag set. `editor.md` Phase 6 gains the default-close paragraph, step 4 becomes "confirm the close landed" rather than "close it", and the Phase 6 completion formula adds the CLOSED condition. `editor-smoke.md` — the file a lane actually runs from — gains both invocations, the step-2 note, and step 4's verify-not-redo. `triage.md §Autonomous closure` class (d) now names the mechanism instead of telling a lane to close by hand.
+
+**The hazard this release documents, because it is a live wrong-close path.** `--close-repo` defaults to the **fork**, and a factory issue carries a number the fork also holds: factory#68 was this work order while fork#68 is a closed telegram issue. `-R` is on every call and the slug is shape-checked, so nothing can post to an *unnamed* board — but it can post to the wrong *named* one. **A factory smoke MUST pass `--close-repo leshchenko1979/opencrabs-dev-factory`**, now stated in all four places a lane reads before invoking the tool.
+
+**No law-gate exemption claimed.** `tools/**` sits outside `LAW_FILES`, so #68 moved no digest — the Toolsmith measured that (`law-digest` MATCH) and correctly declined a version. This release is the bump the **markdown** edits require.
+
+**Bundled commits** (0.4.306 → 0.4.307): `d48b6338` oc-smoke --close (#68).
+
+**Lint:** `tools/audit/oc-lint-laws` clean; `oc-smoke --selftest` 38 passed / 0 failed (rc 0); battery receipt `tools/tests/battery-last.json` PASS 398 / FAIL 0.
+
 ## v0.4.306 — closure fires on the behavioural receipt: class (d)
 
 **What forced it.** The owner reviewed the process against the fork tracker: **187 open / 640 closed** on `leshchenko1979/opencrabs`, with **148 of the open set dated 2026-09** — and his assumption was that issues wait for an upstream PR. The law had already stopped saying that (`a1818bff` retired the harvest-gated closure), so the written rule was not the defect. The defect was that **nothing pulled the trigger**: `triage.md §D3` records the 2026-09-18 sweep finding `#330 / #324 / #302 / #299 / #297` sitting **OPEN while already carrying a `done` row**. A passing smoke stamped `done`, closed the claim, and left the issue open — permanently, because `done` is a `LANDED_KIND`, so the dispatch predicate reads it as landed and no sweep ever visits it again. The autonomous-close authority enumerated only (a) superseded-by, (b) duplicate, (c) owner-confirmed-withdrawn — **there was no class for "the work landed and behaviour was observed"**, which is the ordinary case.
