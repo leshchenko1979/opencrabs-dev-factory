@@ -18,7 +18,9 @@
 
 **Not mechanized — stated so it is not over-read.** No tool enforces (d) yet: `oc-smoke` stamps `done` but does not close the issue, and `oc-ledger` has no close verb. Until a tool leg lands (Toolsmith's `tools/**` decision, not a law edit), closure is a LANE act performed in the same turn as the PASS. The measured cost of that gap is the 148 September issues.
 
-**Lint:** `tools/audit/oc-lint-laws` run on the edited set; findings recorded in the commit message.
+**Bundled commits** (this sync spans 0.4.302 → 0.4.306; the prior arc bumped SKILL.md without a ledger sync, so the version record is catching up four releases): `8a791e1e` questions(#627) closing blob is the TITLE · `cadbe9bc` vendor-manifest re-pin · `f8775a44` battery 398/0 · `e382918a` oc-commit over-age claim refusal (#63) · `3d66c9b9` oc-commit tracker-slug verification (#65) · `8c7ddb95` oc-ledger LAW_FILES + two split law files (#47) · `9c7caa99` battery 398/0 · `d036842b` oc-prchecks echoes the pinned adoption sha (#66) · `a1818bff` v0.4.304 FORK-STANDING register · `2c7079c5` v0.4.305 `editor.md` split · `49f4e298` CHANGELOG lint-line fix · `f73976a9` v0.4.302 disclosure corrections.
+
+**Lint:** `tools/audit/oc-lint-laws` clean; `tools/tests/run.sh` PASS 398 / FAIL 0 (wall 851 s, jobs=4).
 
 ## v0.4.305 — `editor.md` split: Phase 5 and Phase 6 bodies move to lazily-loaded appendices
 
