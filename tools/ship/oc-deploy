@@ -876,6 +876,12 @@ STUB
   local SHA2; SHA2="$(git -C "$T/repo" rev-parse HEAD)"
   git -C "$T/repo" push -q "$T/remote.git" HEAD~1:refs/heads/main   # remote main = c1
   export GH_LOG="$T/gh.log"; : > "$GH_LOG"
+  # #73: a FOREIGN repo (own history, does NOT contain SHA2) and a plain
+  # non-repo dir — the two wrong-directory shapes the ship guard must name.
+  git init -q -b main "$T/foreign"
+  git -C "$T/foreign" config user.email t@t; git -C "$T/foreign" config user.name t
+  echo x > "$T/foreign/g1"; git -C "$T/foreign" add g1; git -C "$T/foreign" commit -qm foreign-one
+  mkdir -p "$T/plain"
 
   # 1. usage (no mode) -> exit 1
   "$SELF_BIN" >/dev/null 2>&1; check_rc "usage-no-mode" $? 1
@@ -915,6 +921,37 @@ STUB
     "$SELF_BIN" ship --sha "$PHANTOM" 2>&1)"; check_rc "ship-phantom-sha" $? 1
   check_has "ship-phantom-msg" "$out" "sha not found in this repo"
   grep -q "PLAN: ship" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: phantom sha produced plan lines"; } || pass=$((pass+1))
+  # 4a-wrong-cwd (#73): a REAL sha absent from the CWD repo is a DIRECTORY
+  # mistake, not a phantom — the old message sent the operator hunting a
+  # fabricated sha that had existed in the fork checkout all along. Refused rc 2
+  # (a gate, not a data verdict) naming both directories. The probe stays
+  # CWD-scoped on purpose: the push sends objects out of the CWD repo, so
+  # accepting the sha here would ship from a foreign checkout and write
+  # refs/oc-deploy/main into it.
+  out="$(cd "$T/foreign" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+  check_rc "ship-wrong-cwd-rc" $rc 2
+  check_has "ship-wrong-cwd-gate" "$out" "OC_DEPLOY_GATE=wrong-checkout"
+  check_has "ship-wrong-cwd-names-cwd" "$out" "$T/foreign"
+  check_has "ship-wrong-cwd-names-fork" "$out" "$T/repo"
+  case "$out" in *"phantom?"*) fail=$((fail+1)); echo "SELFTEST FAIL: ship-wrong-cwd calls a real sha phantom";; *) pass=$((pass+1));; esac
+  grep -q "PLAN: ship" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: wrong-cwd produced plan lines"; } || pass=$((pass+1))
+  # 4a-wrong-cwd-CONTROL (#73): the SAME sha and the SAME OC_DEPLOY_REPO, run
+  # from the repo that actually holds it, must be ADMITTED. Without this control
+  # the arm above passes on a tool that refuses every ship from anywhere.
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+  check_rc "ship-wrong-cwd-control-rc" $rc 0
+  check_has "ship-wrong-cwd-control-plan" "$out" "would: git push"
+  # 4a-no-repo (#73): a cwd with no git at all gets its own refusal — "not found
+  # in this repo" is a lie when there is no repo.
+  out="$(cd "$T/plain" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+  check_rc "ship-no-repo-rc" $rc 2
+  check_has "ship-no-repo-gate" "$out" "not inside a git repository"
   # F-1 fusion (v0.4.97): plan-mode ship with --wait refuses (nothing to poll);
   # non-integer --wait dies 1 at validation.
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git"     OC_DEPLOY_CARRIER="$SD/tools/carrier"     "$SELF_BIN" ship --sha "$SHA2" --wait 30 2>&1)"; check_rc "ship-wait-refused" $? 2
@@ -3679,8 +3716,26 @@ case "$MODE" in
     # n=1878 hard guard: format-valid does not mean real — refuse phantom
     # shas BEFORE any plan/rebase logic (fabricated sha incident: lane-planned
     # ship sha=4c0115ba…, bad object, misleading 'rebase needed' downstream).
-    git cat-file -e "$SHA^{commit}" 2>/dev/null \
-      || die 1 "sha not found in this repo (phantom?): $SHA — pass --sha <real commit sha>"
+    # #73: this probe is CWD-scoped BY CONSTRUCTION, not by accident. The push
+    # that follows sends objects OUT of the CWD repo and the rebase legs act on
+    # the branch checked out HERE, so scoping the probe onto $OC_DEPLOY_REPO
+    # does not repair a refusal — it converts one into a ship that runs from a
+    # foreign checkout and writes refs/oc-deploy/main into it (measured: the
+    # plan then reads "FF ok" against the ref its own fetch had just created
+    # there). The refusal was right; what it owed the operator was the CAUSE, so
+    # a sha that lives in the fork checkout is now named as a wrong directory
+    # instead of as a phantom.
+    if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+      CWD_TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+      FORK_DIR="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+      if [ -z "$CWD_TOP" ]; then
+        die 2 "OC_DEPLOY_GATE=wrong-checkout: not inside a git repository (cwd=$PWD) — ship pushes objects from the CWD repo, so run it from the fork checkout: cd $FORK_DIR"
+      fi
+      if [ -d "$FORK_DIR" ] && git -C "$FORK_DIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
+        die 2 "OC_DEPLOY_GATE=wrong-checkout: $SHA is not an object in the CWD repo ($CWD_TOP) but IS present in $FORK_DIR — ship pushes objects out of the CWD repo, so this is the wrong directory, not a phantom sha. Re-run: cd $FORK_DIR && oc-deploy ship --sha $SHA"
+      fi
+      die 1 "sha not found in this repo (phantom?): $SHA — pass --sha <real commit sha>"
+    fi
     plan "ship sha=$SHA features=$FEATURES stage=$(stage) execute=$EXECUTE"
     # #704: the tip is resolved from refs/oc-deploy/main — the DEDICATED ref
     # THIS fetch writes — never from FETCH_HEAD first (a shared mutable file any
