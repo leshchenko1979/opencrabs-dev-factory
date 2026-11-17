@@ -1,5 +1,22 @@
 # Changelog — opencrabs-dev
 
+## v0.4.308 — SKILL.md sheds its two reference sections (structural cut, not a receipt strip)
+
+**What forced it.** `SKILL.md` is the ONE skill file paid on every trigger — 525 lines, 53,434 B, ~13.4k tokens before any work starts, against the 500-line budget its own rule sets. The measured breakdown put **63% of its bytes in two lookup sections**: the `oc-*` register table (63 lines, 11,073 B) and the glossary (112 lines, 7,848 B). Both are reference, not law: a lane reads them when it needs a tool's exact form or a term's meaning, and neither is needed to decide what to do.
+
+**What moved, and what did not.** The table's 49 rows → `reference-tools.md`; the glossary's 109 lines → `reference-glossary.md`. Both **byte-identical**, verified by extracting each block from the new file and `diff`-ing it against the pre-move `SKILL.md` slice: 0 differences, 0 lines missing. `SKILL.md` keeps what is operative — the directory-layout law (where a NEW tool goes) and the battery requirement — plus a two-line redirect per section. The `§Glossary` heading survives as a stub so every existing `SKILL.md §Glossary` pointer still resolves.
+
+| | before | after |
+|---|---|---|
+| `SKILL.md` | 53,434 B / 525 lines | **36,424 B / 371 lines** (−17,010 B, −31.8%, −154 lines) |
+| corpus total | 53,434 B | 54,828 B (+1,394 B: each new file carries a 4-line provenance header) |
+
+**The receipt question, answered by the numbers, not by taste.** The always-loaded file drops ~4.2k tokens per trigger; the corpus grows 1.4 KB in files nobody loads unless they ask. That asymmetry is the whole argument: **reference belongs on demand, law belongs inline.** No receipt, date, sha or incident record was cut — this release moves text, it does not judge it.
+
+**Three pointers repointed** rather than left dangling: `toolsmith.md` and `triage.md` both cited `§Glossary, SKILL.md` for *disk absorption* (now `reference-glossary.md §disk absorption`), and `SKILL.md`'s own official-ontology bullet now names the file instead of the section.
+
+**Verification.** `tools/audit/oc-lint-laws --strict` clean — every `oc-*` invocation in the corpus still resolves. Heading census unchanged (13 headings), Hard rules untouched at 141 lines / 17,926 B, `§Shared war stories` tail intact.
+
 ## v0.4.307 — class (d) gains its MECHANISM: `oc-smoke --close` (tool #68)
 
 **What forced it.** v0.4.306 added closure class (d) and closed by admitting the gap in the same breath: *"No tool enforces (d) yet — `oc-smoke` stamps `done` but does not close the issue."* A law that depends on a lane remembering is the exact failure that produced the 148 September issues, one level up. The owner ordered the tool leg: **dispatch Toolsmith for `oc-smoke --close`.**

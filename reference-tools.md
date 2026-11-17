@@ -1,0 +1,56 @@
+# reference-tools — the `oc-*` fleet register
+
+> On-demand reference, moved verbatim out of `SKILL.md` §Canonical tooling (2026-11-17) so the
+> always-triggered router stopped paying ~11 KB for a lookup table. Rows unchanged. The
+> directory-layout law (where a NEW tool goes) and the battery requirement stay in `SKILL.md`.
+> rc semantics live ONLY in `tools/docs/RC-CONTRACT.md`.
+
+| Tool | Slot |
+|---|---|
+| `./tools/ship/oc-order-validate <sha>` | ORDER gates inside `oc-deploy ship` |
+| `./tools/ship/oc-job-verify <run-id> <source-ref> [--features] [--identity-only]` | standalone run-identity gate (provenance of RED runs) |
+| `./tools/ship/oc-artifact-verify <artifact-path> [--source <sha>] [--run-id <id>] [--markers m1,m2] [--expect-sha <sha256>] [--expect-version <v>] [--repo R] [--json]` | EXECUTION SANITY SIGNAL + FEATURE-PRESENCE CHECK |
+| `./tools/ship/oc-seal-state [--sha S] [...]` | baseline/orders seal (flag-based interface — no positional `<sha>`) |
+| `./tools/state/oc-attrib --repo <path> (--range <A..B> or --deployed) [--ledger <f>] [--contributors] [--novel\|--no-novel]` | commit-range → worker-lane attribution; `--contributors` projects the 3-col TSV (SINGLE SHAPE); `--deployed` composes the range from `deployed.sha` + `prev_sha` (fan-out compute backend for [issue #24](https://github.com/leshchenko1979/opencrabs/issues/24)) and IMPLIES `--novel` (#407: drops re-sha'd + empty commits; `--no-novel` restores the raw range) |
+| `./tools/ship/oc-deploy <mode>` | the ship path itself (mode list, verdict codes + wait semantics: `tools/docs/RC-CONTRACT.md`; Editor S3 path: `editor-ship.md`). |
+| `./tools/ship/oc-deploy fanout --run <id> [--dry-run]` | mechanical notify fan-out for one carrier run ([#24](https://github.com/leshchenko1979/opencrabs/issues/24)); auto-fired at `swap_execute` tail + on `poll` RED-scan; `OC_DEPLOY_NOFANOUT=1` suppresses — mechanics + journal vocabulary in `s2-swap-journal-spec.md` §Fan-out legs |
+| `./tools/ship/oc-carrier-features [--fetch] [--repo <path>] [--ref <branch>]` | reads the carrier-yml `features` default at `origin/<ref>`; `oc-deploy ship/poll` resolves EMPTY `--features` through this — carrier read failure aborts the ship loudly |
+| `./tools/issue/oc-issue-sweep '<query>' [--fork R] [--upstream R] [--limit N]` | closed-issue hygiene sweep (HQ duty) |
+| `./tools/state/oc-skew-scan [--ledger f] [--current v]` | ledger worker-version skew vs current skill version (HQ roster review) |
+| `./tools/notify/oc-ping-proof <uuid> <ping-ts> [--ledger f]` | post-swap notify proof: WOKEN / SILENT / UNREACHABLE verdict |
+| `./tools/harvest/oc-pr-atomicity <pr-number>` | atomicity gate (harvest Phase 7 / issue triage) |
+| `./tools/state/oc-ledger <verb>` | workers-ledger writer/reader; `--verbs` lists registered subcommands (unrecognized verbs emit vocabulary hints); `roster --live --role <role>` is the ROLE-RESOLUTION verb. Verb list, rc: `tools/docs/RC-CONTRACT.md` |
+| `./tools/state/oc-shadow-rotate [--dry-run]` | INTERNAL tail step of `oc-ledger sync` (standalone = manual fallback) |
+| `./tools/state/oc-review-persist <lens> <text\|@file\|-> [--dir DIR]` · `check-cycle <dir> [--strict-receipt]` | persist a Duty-6 review report (the index line IS the "persisted" receipt); `check-cycle` is the cycle-close gate |
+| `./tools/smoke/oc-smoke-evidence [--unit U] [--markers m1,m2] [--negative-control <bin>] [--append-log [<path>]]` | mechanical identity + presence evidence for a Phase 6 smoke verdict (behavioral judgment stays human); `--append-log` is the SANCTIONED writer of the IDENTITY EVIDENCE BLOCK in `smoke-verdicts.log` — VERDICT ROWS are LANE-AUTHORED (`upstream-merge-runbook.md` §Upstream-merge cadence · HARVEST LAW · NO-HOLD). Register: `tools/docs/RC-CONTRACT.md` |
+| `./tools/issue/oc-issue-log <issue-n> <sha> [--state <text>] [--repo <slug>] [--dry-run]` | per-commit implementation comment via gh `--body-file` ONLY |
+| `./tools/git/oc-commit -m <msg> [--issue N] [--no-comment] [--state <text>] [--repo <path>]` | gated commit wrapper: derives `Issue-Ref` from the actor's latest ledger claim, adds Session-Id + Issue-Ref trailers, folds in the post-commit comment |
+| `./tools/ship/oc-ship-audit [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
+| `./tools/audit/oc-tg-audit <uuid> [--date D] [--days N] [--log-dir P]` | Telegram surface-law evidence scan |
+| `./tools/state/oc-ledger sync` CHANGELOG gate | the sync refuses a bump whose CHANGELOG entry is missing (die 6) and WARNS on bundled commits the entry does not name. Full register: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-harvest-census <scan\|check\|record\|sync\|walk\|purge\|clusters>` | pre-flight census & lifecycle registry for upstream PR harvests; use `check`/`scan` (they derive IN_FLIGHT from the live scan). Mechanics, rc: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` \| `dispatch <issue> <commits> [--dry-run]` | dispatches automated harvest-to-upstream work order for eligible features |
+| `./tools/harvest/oc-harvest-sweep <pr-branch> [--base adolfousier/main] [--repo P] [--port-of sha1,sha2]` | pre-gate harvest verification (harvest Phase 7 sweep, mechanical legs); behavioral judgment stays human |
+| `./tools/state/oc-health [--class <name>|--all] [--rotate] [--status] [--json] [--reap] [--quiet] [--selftest]` | 8-class rotating fleet health & cleanliness sweep (owner order 2026-09-11); spec + per-check remediation in `tools/docs/HEALTH-CLASSES.md` & `tools/docs/HEALTH-CHECKS.md`. `--reap` applies SAFE remediations only; without it the tool is a pure read |
+| `./tools/state/oc-roster --selftest` | hermetic test runner for roster generation and classification |
+| `./tools/audit/oc-watcher-audit [--json] [--notify-orphans]` | detached watcher compliance and sleep-loop audit across active sessions |
+| `./tools/git/oc-start <issue-N> --branch <branch>` | unified entry: claim + branch + worktree initialization |
+| `./tools/smoke/oc-smoke <issue-N> [--probe <cmd>] [--no-ledger] [--no-close] [--close-repo <owner/repo>]` | unified 4-leg smoke verification & verdict row logging + automatic ledger done stamp on PASS + **issue CLOSE on PASS, DEFAULT ON** (class (d) behavioural-smoke-landed). `--no-close` suppresses it (multi-leg issue, non-closing probe). `--close-repo` defaults to the FORK — a FACTORY issue MUST pass `leshchenko1979/opencrabs-dev-factory`, else it closes the fork issue of the same number |
+| `./tools/issue/oc-issue-dispatch [--auto]` · `<issue-number> [--to <uuid>] [--force] [--allow-landed] [--redispatch] [--budget-secs N]` | mechanized issue triage dispatch to idle editor lanes; the issue is POSITIONAL and `--to` names the target session — there is NO `--issue` or `--lane` flag (verified live 2026-09-25 against the tool's own `--help` and `tools/docs/RC-CONTRACT.md` row `oc-issue-dispatch`). `--force` overrides the claim gate, `--allow-landed` disables the landed filter, `--redispatch` disables the 7-day dedup window |
+| `./tools/state/oc-questions <verb>` | the Open Questions register — the sanctioned blocked-on-you channel. Verbs, rc and the ask/answer contract: `tools/docs/RC-CONTRACT.md` row `oc-questions` · canon: `docs/instruments/open-questions.md` **in the meta-factory repo (`/root/agent-factories/`) — NOT resolvable from this skill tree** |
+| `./tools/audit/oc-lint-laws [--strict]` | mechanical syntax & tool-existence lint of skill markdown. Read findings from the tool itself, never from this row. Register: `tools/docs/RC-CONTRACT.md` |
+| `./tools/audit/oc-claims-single-source [--scan DIR] [--selftest]` | battery guard: the claim-closure predicate has exactly ONE home (`tools/lib/oc_claims.py`) — fails on a re-added private copy under `tools/`, keyed on SHAPE not name, including embedded `python3 -c`/heredoc blobs. Register: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-prchecks <branch-or-sha> [--wait N]` · `resume <run-id>` | one-command CI gate on a PR-lane branch; `resume` re-attaches to a run this lane witnessed. Register: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-upstream-delta [--repo P] [--fork-origin R] [--upstream R]` | watch-cycle arithmetic; READ-ONLY — PROPOSE/WAIT judgment stays human |
+| `./tools/git/oc-wt add\|remove\|list` (`--force` is a flag on add/remove) | editor worktree manager (`--force` journals before removal) |
+| `./tools/state/oc-drift-check <uuid> [--ack]` (omit-arg canonical; legacy `<uuid> <claimed-ver>` accepted) | editor §Mid-cycle skill drift step 1-2, mechanical |
+| `./tools/git/oc-branch-sweep --repo <p> [--dry-run]` | branch-death proof + archive-then-delete for MERGED only |
+| `./tools/issue/oc-census` | READ-ONLY pending-branch census (sync runbook Step 7 step 0); splits each branch's `git cherry` `+` set into own/untrailered/foreign arms and ENFORCES the partition identity; prints counts, never a cut sha. Mechanics, rc: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-pr-fault-scope <pr#> --run <id>` | failing-files ∩ PR-files = IN-SCOPE/BASE-FAULT |
+| `./tools/state/oc-ledger confirm <uuid>` | verifies the worker's latest claim then flips workers[].confirmed=true |
+| `gh workflow run pr-checks.yml --ref ci/quick-build-linux -f ref=<branch-or-sha>` | **manual fallback — prefer `./tools/harvest/oc-prchecks`** (row above). PR-lane CI gates before an upstream PR; yml lives only on the carrier branch |
+| `./tools/audit/oc-log-search <pattern> [--log-dir <P>] [--date YYYY-MM-DD] [--since <ts>] [--module <re>] [--tail N]` | telemetry-only daemon-log search; HARD FENCE: `brain::provider` lines never match |
+| `./tools/ship/oc-ship-chain --sha S --branch B` | CI gate → issue-log → ff-merge → ship → swap in ONE invocation; no-self-ping |
+| `./tools/notify/oc-notify-fanout --title T` | per-lane skill-change brief generator; DB-validated forum-scoped targets, receipts + ledger stamp |
+| `./tools/git/oc-rebase-safety overlap\|audit` | re-gate split rule arithmetic |
+| `./tools/state/oc-roster <live|forum|claims|work|classify>` | the DERIVED in-progress roster; stores nothing; `--role <role>` delegates to `oc-ledger roster`. |

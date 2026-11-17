@@ -495,7 +495,7 @@ HOW: same escalation mechanics as toolsmith.md §Escalation (canonical HOW —
 session_notify to HQ session).
 
 WHAT comes back: HQ's rulings and version batches absorb here the
-same way they absorb everywhere — disk absorption (§Glossary, SKILL.md),
+same way they absorb everywhere — disk absorption (`reference-glossary.md` §disk absorption),
 zero-ping (hq.md Duty 3).
 
 ## Retired Duties & Forwarding Pointers

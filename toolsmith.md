@@ -140,7 +140,7 @@ and `interrupt: true` is the legacy alias for the urgent tier (`delivery.mode: i
 they live in the ledger.
 
 WHAT comes back: HQ's rulings and version batches absorb here the
-same way they absorb everywhere — disk absorption (§Glossary, SKILL.md),
+same way they absorb everywhere — disk absorption (`reference-glossary.md` §disk absorption),
 zero-ping (hq.md Duty 3).
 
 ## Tool-problem reports: direct to TOOLSMITH for tools, issues for core (owner order 2026-09-10 ~02:4xZ & 14:3xZ; v0.4.130 Direct Dispatch Law; Finding BS-01 fix v0.4.133)
