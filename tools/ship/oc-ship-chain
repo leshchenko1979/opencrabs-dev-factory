@@ -73,7 +73,10 @@
 #
 # Exit: 0 SWAPPED (full chain complete)
 #       2 usage
-#       3 precondition not met — pre-flight: dirty fork checkout, or $BRANCH
+#       3 precondition not met — pre-flight: the fork checkout is ABSENT or is not
+#         a git checkout (a LINKED WORKTREE is accepted: `.git` is a file there,
+#         and the test is `git rev-parse --git-dir`, not `-d .git` — #69); dirty
+#         fork checkout, or $BRANCH
 #         absent from the fork remote (push it); or the LEG1 gate returned
 #         oc-prchecks rc 2 (its usage/sha-shape/unknown-ref class). A
 #         precondition is the LANE's to fix — it is never an infra fault.
@@ -174,7 +177,9 @@
 #                    lane-declared; see the #20 note at leg 1)
 #   OC_DEPLOY_BIN    default tools/ship/oc-deploy
 #   OC_ISSUELOG_BIN  default tools/issue/oc-issue-log
-#   OC_FORK_REPO     default ~/opencrabs (the fork checkout)
+#   OC_FORK_REPO     default ~/opencrabs (the fork checkout; a LINKED WORKTREE is
+#                    accepted — #69. The chain still redirects to the MAIN worktree
+#                    before the dirty/main checks, so that is where those run.)
 #   OC_ISSUE_LOG_REPO  the tracker LEG2's oc-issue-log posts the per-commit
 #                    comment to. This is oc-issue-log's OWN env hook (its
 #                    --repo is the same thing); the chain passes --repo
@@ -406,6 +411,29 @@ usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF" || 
 CHAIN_DIE_MSG=""
 die() { CHAIN_DIE_MSG="$1"; printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
 
+# #69: "is this a git checkout?" must be asked with GIT's predicate, never with a
+# proxy for it. `[ -d "$repo/.git" ]` is false in a LINKED WORKTREE, where `.git`
+# is a FILE (a gitdir pointer) rather than a directory, so a perfectly valid
+# checkout was refused as "not found" — and that message names the wrong cause,
+# sending the lane to look at paths instead of at the test. Measured 2026-11-17:
+# OC_FORK_REPO=/root/opencrabs-wt/1930-compaction-budget (clean, on a branch) has
+# a 62-byte ASCII `.git`, so `-d` failed while `rev-parse --git-dir` passed.
+# It also bit one level up: the main-worktree auto-redirect already accepts a
+# non-main worktree, but it runs AFTER this pre-flight, so an explicitly-passed
+# worktree died before reaching the code that would have taken it. `-e` would
+# accept any file, `-d` rejects every worktree; `rev-parse
+# --git-dir` IS the predicate. Both call sites share this one implementation so
+# they cannot drift back apart — the original defect was the same wrong test
+# duplicated at two sites.
+require_fork_checkout() { # $1 = path; dies rc 3 with the honest cause
+  _rfc_path="$1"
+  if [ ! -e "$_rfc_path" ]; then
+    die "fork checkout not found: $_rfc_path (path does not exist)" 3
+  fi
+  git -C "$_rfc_path" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "fork checkout not found: $_rfc_path (path exists but is not a git checkout: no .git directory and no gitdir pointer)" 3
+}
+
 SHA=""; BRANCH=""; ISSUE=""; ISSUE_REPO_FLAG=""; REPO=""; DRY=0; NOLEDGER=0; GATED_SHA=""; GATED_RUN=""
 # #14: set ONLY once the invocation has proven it is a chain attempt (both
 # --sha and --branch named). The EXIT-trap wake keys on this, so a NON-chain
@@ -602,7 +630,7 @@ done
 
 if [ "$EVAL_DOCS_SKIP" = "1" ]; then
   [ -n "$SHA" ] || die "--sha or commit argument required for --eval-docs-skip" 2
-  [ -d "$FORK_REPO/.git" ] || die "fork checkout not found: $FORK_REPO" 3
+  require_fork_checkout "$FORK_REPO"
   git -C "$FORK_REPO" rev-parse --verify --quiet "$SHA^{commit}" >/dev/null 2>&1 \
     || die "bad commit or unknown ref: $SHA" 3
   if EVAL_PATHS="$(shipchain_docs_only)"; then
@@ -790,7 +818,7 @@ journal_summary() { # call before exit: one line if any journal write was lost
 }
 
 # ---- pre-flight -----------------------------------------------------------
-[ -d "$FORK_REPO/.git" ] || die "fork checkout not found: $FORK_REPO" 3
+require_fork_checkout "$FORK_REPO"
 
 # ---- actor defaulting (v0.4.152 §Attribution & Goal Hygiene A1) ------------
 # A tool that ALREADY KNOWS the owning session MUST default the actor to it —
@@ -3244,6 +3272,79 @@ EOF
   RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_FORK_REPO="$T/clone" bash "$SELF" --eval-docs-skip "$CMDSHA" 2>&1)" || RC=$?
   check_rc "eval-docs-skip-compiled-rc1" "$RC" 1
   case "$OUT" in *"GATE-REQUIRED"*) ok "eval-docs-skip-compiled-msg" ;; *) bad "eval-docs-skip-compiled-msg: $OUT" ;; esac
+
+  # 20d-ter (#69). "Is this a git checkout?" must be answered by GIT's predicate,
+  # not by a proxy. A LINKED WORKTREE has a `.git` FILE (a gitdir pointer), so the
+  # old `[ -d "$FORK_REPO/.git" ]` pre-flight refused a valid checkout as "not
+  # found" and never dispatched a gate — measured live on
+  # /root/opencrabs-wt/1930-compaction-budget, 62-byte ASCII `.git`.
+  # The worktree is a FIXTURE created here: a live path would make the arm pass or
+  # fail with the box, and the predicate is what is under test.
+  # `--detach` on purpose: a branch already checked out in $T/clone cannot be
+  # added again, and a fixture that silently fails to materialise would leave the
+  # arm asserting nothing.
+  git -C "$T/clone" worktree add -q --detach "$T/wt-linked" main 2>/dev/null || true
+  [ -f "$T/wt-linked/.git" ] && ok "wt69-fixture-is-a-gitdir-file" \
+    || bad "wt69-fixture-is-a-gitdir-file (fixture did not materialise as a linked worktree — the arms below would be vacuous)"
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_FORK_REPO="$T/wt-linked" bash "$SELF" --eval-docs-skip "$DOCS_SHA" 2>&1)" || RC=$?
+  case "$OUT" in
+    *"fork checkout not found"*) bad "eval-docs-skip-linked-worktree-accepted: refused a valid worktree: $OUT" ;;
+    *) ok "eval-docs-skip-linked-worktree-accepted" ;;
+  esac
+  check_rc "eval-docs-skip-linked-worktree-rc0" "$RC" 0
+
+  # Positive control for the refusal direction: a directory that EXISTS but is not
+  # a checkout must still refuse rc 3. Without this, a predicate that accepts
+  # everything (e.g. `true`) would pass the worktree arm above.
+  mkdir -p "$T/not-a-checkout"
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_FORK_REPO="$T/not-a-checkout" bash "$SELF" --eval-docs-skip "$DOCS_SHA" 2>&1)" || RC=$?
+  check_rc "eval-docs-skip-not-a-checkout-rc3" "$RC" 3
+  case "$OUT" in *"path exists but is not a git checkout"*) ok "eval-docs-skip-not-a-checkout-msg" ;; *) bad "eval-docs-skip-not-a-checkout-msg: $OUT" ;; esac
+
+  # An ABSENT path gets a distinct message. One message for two causes is half of
+  # what #69 reports: "not found" sent the lane looking at paths when the path was
+  # fine and the TEST was wrong.
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_FORK_REPO="$T/absent-path-xyz" bash "$SELF" --eval-docs-skip "$DOCS_SHA" 2>&1)" || RC=$?
+  check_rc "eval-docs-skip-absent-path-rc3" "$RC" 3
+  case "$OUT" in *"path does not exist"*) ok "eval-docs-skip-absent-path-msg" ;; *) bad "eval-docs-skip-absent-path-msg: $OUT" ;; esac
+
+  # And the ordinary shape still passes: a plain clone. This one stayed green
+  # while the worktree died, so it cannot stand in for the worktree arm — but it
+  # must not go red either, or the fix would have broken the normal case.
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 OC_FORK_REPO="$T/clone" bash "$SELF" --eval-docs-skip "$DOCS_SHA" 2>&1)" || RC=$?
+  check_rc "eval-docs-skip-plain-clone-rc0" "$RC" 0
+
+  # SINGLE SOURCE (#69). The comment above require_fork_checkout claims "both call
+  # sites share this one implementation so they cannot drift back apart" — and a
+  # claim in a comment is not a check. The original defect was the SAME wrong test
+  # duplicated at two sites, and only ONE of them is reachable from the arms above
+  # (the other needs a full --sha/--branch chain). So assert the shape directly:
+  # exactly one definition, and no surviving `-d .../.git` proxy anywhere.
+  # This arm is what makes the "cannot drift" sentence true rather than hopeful.
+  [ "$(grep -c '^require_fork_checkout()' "$SELF")" = "1" ] \
+    && ok "wt69-single-source-definition" \
+    || bad "wt69-single-source-definition: require_fork_checkout is defined $(grep -c '^require_fork_checkout()' "$SELF") times — the two call sites can drift apart again"
+  # The scanner reads PRODUCTION CODE, never prose and never the selftest body:
+  # this file's own comment block quotes the old test to explain the defect, and
+  # the fixture below must contain the shape to prove the scanner fires. A scanner
+  # that reads all three reddens on the explanation and on its own test data.
+  # Same law as #47's negative control, which went inert by asserting a POSITION
+  # in a sorted list: an instrument must be shown able to fire on its target.
+  _wt69_scan() { # $1 = file, $2 = last production line; prints offending lines
+    sed -n "1,${2}p" "$1" | grep -vE '^[[:space:]]*#' \
+      | grep -E '\[[[:space:]]+-d[[:space:]]+"?\$[A-Za-z_]*FORK[A-Za-z_]*/\.git' || true
+  }
+  _wt69_prod_end="$(grep -n '^selftest_impl()' "$SELF" | head -1 | cut -d: -f1)"
+  if [ -n "$(_wt69_scan "$SELF" "$_wt69_prod_end")" ]; then
+    bad "wt69-no-gitdir-proxy: a \`-d .../.git\` test survives in the CODE — it refuses every linked worktree: $(_wt69_scan "$SELF" "$_wt69_prod_end" | head -1)"
+  else
+    ok "wt69-no-gitdir-proxy"
+  fi
+  # NEGATIVE CONTROL: the same scanner must FLAG the shape when it is real code.
+  printf '%s\n' 'x=1' '[ -d "$FORK_REPO/.git" ] || die nope 3' > "$T/wt69-proxy-fixture.sh"
+  [ -n "$(_wt69_scan "$T/wt69-proxy-fixture.sh" 99)" ] \
+    && ok "wt69-no-gitdir-proxy NEGATIVE CONTROL: the scanner flags the shape (the leg can fail)" \
+    || bad "wt69-no-gitdir-proxy NEGATIVE CONTROL: scanner missed the injected proxy — the coverage leg is inert"
 
   # 20d-bis (#537). The compiled-md set is derived by cd'ing into the fork repo
   # and grepping src/ for include_str!/include_bytes! of markdown. Its failure
