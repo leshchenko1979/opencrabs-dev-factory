@@ -1,5 +1,19 @@
 # Changelog — opencrabs-dev
 
+## v0.4.311 — the gate gets a stall detector, and red-run triage learns its signature
+
+**What forced it.** 40 of 295 gate dispatches (13.6%) hit the 45-minute job cap after **32-48 minutes of total log silence**, against a green-run maximum silence of 2.28 min over ~10,700 lines. The existing `hangdump` watchdog arms on the TEST BINARY appearing, so it is blind to every one of them: 12/12 sampled cap-hits executed **zero tests**, the last line always cargo running `rustc` over the dev-dependency tree. `#331`.
+
+**What shipped (carrier `ci/quick-build-linux`, `64110e59d` + `cf645906d` + `665449763`).** A phase-agnostic `stallwatch` on the test leg: it watches `sum(utime+stime)` over the step's own descendant process tree and SIGTERMs the build after 300 s of flat CPU (owner's number; 2.2× the longest legitimate green silence, and a compiling `rustc` advances CPU on every sample so healthy work cannot accumulate flat time). On fire it dumps `wchan`, `/proc/<pid>/syscall`, the kernel stack and a vmstat sample — `futex` vs `read`/`io_schedule` is the #781-deadlock vs I/O-thrash discriminator — then kills, so a stall costs ~5 min instead of 45 and yields the stack that identifies the mechanism. Fail-open: no python3 or an unparsable heredoc warns and continues. `665449763` added the syscall + kernel-stack payload because gdb is installed only in hangdump mode, so the original dump printed an **empty** stacks section that reads as "no stacks existed".
+
+**Driven, not asserted.** ARM A (busy `comm=rustc`, 22 s at a 6 s threshold) never fired; ARM B (sleeping `comm=rustc`) fired at exactly `flat=6s`, dumped `syscall 230` + `kstack=hrtimer_nanosleep`, and SIGTERMed. Three earlier arm runs reporting NO FIRE were the **driver's** fault, not the detector's — `STALLWATCH_ROOT=$BASHPID` on a backgrounded command expands to the forked child's pid (the watcher watched itself) and `STALLWATCH_SAMPLE` never reached the child. Production sets neither; it resolves root from `os.getppid()`.
+
+**The law change.** `editor.md §Red-run triage heuristics` gains the signature: a `Run tests` RED carrying `STALLWATCH FIRE` is a **stall, not a test failure** — read the dump before touching a test. This is the one file that owns red-run diagnosis, so the bullet lives there and nowhere else.
+
+**Residual gaps, stated.** The `build` job is not watched (its own 45-min cap bounds the damage). A legitimate >5-minute flat-CPU wait — a slow crate download on a cold cache — would false-fire; deps are compiled by the preceding Clippy step, so the window is small but not zero.
+
+**Revert.** Delete the stallwatch block and its teardown in `ci-lane-impl.yml`; restore the two prose figures in `editor.md` and drop this entry.
+
 ## v0.4.310 — the loaded surface loses its restatements (23 files, −20,149 B)
 
 **What forced it.** v0.4.308 and v0.4.309 cut `SKILL.md` alone. The other files a lane actually reads had never been through the same pass: `fleet-directives.md` 130,405 B, `upstream-merge-runbook.md` 103,466 B, `triage.md` 86,410 B, `harvest.md` 51,867 B, `editor.md` 43,847 B — each restating law that another file owns, and paying for it on every read.

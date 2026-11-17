@@ -330,6 +330,15 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
   `gh run view <id> --json status,conclusion` FIRST — even ACKs can be
   stale. v0.4.6 predicates govern claims WE pass on; nothing sanitizes claims
   that ARRIVE — the receiver checks.
+- **A `Run tests` RED carrying `STALLWATCH FIRE` is a STALL, not a test failure**
+  (2026-11-17): the gate's phase-agnostic watchdog SIGTERMs the build after 300 s
+  of flat CPU across the step's own process tree, so the step dies with no
+  failing test name, usually in ~5 min instead of burning to the 45-min job cap.
+  Read the dump before touching a test: `wchan`/`kstack` (futex vs
+  read/io_schedule) is the #781-deadlock vs I/O-thrash discriminator and
+  `syscall` names the blocking call. A "test hang" reading is usually wrong —
+  12/12 sampled cap-hits executed ZERO tests, the last line always cargo running
+  rustc over the dev-dependency tree.
 
 ## Phase 6-Fix — Fix Loop (Red Carrier Build or Failed Smoke)
 
