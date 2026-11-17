@@ -14,6 +14,8 @@
 
 **Revert.** Delete the stallwatch block and its teardown in `ci-lane-impl.yml`; restore the two prose figures in `editor.md` and drop this entry.
 
+**Bundled commits (`v0.4.310..v0.4.311`, named because the version record is the only place a bundled fix's ship date exists).** `fcbebc80` `oc-deploy` passes `fork_version` at carrier dispatch, from one derivation (#72) · `808737e2` `oc-deploy` names the wrong directory instead of a phantom sha (#73) · `584b5c8f` register `oc-deploy`'s wrong-checkout gate token (#73).
+
 ## v0.4.310 — the loaded surface loses its restatements (23 files, −20,149 B)
 
 **What forced it.** v0.4.308 and v0.4.309 cut `SKILL.md` alone. The other files a lane actually reads had never been through the same pass: `fleet-directives.md` 130,405 B, `upstream-merge-runbook.md` 103,466 B, `triage.md` 86,410 B, `harvest.md` 51,867 B, `editor.md` 43,847 B — each restating law that another file owns, and paying for it on every read.
