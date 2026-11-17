@@ -16,6 +16,8 @@
 
 **A stale citation this release inherits.** `oc-smoke`'s invocation and flag set live in `reference-tools.md:38` since v0.4.308 moved the tool register out of `SKILL.md`; a `SKILL.md:121` citation for that row now resolves to nothing. The flags themselves are correct there — including `--no-close` and the `--close-repo` factory hazard.
 
+**Bundled commits (`v0.4.307..v0.4.310`, named because the version record is the only place a bundled fix's ship date exists).** `b79161b3` `war-stories.md` leaves the skill corpus · `6ce6eeb3` v0.4.308 reference sections move to `reference-*.md` · `7490ff0f` v0.4.308 byte figures corrected to the committed artifact · `3b776724` v0.4.309 §Hard rules deslop · `ee07ef3f` v0.4.310 loaded-corpus deslop (23 files, −20,149 B) · `1c4cf377` factory #69 git-checkout predicate · `1a739277` factory #71 `LAW_FILES` coverage boundary · `846b5cce` this restamp.
+
 ## v0.4.309 — §Hard rules keeps the imperatives, loses the archaeology
 
 **What forced it.** v0.4.308 took `SKILL.md` from 525 to 371 lines by moving two reference sections out. §Hard rules was still **18,073 B — 50% of what remained**, and the receipts research delivered the same day said exactly where to cut: *"the imperative earns its tokens; the story usually does not."*
