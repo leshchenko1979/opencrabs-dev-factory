@@ -12,6 +12,8 @@
 
 **No rename, and this is the receipt.** The names are load-bearing API, not labels: `PR-lane gates` is parsed as a job-name string by `oc-ship-chain:1206`, `oc-job-verify:154` and `oc-artifact-verify:143`, and `CI lane impl` is emitted by the generator at `oc-prchecks:280`. Renaming either breaks the ship chain **silently** — the exact failure class this factory keeps paying for. File names are pinned by `oc-deploy`'s `WF=` and `oc-prchecks`' dispatch, so a rename would be a coordinated Toolsmith + HQ change, not a cleanup.
 
+**Bundled in this bump** (other lanes' work — the version record is the only place a bundled fix's ship date exists): `3b13b829` the battery reads the pids budget before it fans out (#74) · `ac9c25b9` battery runs one section at a time at nice 19 / ioprio idle (#76) · `c790bd3e` the deploy chain runs at low priority by default and the CHILD inherits it (#77).
+
 **Residual gap, stated.** Retiring `ci.yml` removed the **only** automated surface that watched the RustSec advisory DB. The 29 advisories are real and unchanged (one CRITICAL: `zip 1.1.4` / `RUSTSEC-2026-0369`, transitive via `candle-core 0.8.4`, so a direct `zip` bump does nothing). #806 is now the only record. The cheap restoration is a ~40-line weekly audit workflow on `main` — a new file, so conflict-free on upstream sync — and it is the owner's call, not a silent addition.
 
 ## v0.4.311 — the gate gets a stall detector, and red-run triage learns its signature
