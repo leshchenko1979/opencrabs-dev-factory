@@ -1,15 +1,16 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-17T11:11:21Z",
+  "ts": "2026-11-17T12:20:19Z",
   "pass": 398,
   "fail": 0,
   "verdict": "PASS",
+  "mode": "parallel jobs=2",
   "fail_log": "",
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r35325ace43364f06be0996fe000a198a.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r7ab8fc2f34894d2e8478fe001700544f.scope",
   "cgroup_isolated": false,
-  "wall_ms": 1026500,
-  "timing": []
+  "wall_ms": 747270,
+  "timing": {"max_concurrency": 2, "section_count": 68, "sum_ms": 1468628, "slowest": [{"n": 44, "ms": 308658, "start_ms": 340338, "end_ms": 648996, "title": "62. oc-health (owner-ordered hourly health & cleanliness sweep, 2026-09-11)"}, {"n": 50, "ms": 287154, "start_ms": 460109, "end_ms": 747263, "title": "68. oc-harvest-dispatch (automated harvest order dispatcher)"}, {"n": 39, "ms": 141653, "start_ms": 202708, "end_ms": 344361, "title": "17. lens-F coverage batch (v0.4.72, F8: tools the battery never ran) ---"}, {"n": 33, "ms": 114666, "start_ms": 31801, "end_ms": 146467, "title": "11. oc-ledger (KERNEL C1\u2013C5 + item-2(b) commit-pending sweep) ---------"}, {"n": 32, "ms": 90756, "start_ms": 28329, "end_ms": 119085, "title": "10. oc-deploy -----------------------------------------------------------"}, {"n": 48, "ms": 88074, "start_ms": 364792, "end_ms": 452866, "title": "64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)"}, {"n": 35, "ms": 78396, "start_ms": 124238, "end_ms": 202634, "title": "13. oc-prchecks (KERNEL C5 \u2014 one-command PR lint gate) ----------------"}, {"n": 40, "ms": 69986, "start_ms": 206184, "end_ms": 276170, "title": "18. oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z) -----------"}, {"n": 43, "ms": 46989, "start_ms": 293312, "end_ms": 340301, "title": "61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)"}, {"n": 38, "ms": 40485, "start_ms": 165627, "end_ms": 206112, "title": "16. lens-C tool builds (v0.4.58, owner Go 2026-08-31 04:20Z) -----------"}]}
 }
