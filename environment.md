@@ -138,25 +138,29 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   discipline as `leshchenko1979/*`).
 - **ALL fork CI lives on the carrier branch — `main` carries UPSTREAM's workflows, not ours**
   (owner correction 2026-10-01T01:11Z: *"the forks ci files live on a special branch"*).
-  Measured: `origin/main` carries exactly `auto-assign.yml` `ci.yml` `prerelease.yml`
-  `release.yml`; the fork's OWN CI — `pr-checks.yml` (the PR-lane gate), `ci-lane-impl.yml`
-  and `quick-build-linux.yml` (the carrier build) — exists ONLY on `ci/quick-build-linux`.
-  `main`'s `ci.yml` carries **no fork edits of its own** — its blob `66213a97` is upstream's
-  at upstream `878c4af5c`, so any "byte-identical" reading holds only **as of upstream
-  `878c4af5c`**; upstream has since advanced **3 ci.yml commits** (`e99d915ce` `334a4d3e1`
-  `aa271a0e3`) — compare blobs, never assume. Its jobs resolve
-  `self-hosted` on a push (the ternary yields `ubuntu-latest` only for a fork PR) and the fork
-  has **0 registered self-hosted runners**, so every main-push run queues indefinitely and is
-  cancelled by the next push. Measured 2026-10-03T22:23:11Z over the FULL run population
-  (`total_count` 496, all 5 pages — count first, never read a page): **6 success · 466
-  cancelled · 23 failure · 1 startup_failure**, 0 in flight. The 6 successes are **May 2026
-  same-repo PRs** (`head_repository = leshchenko1979/opencrabs` → the `self-hosted` arm) from
-  when runners existed; **zero `push` runs have EVER succeeded**. So the fork is
-  **de-provisioned, NOT impossible** — a registered self-hosted runner would make it
-  green-capable (not worth doing: the carrier is green-capable today). The earlier
-  `0 success / 58 cancelled` was a **truncated page read, not a population**.
-  **CONSEQUENCE — fork `main` has NO post-merge CI net**, by
-  design: the PRE-merge PR-lane gate (`oc-ship-chain` LEG1) is the ONLY gate, and
-  the only thing between a red commit and the carrier build. **Never read `main`'s workflow
-  files as evidence about the fork's CI, and never "repair" them** — they are upstream's; editing
-  one is divergence that conflicts on every upstream sync.
+  Measured 2026-11-17: `origin/main` carries exactly `auto-assign.yml` `ci.yml` `prerelease.yml`
+  `release.yml` — **all four `disabled_manually`**; the fork's OWN CI — `pr-checks.yml` (the
+  PR-lane gate), `ci-lane-impl.yml` (the shared body) and `quick-build-linux.yml` (the carrier
+  build) — exists ONLY on `ci/quick-build-linux`, which after `926ba669e` carries **exactly those
+  three** (the four inherited copies were deleted there; 1103 lines removed).
+  **DISABLE, never EDIT, a main-resident workflow:** disabling leaves the blob untouched and adds
+  no divergence to absorb on every upstream sync; editing one does. Workflow IDs: `ci.yml`
+  279870630 · `auto-assign.yml` 279870629 · `release.yml` 279870631 · `prerelease.yml` 340793217 ·
+  `lock-regen.yml` 344261038 · `verify-anchor.yml` 406520527.
+  `main`'s `ci.yml` is **no longer upstream's blob**: fork blob `628b6957e` (upstream's was
+  `66213a97` at upstream `878c4af5c`), fork-edited at `2cc9f9123` (2026-11-02) to run
+  lint/test/audit on `ubuntu-latest` because the fork has **0 registered self-hosted runners** and
+  every `self-hosted` job sat `queued` until `concurrency` cancelled it. **Do NOT re-flip
+  lint/test/audit back to `self-hosted`** — the `if: runner.environment == 'self-hosted'` steps
+  stay as harmless no-ops. Its `branches: [main]` and `paths-ignore` are **COMMENTED OUT**, so it
+  fires on EVERY push: measured 2026-11-17 over the last 300 runs (2026-09-16 → 2026-11-17) —
+  **0 success · 233 cancelled · 67 failed**, 292 of the 300 firing on `main` pushes (~5 merges/day,
+  each run cancelling the previous via `concurrency`). The red is Cargo Audit, not a compile
+  failure.
+  **CONSEQUENCE — fork `main` has NO post-merge CI net**, by design: the PRE-merge PR-lane gate
+  (`oc-ship-chain` LEG1) is the ONLY gate, and the only thing between a red commit and the carrier
+  build. **Never read `main`'s workflow files as evidence about the fork's CI.**
+  **AND `ci.yml` was never that gate:** `ci-lane-impl.yml` has exactly three jobs —
+  `order-gates` `build` `pr-gates` — and **no audit job at all** (the only `audit` strings in it
+  name the `oc-ship-audit` TOOL). So a red Cargo Audit in `ci.yml` never blocked a lane's merge;
+  asserting otherwise is a measured error (ledger n=16514, corrected at n=16518).

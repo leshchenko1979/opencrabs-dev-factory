@@ -1,5 +1,19 @@
 # Changelog — opencrabs-dev
 
+## v0.4.312 — six workflows retired, and the correction that `ci.yml` was never our gate
+
+**What forced it.** Eight workflows were registered on the fork and three of them had a user. Measured run counts, all read from the API: `auto-assign.yml` 853 (assigns `adolfousier`, who is **not assignable on this fork** — only `leshchenko1979` is — so every run silently no-ops, and it fights the claim law besides), `ci.yml` 620, `prerelease.yml` 0, `release.yml` 0 (triggers on `v*` tags the fork never pushes; `oc-deploy` publishes via `gh release`), `lock-regen.yml` 1 (superseded by the `lockregen` input on the PR gate), `verify-anchor.yml` 1 (a one-off for #1677). The keep-set is `pr-checks.yml` (2728 runs, the PR gate) and `quick-build-linux.yml` (588, the carrier build), with `ci-lane-impl.yml` as the reusable body both `uses:`.
+
+**What `ci.yml` was doing.** Its last 300 runs (2026-09-16 → 2026-11-17): **0 success · 233 cancelled · 67 failed**, and 292 of the 300 fire on `main` pushes (~5 merges/day) because the fork's copy has `branches: [main]` and `paths-ignore` **commented out**. The cancellations are its own `concurrency` group superseding itself. The red is Cargo Audit.
+
+**What shipped.** Six workflows **disabled on main** (`gh workflow disable`, which leaves the blob untouched — editing a main-resident workflow is divergence that conflicts on every upstream sync): the four above plus `lock-regen` and `verify-anchor`. All four inherited copies **deleted from the carrier** `ci/quick-build-linux` at `926ba669e` — 1103 lines — so that branch now carries exactly the fork's own CI: `pr-checks.yml`, `quick-build-linux.yml`, `ci-lane-impl.yml`.
+
+**The correction this entry exists to record.** `ci.yml` was **never the fork's gate**, and I had said it was. `ci-lane-impl.yml` has exactly three jobs — `order-gates` `build` `pr-gates` — and **no audit job at all**; the only `audit` strings in it name the `oc-ship-audit` TOOL. So a red Cargo Audit in `ci.yml` never blocked a lane's merge, and my ledger note n=16514 ("no CI-verifiable merge until #806 lands") was false; corrected at n=16518. `environment.md §ALL fork CI lives on the carrier branch` now carries the measured state, the disable-never-edit rule with the six workflow IDs, and that correction.
+
+**No rename, and this is the receipt.** The names are load-bearing API, not labels: `PR-lane gates` is parsed as a job-name string by `oc-ship-chain:1206`, `oc-job-verify:154` and `oc-artifact-verify:143`, and `CI lane impl` is emitted by the generator at `oc-prchecks:280`. Renaming either breaks the ship chain **silently** — the exact failure class this factory keeps paying for. File names are pinned by `oc-deploy`'s `WF=` and `oc-prchecks`' dispatch, so a rename would be a coordinated Toolsmith + HQ change, not a cleanup.
+
+**Residual gap, stated.** Retiring `ci.yml` removed the **only** automated surface that watched the RustSec advisory DB. The 29 advisories are real and unchanged (one CRITICAL: `zip 1.1.4` / `RUSTSEC-2026-0369`, transitive via `candle-core 0.8.4`, so a direct `zip` bump does nothing). #806 is now the only record. The cheap restoration is a ~40-line weekly audit workflow on `main` — a new file, so conflict-free on upstream sync — and it is the owner's call, not a silent addition.
+
 ## v0.4.311 — the gate gets a stall detector, and red-run triage learns its signature
 
 **What forced it.** 40 of 295 gate dispatches (13.6%) hit the 45-minute job cap after **32-48 minutes of total log silence**, against a green-run maximum silence of 2.28 min over ~10,700 lines. The existing `hangdump` watchdog arms on the TEST BINARY appearing, so it is blind to every one of them: 12/12 sampled cap-hits executed **zero tests**, the last line always cargo running `rustc` over the dev-dependency tree. `#331`.
