@@ -848,6 +848,21 @@ case "$*" in
       echo '{"status":"completed","conclusion":"failure"}'
     fi ;;
   *runs/111/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, telegram)"}]}' ;;
+  # #72: the carrier's OWN declaration — the dispatch leg probes this before
+  # passing -f fork_version, because an undeclared dispatch input is a hard 422
+  # from the API (it would break EVERY ship, not just this one).
+  #   OC_TEST_CARRIER_FORK_VERSION=1 => the input IS declared (post-transition)
+  #   unset                          => transition carrier, input absent
+  *contents/.github/workflows/*)
+    # OC_TEST_CARRIER_YML_FAIL=1 => the read itself FAILS (rc 1). This is NOT the
+    # same state as "declared nothing": an unreadable contract must refuse, not
+    # be read as a negative answer (#72).
+    if [ -n "${OC_TEST_CARRIER_YML_FAIL:-}" ]; then exit 1; fi
+    if [ -n "${OC_TEST_CARRIER_FORK_VERSION:-}" ]; then
+      printf 'on:\n  workflow_dispatch:\n    inputs:\n      source_repository:\n        required: false\n      fork_version:\n        required: false\n'
+    else
+      printf 'on:\n  workflow_dispatch:\n    inputs:\n      source_repository:\n        required: false\n'
+    fi ;;
   *) echo '{}' ;;
 esac
 STUB
@@ -1941,6 +1956,54 @@ NSTUB3
   else pass=$((pass+1)); fi
   grep -q "publish=skipped" "$SD7/workers-ledger.json" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: guard run did not record publish=skipped"; }
+  # 17v. #72 — the carrier dispatch carries the fork release identity, and it is
+  #      the SAME string the publish leg names the release with. Both legs are
+  #      driven from ONE fixture ($SD7: version 0.5.4, cycle 352), so "same by
+  #      construction" is MEASURED rather than agreed. The flag is gated on the
+  #      carrier's own declaration: an undeclared input is a hard 422 that would
+  #      break EVERY ship, so a transition carrier must get the OLD form + a NOTE.
+  local FV72="" PN72=""
+  : > "$GH_LOG"
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD7" OC_DEPLOY_REPO="$T/crepo" \
+    OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
+    OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_TEST_CARRIER_FORK_VERSION=1 \
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+  check_rc "72-dispatch-rc" $rc 0
+  check_has "72-dispatch-echo" "$out" "carrier fork_version=0.5.4+fork.352"
+  FV72="$(grep -o 'fork_version=[^ ]*' "$GH_LOG" | head -1 | sed 's/^fork_version=//')"
+  [ "$FV72" = "0.5.4+fork.352" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #72 dispatch did not carry -f fork_version=0.5.4+fork.352 (got '${FV72:-<none>}')"; }
+  # publish leg, SAME fixture: the release title must be the identical string
+  out="$(_oc766_pub e555555555555555555555555555555555555555 905 "" "")"; rc=$?
+  check_rc "72-publish-rc" $rc 0
+  PN72="$(grep 'release create fork-latest' "$GH_LOG" | sed -n 's/.*--title \([^ ]*\) .*/\1/p' | head -1)"
+  [ -n "$PN72" ] && [ "$PN72" = "$FV72" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #72 release name '$PN72' != dispatched fork_version '$FV72' (ONE derivation, two consumers)"; }
+  # transition carrier (input NOT declared): ship still succeeds, passes NO flag,
+  # and says why — this is the state the carrier is in right now.
+  : > "$GH_LOG"
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD7" OC_DEPLOY_REPO="$T/crepo" \
+    OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
+    OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+  check_rc "72-transition-rc" $rc 0
+  grep -q 'fork_version=' "$GH_LOG" \
+    && { fail=$((fail+1)); echo "SELFTEST FAIL: #72 passed fork_version to a carrier that does not declare it (422 on every ship)"; } || pass=$((pass+1))
+  check_has "72-transition-note" "$out" "declares no fork_version input"
+  # undecidable contract: the carrier yml read FAILS. Refusing is the only
+  # honest answer — passing blind is a 422 on every ship, omitting blind ships a
+  # binary whose version never matches its release name. Must NOT dispatch.
+  : > "$GH_LOG"
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD7" OC_DEPLOY_REPO="$T/crepo" \
+    OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
+    OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_TEST_CARRIER_YML_FAIL=1 \
+    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+  check_rc "72-undecidable-rc" $rc 2
+  check_has "72-undecidable-msg" "$out" "refusing to dispatch blind"
+  grep -q 'workflow run' "$GH_LOG" \
+    && { fail=$((fail+1)); echo "SELFTEST FAIL: #72 dispatched despite an UNREADABLE carrier contract (blind guess either way)"; } || pass=$((pass+1))
   # 17n. sidecar sync (#47): GREEN swap restarts STALE non-ops units, leaves
   #      in-sync units untouched; sandbox systemctl shims + OC_SWAP_SIDECARS=2.
   local SD4="$T/state4" SCJ
@@ -2792,6 +2855,45 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
 # Actions-secret dependency is exactly what leaves upstream's release.yml dead
 # on the fork).
 #
+# --- fork release identity: ONE derivation, TWO consumers (#72) --------------
+# The release NAME (publish leg) and the version injected into the carrier build
+# (dispatch leg) MUST be the same string, BY CONSTRUCTION and not by agreement.
+# Why it is load-bearing rather than cosmetic: `evolve` compares the running
+# binary's version against the release name, so a binary at fork.429 beside a
+# release named fork.430 reports an update forever and re-downloads in a loop.
+# Therefore VER/CYC are derived HERE, once, and both legs call this. Never
+# compute them a second time inline — that is exactly how the two diverge.
+_fork_release_name() { # $1=sha -> "<upstream-version>+fork.<cycle>"
+  local sha="${1:-}" repo base_dir baseline ver cyc
+  repo="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+  base_dir="$(dirname "$(readlink -f "$LEDGER" 2>/dev/null || echo "$LEDGER")")"
+  baseline="$base_dir/baseline.json"
+  # VER is the version AT $SHA (git show), never the working tree's.
+  ver="$(git -C "$repo" show "$sha:Cargo.toml" 2>/dev/null | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$ver" ] || ver="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$repo/Cargo.toml" 2>/dev/null | head -1)"
+  [ -n "$ver" ] || ver="0.0.0"
+  cyc="$(jq -r '.cycle // 0' "$baseline" 2>/dev/null || true)"
+  [ -n "$cyc" ] || cyc=0
+  printf '%s+fork.%s\n' "$ver" "$cyc"
+}
+
+# Does the carrier workflow on the carrier ref DECLARE this dispatch input?
+# An undeclared input is a hard 422 from the API — passing one against a carrier
+# that has not shipped it yet would break EVERY ship, so the dispatch leg asks
+# the carrier's own declaration instead of assuming (transition safety, #72).
+_carrier_declares_input() { # $1=input name -> 0 declared, 1 not declared, 2 read FAILED
+  local want="${1:-}" yml
+  [ -n "$want" ] || return 2
+  yml="$("$GH" api "repos/$FORK/contents/.github/workflows/$WF?ref=$CARRIER_REF" \
+    -H "Accept: application/vnd.github.raw" 2>/dev/null)" || return 2
+  [ -n "$yml" ] || return 2
+  # `<<<` not `printf | grep -q`: under pipefail an early-exiting grep SIGPIPEs
+  # printf, so the pipeline reports failure even when the match was found. It
+  # only ever passed on short inputs that fit the pipe buffer (#691 lint leg).
+  if grep -qE "^[[:space:]]+${want}:" <<< "$yml"; then return 0; fi
+  return 1
+}
+
 # Contract (D1=P2 / D2=I2 / D3=A1 / D4=amd64-only):
 #   assets : opencrabs-fork-linux-amd64.tar.gz · SHA256SUMS · build-flags.txt
 #   tags   : rolling `fork-latest` (force-moved each publish)
@@ -2820,13 +2922,13 @@ publish_fork_release() { # $1=sha $2=run_id $3=features $4=binary-path $5=artifa
   BASE_DIR="$(dirname "$(readlink -f "$LEDGER" 2>/dev/null || echo "$LEDGER")")"
   BASELINE="$BASE_DIR/baseline.json"
 
-  # release name: <upstream-version>+fork.<cycle>
-  VER="$(git -C "$REPO" show "$SHA:Cargo.toml" 2>/dev/null | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-  [ -n "$VER" ] || VER="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$REPO/Cargo.toml" 2>/dev/null | head -1)"
-  [ -n "$VER" ] || VER="0.0.0"
-  CYC="$(jq -r '.cycle // 0' "$BASELINE" 2>/dev/null || true)"
-  [ -n "$CYC" ] || CYC=0
-  NAME="${VER}+fork.${CYC}"
+  # release name: <upstream-version>+fork.<cycle> — ONE derivation (#72), shared
+  # with the carrier dispatch leg so the injected binary version and the release
+  # name are the same string by construction. VER/CYC are recovered FROM the name
+  # rather than computed again: a second computation is the divergence itself.
+  NAME="$(_fork_release_name "$SHA")"
+  VER="${NAME%%+fork.*}"
+  CYC="${NAME##*+fork.}"
 
   # stage: the verified binary as `opencrabs`, plus its tarball, SHA256SUMS and
   # the carrier's own build-flags.txt (falling back to a synthesized one).
@@ -3735,8 +3837,29 @@ case "$MODE" in
       OC_REPO="$FORK" OC_LEDGER="$LEDGER" "$VALIDATE" --repo "$FORK" --ledger "$LEDGER" "$SHA" \
         || { shadow_log ship "$SHA" "$FEATURES" "gate-fail"; die 2 "OC_DEPLOY_GATE=order-gate-failed: ORDER gates failed post-push (see validator exit code)"; }
       echo "ORDER gates 4/4 PASS ($SHA)"
+      # #72: inject the fork release identity so the built binary reports the SAME
+      # string its release is named — evolve compares the two, and a divergence
+      # re-downloads forever. Gated on the carrier's OWN declaration: an undeclared
+      # dispatch input is a hard 422 from the API and would break EVERY ship, so a
+      # carrier that has not shipped the input yet gets the old form plus a NOTE.
+      FV_ARGS=()
+      # `set -e` is ACTIVE here: a bare `cmd; X=$?` would abort the shell on a
+      # non-zero probe instead of capturing it. Capture with `|| X=$?`.
+      FV_PROBE=0
+      _carrier_declares_input fork_version || FV_PROBE=$?
+      case "$FV_PROBE" in
+        0) FORK_VERSION="$(_fork_release_name "$SHA")"
+           FV_ARGS=(-f "fork_version=$FORK_VERSION")
+           echo "carrier fork_version=$FORK_VERSION" ;;
+        1) echo "oc-deploy: NOTE — carrier $WF@$CARRIER_REF declares no fork_version input; dispatching without it (the binary reports the bare upstream version until the carrier ships the input, #72)" >&2 ;;
+        *) # An unreadable contract is NOT a negative answer: the two ways of
+           # guessing are a hard 422 on every ship (passing an undeclared input)
+           # and a silent re-download loop (omitting a declared one). Refuse.
+           die 2 "cannot read the carrier contract for $WF@$CARRIER_REF (gh api read failed) — refusing to dispatch blind: an undeclared -f fork_version is a 422 on every ship, and omitting a declared one ships a binary whose version never matches its release name (#72). Re-run once the API is reachable." ;;
+      esac
       "$GH" workflow run "$WF" --repo "$FORK" --ref "$CARRIER_REF" \
         -f source_repository="$FORK" -f source_ref="$SHA" -f features="$FEATURES" \
+        ${FV_ARGS[@]+"${FV_ARGS[@]}"} \
         || { shadow_log ship "$SHA" "$FEATURES" "dispatch-fail"; die 2 "carrier dispatch failed"; }
       echo "dispatched carrier run for $SHA (features=$FEATURES)"
       shadow_log ship "$SHA" "$FEATURES" "dispatched"
@@ -3798,7 +3921,7 @@ case "$MODE" in
     else
       plan "would: git push $REMOTE $SHA:refs/heads/main"
       plan "would: $VALIDATE --repo $FORK --ledger <ledger> $SHA   # 4 ORDER gates vs live remote"
-      plan "would: $GH workflow run $WF --repo $FORK --ref $CARRIER_REF -f source_ref=$SHA -f features=$FEATURES"
+      plan "would: $GH workflow run $WF --repo $FORK --ref $CARRIER_REF -f source_ref=$SHA -f features=$FEATURES -f fork_version=$(_fork_release_name "$SHA") (only if the carrier declares the input, #72)"
       plan "would: shadow journal appended; fanout notifies contributors on swap"
       shadow_log ship-plan "$SHA" "$FEATURES" "planned"
       echo "plan complete — nothing executed (pass --execute to ship)"
