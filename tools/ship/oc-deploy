@@ -2501,6 +2501,54 @@ OCPY
   else
     pass=$((pass+1))   # state repo absent in this environment; the suffix arm above stands
   fi
+  # ---- #77: scheduling class. Deploys are BACKGROUND work: `low` is the
+  # default, and the class is read back off the kernel rather than echoed from
+  # the flag just parsed.
+  #
+  # Each probe forces niceness 0 inside its own subshell first. The battery
+  # renices itself to 19 (#76), so without that baseline a child which lowers
+  # NOTHING inherits 19 -- a `nice=0` assertion then fails for the wrong reason
+  # and, worse, a `nice=19` assertion passes for the wrong reason. #76 measured
+  # exactly that failure: a mutant that never renices read 19 and the control
+  # called it success.
+  rc=0; out="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; exec "$0" ship --resolve-priority' "$SELF_BIN" 2>&1)" || rc=$?
+  check_rc "priority-default-rc0" "$rc" 0
+  check_has "priority-default-class-low" "$out" "priority=low"
+  check_has "priority-default-nice-19" "$out" "nice=19"
+  # #77 req 2: the BUILD CHILD, not just this process. The probe forks a real
+  # child after the renice; if the apply moved below the child spawn this leg
+  # reads child_nice=0 while the parent still reads 19, so it discriminates
+  # ORDERING rather than merely restating the parent arm.
+  check_has "priority-default-child-nice-19" "$out" "child_nice=19"
+  check_has "priority-default-applied-names-renice" "$out" "renice"
+
+  # `normal` must really leave the process alone, asserted from a 0 baseline so
+  # "did nothing" is distinguishable from "inherited 0".
+  rc=0; out="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; exec "$0" ship --priority normal --resolve-priority' "$SELF_BIN" 2>&1)" || rc=$?
+  check_rc "priority-normal-rc0" "$rc" 0
+  check_has "priority-normal-class" "$out" "priority=normal"
+  check_has "priority-normal-nice-0" "$out" "nice=0"
+  check_has "priority-normal-child-nice-0" "$out" "child_nice=0"
+  check_has "priority-normal-applied-none" "$out" "applied=none"
+
+  # A typo is refused, never silently treated as `normal`: an accepted-but-inert
+  # flag is indistinguishable from an honoured one.
+  rc=0; out="$("$SELF_BIN" ship --priority hig --resolve-priority 2>&1)" || rc=$?
+  check_rc "priority-bad-value-rc2" "$rc" 2
+  # The rc alone is NOT sufficient here: an unvalidated `--priority` also exits 2,
+  # downstream, on the missing-`--sha` usage die. Measured: the neutered mutant
+  # returns rc 2 for that unrelated reason, so an rc-only leg passes on a tool
+  # with no validation at all. The diagnostic is the discriminator.
+  rc=0; out="$("$SELF_BIN" ship --priority 2>&1)" || rc=$?
+  check_rc "priority-missing-value-rc2" "$rc" 2
+  check_has "priority-missing-value-names-the-flag" "$out" "--priority needs"
+
+  # The class must reach the OPERATOR: the stderr line prints on every non-probe
+  # invocation, so a lane reading a deploy log can classify the run without
+  # re-deriving it from argv.
+  rc=0; out="$(renice -n 0 -p $$ >/dev/null 2>&1 || :; "$SELF_BIN" ship 2>&1)" || rc=$?
+  check_has "priority-stderr-names-class" "$out" "priority=low (nice=19"
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]
@@ -3043,6 +3091,12 @@ swap_execute() {
   fi
 
   journal_init "$SHORT"
+  # #77: the scheduling class this swap actually ran under, recorded in the
+  # journal so a slow swap can be classified after the fact instead of guessed
+  # from the flags someone typed.
+  jline priority 0 "$(jq -cn --arg c "$PRIORITY" --arg n "${PRIORITY_NICE:-}" \
+    --arg io "${PRIORITY_IOPRIO:-}" --arg a "${PRIORITY_APPLIED:-none}" \
+    '{class:$c, nice:$n, ioprio:$io, applied:$a}')"
   local BASE_DIR; BASE_DIR="$(dirname "$(readlink -f "$LEDGER")")"
   local BASELINE="$BASE_DIR/baseline.json" ORDERS="$BASE_DIR/orders.json"
 
@@ -3318,7 +3372,7 @@ swap_execute() {
       # lands last, matching the GREEN leg; a crash in between leaves receipt
       # evidence, never an unbacked stamp)
       jline receipt 1 "$(jq -cn '{note:"drill expected a rollback but verify matched — anomaly"}')"
-      ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write; journal=$JF backup=$BAK auth=auto-swap" "swap-result"
+      ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write; priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?}; journal=$JF backup=$BAK auth=auto-swap" "swap-result"
       die 2 "drill anomaly: post-verify matched a deliberately wrong expected sha"
     fi
     sidecar_sync "$EXPECTED"
@@ -3351,7 +3405,7 @@ swap_execute() {
       jline publish "$PUB_RC" "$(jq -cn --argjson r "$PUB_RC" '{rc:$r, issue:"#766", nonfatal:true, rolling_tag:"fork-latest"}')"
       [ "$PUB_RC" = 0 ] || echo "oc-deploy: fork release publish rc=$PUB_RC — swap STANDS (#766 leg is non-fatal)" >&2
     fi
-    ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE publish=$PUB_NOTE" "swap-result"
+    ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?}; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE publish=$PUB_NOTE" "swap-result"
     shadow_log swap "$SHA" "$FEATURES" "deployed"
     echo "SWAP COMPLETE: sha=$SHA run=$RUN_ID verified disk==proc, markers written, fanout=$FO_NOTE, ledger stamped"
     exit 0
@@ -3602,7 +3656,7 @@ MODE="${1:-}"; [ $# -gt 0 ] && shift
 # globals — the cgroup detach must re-exec with the original flags.
 ORIG_ARGS=("$@")
 # C-F5 (v0.4.71): --help / -h exits 0 on stdout, before any validation
-case "$MODE" in -h|--help) echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;; esac
+case "$MODE" in -h|--help) echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;; esac
 # issue #24 D1: contributors takes its own arg shape (positional range /
 # --deployed / --repo) — dispatch BEFORE the ship/poll flag loop so the
 # positional range survives. contributors is RETIRED (dies rc 1); the
@@ -3619,6 +3673,10 @@ SHA=""; FEATURES=""; FEATURES_EXPLICIT=0; EXECUTE=0; RUN_ID=""; DRILL=0; ARTDIR=
 WAIT_SECS=0; NOTIFY_SESSION=""   # C-#2: poll --wait / --notify-session
 ALLOW_REWRITTEN_LINEAGE=0; RW_JUSTIFY=""; RW_ACTOR="${OC_DEPLOY_ACTOR:-$(id -un 2>/dev/null || echo unknown)}"   # v0.4.151: audited swap-guard override
 GATED_RUN=""; GATED_SHA=""; ALLOW_UNGATED=0; UNGATED_JUSTIFY=""   # #355: gate-before-land (reuses oc-ship-chain's --gated-run/--gated-sha contract)
+# #77: scheduling class. `low` (nice 19 + ionice class idle) is the default
+# because ship/poll sit in remote-CI waits for minutes and must not compete with
+# the daemon. `normal` is the opt-out.
+PRIORITY="low"; PRIORITY_PROBE=0; PRIORITY_NICE=""; PRIORITY_IOPRIO=""; PRIORITY_APPLIED="none"
 # #675-safe: the KERNEL's per-process guard must not change.
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -3642,11 +3700,79 @@ while [ $# -gt 0 ]; do
     --wait)     WAIT_SECS="${2:-}"; shift ;;   # C-#2: poll blocks until a NEW green run (or timeout, rc 5)
     --notify-session) [ -n "${2:-}" ] || die 2 "--notify-session needs a session uuid"; NOTIFY_SESSION="${2:-}"; shift ;;   # C-#2: session uuid woken on handoff/timeout; guard lens C MED-3 (v0.4.79)
     --artifact-dir) ARTDIR="${2:-}"; shift ;;
-    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
+    # #77: scheduling class. Validated HERE so a typo dies at the caller's own
+    # arg boundary (rc 2) instead of reaching the apply step as a bad input.
+    --priority)
+      PRIORITY="${2:-}"
+      case "$PRIORITY" in
+        low|normal) : ;;
+        '') die 2 "--priority needs 'low' or 'normal' (got nothing)" ;;
+        *)  die 2 "--priority needs 'low' or 'normal' (got '$PRIORITY')" ;;
+      esac
+      shift ;;
+    # #77: read-only probe — applies the REAL block, prints the resolved class,
+    # exits 0 before the carrier read or any network call. The selftest drives
+    # THIS; a re-implementation in the test would prove nothing.
+    --resolve-priority) PRIORITY_PROBE=1 ;;
+    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
     *)          die 1 "unknown arg: $1" ;;
   esac
   shift || true
 done
+
+# ---- scheduling priority (#77) ----------------------------------------------
+# Applied to THIS process so every child (gh, git, oc-prchecks) inherits it at
+# fork. `renice` rather than a `nice -n 19` wrapper: swap-execute may already
+# have re-exec'd us out of the unit cgroup, and a second exec layer would make
+# "which PID is the deploy" depend on which branches fired.
+# A failed renice/ionice is a WARNING and never a die — refusing to ship because
+# we could not lower our own priority would trade a scheduling nicety for an
+# outage. What the class actually APPLIED is re-read from the kernel and carried
+# in the journal row, so a run can be classified afterwards rather than inferred
+# from the flag someone typed.
+oc_priority_apply() {  # $1 = low|normal ; sets PRIORITY_NICE/PRIORITY_IOPRIO/PRIORITY_APPLIED
+  local want="$1" a=""
+  PRIORITY_APPLIED="none"
+  PRIORITY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+  PRIORITY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
+  if [ "$want" = "low" ]; then
+    if command -v renice >/dev/null 2>&1; then
+      if renice -n 19 -p $$ >/dev/null 2>&1; then
+        a="renice"
+      else
+        printf '%s\n' "oc-deploy: WARNING: renice -n 19 failed -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+      fi
+    else
+      printf '%s\n' "oc-deploy: WARNING: no renice -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+    fi
+    if command -v ionice >/dev/null 2>&1; then
+      if ionice -c3 -p $$ >/dev/null 2>&1; then
+        a="${a:+$a+}ionice"
+      else
+        printf '%s\n' "oc-deploy: WARNING: ionice -c3 failed -- I/O priority unchanged (#77)" >&2
+      fi
+    else
+      printf '%s\n' "oc-deploy: WARNING: no ionice -- I/O priority unchanged (#77)" >&2
+    fi
+    PRIORITY_APPLIED="${a:-none}"
+    PRIORITY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+    PRIORITY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
+  fi
+}
+oc_priority_apply "$PRIORITY"
+if [ "$PRIORITY_PROBE" = "1" ]; then
+  # #77 req 2: a child spawned AFTER the renice must inherit it. Asserting only
+  # the parent's nice cannot distinguish "applied before the children" from
+  # "applied after" -- and a nice 19 parent does NOT yield a child that forked
+  # at 0 (the issue's own warning). This forks a REAL child ($BASHPID inside
+  # `bash -c` is the new process) and reports what it actually reads.
+  PRIORITY_CHILD_NICE="$(bash -c 'ps -o nice= -p $$' 2>/dev/null | tr -d ' ')"
+  printf 'priority=%s\nnice=%s\nioprio=%s\napplied=%s\nchild_nice=%s\n' \
+    "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" "${PRIORITY_CHILD_NICE:-}"
+  exit 0
+fi
+printf 'oc-deploy %s: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
+  "$MODE" "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" >&2
 
 # KERNEL D2 (2026-08-28): --features omitted -> resolve the carrier's
 # features default via oc-carrier-features. A carrier read FAILURE ABORTS —
@@ -4147,5 +4273,5 @@ case "$MODE" in
     status_run "$@"
     ;;
   --selftest|selftest) selftest "$@" ;;
-  *) die 1 "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)" ;;
+  *) die 1 "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)" ;;
 esac

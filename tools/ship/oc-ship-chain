@@ -18,7 +18,16 @@
 #                 [--gated-sha <sha>] [--gated-run <id>] [--wait <sec>]
 #                 [--gate-wait <sec>] [--full] [--test-threads <N>]
 #                 [--dry-run] [--no-ledger] [--selftest] [--help]
+#                 [--priority low|normal] [--resolve-priority]
 #   oc-ship-chain --eval-docs-skip [<sha>]
+#
+#   --priority low|normal  Scheduling class for the chain and every child it
+#                    forks (default: low = nice 19 + I/O class idle). A chain is
+#                    background work and must not compete with the daemon; pass
+#                    `normal` for an interactive or debugging run.
+#   --resolve-priority  Apply the real priority block, print the resolved class
+#                    (priority=/nice=/ioprio=/applied=) and exit 0. Read-only
+#                    probe; used by --selftest.
 #
 # Flags:
 #   --eval-docs-skip [<sha>] Evaluate whether a commit qualifies for the docs-only
@@ -582,6 +591,11 @@ EOF
 
 FAST_GATE=1
 EVAL_DOCS_SKIP=0
+# #77: scheduling class for this chain. `low` (nice 19 + ionice class idle) is
+# the default because a chain is BACKGROUND work — it sits in remote-CI waits for
+# minutes and must not compete with the daemon. `normal` is the opt-out.
+PRIORITY="low"
+PRIORITY_PROBE=0
 # factory #39: the #1936 Stage-1 hang mitigation, forwarded to LEG1's
 # oc-prchecks dispatch. The env default follows the house pattern
 # (OC_SHIPCHAIN_GATE_WAIT / OC_SHIPCHAIN_SHIP_WAIT); EMPTY = not requested,
@@ -623,10 +637,78 @@ while [ $# -gt 0 ]; do
                        shift ;;
     --dry-run)   DRY=1; shift ;;
     --no-ledger) NOLEDGER=1; shift ;;
+    # #77: scheduling class. Validated HERE so a typo dies at the caller's own
+    # arg boundary (rc 2) instead of reaching the apply step as a bad input.
+    --priority)
+      PRIORITY="${2:-}"
+      case "$PRIORITY" in
+        low|normal) : ;;
+        '') die "--priority needs 'low' or 'normal' (got nothing)" 2 ;;
+        *)  die "--priority needs 'low' or 'normal' (got '$PRIORITY')" 2 ;;
+      esac
+      shift 2 ;;
+    # #77: read-only probe — applies the REAL block, prints the resolved class,
+    # exits 0 before any required-arg check or network call. This is what the
+    # selftest drives; a re-implementation in the test would prove nothing.
+    --resolve-priority) PRIORITY_PROBE=1; shift ;;
     --help|-h)   usage ;;
     *) die "unknown arg: $1 (see --help)" 2 ;;
   esac
 done
+
+# ---- scheduling priority (#77) ----------------------------------------------
+# Applied to THIS process, so every child (gh, git, oc-prchecks) inherits it at
+# fork. `renice` rather than a `nice -n 19` wrapper: the chain may already have
+# re-exec'd itself once, and a second exec layer would make "which PID is the
+# chain" depend on which branches fired.
+# A failed renice/ionice is a WARNING and never a die — refusing to ship because
+# we could not lower our own priority would trade a scheduling nicety for an
+# outage. What the class actually APPLIED is re-read from the kernel and carried
+# in the log line and the ledger row, so a run can be classified afterwards
+# rather than inferred from the flag someone typed.
+oc_priority_apply() {  # $1 = low|normal ; sets PRIORITY_NICE/PRIORITY_IOPRIO/PRIORITY_APPLIED
+  local want="$1" a=""
+  PRIORITY_APPLIED="none"
+  PRIORITY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+  PRIORITY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
+  if [ "$want" = "low" ]; then
+    if command -v renice >/dev/null 2>&1; then
+      if renice -n 19 -p $$ >/dev/null 2>&1; then
+        a="renice"
+      else
+        printf '%s\n' "oc-ship-chain: WARNING: renice -n 19 failed -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+      fi
+    else
+      printf '%s\n' "oc-ship-chain: WARNING: no renice -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+    fi
+    if command -v ionice >/dev/null 2>&1; then
+      if ionice -c3 -p $$ >/dev/null 2>&1; then
+        a="${a:+$a+}ionice"
+      else
+        printf '%s\n' "oc-ship-chain: WARNING: ionice -c3 failed -- I/O priority unchanged (#77)" >&2
+      fi
+    else
+      printf '%s\n' "oc-ship-chain: WARNING: no ionice -- I/O priority unchanged (#77)" >&2
+    fi
+    PRIORITY_APPLIED="${a:-none}"
+    PRIORITY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+    PRIORITY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
+  fi
+}
+oc_priority_apply "$PRIORITY"
+if [ "$PRIORITY_PROBE" = "1" ]; then
+  # #77 req 2: a child spawned AFTER the renice must inherit it. Asserting only
+  # the parent's nice cannot distinguish "applied before the children" from
+  # "applied after" -- and a nice 19 parent does NOT yield a child that forked
+  # at 0 (the issue's own warning). This forks a REAL child ($BASHPID inside
+  # `bash -c` is the new process) and reports what it actually reads.
+  PRIORITY_CHILD_NICE="$(bash -c 'ps -o nice= -p $$' 2>/dev/null | tr -d ' ')"
+  printf 'priority=%s\nnice=%s\nioprio=%s\napplied=%s\nchild_nice=%s\n' \
+    "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" "${PRIORITY_CHILD_NICE:-}"
+  exit 0
+fi
+printf 'oc-ship-chain: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
+  "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" >&2
 
 if [ "$EVAL_DOCS_SKIP" = "1" ]; then
   [ -n "$SHA" ] || die "--sha or commit argument required for --eval-docs-skip" 2
@@ -965,7 +1047,7 @@ fi
 # longer survives to the gate. Production never sets it.
 
 journal "pre-flight ok: branch $BRANCH and sha $SHA present"
-journal "START sha=$SHA branch=$BRANCH"
+journal "START sha=$SHA branch=$BRANCH priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?} priority_applied=${PRIORITY_APPLIED:-none}"
 
 # ---- gate-mode marker (Design E, #415 step 11) -----------------------------
 # The DEFAULT is FAST: fmt + clippy only, and the all-features test leg is
@@ -3535,6 +3617,65 @@ DRIVER
   git -C "$T/clone" checkout -q main; git -C "$T/clone" reset -q --hard origin/main
   TRUNC="$(bash "$T/survive-driver.sh" "$T" "$SELF" "$DSHA" 0 2>/dev/null | tail -1)"
   [ "$TRUNC" = "TRUNCATED" ] && ok "no-detach-truncates-on-kill" || bad "no-detach-truncates-on-kill (got '$TRUNC')"
+
+  # ---- #77: scheduling class. A chain is BACKGROUND work and must not compete
+  # with the daemon, so `low` is the DEFAULT -- and the class is read back off
+  # the kernel, never echoed from the flag we just parsed.
+  #
+  # Every probe runs inside a subshell whose niceness is first forced to 0.
+  # That is not decoration: the battery renices itself to 19 (#76), so a child
+  # that lowers nothing inherits 19 -- a naive `nice=0` assertion then fails for
+  # the wrong reason, and a naive `nice=19` assertion PASSES for the wrong
+  # reason. #76 measured exactly that: a mutant that never renices read 19 and
+  # the control reported success.
+  RC=0; OUT="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; OC_SHIPCHAIN_IMPL=0 exec bash "$0" --resolve-priority' "$SELF" 2>&1)" || RC=$?
+  check_rc "priority-default-rc0" "$RC" 0
+  grep -qx 'priority=low' <<< "$OUT" \
+    && ok "priority-default-class-low" || bad "priority-default-class-low (got: $OUT)"
+  grep -qx 'nice=19' <<< "$OUT" \
+    && ok "priority-default-nice-19" || bad "priority-default-nice-19 (got: $OUT)"
+  # #77 req 2: the CHILD, not just this process. The probe forks a real child
+  # after the renice; if the apply moved below that spawn this reads 0 while the
+  # parent still reads 19, so it discriminates ORDERING.
+  grep -qx 'child_nice=19' <<< "$OUT" \
+    && ok "priority-default-child-nice-19" || bad "priority-default-child-nice-19 (got: $OUT)"
+  grep -q '^applied=.*renice' <<< "$OUT" \
+    && ok "priority-default-applied-names-renice" || bad "priority-default-applied-names-renice (got: $OUT)"
+
+  # 15b. `normal` must really leave the process alone. Asserted from a 0
+  #      baseline so "did nothing" is distinguishable from "inherited 0".
+  RC=0; OUT="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; OC_SHIPCHAIN_IMPL=0 exec bash "$0" --priority normal --resolve-priority' "$SELF" 2>&1)" || RC=$?
+  check_rc "priority-normal-rc0" "$RC" 0
+  grep -qx 'priority=normal' <<< "$OUT" \
+    && ok "priority-normal-class" || bad "priority-normal-class (got: $OUT)"
+  grep -qx 'nice=0' <<< "$OUT" \
+    && ok "priority-normal-nice-0" || bad "priority-normal-nice-0 (got: $OUT)"
+  grep -qx 'child_nice=0' <<< "$OUT" \
+    && ok "priority-normal-child-nice-0" || bad "priority-normal-child-nice-0 (got: $OUT)"
+  grep -qx 'applied=none' <<< "$OUT" \
+    && ok "priority-normal-applied-none" || bad "priority-normal-applied-none (got: $OUT)"
+
+  # 15c. a typo must be refused, not silently treated as `normal` -- an accepted
+  #      but ignored flag is indistinguishable from an honoured one.
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 bash "$SELF" --priority hig --resolve-priority 2>&1)" || RC=$?
+  check_rc "priority-bad-value-rc2" "$RC" 2
+  RC=0; OUT="$(OC_SHIPCHAIN_IMPL=0 bash "$SELF" --priority 2>&1)" || RC=$?
+  check_rc "priority-missing-value-rc2" "$RC" 2
+  # rc alone is not sufficient: see the twin leg in oc-deploy -- an unvalidated
+  # flag can exit 2 downstream for an unrelated reason, so the diagnostic is
+  # what discriminates validation from a later usage error.
+  grep -q -- '--priority needs' <<< "$OUT" \
+    && ok "priority-missing-value-names-the-flag" || bad "priority-missing-value-names-the-flag (got: $OUT)"
+
+  # 15d. the class must reach the OPERATOR, not just the probe. The stderr line
+  #      prints on every non-probe invocation, so a lane reading a chain's log
+  #      can tell what class it ran at without re-deriving it from argv.
+  RC=0; OUT="$(renice -n 0 -p $$ >/dev/null 2>&1 || :; OC_SHIPCHAIN_IMPL=0 OPENCRABS_SESSION_ID="$LEG_UUID" \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" OC_FORK_REPO="$T/clone" \
+    bash "$SELF" --eval-docs-skip "$FSHA" 2>&1)" || RC=$?
+  check_rc "priority-stderr-line-rc1" "$RC" 1
+  grep -q 'oc-ship-chain: priority=low (nice=19' <<< "$OUT" \
+    && ok "priority-stderr-names-class" || bad "priority-stderr-names-class (got: $OUT)"
 
   echo "selftest: $PASS passed, $FAIL failed"
   # Contract fix 2026-09-11: was `return $?`, which returned ECHO's status (0),
