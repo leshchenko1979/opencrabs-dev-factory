@@ -12,6 +12,14 @@
 # The oc-seal-state IFS-join regression here is the one that silently dropped
 # pipe operators between jq filters (fix 2026-08-26) — if it ever comes back,
 # this suite goes red before anyone trusts a seal.
+
+# Parallelism and priority (#76, opencrabs#870 item 5): the battery runs ONE
+# section at a time by default and at nice 19 / I/O class idle, because it is
+# BACKGROUND work and must lose every race against the daemon. Measured
+# 2026-11-17 at the old $(nproc) default: disk 86-95% busy, swap 250 MB -> 1 GB,
+# 16 daemon Tokio threads blocked on page faults for an hour. Override with
+# --jobs N, --jobs=N or OC_BATTERY_JOBS=N; opt out of the priority drop with
+# OC_BATTERY_NO_PRIORITY=1.
 # =============================================================================
 set -u
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
@@ -228,7 +236,12 @@ if [ -z "${BATTERY_IN_CHUNK:-}" ]; then
   fi
 fi
 
-JOBS="${OC_BATTERY_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+# Default JOBS=1 (#76): the battery is background work, and $(nproc)=4 both
+# oversubscribed this host and lost the pids preflight below anyway. Same tree,
+# same commit: jobs=2 -> 747 s, jobs=1 -> 1171 s, both 398/0 -- the wall is the
+# intended trade, because a battery that stalls the daemon costs more than the
+# 7 minutes it saves.
+JOBS="${OC_BATTERY_JOBS:-1}"
 if [ "${1:-}" = "--jobs" ] && [ -n "${2:-}" ]; then JOBS="$2"; shift 2; fi
 case "${1:-}" in --jobs=*) JOBS="${1#--jobs=}"; shift ;; esac
 # ---- cgroup isolation (#720): never run the battery inside the daemon's unit -
@@ -306,6 +319,33 @@ if [ "${BATTERY_CGROUP_ISOLATED:-0}" = "1" ] && [ -n "$BATTERY_SELF_CGROUP" ] \
   BATTERY_SELF_CGROUP_ISO=true
 fi
 
+# ---- lower the parent's scheduling priority (#76) ---------------------------
+# Applied to the PARENT so every chunk child inherits it at fork. `renice`
+# rather than a `nice -n 19` wrapper: the cgroup block above may already have
+# re-exec'd us once, and a second exec layer would make "which PID is the
+# battery" depend on which branches fired. Raising niceness is permitted
+# unprivileged, and failing to do it is a WARNING and never a red -- a harness
+# that refuses to run is worse than one running at nice 0.
+BATTERY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+BATTERY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
+if [ "${OC_BATTERY_NO_PRIORITY:-0}" != "1" ] && [ -z "${BATTERY_IN_CHUNK:-}" ]; then
+  if command -v renice >/dev/null 2>&1; then
+    if renice -n 19 -p $$ >/dev/null 2>&1; then
+      BATTERY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+    else
+      note "battery: WARNING: renice -n 19 failed -- running at nice ${BATTERY_NICE:-?} (#76)"
+    fi
+  else
+    note "battery: WARNING: no renice -- running at nice ${BATTERY_NICE:-?} (#76)"
+  fi
+  if command -v ionice >/dev/null 2>&1; then
+    ionice -c3 -p $$ >/dev/null 2>&1 || note "battery: WARNING: ionice -c3 failed -- I/O priority unchanged (#76)"
+  else
+    note "battery: WARNING: no ionice -- I/O priority unchanged (#76)"
+  fi
+  BATTERY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
+fi
+
 # ---- pids budget preflight (#74) --------------------------------------------
 # Defect (measured 2026-11-17): the default JOBS is $(nproc)=4, but a detached
 # run's scope carries pids.max=64 (scope_tasks_max), and four concurrent chunks
@@ -353,7 +393,7 @@ fi
 # exit before any suite runs, so the cap is testable without a 12-minute run.
 if [ "${1:-}" = "--resolve-jobs" ]; then
   _oc_capped=no; [ -n "$BATTERY_PIDS_CAP_NOTE" ] && _oc_capped=yes
-  printf 'jobs=%s\npids_max=%s\ncapped=%s\n' "$JOBS" "${BATTERY_PIDS_MAX:-unknown}" "$_oc_capped"
+  printf 'jobs=%s\npids_max=%s\ncapped=%s\nnice=%s\nioprio=%s\n' "$JOBS" "${BATTERY_PIDS_MAX:-unknown}" "$_oc_capped" "${BATTERY_NICE:-}" "${BATTERY_IOPRIO:-}"
   exit 0
 fi
 
@@ -505,10 +545,10 @@ emit_summary() {
   battery_capture_fail_rows
   local _fpe _changed; _fpe="$(_battery_tree_fp)"
   _changed=false; [ "$_fpe" = "$BATTERY_FP_START" ] || _changed=true
-  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
+  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "nice": "%s",\n  "ioprio": "%s",\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
     "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" \
     "${BATTERY_PIDS_MAX:-}" "${BATTERY_PIDS_CAP_NOTE:-}" "$FAIL_LOG_FIELD" \
-    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
+    "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "${BATTERY_NICE:-}" "${BATTERY_IOPRIO:-}" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
     > "$TOOLS_DIR/tests/battery-last.json"
   [ "$_changed" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
   note ""
@@ -3963,6 +4003,7 @@ _pf() { # $1 = pids.max fixture content; $2 = --jobs value; remaining: NAME=VALU
   local _d; _d="$(mktemp -d)"
   printf '%s\n' "$_v" > "$_d/pm"
   env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
+      -u OC_BATTERY_JOBS \
       "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
       "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
       bash "${_PF_SCRIPT:-$_pf_src}" --jobs "$_j" --resolve-jobs 2>&1
@@ -4015,6 +4056,106 @@ rm -f "$_o74m"
   && ok "#74 NEGATIVE CONTROL: with the clamp neutered the same fixture reads 4 (the leg can fail)" \
   || bad "#74 NEGATIVE CONTROL: neutered clamp still read '$(_pf_jobs "$_o74n")' — LEG 1 is inert"
 
+# ---- 89. battery default jobs=1 + low priority for the parent (#76) --------
+# Defect (measured 2026-11-17): the battery defaulted to $(nproc)=4 and ran at
+# nice 0 with I/O class none, and on this host that cost an hour of stall --
+# disk 86-95% busy, swap 250 MB -> 1 GB, ~400 pages/s swap-in, ~150 major
+# faults/s, 16 daemon Tokio threads blocked on page faults, and the 24 h
+# maintenance sweep's message prune took 23 min for 31 rows against 6-14 s
+# earlier the same day. The battery is BACKGROUND work: it must lose every race
+# against the daemon. Same tree, same commit: jobs=2 -> 747 s, jobs=1 -> 1171 s,
+# both 398/0 -- the wall is the intended trade.
+#
+# Driven through the real block via --resolve-jobs, never a re-implementation: a
+# copy of the default or of the renice here would stay green while run.sh kept
+# the bug.
+_pf_nojobs() { # $1 = pids.max fixture content; remaining: NAME=VALUE env
+  # No --jobs argument at all: this is the DEFAULT path, and `env` treats a bare
+  # `--jobs` in "$@" as an OPTION, so it cannot be smuggled through the env list.
+  local _v="$1"; shift
+  local _d; _d="$(mktemp -d)"
+  printf '%s\n' "$_v" > "$_d/pm"
+  env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
+      -u OC_BATTERY_JOBS \
+      "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
+      "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
+      bash "${_PF_SCRIPT:-$_pf_src}" --resolve-jobs 2>&1
+  rm -rf "$_d"
+}
+_pf_field() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+
+# LEG 1 (POSITIVE CONTROL): the default is 1, never nproc. Asserted on the
+# script's OWN report line, so the leg is honest about what a caller sees.
+_o76a="$(_pf_nojobs max)"
+[ "$(_pf_jobs "$_o76a")" = "1" ] \
+  && ok "#76: with OC_BATTERY_JOBS unset the default is jobs=1 (never nproc)" \
+  || bad "#76: default resolved to jobs='$(_pf_jobs "$_o76a")' (want 1) — the battery still fans out on its own"
+
+# LEG 2: the parent must ACTUALLY be low priority. Read back from `ps`, never
+# from the value we asked for: `renice` can be refused, and a receipt claiming
+# nice 19 while the run sat at 0 is worse than no claim at all.
+[ "$(_pf_field "$_o76a" nice)" = "19" ] \
+  && ok "#76: the parent runs at nice 19 (children inherit)" \
+  || bad "#76: parent nice read '$(_pf_field "$_o76a" nice)' (want 19) — the priority drop is inert"
+
+# LEG 3: I/O class idle (ionice -c3), where the box honours it.
+[ "$(_pf_field "$_o76a" ioprio)" = "idle" ] \
+  && ok "#76: the parent runs at I/O class idle (ionice -c3)" \
+  || bad "#76: parent ioprio read '$(_pf_field "$_o76a" ioprio)' (want idle) — I/O priority unchanged"
+
+# LEG 4/5: both overrides must survive the new default, or a lane that needs the
+# old speed has no way back to it.
+_o76b="$(_pf_nojobs max OC_BATTERY_JOBS=2)"
+[ "$(_pf_jobs "$_o76b")" = "2" ] \
+  && ok "#76: OC_BATTERY_JOBS=2 still overrides the default" \
+  || bad "#76: OC_BATTERY_JOBS=2 resolved to '$(_pf_jobs "$_o76b")' (want 2)"
+_o76c="$(_pf max 2)"
+[ "$(_pf_jobs "$_o76c")" = "2" ] \
+  && ok "#76: --jobs 2 still overrides the default" \
+  || bad "#76: --jobs 2 resolved to '$(_pf_jobs "$_o76c")' (want 2)"
+
+# LEG 6: the #74 pids cap still applies ON TOP of an explicit --jobs. The issue
+# asked for the preflight to be kept, and "kept" is only true if it still bites
+# after the default moved.
+_o76d="$(_pf 16 2)"
+[ "$(_pf_jobs "$_o76d")" = "1" ] \
+  && ok "#76: the #74 pids cap still applies on top of --jobs 2" \
+  || bad "#76: --jobs 2 under pids.max=16 resolved to '$(_pf_jobs "$_o76d")' (want 1) — the cap was dropped"
+
+# NEGATIVE CONTROL (neuter-the-code): with the renice removed, the same fixture
+# must read something other than 19. Without this, LEG 2 could be green because
+# the BOX already ran at 19 rather than because the block works.
+#
+# MEASURED THE HARD WAY (battery 2026-11-17T15:21:35Z, 411 PASS / 1 FAIL): run
+# inside the battery, this control read nice 19 from the MUTANT and reported
+# LEG 2 inert -- because the battery has already reniced ITSELF to 19, so every
+# child inherits 19 and a neutered renice is indistinguishable from a working
+# one. The control was defeated by inheritance, which is exactly the class of
+# defect it exists to catch: it must establish its OWN baseline.
+#
+# So both halves run from an explicit nice-0 baseline (renice is ABSOLUTE, and
+# as root we can lower it), and the assertion is PAIRED: the real script must
+# read 19 and the mutant must not. A single-sided check cannot discriminate when
+# the inherited value already equals the target.
+_pf_at0() { ( renice -n 0 -p "$BASHPID" >/dev/null 2>&1; _pf_nojobs "$@" ); }
+_o76base="$( ( renice -n 0 -p "$BASHPID" >/dev/null 2>&1; ps -o nice= -p "$BASHPID" | tr -d ' ' ) )"
+if [ "$_o76base" != "0" ]; then
+  bad "#76 NEGATIVE CONTROL: could not establish a nice-0 baseline (read '$_o76base') — the control cannot discriminate, so it must not pass"
+else
+  _o76m="$(dirname "$_pf_src")/run.sh-mut76"
+  sed 's|^    if renice -n 19 -p \$\$ >/dev/null 2>&1; then$|    if false; then|' "$_pf_src" > "$_o76m"
+  _o76r="$(_pf_at0 max)"
+  _PF_SCRIPT="$_o76m"
+  _o76n="$(_pf_at0 max)"
+  unset _PF_SCRIPT
+  rm -f "$_o76m"
+  if [ "$(_pf_field "$_o76r" nice)" = "19" ] && [ "$(_pf_field "$_o76n" nice)" != "19" ]; then
+    ok "#76 NEGATIVE CONTROL: from a nice-0 baseline the real block reads 19 and the neutered copy reads $(_pf_field "$_o76n" nice) (the leg can fail)"
+  else
+    bad "#76 NEGATIVE CONTROL: real read nice '$(_pf_field "$_o76r" nice)' (want 19), neutered read '$(_pf_field "$_o76n" nice)' (want != 19) — LEG 2 is inert"
+  fi
+fi
+
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
 battery_capture_fail_rows
@@ -4024,10 +4165,10 @@ _tch=false
 _fp_tail="$(_battery_tree_fp)"
 [ "$_fp_tail" = "$BATTERY_FP_START" ] || _tch=true
 BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
+printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "nice": "%s",\n  "ioprio": "%s",\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
   "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" \
   "${BATTERY_PIDS_MAX:-}" "${BATTERY_PIDS_CAP_NOTE:-}" "$FAIL_LOG_FIELD" \
-  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
+  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "${BATTERY_NICE:-}" "${BATTERY_IOPRIO:-}" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
   > "$TOOLS_DIR/tests/battery-last.json"
 [ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
 

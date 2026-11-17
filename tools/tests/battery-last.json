@@ -1,18 +1,20 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-17T14:39:16Z",
-  "pass": 405,
+  "ts": "2026-11-17T15:43:50Z",
+  "pass": 412,
   "fail": 0,
   "verdict": "PASS",
-  "mode": "parallel jobs=2",
+  "mode": "sequential",
   "pids_max": "64",
-  "pids_cap": "jobs 4 -> 2 (pids.max=64, 32 pids/chunk)",
+  "pids_cap": "",
   "fail_log": "",
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r8c3835397a4848e0a097b636d8cdfdaa.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-rd0e8046b3abc434f94f04c841e11c00a.scope",
   "cgroup_isolated": false,
-  "wall_ms": 610131,
-  "timing": {"max_concurrency": 2, "section_count": 69, "sum_ms": 1055473, "slowest": [{"n": 50, "ms": 240029, "start_ms": 370092, "end_ms": 610121, "title": "68. oc-harvest-dispatch (automated harvest order dispatcher)"}, {"n": 39, "ms": 135915, "start_ms": 189060, "end_ms": 324975, "title": "17. lens-F coverage batch (v0.4.72, F8: tools the battery never ran) ---"}, {"n": 33, "ms": 115517, "start_ms": 28448, "end_ms": 143965, "title": "11. oc-ledger (KERNEL C1\u2013C5 + item-2(b) commit-pending sweep) ---------"}, {"n": 32, "ms": 97041, "start_ms": 25013, "end_ms": 122054, "title": "10. oc-deploy -----------------------------------------------------------"}, {"n": 44, "ms": 76338, "start_ms": 318175, "end_ms": 394513, "title": "62. oc-health (owner-ordered hourly health & cleanliness sweep, 2026-09-11)"}, {"n": 40, "ms": 68958, "start_ms": 192644, "end_ms": 261602, "title": "18. oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z) -----------"}, {"n": 35, "ms": 61892, "start_ms": 127134, "end_ms": 189026, "title": "13. oc-prchecks (KERNEL C5 \u2014 one-command PR lint gate) ----------------"}, {"n": 43, "ms": 42631, "start_ms": 275492, "end_ms": 318123, "title": "61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)"}, {"n": 38, "ms": 34425, "start_ms": 158178, "end_ms": 192603, "title": "16. lens-C tool builds (v0.4.58, owner Go 2026-08-31 04:20Z) -----------"}, {"n": 48, "ms": 21327, "start_ms": 342120, "end_ms": 363447, "title": "64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)"}]}
+  "nice": "19",
+  "ioprio": "idle",
+  "wall_ms": 1283758,
+  "timing": []
 }
