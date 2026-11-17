@@ -1,5 +1,17 @@
 # Changelog — opencrabs-dev
 
+## v0.4.309 — §Hard rules keeps the imperatives, loses the archaeology
+
+**What forced it.** v0.4.308 took `SKILL.md` from 525 to 371 lines by moving two reference sections out. §Hard rules was still **18,073 B — 50% of what remained**, and the receipts research delivered the same day said exactly where to cut: *"the imperative earns its tokens; the story usually does not."*
+
+**The research, in three lines.** (a) The one controlled A/B of policy wording in real AGENTS.md files found adding a rationale **made no difference on Claude** and flipped sign across models (20.4% vs 6.7% on one, 49.4% vs 71.6% on another) — no consistent effect to buy. (b) What DOES move compliance is being **unconditional** (conditional phrasing was worst in 3 of 4 combinations, 64.2% vs 78.0%) and **negative** (every individually beneficial rule in the largest study was a "do not"; every harmful one was a "do"). (c) **Nothing peer-reviewed measures a dated incident citation at all** — the construct is untested, and the nearest probe found authoritative prose *suppresses* verification whether or not it is stale.
+
+**What changed.** No rule was deleted, merged or weakened: **18 items → 18, modal prohibitions 57 → 57** (counted, not eyeballed — the first pass silently dropped two and they were restored). What left is the archaeology: superseded-ruling genealogies ("supersedes the 2026-10-03 21:17Z three-stream law and its 2026-10-08 14:59Z re-scope, q69 → option 0"), a seven-row state table for a binary flag, and four incident receipts now living in `war-stories.md §Hard-rules receipts` with the rule pointing at them. `§Hard rules` **18,073 → 15,466 B (−2,607)**; `SKILL.md` **36,437 → 33,830 B / 291 lines** (−19,604 B, −36.7% against the 525-line original).
+
+**A policy line added, because the corpus had no rule about how to write a rule.** §Hard rules now opens with the three properties the evidence supports — unconditional, concrete, negative — plus the two things it does NOT support: rationale as a compliance lever, and a date as one. The sharpest finding is stated where a rule-writer will read it: **refusal rules scored 0% under every wording intervention tested, including verbatim quotation** — if a prohibition matters, add a verifier, not a better paragraph.
+
+**Verification.** `oc-lint-laws --strict` clean. Item/modal/date census run on the pre-cut pre-image `/tmp/SKILL.md.pre-cut` and on the result; the date-and-sha count deliberately fell 68 → 49, and every dropped reference is either a superseded ruling or a receipt now in `war-stories.md`.
+
 ## v0.4.308 — SKILL.md sheds its two reference sections (structural cut, not a receipt strip)
 
 **What forced it.** `SKILL.md` is the ONE skill file paid on every trigger — 525 lines, 53,434 B, ~13.4k tokens before any work starts, against the 500-line budget its own rule sets. The measured breakdown put **63% of its bytes in two lookup sections**: the `oc-*` register table (63 lines, 11,073 B) and the glossary (112 lines, 7,848 B). Both are reference, not law: a lane reads them when it needs a tool's exact form or a term's meaning, and neither is needed to decide what to do.
