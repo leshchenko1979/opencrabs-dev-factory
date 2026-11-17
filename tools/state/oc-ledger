@@ -359,10 +359,21 @@ state_sweep_tracked() { # $1=state dir, $2=label -> commits the TRACKED namespac
 # this tool's, so a hard failure here would let one side's edit block the other's
 # work at a boundary it does not own.
 state_tracked_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
-  local bullet tok mech m hit=0 gap=0 unclass=0
-  bullet="$(awk '/^  - \*\*TRACKED\*\* —/ { f=1; print; next } f && (/^  - / || /^  [A-Za-z]/) { f=0 } f { print }' "$SKILL_DIR/SKILL.md" 2>/dev/null)"
+  local bullet tok mech m hit=0 gap=0 unclass=0 src="" found=""
+  # #71 (2026-11-17): search the whole LAW CORPUS, not SKILL.md by name. The
+  # declaration legitimately MOVES — v0.4.310 moved this bullet into
+  # reference-glossary.md — and a reader pinned to one filename goes blind the
+  # moment the law is reorganised, then reports SKIP while the audit it exists to
+  # perform has silently stopped. The audit must follow the DECLARATION, not a
+  # path. LAW_FILES is the authority on what the corpus IS, so an unlisted new
+  # law file cannot hide a declaration from this scan.
+  for src in "${LAW_FILES[@]}"; do
+    [ -f "$SKILL_DIR/$src" ] || continue
+    bullet="$(awk '/^  - \*\*TRACKED\*\* —/ { f=1; print; next } f && (/^  - / || /^  [A-Za-z]/) { f=0 } f { print }' "$SKILL_DIR/$src" 2>/dev/null)"
+    [ -n "$bullet" ] && { found="$src"; break; }
+  done
   if [ -z "$bullet" ]; then
-    echo "state-tracked: NOTE — declared-vs-mechanism check SKIPPED: SKILL.md carries no '  - **TRACKED** —' bullet to parse. This is NOT a clean result and NOT a finding." >&2
+    echo "state-tracked: NOTE — declared-vs-mechanism check SKIPPED: no '  - **TRACKED** —' bullet in any of the ${#LAW_FILES[@]} LAW_FILES. This is NOT a clean result and NOT a finding." >&2
     return 0
   fi
   # Names carried by ANY mechanism: the two list variables, plus
@@ -400,13 +411,13 @@ state_tracked_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
       esac
     done
     [ "$hit" -eq 1 ] && continue
-    echo "state-tracked: WARN — '$tok' is declared TRACKED in SKILL.md's state-dir glossary but carried by NEITHER STATE_TRACKED_PATHS nor STATE_TRACKED_GLOB. Add it to the list, or amend the glossary (#514)." >&2
+    echo "state-tracked: WARN — '$tok' is declared TRACKED in $found's state-dir glossary but carried by NEITHER STATE_TRACKED_PATHS nor STATE_TRACKED_GLOB. Add it to the list, or amend the glossary (#514)." >&2
     gap=$((gap + 1))
   done <<EOF
 $(printf '%s\n' "$bullet" | grep -o '`[^`]*`' | tr -d '`')
 EOF
   [ "$unclass" -gt 0 ] && echo "state-tracked: note — $unclass backticked span(s) in the TRACKED bullet are not path-shaped (commands/parentheticals) and were not classified. Disclosed so the skip is never silent." >&2
-  [ "$gap" -eq 0 ] && echo "state-tracked: every name declared TRACKED in SKILL.md is carried by the sweep list." >&2
+  [ "$gap" -eq 0 ] && echo "state-tracked: every name declared TRACKED in $found is carried by the sweep list." >&2
   return 0
 }
 
@@ -1295,11 +1306,21 @@ EOF
 #   README.md      — partly the Toolsmith's tool-fleet surface (same reason)
 # An ABSENT file hashes as ABSENT, so a rename or deletion is a law change too:
 # an absent file is a state, not a no-op.
+# #71 (2026-11-17): the set went STALE when v0.4.308/309/310 moved law out of
+# SKILL.md. `war-stories.md` left the corpus (`b79161b3`) while still declared —
+# and an absent file hashes as the constant string ABSENT, so it contributed a
+# fixed value forever: stable, never red, and the set silently shrank by one. The
+# split that moved the content ALSO created two law files the set never named
+# (`reference-glossary.md`, `reference-tools.md`), so edits to them were outside
+# the coverage boundary — #47's own failure class, reintroduced by a rename.
+# The battery's #47 legs caught both directions (UNDECLARED + PHANTOM); this is
+# the tool-side follow-up to a law-side move, not a change of intent.
 LAW_FILES=(
   SKILL.md editor.md editor-ship.md editor-smoke.md hq.md triage.md
   toolsmith.md harvest.md
   fleet-directives.md upstream-merge-runbook.md review-lenses.md
-  session-notify.md environment.md war-stories.md s2-swap-journal-spec.md
+  session-notify.md environment.md s2-swap-journal-spec.md
+  reference-glossary.md reference-tools.md
 )
 law_digest() {
   local f h out=""
@@ -2788,17 +2809,47 @@ ACKEOF
   # (a) SKIP path: no bullet derivable -> a NOTE that SAYS it is not clean
   printf '# fixture with no TRACKED bullet\n' > "$T/auditskill/SKILL.md"
   export STATE_TRACKED_PATHS STATE_TRACKED_GLOB
-  _aout="$(SKILL_DIR="$T/auditskill" bash -c '. '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
+  # LAW_FILES is a multi-line ARRAY assignment, so it cannot be eval'd by grep
+  # like the two lists. The fixture declares its OWN one-entry corpus: pointing
+  # SKILL_DIR at a temp dir while leaving LAW_FILES at the real 16 names made
+  # arm (a) pass VACUOUSLY (every path missing -> empty bullet -> SKIP branch,
+  # which is not the case under test).
+  _corpus='LAW_FILES=(SKILL.md)'
+  _aout="$(SKILL_DIR="$T/auditskill" bash -c "$_corpus"'; . '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
   grep -q 'SKIPPED' <<< "$_aout" && ok || bad "state-tracked-audit-skip-note"
   grep -q 'NOT a clean result' <<< "$_aout" && ok || bad "state-tracked-audit-skip-not-silent"
   [ "$(printf '%s' "$_aout" | grep -c '^state-tracked: WARN')" = "0" ] && ok || bad "state-tracked-audit-skip-no-warn"
-  # (b) the discriminating half: a declared name the mechanism does NOT carry
-  sed -n '/^  - \*\*TRACKED\*\* —/,/^  - \*\*GENERATED-IGNORED\*\*/p' "$SKILL_DIR/SKILL.md" > "$T/auditskill/SKILL.md"
-  sed -i 's/· `baseline.json` ·/· `baseline.json` · `bogus-new-record.json` ·/' "$T/auditskill/SKILL.md"
+  # (b) the discriminating half: a declared name the mechanism does NOT carry.
+  # HERMETIC (#71): the bullet is WRITTEN here, never sliced out of live law
+  # text. The old `sed -n` derivation coupled these three legs to HQ's prose —
+  # the day v0.4.310 moved the bullet into reference-glossary.md the slice came
+  # back EMPTY, the `sed -i` anchor matched nothing, and three legs went red for
+  # a law edit that was entirely correct. A fixture must not depend on the thing
+  # it is testing.
+  cat > "$T/auditskill/SKILL.md" <<'FIXTURE'
+  - **TRACKED** — state-dir files under `journal/` · `baseline.json` · `bogus-new-record.json` ·
+  - **GENERATED-IGNORED** — not audited
+FIXTURE
   grep -q 'bogus-new-record.json' "$T/auditskill/SKILL.md" && ok || bad "state-tracked-audit-fixture-injected"
-  _bout="$(SKILL_DIR="$T/auditskill" bash -c '. '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
+  _bout="$(SKILL_DIR="$T/auditskill" bash -c "$_corpus"'; . '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
   [ "$(printf '%s' "$_bout" | grep -c '^state-tracked: WARN')" = "1" ] && ok || bad "state-tracked-audit-warns-once"
   grep -q "bogus-new-record.json" <<< "$_bout" && ok || bad "state-tracked-audit-names-the-gap"
+  # (c) THE REGRESSION ITSELF: the declaration lives in a law file that is NOT
+  # SKILL.md. A reader pinned to one filename reports SKIP here while the audit
+  # it exists to perform has silently stopped — the exact 2026-11-17 failure.
+  printf '# no bullet here\n' > "$T/auditskill/SKILL.md"
+  printf '  - **TRACKED** — state-dir files under `journal/` · `baseline.json` ·\n  - **NEXT** — stop\n' > "$T/auditskill/reference-glossary.md"
+  _cout="$(SKILL_DIR="$T/auditskill" bash -c 'LAW_FILES=(SKILL.md reference-glossary.md); . '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
+  grep -q 'SKIPPED' <<< "$_cout" && bad "state-tracked-audit-moved-declaration-found" || ok
+  [ "$(printf '%s' "$_cout" | grep -c '^state-tracked: WARN')" = "0" ] && ok || bad "state-tracked-audit-moved-declaration-clean"
+  # the success line must NAME the file it found, or a moved declaration is
+  # invisible in the log even when the audit works
+  grep -q 'reference-glossary.md' <<< "$_cout" && ok || bad "state-tracked-audit-names-source"
+  # (d) NO ARM. The `[ -f "$SKILL_DIR/$src" ] || continue` guard is defensive
+  # but UNOBSERVABLE: awk is silent on a missing path AND on a directory, so the
+  # guard changes no output and no rc. A leg asserting it would pass with the
+  # guard deleted — decoration, which is the defect class #71 exists to remove.
+  # Disclosed rather than shipped as a green row that tests nothing.
   # ---- #540: the INVERSE audit — tracked files NO commit path carries -------
   # state_tracked_audit runs declaration -> mechanism. This runs the other way:
   # tracked files that NEITHER the sweep list NOR the glossary names. Such a file

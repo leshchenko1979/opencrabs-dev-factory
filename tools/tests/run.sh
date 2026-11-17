@@ -3853,10 +3853,21 @@ case "$_law_real" in
     : > "$_law_fx/zz-undeclared-law.md"
     _law_ctrl="$(_law_scan "$_law_fx")"
     rm -rf "$_law_fx"
-    case "$_law_ctrl" in
-      *"MISSING:zz-undeclared-law.md"*) ok "#47 NEGATIVE CONTROL: an undeclared law file IS flagged (the leg can fail)" ;;
-      *) bad "#47 NEGATIVE CONTROL: scanner missed the injected undeclared file — the coverage leg is inert" ;;
-    esac ;;
+    # MEMBERSHIP, not position (#71). MISSING: carries a COMMA-JOINED SORTED
+    # list, so a glob for "MISSING:zz-undeclared-law.md" only matches while zz-
+    # happens to sort FIRST — i.e. while the real tree has no other undeclared
+    # file. The moment one exists the control reported "scanner missed" about a
+    # scanner that had worked, blaming the instrument for the tree's own state.
+    _law_miss_ctrl="$(printf '%s\n' "$_law_ctrl" | sed -n 's/^MISSING://p')"
+    _law_hit=0
+    _law_oldifs="$IFS"; IFS=','
+    for _n in $_law_miss_ctrl; do [ "$_n" = "zz-undeclared-law.md" ] && _law_hit=1; done
+    IFS="$_law_oldifs"
+    if [ "$_law_hit" = 1 ]; then
+      ok "#47 NEGATIVE CONTROL: an undeclared law file IS flagged (the leg can fail)"
+    else
+      bad "#47 NEGATIVE CONTROL: scanner did not flag the injected undeclared file (MISSING: '$_law_miss_ctrl') — the coverage leg is inert"
+    fi ;;
 esac
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
