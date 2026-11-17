@@ -25,8 +25,7 @@ YAGNI applies — never automate a one-off or a human-judgment call. **Guard
 (S3-rewired 2026-08-28):** the build-cycle tools (`oc-deploy`
 ship/poll/swap-execute) RUN the cycle themselves — the old guard
 ("HQ never runs tools inside a build cycle; the Compiler validates
-before adoption") retired WITH the Compiler role.
-Current invariants instead of the retired Compiler's validation: `oc-deploy --selftest`
+before adoption") retired WITH the Compiler role. Current invariants: `oc-deploy --selftest`
 green + battery `tools/tests/run.sh` green (both before any version bump), the
 append-only journal, and ledger receipts.
 
@@ -46,10 +45,9 @@ stay here. Expected reply shape: "routed to <worker>", not done-work.
 - One coherent revision per owner-verdict batch (one `v0.4.x`), never scattered
   patches. Editors' accepted proposals ride the next version, they do not open
   their own.
-- `tools/**` CODE authorship moved to the TOOLSMITH lane at v0.4.87 (owner "Go
-  toolsmith" 2026-09-06): tool fixes / extensions / new tools execute THERE with
-  battery receipts; HQ keeps skill markdown, CHANGELOG, version
-  bumps, and fleet-directives (single-writer law for skill text unchanged, except the per-instrument law files under `docs/instruments/` — see the EXCEPTION bullets).
+- `tools/**` CODE authorship is TOOLSMITH's (v0.4.87) — fixes / extensions / new tools
+  execute THERE with battery receipts (§PROCESS-TOOL OWNERSHIP above; `toolsmith.md §Duty TM1`).
+  HQ keeps skill markdown, CHANGELOG, version bumps, and fleet-directives.
 - Provenance = the `## v<v>` CHANGELOG entry, written at ship time (this file,
   §Rule-text provenance — CHANGELOG at ship time, F13 — rule text carries NO biography).
 - **Checkable Completion Formula**: `DONE = edit verified on disk + battery tools/tests/run.sh PASS + CHANGELOG.md entry present + git commit in skill repo + oc-ledger sync --version <v> returns rc=0` — and **"entry present" means the entry NAMES every non-sync commit the sync bundles** (v0.4.239), checked against `git log --oneline <prev-sync>..<this-sync>`: a fix that rides a sync unmentioned is unrecoverable from the version record, which is the only place its ship date exists.
@@ -72,10 +70,9 @@ the registry answers "who exists and which version are they on"; discovery
 answers "who is alive right now".
 
 - **LIVE STATUS IS NEVER STORED:** whenever liveness or freshness matters,
-  DISCOVER it in the same turn: `oc-roster live` for sessions (the DERIVED roster — ledger claims + worktree state + session-DB liveness + forum bindings; `oc-roster classify` for ACTIVE/IDLE/UNKNOWN, `oc-roster work`/`claims` for the other two signals). Role resolution is NOT `oc-roster` — use `oc-ledger roster --live --role <role>`; `oc-roster`'s `--role` flag is a supported delegation to `oc-ledger roster --live --role <role>` (verified live 2026-09-20: `--role hq` returns the row; only the BARE `--role` fails, rc 2 `--role needs a value`),
-  `gh run list` for CI, `git ls-remote` for refs.
-- Seed/update ONLY from proven facts (full schema + write rules now live in
-  triage.md §Duty T6 — lens B-F10 v0.4.96 cross-role move).
+  DISCOVER it in the same turn: `oc-roster live` for sessions (the DERIVED roster — ledger claims + worktree state + session-DB liveness + forum bindings; `oc-roster classify` for ACTIVE/IDLE/UNKNOWN, `oc-roster work`/`claims` for the other two signals). Role resolution is NOT `oc-roster` — use `oc-ledger roster --live --role <role>`; `oc-roster --role` is a supported delegation to it (verified live 2026-09-20: `--role hq` returns the row; only the BARE `--role` fails, rc 2 `--role needs a value`).
+  Also `gh run list` for CI, `git ls-remote` for refs.
+- Seed/update ONLY from proven facts (schema + write rules: `triage.md §Duty T6`).
 - **REGISTRY WRITES BELONG TO TRIAGE (owner law 2026-09-07, v0.4.91):** claims,
   ack rows, event notes, roster enrollment, `confirmed` flags — Triage writes
   them all (it already did the operational writes; this closes the split).
@@ -101,12 +98,12 @@ answers "who is alive right now".
 | Routine version bump (default, v0.4.172) | **JIT pull-absorption** (advisory `n=5322`, owner order 2026-09-14): Routine version bumps do NOT emit mass fanout pings across dormant lanes. The core daemon harness automatically injects a JIT turn-start skill hint whenever an active skill diffs on disk (shipped in `#210`, commit `acb8c5e6`). Active lanes absorb the diff and execute `oc-drift-check <uuid> --ack` at their own natural boundaries without session churn. |
 | Breaking security/process shift or fleet halt | **`[ALL]` broadcast wave (`turn-end`)** via `oc-notify-fanout --title "CRITICAL SKILL SHIFT — v<v>"` — rules whose absence produces immediate procedural or security breaches. `now` is RETIRED and fails the delivery outright (#373); `interrupt` is the URGENT tier (`interrupt: true` is its legacy alias) — precedence framing, never deferred, but NOT pre-emption. A CRITICAL wave sends `turn-end` like any other, and against a mid-turn target it QUEUES for the next tool-loop boundary regardless of tier: the tier changes the FRAMING the target sees at that boundary, not the boundary itself. |
 | Explicit owner reload order | **`PUSH-ALL-QUIET` broadcast wave** via `oc-notify-fanout --title "SKILL CHANGE — v<v>"` (generates per-lane briefs, self-uuid reload instruction, DB-validated targets, ledger stamp). |
-| Confirm law (probe-verified 2026-09-07; mode enum corrected 2026-09-19) | `delivery=quiet` + `confirm=true` is a NO-OP watch — quiet always returns instantly with a deferred verdict + notify_id; confirm only watches synchronous states. Routine pushes: `turn-end` (THE default), NO confirm, fire-and-forget (drift-check is the comprehension guard). Mode semantics: `fleet-directives.md §Cross-lane message delivery discipline` (canonical). There is NO blocking-watch mode: a CRITICAL notify sends `turn-end` like any other, and against a mid-turn target it QUEUES for the next tool-loop boundary regardless of tier |
+| Confirm law (probe-verified 2026-09-07; mode enum corrected 2026-09-19) | `delivery=quiet` + `confirm=true` is a NO-OP watch — quiet always returns instantly with a deferred verdict + notify_id; confirm only watches synchronous states. Routine pushes: `turn-end` (THE default), NO confirm, fire-and-forget (drift-check is the comprehension guard). Mode semantics: `fleet-directives.md §Cross-lane message delivery discipline` (canonical). There is NO blocking-watch mode. |
 | Worker >3 versions behind, acting substantively | targeted notify (mechanical drift and ack-row reads don't count) |
 
 
 Bump propagation mechanics (B-F4 v0.4.96 — moved out of the table cell):
-1. **Publish the version to the ledger: `oc-ledger sync --version <v> [--why <provenance>]` — and READ its rc.** The skill-repo commit/tag is NOT the version-published event; only `sync` mints the `skill-bump` row AND the three registry fields (`current_skill_version`, `meta.current_skill_version`, `meta.skill_version`) in one flock'd atomic write. A commit without a sync leaves the registry reading the PREVIOUS version while lanes ack the new one — the fleet is on `<v>` and the ledger still says `<v-1>`. `sync` is battery-gated and refuses `rc 7` on unrelated dirty paths (stray-guard, v0.4.157); **a refusal writes NOTHING and is silent unless someone reads rc/stderr**, so a bump that ships law text + a fanout brief and never reads the sync's rc has minted NO version-published event. Origin: v0.4.164 shipped its law text and its fanout brief and 27 lanes acked it with no `skill-bump` row (gap reported first-hand by lanes `530c29ec` + `facd50af`). **The consumer half (Reviewer-J inverse, v0.4.165):** `oc-ledger check-version` — rc 1 when any of the three fields disagrees with `SKILL.md` — is a pure function of on-disk state and had NO actor assigned to it. On the Duty-3/4 cadence READ it, and treat `rc=1` as a bump-propagation failure to heal with `oc-ledger sync --version <SKILL.md version>`, not as a worker defect.
+1. **Publish the version to the ledger: `oc-ledger sync --version <v> [--why <provenance>]` — and READ its rc.** The skill-repo commit/tag is NOT the version-published event; only `sync` mints the `skill-bump` row AND the three registry fields (`current_skill_version`, `meta.current_skill_version`, `meta.skill_version`) in one flock'd atomic write. A commit without a sync leaves the registry reading the PREVIOUS version while lanes ack the new one — the fleet is on `<v>` and the ledger still says `<v-1>`. `sync` is battery-gated and refuses `rc 7` on unrelated dirty paths (stray-guard, v0.4.157); **a refusal writes NOTHING and is silent unless someone reads rc/stderr**, so a bump that ships law text + a fanout brief and never reads the sync's rc has minted NO version-published event. Origin: v0.4.164 shipped its law text and its fanout brief and 27 lanes acked it with no `skill-bump` row (reported first-hand by lanes `530c29ec` + `facd50af`). **The consumer half (Reviewer-J inverse, v0.4.165):** `oc-ledger check-version` — rc 1 when any of the three fields disagrees with `SKILL.md` — is a pure function of on-disk state and had NO actor assigned to it. On the Duty-3/4 cadence READ it, and treat `rc=1` as a bump-propagation failure to heal with `oc-ledger sync --version <SKILL.md version>`, not as a worker defect.
 2. Commit BOTH git repos — skill-dir: one commit per bump; state-dir: one
    commit per ledger stamp, inside the same flock as the write (git-history regime).
 3. TOOL-written stamps (`oc-deploy` swap-execute etc.) are committed by the
@@ -145,12 +142,12 @@ copy is the drift this carve removed.
 > names `tools/review.py` as THE executable. **That file does not exist in this skill tree**, and
 > the real engine (`/root/agent-factories/tools/review.py`) hardcodes its cycle root to its own
 > repo (`REPO_ROOT = Path(__file__).resolve().parent.parent`), so it answers *"Cycle … not
-> found"* about cycles that are sitting on disk here. The instrument's own adoption census
-> reports this factory `0/5 … ABSENT`, and its lens catalog (14 lenses / 6 families) is not ours
-> (11). **The OPERATIVE carriers at this factory are `tools/state/oc-review-persist` and
-> `tools/state/oc-review-persist check-cycle`, with the in-corpus catalog `review-lenses.md`.**
-> The pointer above is kept because the contract is real and lives elsewhere; its claim of a
-> WIRED executable does not survive measurement.
+> found"* about cycles sitting on disk here. Its adoption census reports this factory
+> `0/5 … ABSENT`, and its lens catalog (14 lenses / 6 families) is not ours (11). **The OPERATIVE
+> carriers are `tools/state/oc-review-persist` and `tools/state/oc-review-persist check-cycle`,
+> with the in-corpus catalog `review-lenses.md`** — the pointer above is kept because the
+> contract is real and lives elsewhere; its claim of a WIRED executable does not survive
+> measurement.
 
 What STAYS at this factory, because it is process law about US and not about the instrument:
 
@@ -184,15 +181,14 @@ Cadence: shared trigger with Duty 4 (see §Duty 4). The cadence is COMPUTED from
 narrated — see `docs/instruments/review-rotation.md` and the section below.
 
 **MOVED 2026-09-27.** The review contract — step-0 recovery, the frozen state schema and its
-field rules, the anchored boundary matching, the read-only sub-agent reviewers, the family
-split, persist-first write-through, the validation triple-check, the reviewer-performance loop
-and the lens census — now lives at `docs/instruments/review-rotation.md` **in the meta-factory
-repo (`/root/agent-factories/`), NOT resolvable from this skill tree**. The instrument names
+field rules, anchored boundary matching, the read-only sub-agent reviewers, the family split,
+persist-first write-through, the validation triple-check, the reviewer-performance loop and the
+lens census — now lives at `docs/instruments/review-rotation.md` **in the meta-factory repo
+(`/root/agent-factories/`), NOT resolvable from this skill tree**. The instrument names
 `tools/review.py` (`step0` · `brief` · `record` · `waive` · `verify` · `compile` · `cadence` ·
 `close` · `migrate`) with `docs/review-cycle.schema.json` as its state schema — **but that
-executable is NOT operative for this factory; see the ⚠ banner in §Duty 4 above.** The
-operative carriers here are `tools/state/oc-review-persist` and its `check-cycle` gate, against
-the in-corpus catalog `review-lenses.md`.
+executable is NOT operative for this factory; see the ⚠ banner in §Duty 4 above.** Operative
+carrier: `tools/state/oc-review-persist` and its `check-cycle` gate.
 
 What STAYS at this factory:
 
@@ -231,16 +227,16 @@ lane via the fork tracker). Legacy references to "hq.md Duty 7" are retired.
 - **Backlog assignment (Duty T5, v0.4.92):** post-compaction sweep of OPEN fork issues against ledger claim-refs; unclaimed → route or surface here for dispatch.
 - **Telegram-law TOOL_ACCUM enforcement (Duty T4, v0.4.43):** OPERATES in the TRIAGE lane since v0.4.86 — full procedure in `triage.md` §Duty T4. Repeat offenders escalate HERE for review-toggle decisions.
 
-**Upstream-relations ownership (v0.4.176)**: All upstream lifecycle tracking (upstream delta watch, upstream PR census, maintainer dependency tracking) is consolidated in **Triage** (`triage.md §Duty T4`). Fork branch lifecycle / clean sweep is executed by Triage (`triage.md §Duty T4`). **The HARVEST lane exclusively authors and files upstream PRs** (`harvest.md`); editors stop at smoke evidence (owner order 2026-09-24 centralising harvest).
+**Upstream-relations ownership (v0.4.176)**: all upstream lifecycle tracking (delta watch, upstream PR census, maintainer dependencies) and fork branch lifecycle / clean sweep are **Triage's** (`triage.md §Duty T4`). **The HARVEST lane exclusively authors and files upstream PRs** (`harvest.md`); editors stop at smoke evidence (owner order 2026-09-24 centralising harvest).
 
 ## Upstream sync — watch & governance (sync execution delegated to Triage)
 
-Sync execution is DELEGATED TO TRIAGE (owner order 2026-09-11: "You should not do these merges - delegate to triage"; HQ does not execute syncs). **SYNC LAW canonical = `upstream-merge-runbook.md §Remotes & sync` (REBASE model); executing procedure: `upstream-merge-runbook.md` (managed by Triage via the `triage.md` prologue — "Upstream sync: delegated to Triage"; upstream patrols in `triage.md §Duty T4`).**
+Sync execution is DELEGATED TO TRIAGE (owner order 2026-09-11: "You should not do these merges - delegate to triage"; HQ does not execute syncs). **SYNC LAW canonical = `upstream-merge-runbook.md §Remotes & sync` (REBASE model); executing procedure: `upstream-merge-runbook.md`, managed by Triage via the `triage.md` prologue; upstream patrols in `triage.md §Duty T4`.**
 
 HQ retains watch and governance authority only:
 - **Watch**: Monitor upstream delta (`./tools/harvest/oc-upstream-delta`) and notify Triage to execute rebase sync when upstream advances.
 - **Rulings**: Rule on non-trivial merge blockers or semantic conflicts escalated by Triage.
-- **Parity verification**: Ensure carrier proof-dispatch runs clean after rebase cutover. Procedural execution steps live exclusively in `upstream-merge-runbook.md` and `triage.md`.
+- **Parity verification**: Ensure carrier proof-dispatch runs clean after rebase cutover.
 
 ## Detached command execution (background: true)
 
@@ -259,9 +255,8 @@ predicate is a `kind=note` row whose text BEGINS `<version> ACCEPTED`** — the 
 
 **The close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT
 `oc-ledger stamp review-battery`.** This section prescribed the `review-battery` form until
-v0.4.243, and following it literally silently FAILED to reset the counter while the stamp itself
-returned success — a green receipt on a boundary that never moved (found by Duty 4 cycle
-`20260922-c22`: the prose was stale, the tool was right). Rule: every consolidated review verdict
+v0.4.243, and following it literally FAILED to reset the counter while the stamp itself returned
+success — a green receipt on a boundary that never moved (found by Duty 4 cycle `20260922-c22`: the prose was stale, the tool was right). Rule: every consolidated review verdict
 ends with the boundary stamp BEFORE reporting the cadence state; never narrate a cadence reading
 without confirming the boundary row exists.
 

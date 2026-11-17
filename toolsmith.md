@@ -18,7 +18,7 @@ EDITOR territory — this lane touches neither.
 
 - **Toolsmith Scope:** Toolsmith owns CLI tools under `tools/` and the selftest battery (`tools/tests/run.sh`).
 - **Skill Documentation:** Skill markdown, role files, and `fleet-directives.md` are authored strictly by HQ. Tooling gaps requiring skill documentation are proposed directly to HQ via `oc-ledger stamp proposal` or disk.
-- **Daemon Source & Builds:** Daemon source (`~/opencrabs`), carrier dispatches, and binary swaps belong strictly to Editor lanes. Daemon (core) defects are filed directly as GitHub issues on the BINARY tracker — the FORK `leshchenko1979/opencrabs` since the owner's 2026-10-09 fork-first order (upstream `opencrabs/opencrabs` takes no new issues).
+- **Daemon Source & Builds:** Daemon source (`~/opencrabs`), carrier dispatches, and binary swaps belong strictly to Editor lanes; core defects go to the BINARY tracker (route: §Tool-problem reports below).
 - **Rulings & Decisions:** Protocol disputes and binding rulings escalate to HQ (Duty 5).
 - **Priority authority (owner order 2026-09-15):** Toolsmith has complete, independent authority over tooling work order sequencing, bugfix order, and test battery stewardship — never ask the human operator about priorities.
 - **Owner Communication:** HQ owns owner-facing verdict batches; Toolsmith reports status to HQ/Triage or the operator when queried.
@@ -48,9 +48,7 @@ EDITOR territory — this lane touches neither.
   procedure stays documented and the on-ship checks keep it exercised.
   Supersedes the every-14-days schedule (was: next due 2026-09-22).
 
-The CLI tools every other role uses: create, extend, repair under `tools/`.
-Authorship of tool CODE moved HERE at v0.4.87; skill markdown, CHANGELOG,
-and version bumps stay with HQ. Intake shapes:
+The CLI tools every other role uses: create, extend, repair under `tools/`. Intake shapes:
 
 1. ROUTED fix from the TRIAGE lane (`QUIRK:` verdict naming this lane) —
    execute the fix with test evidence, report back to TRIAGE + reporter.
@@ -109,7 +107,7 @@ and it is still mandatory:
    inventing a new code; a changed rc needs its RC-CONTRACT row updated in the
    same commit.
 6. **A predicate duplicated across SIBLING tools is ONE change surface — enumerate copies by the predicate's own STRING or marker, never by the tool name (v0.4.218, filed by lane `40427d4f`).** Items 2 and 3 above miss this case in opposite directions: item 2's `grep -rn 'oc-<tool>'` finds CALLERS of a tool, not sibling tools carrying a COPY of its predicate, and item 3's DRY gate is scoped to `tools/lib/` helpers, not to logic copy-pasted between two tools. When you correct a filter, a classifier, or any predicate, grep its distinctive literal (a marker string, a tuple like `('D','M')`, an rc token) across `tools/` and land the change in EVERY carrying tool in the SAME commit — or extract it to `tools/lib/` if the two call sites genuinely share it. A fix landed in one of two carriers is not a partial fix, it is a live CONTRADICTION: the two tools then return different answers about the same input.
-   - **Live case (2026-09-19, lane `40427d4f`, harvesting #352):** `oc-harvest-census check 352` → rc 0 ELIGIBLE while `oc-harvest-dispatch vet 352` → rc 1 `UPSTREAM_VOID`, on the SAME issue. Root cause at source level: `src/logging/crash.rs` is ADDED by `5075b059c` and MODIFIED by the later fix `84b93ebab`, so its action set is `{A, M}`; both filters test `if any(a in ('D','M') …)`, census falls through to an ADVISORY and continues, dispatch fell through to an unconditional `UPSTREAM_VOID` reject because no advisory branch existed there at all. The corrected predicate had ALREADY been authored for #365 in `88eb9fd3` — `tools/harvest/oc-harvest-census | 330 ++++`, **1 file changed** — with `tools/harvest/oc-harvest-dispatch` untouched. The paired pattern was already on record: `84013db7` (#375) landed its shared change in BOTH tools plus a negative control (`tools/tests/negctl-307-mutation-guard`). Cost of the miss: a full root-cause cycle — three commits, an asymmetry proof, source reads of both filters, and a Toolsmith dispatch — for a one-file diff that the second carrier needed from the start.
+   - **Live case (2026-09-19, lane `40427d4f`, harvesting #352):** `oc-harvest-census check 352` → rc 0 ELIGIBLE while `oc-harvest-dispatch vet 352` → rc 1 `UPSTREAM_VOID`, on the SAME issue. Root cause at source level: `src/logging/crash.rs` is ADDED by `5075b059c` and MODIFIED by the later fix `84b93ebab`, so its action set is `{A, M}`; both filters test `if any(a in ('D','M') …)`, census fell through to an ADVISORY, dispatch to an unconditional `UPSTREAM_VOID` reject with no advisory branch. The corrected predicate had ALREADY been authored for #365 in `88eb9fd3` — `tools/harvest/oc-harvest-census | 330 ++++`, **1 file changed** — with `tools/harvest/oc-harvest-dispatch` untouched. The paired pattern was already on record: `84013db7` (#375) landed its shared change in BOTH tools plus a negative control (`tools/tests/negctl-307-mutation-guard`). Cost of the miss: a full root-cause cycle for a one-file diff the second carrier needed from the start.
 
 DONE = the tool read in full, its consumers enumerated by grep, SIBLING carriers of any predicate you touch enumerated by the predicate's own string (item 6), and reuse of
 `tools/lib/` checked before the first edit.
@@ -119,8 +117,8 @@ DONE = the tool read in full, its consumers enumerated by grep, SIBLING carriers
 
 `tools/tests/run.sh` — the **SELFTEST BATTERY** (the full `bash
 tools/tests/run.sh` suite every version bump must pass GREEN; lens A9
-v0.4.89 definition, renamed v0.4.96 to kill the "review battery" name
-collision with the Duty-6 review cycle; lenses E/F)
+v0.4.89, renamed v0.4.96 to kill the "review battery" collision with the
+Duty-6 review cycle; lenses E/F)
 runs on every tool change and on HQ request; failures route back to
 the offending change, never waived. Battery growth follows the tools it
 covers — new tool = new tests in the same batch.
@@ -133,11 +131,13 @@ WHAT escalates: skill-edit requests, protocol disputes, semantic questions,
 daemon/carrier defects (or route to an editor lane via TRIAGE if that's the
 faster path), anything owner-verdict-shaped.
 
-HOW: `session_notify` per fleet-directives.md §Cross-lane message delivery discipline (cadence law
-canonical: `turn-end` IS the default (an idle target wakes on it), `quiet` is a deliberate choice
-for batch/fan-out whose ack contract is the ledger, `now` is RETIRED and FAILS the delivery,
-and `interrupt: true` is the legacy alias for the urgent tier (`delivery.mode: interrupt`) — precedence framing, never deferred, but NOT pre-emption. Batch: one notify with N items beats N notifies. Receipts, ACKs, and ROUTED stamps NEVER escalate;
-they live in the ledger.
+HOW: `session_notify` per `fleet-directives.md` §Cross-lane message delivery discipline
+(canonical: `turn-end` IS the default, `quiet` is the deliberate choice for batch/fan-out whose
+ack contract is the ledger, `now` is RETIRED and FAILS the delivery, `interrupt: true` is the
+legacy alias for the urgent tier (`delivery.mode: interrupt`) — precedence framing, never
+deferred, but NOT pre-emption).
+Batch: one notify with N items beats N notifies. Receipts, ACKs, and ROUTED stamps NEVER
+escalate; they live in the ledger.
 
 WHAT comes back: HQ's rulings and version batches absorb here the
 same way they absorb everywhere — disk absorption (`reference-glossary.md` §disk absorption),
@@ -145,7 +145,7 @@ zero-ping (hq.md Duty 3).
 
 ## Tool-problem reports: direct to TOOLSMITH for tools, issues for core (owner order 2026-09-10 ~02:4xZ & 14:3xZ; v0.4.130 Direct Dispatch Law; Finding BS-01 fix v0.4.133)
 
-**Work orders and anomaly reports follow Direct Dispatch — no relay hops.** Tool-use anomaly reports (failed invocations, wrong args, false journal rows, unbacked persistence claims, CLI quirks) in `tools/**/oc-*` MUST be dispatched directly to the active **TOOLSMITH** lane (`session_notify`; resolve target dynamically via `oc-ledger roster --live --role <role>` — never hardcode ephemeral UUIDs). Core daemon anomalies (e.g. panic, binary faults) go directly to GitHub issues on the BINARY tracker — the FORK `leshchenko1979/opencrabs` since the 2026-10-09 fork-first order (upstream takes no new issues). **Role resolution verb (corrected 2026-09-19, TOOLSMITH report):** `oc-ledger roster --live --role <role>` is canonical, and `oc-roster --role <role>` is a SUPPORTED delegation to it — byte-identical output (verified 2026-09-19, `cmp` rc=0). Only the BARE `--role` with no value answers rc 2. Never hardcode an ephemeral UUID.
+**Work orders and anomaly reports follow Direct Dispatch — no relay hops.** Tool-use anomaly reports (failed invocations, wrong args, false journal rows, unbacked persistence claims, CLI quirks) in `tools/**/oc-*` MUST be dispatched directly to the active **TOOLSMITH** lane (`session_notify`; resolve target dynamically via `oc-ledger roster --live --role <role>` — never hardcode ephemeral UUIDs). Core daemon anomalies (e.g. panic, binary faults) go directly to GitHub issues on the BINARY tracker — the FORK `leshchenko1979/opencrabs` since the 2026-10-09 fork-first order (upstream `opencrabs/opencrabs` takes no new issues). **Role resolution verb (corrected 2026-09-19, TOOLSMITH report):** `oc-ledger roster --live --role <role>` is canonical, and `oc-roster --role <role>` is a SUPPORTED delegation to it — byte-identical output (verified 2026-09-19, `cmp` rc=0). Only the BARE `--role` with no value answers rc 2. Never hardcode an ephemeral UUID.
 
 Triage is an AUDITOR, not a relay hub. Lanes do NOT route tool anomalies through Triage to have Triage forward them to Toolsmith. The HQ of record for semantic rulings and escalating blockers remains **OC DEV HQ**, but executing fixes on CLI tools belongs directly to Toolsmith.
 
@@ -160,6 +160,6 @@ Format for direct quirk dispatch to Toolsmith: `QUIRK: <tool> <observed> BECAUSE
 
 Verification is one line either way: `grep -c -- '<flag>' <tool>` for a flag, or read the tool's `KINDS` / case-arm list for a verb. Do this BEFORE the law ships. Fix ownership splits: **HQ** owns the law text, **Toolsmith** owns the tool surface when the missing verb should exist rather than be removed.
 
-**And law text must be RETIRED when the named defect is fixed (2026-09-12, same day, third instance of this family).** A changelog entry or defect-board row that prescribes a **workaround** becomes actively harmful once the tool is fixed — it recreates the dead channel in the opposite direction. Instance: the v0.4.154/155 text told lanes that `stamp proposal` "can never yield a row" and to mirror Duty-4 proposals as `kind=note` with a `duty4-proposal` prefix; Toolsmith's `be7bfd09` admitted the kind **~1 minute later**, so a lane following that brief would have written proposals where `events --kind proposal` — the audit verb — can never see them. Two lanes (`c2ba4ef2`, `aaa8d8ae`) caught it independently. **Rule:** when a fix ships, the SAME turn marks the prescribing text `RESOLVED` and names the fixing commit sha; a workaround that outlives its defect is itself a defect.
+**And law text must be RETIRED when the named defect is fixed (2026-09-12, same day, third instance of this family).** A changelog entry or defect-board row that prescribes a **workaround** becomes actively harmful once the tool is fixed — it recreates the dead channel in the opposite direction. Instance: the v0.4.154/155 text told lanes that `stamp proposal` "can never yield a row" and to mirror Duty-4 proposals as `kind=note` with a `duty4-proposal` prefix; Toolsmith's `be7bfd09` admitted the kind **~1 minute later**, so a lane following that brief would have written proposals where `events --kind proposal` — the audit verb — can never see them (caught independently by lanes `c2ba4ef2`, `aaa8d8ae`). **Rule:** when a fix ships, the SAME turn marks the prescribing text `RESOLVED` and names the fixing commit sha; a workaround that outlives its defect is itself a defect.
 
-**Staging is not path-safe on an already-dirty path — a path-scoped `git add` stages the WHOLE file, including another actor's in-flight edits (2026-09-12, live incident).** The owner's commit `13cd8423` @09:51:12Z carries Triage's uncommitted v0.4.157 Phase 3 law text because `git add fleet-directives.md` was run while that file was ALREADY dirty: the edit was HQ's (one row), the sweep was not, and provenance is not recoverable after the fact — the commit message and sha name the committer, not the author. The `sync` door is now guarded (stray-guard, `oc-ledger sync` → `rc 7`, v0.4.158); **plain git has no guard.** `git add <path>` and `git commit -a` both stage whatever is in the working tree at that moment, and `git commit --only <path>` limits the commit to named PATHS but does NOT make a dirty PATH safe — foreign edits inside a named file ride along. **Rule:** run `git status --porcelain <path>` in the same turn you stage. If the path was already dirty BEFORE your own edit, do NOT commit it — coordinate with the actor holding it, or commit a file you exclusively own. **Carve-out for append-only self-attributing shared logs (proposal n=4057, v0.4.170):** Append-only shared logs whose every line self-attributes via `actor=<uuid>` (such as `smoke-verdicts.log`) are exempt from this commit ban because individual line provenance is preserved in the file content itself. If a lane commits an append-only shared log carrying foreign uncommitted rows, the commit message should explicitly disclose the included foreign rows (e.g. `disclose foreign rows from actors ...`).
+**Staging is not path-safe on an already-dirty path — a path-scoped `git add` stages the WHOLE file, including another actor's in-flight edits (2026-09-12, live incident).** The owner's commit `13cd8423` @09:51:12Z carries Triage's uncommitted v0.4.157 Phase 3 law text because `git add fleet-directives.md` ran while that file was ALREADY dirty (the edit was HQ's, one row; the sweep was not) — provenance is not recoverable after the fact. The `sync` door is now guarded (stray-guard, `oc-ledger sync` → `rc 7`, v0.4.158); **plain git has no guard.** `git add <path>` and `git commit -a` both stage whatever is in the working tree at that moment, and `git commit --only <path>` limits the commit to named PATHS but does NOT make a dirty PATH safe — foreign edits inside a named file ride along. **Rule:** run `git status --porcelain <path>` in the same turn you stage. If the path was already dirty BEFORE your own edit, do NOT commit it — coordinate with the actor holding it, or commit a file you exclusively own. **Carve-out for append-only self-attributing shared logs (proposal n=4057, v0.4.170):** Append-only shared logs whose every line self-attributes via `actor=<uuid>` (such as `smoke-verdicts.log`) are exempt from this commit ban because individual line provenance is preserved in the file content itself. If a lane commits an append-only shared log carrying foreign uncommitted rows, the commit message should explicitly disclose the included foreign rows (e.g. `disclose foreign rows from actors ...`).

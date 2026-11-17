@@ -17,12 +17,8 @@ watches build runs, and NEVER touches binaries — all automation territory via
 `oc-deploy` (NO dispatch exceptions: BUILD TRIGGERS = exactly TWO — SKILL.md §Hard rules).
 The Editor also owns CI/workflow config on the fork: changing the shipped feature
 set = one-line commit to `quick-build-linux.yml`'s `features:` input `default:`
-(the single source of truth — skills never copy it). A feature is COMPLETE only
-when its behaviour has been demonstrated against the live binary and the verdict
-row is recorded (Phase 6; `§Completion Definition`). Posting that evidence and
-handing the feature to the HARVEST lane — which owns the port, the upstream gate,
-the filing when the owner asks for one, and the PR lifecycle (procedure: `harvest.md`; owner order 2026-09-24 centralising
-harvest). An editor lane NEVER files an upstream PR.
+(the single source of truth — skills never copy it). A feature is COMPLETE only when demonstrated against the live binary with its verdict row recorded (Phase 6; `§Completion Definition`). Posting that evidence and handing the feature to the HARVEST lane — which owns the port, the upstream
+gate, the filing and the PR lifecycle (`harvest.md`; owner order 2026-09-24). An editor lane NEVER files an upstream PR.
 
 **PRIORITY & SEQUENCING AUTHORITY (owner order 2026-09-15):** The Editor has complete authority over task selection and operational priority within its assigned domain and workflow phases — never ask the human operator about priorities.
 
@@ -77,7 +73,7 @@ editor-facing duties:
 
 1. **Detached execution, actor attribution & re-dispatch:** W1/W2/W6 of `fleet-directives.md §CI-wait discipline & actor attribution` bind unchanged; a re-run because the head moved is inherent to a fix loop but goes through `oc-prchecks` re-dispatch — `pr-checks.yml` carries a concurrency group (`cancel-in-progress: true`), so the superseded run auto-cancels.
 2. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only identifies the DISPATCH; the run's checkout log line identifies the TESTED TREE — only the checkout-ref is terminal truth for code-level verdicts. Verify the run checked out your head sha before reading any verdict as lane evidence — `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity reported but never trusted; a mismatch is a carrier bug against the dispatch path — come straight to HQ with run id + checkout-ref + ledger incident stamp (suspect the single-flight dispatch lock adoption).
-3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify the run carries your head (job name embeds the head sha) before waiting — a dispatch on the wrong ref wastes the whole wait; `oc-prchecks` headSha adoption enforces this for its own runs. **The two obvious queries are BLIND to a PR-lane sha by construction** — `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a `workflow_dispatch` run carries the CARRIER head. Read the sha out of the **JOB NAME**. Full clause + the general counter rule: `environment.md §Environment facts (all roles)` (binds every role that checks a gate, not editors only).
+3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify the run carries your head (job name embeds the head sha) before waiting — a dispatch on the wrong ref wastes the whole wait; `oc-prchecks` headSha adoption enforces this for its own runs. **The two obvious queries are BLIND to a PR-lane sha by construction** — `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a `workflow_dispatch` run carries the CARRIER head: read the sha out of the **JOB NAME**. General counter rule: `environment.md §Environment facts (all roles)` (binds every role that checks a gate, not editors only).
 4. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
 5. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
 6. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated or lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
@@ -96,15 +92,12 @@ files read on demand — nothing is cached in-session — so "reload" = re-read:
    `last_acked` from the roster; the legacy `<claimed-ver>` form still works. mechanical:
    version-shape validated; `--ack` stamps the adoption record directly).
 2. Drift → re-read SKILL.md + editor.md in full from disk, then stamp
-   `oc-ledger ack <your-roster-uuid> <new-version>` (shape `0.N.N`, `v`
-   prefix tolerated — v0.4.55 fixed the N.N-only regex that made every real
-   version un-ackable) — **ONLY when step 1 ran WITHOUT `--ack`**. With
+   `oc-ledger ack <your-roster-uuid> <new-version>` (shape `0.N.N`, `v` prefix
+   tolerated — the regex validates that shape only) — **ONLY when step 1 ran WITHOUT `--ack`**. With
    `--ack`, step 1 already wrote the adoption row (`oc-drift-check`'s `--ack` arm
    delegates to `oc-ledger ack`), so stamping here is a SECOND row for ONE
-   adoption: **`--ack` IS the ack.** The canonical reload receipt is the
-   single `oc-ledger ack` row — written once, by `--ack` if it was passed,
-   otherwise by this hand-stamp. The ack row is the mechanical adoption
-   record (HQ Duty 3 reads it for skew-chase). **ORDERING — a DRIFT verdict printed
+   adoption: **`--ack` IS the ack** — one `oc-ledger ack` row, written by
+   `--ack` if it was passed, otherwise by this hand-stamp (HQ Duty 3 reads it for skew-chase). **ORDERING — a DRIFT verdict printed
    right after a `--ack` run does NOT mean the ack failed (v0.4.166; lane `329bf3a3`).**
    The `--ack` block runs BEFORE the verdict comparison, so ONE invocation both stamps
    the new version and reports DRIFT against the `last_acked` it read a moment earlier.
@@ -118,12 +111,10 @@ files read on demand — nothing is cached in-session — so "reload" = re-read:
 4. `tools/*` need NO reload: every invocation is a fresh process off disk,
    always the newest version — that is also why tool-level fixes (vocabulary,
    sweep lists) never strand a running lane.
-5. **Tool discovery (owner order 2026-09-07, v0.4.94):** the table below is
-   the role-DAILY subset, not the inventory — the full tool list
-   lives in `tools/docs/RC-CONTRACT.md` (every tool: invocation, rc register,
-   selftest owner). Before hand-rolling any check, grep
-   tools/docs/RC-CONTRACT.md for a purpose-built tool — verification, audit, smoke,
-   artifact and log work especially: a tool likely already exists.
+5. **Tool discovery (owner order 2026-09-07, v0.4.94):** the table below is the
+   role-DAILY subset — the full inventory (invocation, rc register, selftest owner)
+   lives in `tools/docs/RC-CONTRACT.md`. Before hand-rolling any check — verification,
+   audit, smoke, artifact and log work especially — grep it: a purpose-built tool likely exists.
 6. **PATH anchoring (v0.4.130, ruling n=2369):** the oc-* tools are NOT on
    the lane shell's PATH — never invoke them bare and never `which` them
    (empty result ⇒ the rc=127 discovery class, first catalogued 2026-09-06).
@@ -186,10 +177,7 @@ Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch
    ```bash
    tools/git/oc-start <issue-N> --branch <type>/<slug>
    ```
-   `oc-start` automatically executes:
-   - Uniqueness check and ledger claim (`oc-ledger claim`).
-   - Remote fetch and clean branch creation off fresh `origin/main`.
-   - Clean worktree mounting at `~/opencrabs-wt/<task>`.
+   `oc-start` executes the uniqueness check + ledger claim (`oc-ledger claim`), the clean branch off fresh `origin/main`, and the worktree mount at `~/opencrabs-wt/<task>`.
    *(Manual fallback `oc-wt add <task> <branch>` is reserved only for raw non-issue worktrees).*
    - **ZERO-ACK ON DISPATCH (owner order 2026-09-13)**: When receiving a task dispatch (`[ISSUE DISPATCH: #N]`), **NEVER reply with a `session_notify` ack**. Running `oc-start` or stamping `oc-ledger claim` is the sole required action.
 
@@ -238,7 +226,7 @@ Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch
 
 - One logical change per branch; drive-by refactors go to their own branch + issue.
 - Stage only paths YOU changed: `git add <paths>`. Never `git add -A`, never `commit -a`.
-- **A redirect into a TRACKED file destroys it before the command can fail (v0.4.267, lane 42a44908).** `cmd > tracked_file` truncates the target at open time, so a command that then fails leaves an EMPTY tracked file — and `git checkout -- <path>` is the only repair, since the content is gone. Redirect to a scratch path (`/tmp/...`) and move it into place only on success, or use `git show <sha>:<path> > /tmp/x` then compare before writing. Measured 2026-09-27 while rebuilding an upstream worktree: the fastest-looking repair was also the one that destroyed the file.
+- **A redirect into a TRACKED file destroys it before the command can fail (v0.4.267, lane 42a44908).** `cmd > tracked_file` truncates the target at open time, so a command that then fails leaves an EMPTY tracked file — and `git checkout -- <path>` is the only repair, since the content is gone. Redirect to a scratch path (`/tmp/...`) and move it into place only on success, or use `git show <sha>:<path> > /tmp/x` then compare before writing. Measured 2026-09-27 while rebuilding an upstream worktree.
 - **A zero-match `grep -c` exits 1, and inside an `&&` chain it silently CANCELS the next command (v0.4.267, lane 2ed8adeb).** `grep -c PAT f && next` does not run `next` when the count is 0 — the chain short-circuits on a result that is a legitimate answer, not an error. So a verification step written this way reports nothing and looks like it passed. Use `grep -c PAT f; rc=$?` and branch on the COUNT, or `|| true` when the zero is expected. The same holds for `[ ... ]` tests whose false branch is not a failure.
 - Never revert/reset/amend commits you did not write — report and wait, or branch off.
 - **New enum variant → grep ALL matches on it before committing** (v0.4.71,
@@ -277,11 +265,9 @@ any gate or push (a hand-rolled `git interpret-trailers --parse` is agent-memory
 **No local fmt exists — the fmt leg runs in CI only (v0.4.210).** `/root/.rustup` is gone from this host and `/usr/local/bin/rustfmt` was RETIRED 2026-09-19: it exits 1 `BLOCKED`. Do not invoke it, and do not hunt for a replacement. `pr-checks.yml` runs fmt as a **soft-fail** leg, so a formatting-only diff it reports on code that is already green is **KEEP AS-IS; fix only what you introduced yourself**. There is no local fmt or compile path at all: the first real check of a change is the CI gate.
 
 **fmt-clean ≠ compiles — audit CALL-SITE SHAPE before you chain (v0.4.141).**
-There is no local compile path on this box: `which cargo` prints a path, but
-running it prints `BLOCKED` — *the presence of a path is not evidence of a
-toolchain*, the same family as "an empty result from a wrong path is not a
-verdict". Nothing local proves a change compiles or is formatted; the first real
-check is CI — a full gate dispatch. Before `oc-ship-chain`, mechanically
+`which cargo` prints a path, but running it prints `BLOCKED` — *the presence of a
+path is not evidence of a toolchain*, same family as "an empty result from a wrong
+path is not a verdict". Before `oc-ship-chain`, mechanically
 cross-check every NEW or CHANGED call site against the callee's real definition:
 **free fn vs associated fn** (a free-fn path on an associated fn is `E0425`),
 the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
@@ -291,48 +277,47 @@ the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
 
 ## Phase 5 — Ship (`oc-ship-chain`)
 
-**The ship path is ONE tool.** `oc-ship-chain` runs the whole commit-to-swapped stretch — LEG1 CI gate -> LEG2 issue comment -> LEG3 fast-forward into fork `main` -> LEG4 carrier build -> LEG5 swap+seal. **There is NO legitimate manual exit point between gate verdict and swap** (the #134 orphan class — stopping at GREEN without swapping — is structurally closed).
+**The ship path is ONE tool.** `oc-ship-chain` runs the whole commit-to-swapped stretch — LEG1 CI gate -> LEG2 issue comment -> LEG3 fast-forward into fork `main` -> LEG4 carrier build -> LEG5 swap+seal — with NO legitimate manual exit point between gate verdict and swap (the #134 orphan class: stopping at GREEN without swapping).
 
-**THE LAUNCH SURFACE IS LOAD-BEARING.** Arm the chain in its OWN transient unit. The harness's `background:true` auto-detach is KILLED ~75 s after the wrapper exits, even though the chain re-execs itself into a user scope — measured 2026-09-26, lane 63d775f9: two consecutive chains died `rc=143` (`gate infra rc=143`), leaving two full gates `in_progress` with nobody polling them. The `--unit=... --collect` form survives and polls:
+**THE LAUNCH SURFACE IS LOAD-BEARING — arm the chain in its OWN transient unit.** The harness's `background:true` auto-detach is KILLED ~75 s after the wrapper exits; only the `--unit=... --collect` form survives and polls (measured 2026-09-26, lane 63d775f9: two chains `rc=143`, `gate infra rc=143`, two gates left `in_progress` with nobody polling them):
 
     systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
       tools/ship/oc-ship-chain --sha <commit-sha> --branch <branch> [--issue <n>] --test-threads 2
 
-**`--test-threads 2` IS LAW on the ship invocation until the wedge symptom clears** (fork #781): upstream #1936's four-slot deadlock wedges the gate at the workflow's own 45-min wall, while the SAME gate input re-dispatched at `--test-threads 2` came back GREEN in 31.4 min. It is INERT on `--gated-run` and a no-op on `--fast`. **Expiry is keyed on the SYMPTOM, never on #1936's issue state — it reads CLOSED while the wedge recurs.**
+**`--test-threads 2` IS LAW on the ship invocation until the wedge symptom clears** (fork #781): #1936's four-slot deadlock wedges the gate at the workflow's own 45-min wall; the SAME gate input re-dispatched at `--test-threads 2` came back GREEN in 31.4 min. INERT on `--gated-run`, no-op on `--fast`; **expiry is keyed on the SYMPTOM, never on #1936's issue state — it reads CLOSED while the wedge recurs.**
 
-**The chain's DEFAULT gate is FAST, and FAST is not the CI-gate leg of the 4-Leg Smoke Rubric** — `--fast` runs fmt + clippy only, tests `skipped`, so citing it leaves the smoke receipt with no all-features test evidence. Pass `--full` when the receipt needs the test leg. A pure-docs commit SKIPS LEG1: record it as SKIPPED, never as GREEN, and never count it as a passed leg.
+**The chain's DEFAULT gate is FAST, and FAST is not the CI-gate leg of the 4-Leg Smoke Rubric** — fmt + clippy only, tests `skipped`: pass `--full` when the receipt needs the test leg. A pure-docs commit SKIPS LEG1: record it as SKIPPED, never as GREEN, and never count it as a passed leg.
 
-**Everything else about Phase 5 is in `editor-ship.md`** — the failure-mode / rc register, the EIGHT exit-5 causes with the rebase recipe, the conflict-quality gate, the post-landing-lock ancestor re-check, the gate-idle question sweep, the docs-only LEG1 skip definition, post-rewrite swap recovery, carrier coalescence and the features-compat gate. **Read it before shipping: a chain run without it is a chain run without its traps.**
+**Everything else about Phase 5 is in `editor-ship.md`** — the rc register, the EIGHT exit-5 causes with the rebase recipe, the conflict-quality gate, the post-landing-lock ancestor re-check, the gate-idle question sweep, the docs-only LEG1 skip, post-rewrite swap recovery, carrier coalescence and the features-compat gate. **Read it before shipping.**
 
 - **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
 
 
 ## Phase 6 — Smoke Verification (oc-smoke)
 
-A post-swap notify announcing a new binary means your commits are in it — prove the FEATURE works, behaviourally, against the RUNNING binary, zero cargo. CODE TESTS (fmt/clippy/cargo test) are a different kind and CI-only.
+A post-swap notify means your commits are in the new binary: prove the FEATURE works behaviourally against the RUNNING one — zero cargo. CODE TESTS (fmt/clippy/cargo test) are a different kind, CI-only.
 
     # Unified 4-leg smoke verification & verdict row logging:
     ~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<command-to-verify-behavior>"
 
-**`--close` is ON by default:** a PASS closes the issue with a comment citing BOTH receipts — the verdict row and the `done` row written in that same run (class (d) behavioural-smoke-landed). It is gated on both, so `--no-ledger` is close-free by construction. `--no-close` suppresses it: use it for a MULTI-LEG issue whose `done` row covers only one leg (`triage.md §D1 LEG-SCOPE`) or for a probe that is not the feature's closing verification. **`--close-repo` defaults to the FORK `leshchenko1979/opencrabs` — a FACTORY issue smoked without `--close-repo leshchenko1979/opencrabs-dev-factory` closes the FORK issue of the same number, and both boards hold low numbers, so that is a live wrong-close path.** A skipped close (tracker unreadable, `--no-ledger`, non-numeric ref) leaves the close OWED by hand; the PASS verdict still stands and the exit code is unaffected.
+**`--close` is ON by default:** a PASS closes the issue with a comment citing BOTH receipts — the verdict row and the `done` row from that same run (class (d) behavioural-smoke-landed; gated on both, so `--no-ledger` is close-free). `--no-close` is for a MULTI-LEG issue whose `done` row covers only one leg (`triage.md §D1 LEG-SCOPE`) or a probe that is not the feature's closing verification. **`--close-repo` defaults to the FORK `leshchenko1979/opencrabs`** — a FACTORY issue smoked without `--close-repo leshchenko1979/opencrabs-dev-factory` closes the FORK issue of the same number (both boards hold low numbers): a live wrong-close path. A skipped close (tracker unreadable, `--no-ledger`, non-numeric ref) leaves the close OWED by hand; the PASS verdict stands.
 
 1. Read run id + built sha from the notify body. **If the daemon bounced, re-surface lazy tool schemas via `tool_search` BEFORE any smoke invocation** — a restart kills activated schemas and intents misfire onto wrong tools.
-2. **IDENTITY RECEIPT:** `oc-smoke` verifies unit exe identity against the deployed sha and writes the canonical row to `smoke-verdicts.log`. MISMATCH -> STOP: you would be smoking a binary that is not the one that was built. Report it to the sender; never smoke a stale unit.
-3. **BEHAVIOURAL PROBE:** drive the feature end-to-end against the RUNNING unit on its real surfaces (Telegram, cron, MCP — whatever the feature touches). Lineage, identity and the CI gate are BOOKKEEPING LEGS — **a verdict citing only those three is `UNPROVEN`, never GREEN.** A fix with no observable runtime surface records `UNPROVEN (no-runtime-surface)`, names the surface that would have to exist, and is a documented gap rather than a discharged obligation.
-4. PASS -> `session_notify` the sender with one line of evidence plus the IDENTITY-MATCH receipt (`oc-smoke` auto-stamps `oc-ledger stamp done`, closing the claim, and closes the ISSUE by default), then hand the port to HARVEST. **The lane's obligation is discharged by the recorded behavioural verdict, not by the post — but a PASS behind an OPEN issue is unfinished: confirm the close landed, or close by hand where the tool skipped it.**
+2. **IDENTITY RECEIPT:** `oc-smoke` verifies unit exe identity against the deployed sha and writes the canonical row to `smoke-verdicts.log`. MISMATCH -> STOP: never smoke a stale unit — report it to the sender.
+3. **BEHAVIOURAL PROBE:** drive the feature end-to-end against the RUNNING unit on its real surfaces (Telegram, cron, MCP). Lineage, identity and the CI gate are BOOKKEEPING LEGS — **a verdict citing only those three is `UNPROVEN`, never GREEN.** No observable runtime surface → `UNPROVEN (no-runtime-surface)` naming the surface that would have to exist: a documented gap, not a discharged obligation.
+4. PASS -> `session_notify` the sender with one line of evidence plus the IDENTITY-MATCH receipt (`oc-smoke` auto-stamps `oc-ledger stamp done` and closes the ISSUE by default), then hand the port to HARVEST. **A PASS behind an OPEN issue is unfinished: confirm the close landed, or close by hand where the tool skipped it.**
 5. FAIL -> FILE THE ISSUE FIRST (symptom + evidence — you found it, you file it), then send raw evidence + the issue link to the owning editor or Triage. Never attribute, never fix another editor's feature.
 
-**Everything else about Phase 6 is in `editor-smoke.md`** — the full verdict rules, the presence-is-not-behaviour incident history, the live-verification stamp required for UX features, leg-4 probe hygiene, `PARKED-OWNER-EYE` with the L1–L4 owner-dependent-leg law, swap-timing non-coordination, and no-auto-rollback. **Read it before writing any verdict row.**
+**Everything else about Phase 6 is in `editor-smoke.md`** — the verdict rules, the presence-is-not-behaviour history, the UX live-verification stamp, leg-4 probe hygiene, `PARKED-OWNER-EYE` with the L1–L4 law, swap-timing non-coordination, and no-auto-rollback. **Read it before writing any verdict row.**
 
 - **Checkable Completion Formula**: DONE = mechanical proof of the target feature executing against the running binary (command output, log line with PID/timestamp match, or API receipt), confirmed via `tools/smoke/oc-smoke` (exit 0), recorded in `smoke-verdicts.log`, **and the issue CLOSED on that receipt** — `oc-smoke --close` does it by default; a PASS behind an OPEN issue is an UNFINISHED task (`triage.md §Autonomous closure`, class (d)).
 
 
 ## Red-run triage heuristics (shared core, v0.4.10)
 
-ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-08-28, Step 2; now:
-`oc-deploy` RED reports + HQ triage); the
-Editor applies the same ones in its fix round (editor.md Phase 6-Fix). No lane
-uses them as a licence to fix outside its scope.
+ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-08-28; now
+`oc-deploy` RED reports + HQ triage); the Editor applies the same ones in its fix round
+(§Phase 6-Fix). No lane uses them as a licence to fix outside its scope.
 
 - Fix unresolved-name/import errors FIRST (E0425/E0433...) — later errors are
   usually poisoned fallout. When scopes look shifted, count brace DEPTH, not
@@ -355,9 +340,8 @@ Your answer is always the SAME sequence:
 0. GATE — the bug must already HAVE an issue; the red-run hand-off names
    it. Missing? File it first (Phase 1 procedure). Fixing before filing
    violates the issue-first hard rule (SKILL.md).
-1. **MANDATORY EXPLORATION & DRY GATE**: Before editing any files to apply a fix, you MUST run
-   `memory_search scope="external"` over `/root/opencrabs/src/**/*.rs` to map callers,
-   symbol definitions, and ensure no DRY abstractions are violated.
+1. **DRY GATE (§Phase 3 binds unchanged)**: before editing any file you MUST run
+   `memory_search scope="external"` over `/root/opencrabs/src/**/*.rs` to map callers and symbol definitions.
 
 ```bash
 # 1. fresh worktree at the relevant sha (worktree lifecycle, Phase 2)
@@ -384,19 +368,16 @@ part ends at smoke evidence — post it and hand the feature over.
 
 ## Autonomous Editor Goal & Continuous Phase Execution Law (v0.4.149, owner order 2026-09-12) [LANE]
 
-- **Autonomous Goal Mandate**: Every editor claiming or waking on an issue MUST issue `/goal follow the skill until the smoke test phase` (or set its session goal) to ensure unbroken continuous execution across all lifecycle phases.
+- **Autonomous Goal Mandate**: Every editor claiming or waking on an issue MUST issue `/goal follow the skill until the smoke test phase` (or set its session goal).
 - **Design-gate precondition (owner order 2026-09-12)**: The goal is issued **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). Until that confirmation lands, the editor stays in the design/approval phase and MUST NOT open the autonomous run: issuing the goal early would carry the editor straight past the gate that exists to require owner approval BEFORE code. Sequence is fixed — design → owner confirms → `/goal` → continuous execution to the smoke test phase.
 - **Design-gated WRITE SCOPE (v0.4.243, cycle `20260922-c22`; converged from lanes
-  `9fa7c71a` and `40427d4f`).** A lane parked on the owner design gate had a codified
-  NUDGE scope and, until this clause, NO write scope — the only constraint a parked lane
-  could see was a harness-injected block, and `grep -rln "plan mode|plan-mode"` over the
-  whole skill returned **ZERO files** (measured 2026-09-22), so "no project file edits"
-  could not be resolved against a lane's fleet-process write obligations. The scope is a
-  SURFACE distinction, not "files vs no files" — a design-gated lane **MAY** write
-  fleet-process surfaces (the ledger, `reviews/**` including its own proposal file, the
-  state dir, journals, and run artifacts) and **MAY NOT** write project/source files or
-  open the autonomous checklist. Two lanes resolved that ambiguity the same way by reading
-  intent rather than law; this clause makes that reading the rule.
+  `9fa7c71a` and `40427d4f`).** The scope is a SURFACE distinction, not "files vs no files" — a design-gated lane
+  **MAY** write fleet-process surfaces (the ledger, `reviews/**` including its own
+  proposal file, the state dir, journals, and run artifacts) and **MAY NOT** write
+  project/source files or open the autonomous checklist. `grep -rln "plan mode|plan-mode"`
+  over the whole skill returned **ZERO files** (measured 2026-09-22): a parked lane's only
+  visible constraint was a harness-injected block, so "no project file edits" could not be
+  resolved against its fleet-process write obligations.
 - **An UNATTENDED session MUST NOT open a plan (v0.4.246, HQ ruling 2026-09-24; origin #510).** A session with no channel binding (a cron worker, an A2A-origin session) has **no approval surface at all**, so a plan sits `Editing` with `approved_at: null` forever — measured on `ops` 2026-09-24: **6** such plans, **every one with 0 `plan_cards` rows and 0 `session_bindings`**. The class is **not cron-only** and **self-repeats**: a cron reuses its worker session, so every fire re-reads the stranded plan and re-reports a blocker no surface can clear. A cron/A2A prompt that could reach `plan init` must forbid it **explicitly**; `init mode=checklist` ALSO returns to `Editing`, so it is **not** a mitigation. Tool-side fix is **#510**; this clause is the law-side stop. A blocker claim is a status claim — the same-turn read applies (`AGENTS.md` §Execution Discipline).
 
 - **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6 behavioral smoke testing.

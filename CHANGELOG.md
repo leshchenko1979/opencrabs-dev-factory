@@ -1,5 +1,17 @@
 # Changelog — opencrabs-dev
 
+## v0.4.310 — the loaded surface loses its restatements (23 files, −20,149 B)
+
+**What forced it.** v0.4.308 and v0.4.309 cut `SKILL.md` alone. The other files a lane actually reads had never been through the same pass: `fleet-directives.md` 130,405 B, `upstream-merge-runbook.md` 103,466 B, `triage.md` 86,410 B, `harvest.md` 51,867 B, `editor.md` 43,847 B — each restating law that another file owns, and paying for it on every read.
+
+**What changed.** Eight cutters, one per file group, each working from an immutable `in/` copy into `out/` and none permitted to touch the live tree. **23 files compared, 22 changed** — `reference-tools.md` came back byte-identical, which is the right answer for a register whose value is completeness. **678,791 → 658,642 B (−20,149, −2.97%)**, 5,651 → 5,523 lines. Largest: `harvest.md` −5,461 (−10.53%), `triage.md` −2,460, `fleet-directives.md` −2,072, `editor.md` −1,719, `SKILL.md` −1,219, `upstream-merge-runbook.md` −1,151.
+
+**Species of the cuts.** Duplication first: a rule stated twice in one file keeps the stronger instance and points at the owner for the rest. The one substantive correction: `editor-ship.md` asserted a **"21-path compiled-in exclusion set"** that its own owning section forbids — the set is tool-DERIVED at gate time — so a stale claim contradicted live law in the same file; the claim is gone and the derived definition stays. Then sediment (retirement biographies, version-by-version retellings), then no-ops. What the cuts were made *around* survives: every receipt, sha, date, `#NNN`, `n=` row and register row. `SKILL.md`'s removed receipts are preserved in `war-stories.md §SKILL.md deslop pass` (18,740 → 26,831 B).
+
+**The one modal delta, stated rather than hidden.** Census over the same 23 files: `never` 607→607, `must` 266→266, `only` 602→605, `do not` 111→111, `always` 32→32, `ban`-class **78→77**. The single drop is `harvest.md`, where "`--fast` is strictly prohibited for pre-PR testing" was stated **twice** — once lowercase under Phase 7c item 3, once in the owning §Full-Gate Pre-PR Testing Law in bold caps. The duplicate went; the prohibition survives in the owning section that the surviving pointer names. The per-file verifier did not flag it because its `ban` pattern does not count `prohibited`; the corpus census did.
+
+**Verification.** Every pair gated `verify.py check in/X.md out/X.md` → `VERDICT PASS`, then **re-run against the applied live tree**: 23/23 PASS, and the byte delta reconciled on both sides (−20,149 each). `oc-lint-laws --strict` clean. `reviews/` (on-demand history) and `tools/docs/RC-CONTRACT.md` were excluded from the pass by design.
+
 ## v0.4.309 — §Hard rules keeps the imperatives, loses the archaeology
 
 **What forced it.** v0.4.308 took `SKILL.md` from 525 to 371 lines by moving two reference sections out. §Hard rules was still **18,073 B — 50% of what remained**, and the receipts research delivered the same day said exactly where to cut: *"the imperative earns its tokens; the story usually does not."*

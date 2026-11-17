@@ -8,8 +8,7 @@
 ## What this is
 
 A register where an agent parks the decisions it is blocked on, renders them as a page you can
-open in a browser, and receives your answers back into the asking agent session. The agent asks;
-you answer on the page; the answer is delivered to the session that asked.
+open in a browser, and receives your answers back into the asking agent session.
 
 You need three things: **two files**, **a Node build directory**, and — only if you want an
 *agent* to call it as a tool — **the bridge + one config entry**. There is no pip package and no
@@ -119,9 +118,8 @@ of the instance this tool was extracted from, so **you must change them**:
 | `OC_QUESTIONS_SKILL_ROOT` | a path on the author's box | **where you unpacked this repo** — the bridge searches it for the CLI |
 | `OC_FLEET_MANIFEST` | none — see the cross-factory note below | your `registry/fleet.json` — the cross-factory registration gate reads each factory's declared `chat_id` from it |
 
-`OC_QUESTIONS_DB` is worth knowing about: the tool resolves a lane's **display name** from the live
-session binding in your instance's database, never from a value the caller supplies. On your own
-profile that default is already correct.
+`OC_QUESTIONS_DB` matters because the tool resolves a lane's **display name** from the live
+session binding in that database, never from a value the caller supplies.
 
 ### The cross-factory registration gate (#309)
 
@@ -166,12 +164,11 @@ store, a oneshot `.service` that rsyncs the pages to a small host, and a web ser
 **Without any of that, everything still works** — you just open the page from disk.
 
 Two things about that arrangement are worth copying if you want answers to come back to the
-asking session. First, the mirror carries the **page tree only**: the confirmation's lane name and
-question title are read from the token's own page meta (the `echo` block the tool writes at
-publish time), so the public host needs no copy of the register — a copy it never had cannot go
-stale. Second, the small backend that accepts the answer runs the register CLI back on the agent
-host over ssh with the CLI's `--notify` flag, so **one submission costs one ssh round trip**, not
-two. `tools/docs/OPEN-QUESTIONS-ARCHITECTURE.md` covers that return path in full.
+asking session: the mirror carries the **page tree only** (the `echo` block in each page's meta
+already names the lane and question titles, so the public host never needs a copy of the
+register), and the answer backend runs the register CLI back on the agent host over ssh with
+`--notify`, so **one submission costs one ssh round trip**. `tools/docs/OPEN-QUESTIONS-ARCHITECTURE.md`
+covers that return path in full.
 
 ---
 
@@ -183,8 +180,7 @@ two. `tools/docs/OPEN-QUESTIONS-ARCHITECTURE.md` covers that return path in full
   asking session. If that delivery fails the answer is still safe and still visible in the
   register — but the lane is not woken. The tool records the outcome per question; nothing retries
   automatically.
-- **Nothing tells you your copy is stale.** A copy on disk is a copy nobody compares. Re-pull from
-  a newer revision when you want the fixes.
+- **Nothing tells you your copy is stale.** Re-pull from a newer revision when you want the fixes.
 - **The governing contract is not in this repository.** The canon is `docs/instruments/open-questions.md`
   in a private factory repository. `tools/docs/RC-CONTRACT.md` here documents the tool's exit codes
   and behaviour in detail, so you are not blind — but the contract that governs it is out of reach.

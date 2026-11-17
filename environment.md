@@ -22,14 +22,14 @@ build/carrier surface, and the daemon facts.
   The fork remote carries NO `gh-resolved` key while `remote.adolfousier.gh-resolved
   base` does, so gh's resolver selects upstream `opencrabs/opencrabs` for ANY command
   run from that directory without `-R` / `--repo`. It fails SILENTLY in both directions:
-  a number that exists upstream returns a REAL but WRONG issue, and one that does not
-  404s and reads as "no such issue" — while a write (`gh issue close` / `comment` / `edit`)
+  a number that exists upstream returns a REAL but WRONG issue, one that does not 404s
+  and reads as "no such issue", and a write (`gh issue close` / `comment` / `edit`)
   lands on the OWNER'S UPSTREAM REPO. Measured 2026-09-22 from that cwd: unscoped
   `gh issue list --state open` → 9 (upstream), `-R leshchenko1979/opencrabs` → 144;
   `gh issue view 340` 404s unscoped and resolves scoped. Every prescribed `gh` command
-  in this corpus already carries `-R` (14 sites) — this bullet states the RULE they were
-  silently following. The environment fix (`gh repo set-default`) rewrites shared repo
-  config and is the OWNER's call, never a lane's.
+  in this corpus already carries `-R` (14 sites) — this bullet states the RULE they
+  follow. The environment fix (`gh repo set-default`) rewrites shared repo config and
+  is the OWNER's call, never a lane's.
 - **A `--branch` filter and a `headSha` scan are BLIND to a PR-lane sha BY
   CONSTRUCTION (editor lane 95bec69b + triage, 2026-09-27 — three lanes, one day,
   two of them reaching the same false "never gated").** `pr-checks.yml` is
@@ -44,9 +44,8 @@ build/carrier surface, and the daemon facts.
   so the tool is not the defect — **believing the blind zero is.**
 - **Before quoting ANY counter as a clearing receipt, state the mechanism by which
   the alleged event would REACH it.** A `workflow_dispatch` run's `headSha` cannot
-  carry a PR-lane sha at all, so its zero is structural, not exculpatory. Same family
-  as the `gh` default-repo trap above: both return a confident answer for a class
-  they are blind to, and both were believed.
+  carry a PR-lane sha at all, so its zero is structural, not exculpatory — the same
+  trap as the `gh` default-repo bullet above.
 - **The skill glob GATE matches PATHS, not intent (v0.4.243, cycle
   `20260922-c22`).** A skill whose `SKILL.md` declares a `globs:` frontmatter key
   guards its own topic: any tool call whose harvested path tokens match one of
@@ -84,14 +83,12 @@ build/carrier surface, and the daemon facts.
 - This box has **no sanctioned Rust toolchain** — CI is the only sanctioned
   compile/test executor (Compiler role RETIRED 2026-08-28). No cargo/rustc/clippy in ANY form —
   install, PATH-prepend, explicit path, even an invocation that exits 0 is a
-  violation. **Canonical full law: `editor.md §Box law — no local cargo, ever`** (Duty-6 c25 A-8:
-  one home, pointers everywhere else). **No local tool exists at all** — `/root/.rustup` is gone and the
+  violation. **Canonical full law (ban list, fmt/lint evidence): `editor.md §Box law — no local cargo, ever`**
+  (Duty-6 c25 A-8: one home, pointers everywhere else). `/root/.rustup` is gone and the
   `rustfmt` wrapper was RETIRED 2026-09-19 (exits 1 `BLOCKED`), so fmt runs only
   in CI as the soft-fail leg of `pr-checks.yml`; **cosmetic diffs it reports on
   CI-green code are KEPT AS-IS, not applied — fix only formatting artifacts you
-  introduced yourself**; modum RETIRED 2026-08-28; lint evidence =
-  GREEN pr-checks.yml run. Full ban list: editor.md §Box law (canonical;
-  "(box law)" tags elsewhere refer to it).
+  introduced yourself**. modum RETIRED 2026-08-28.
 - Daemons run as systemd **user** units (`systemctl --user`) — system-scope queries
   (`systemctl`, `/etc/systemd`) find nothing. (Binary path: `which opencrabs`.)
 - Daemon PID identity (v0.4.15): NEVER `pgrep | head -1` — three daemons share
@@ -106,8 +103,7 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   CARRIER branch `ci/quick-build-linux` is the SINGLE SOURCE OF TRUTH** for what we
   ship — these skill files NEVER copy the set (drift killed 2026-08-25). Read it
   live with `tools/ship/oc-carrier-features` (the reader oc-deploy itself resolves
-  through).
-  Changing the pick later = one-line Editor commit to that yml's `default:` —
+  through). Changing the pick later = one-line Editor commit to that yml's `default:` —
   skills untouched.
 - Dispatch ALWAYS passes the set explicitly: `-f features=<set>` (decision
   2026-08-25), even though a safe default exists. Artifact name carries the set:
@@ -135,20 +131,20 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   `runs-on: ubuntu-latest` (`:142` `:175` `:245`) — the carrier is green-capable on hosted
   runners, unlike `main`'s `ci.yml` (see below).
 - The workflow lives ONLY on the carrier branch `ci/quick-build-linux` (moved off
-  fork `main` 2026-08-26, Alexey's call — mirrors upstream dropping it from their
-  main). Dispatch pattern adds `--ref ci/quick-build-linux`. CONSEQUENCE: the run
-  object's `headSha` reports the CARRIER tip, not the built tree — the built
-  commit is verified via the JOB NAME, which embeds `(source_ref, features)`.
-  Carrier branches NEVER merge to `main` (same reservation discipline as `leshchenko1979/*`).
+  fork `main` 2026-08-26, Alexey's call — mirrors upstream dropping it from theirs).
+  Dispatch adds `--ref ci/quick-build-linux`; the run object's `headSha` reports the
+  CARRIER tip, and the built commit is verified via the JOB NAME, which embeds
+  `(source_ref, features)`. Carrier branches NEVER merge to `main` (same reservation
+  discipline as `leshchenko1979/*`).
 - **ALL fork CI lives on the carrier branch — `main` carries UPSTREAM's workflows, not ours**
   (owner correction 2026-10-01T01:11Z: *"the forks ci files live on a special branch"*).
   Measured: `origin/main` carries exactly `auto-assign.yml` `ci.yml` `prerelease.yml`
   `release.yml`; the fork's OWN CI — `pr-checks.yml` (the PR-lane gate), `ci-lane-impl.yml`
   and `quick-build-linux.yml` (the carrier build) — exists ONLY on `ci/quick-build-linux`.
   `main`'s `ci.yml` carries **no fork edits of its own** — its blob `66213a97` is upstream's
-  at upstream `878c4af5c` (an ancestor of `adolfousier/main`); upstream has since advanced
-  **3 ci.yml commits** (`e99d915ce` `334a4d3e1` `aa271a0e3`), so any "byte-identical" reading
-  holds only **as of upstream `878c4af5c`** — compare blobs, never assume. Its jobs resolve
+  at upstream `878c4af5c`, so any "byte-identical" reading holds only **as of upstream
+  `878c4af5c`**; upstream has since advanced **3 ci.yml commits** (`e99d915ce` `334a4d3e1`
+  `aa271a0e3`) — compare blobs, never assume. Its jobs resolve
   `self-hosted` on a push (the ternary yields `ubuntu-latest` only for a fork PR) and the fork
   has **0 registered self-hosted runners**, so every main-push run queues indefinitely and is
   cancelled by the next push. Measured 2026-10-03T22:23:11Z over the FULL run population
@@ -160,8 +156,7 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   green-capable (not worth doing: the carrier is green-capable today). The earlier
   `0 success / 58 cancelled` was a **truncated page read, not a population**.
   **CONSEQUENCE — fork `main` has NO post-merge CI net**, by
-  design (the CI files moved off `main` 2026-08-26, Alexey's call, mirroring upstream dropping
-  them from theirs): the PRE-merge PR-lane gate (`oc-ship-chain` LEG1) is the ONLY gate, and
+  design: the PRE-merge PR-lane gate (`oc-ship-chain` LEG1) is the ONLY gate, and
   the only thing between a red commit and the carrier build. **Never read `main`'s workflow
   files as evidence about the fork's CI, and never "repair" them** — they are upstream's; editing
   one is divergence that conflicts on every upstream sync.

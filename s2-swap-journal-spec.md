@@ -12,10 +12,10 @@ Answers: owner tool-logging law 2026-08-28 (fleet-directives.md §Tool logging r
 
 ## Law being satisfied
 
-Every state-changing step writes a timestamped, append-only journal line (input,
-action, outcome, exit code) to durable storage BEFORE the next step begins. If a
-crash or restart can leave a run unreconstructable from journal + markers alone,
-the tool is NOT DONE. Chat-scroll archaeology is failure.
+Canonical: `fleet-directives.md §Tool logging rule` — every state-changing step writes a
+timestamped, append-only journal line (input, action, outcome, exit code) to durable
+storage BEFORE the next step begins. Applied here: a swap unreconstructable from journal
++ markers alone is NOT DONE; chat-scroll archaeology is failure.
 
 ## Journal location
 
@@ -103,7 +103,7 @@ answer requiring chat history = the reconstruction leg is not met.
   `/root/.opencrabs/profiles/ops/opencrabs-dev/oc-deploy/journal/fanout-<run>-*.jsonl` (state dir since v0.4.60), steps `fanout-start /
   contributors / attributed / notified / skip / unowned / fanout-end`.
 
-**The notified sha may not be the RUNNING sha — resolve by IDENTITY, then smoke the running binary (v0.4.218, filed by lane c10cd97b; its `target=` clause amended per the HQ ruling below).** A fan-out names the sha whose range attributed your commits, and the box swaps on its own cadence — so by the time a lane reaches its smoke phase the notified sha is frequently superseded. The filing lane's own measurement: the notice for run `35441550360` named `b2823127` (swapped 12:14:45Z, so the notice itself lagged the swap by 22m33s), and six distinct shas were swapped across the 12:14:45Z–15:14:40Z window (span 2h59m55s, mean inter-swap gap 36.0 min) with 17 across the day. A mean gap shorter than a typical lane's design→ship→smoke cycle makes "the notified sha is no longer live" the NORMAL case, not an edge. Resolve the collision from LIVE STATE, never from the notice:
+**The notified sha may not be the RUNNING sha — resolve by IDENTITY, then smoke the running binary (v0.4.218, filed by lane c10cd97b; its `target=` clause amended per the HQ ruling below).** A fan-out names the sha whose range attributed your commits, and the box swaps on its own cadence — so by the time a lane reaches its smoke phase the notified sha is frequently superseded. The filing lane's own measurement: the notice for run `35441550360` named `b2823127`, itself lagging the 12:14:45Z swap by 22m33s, and six distinct shas were swapped across the 12:14:45Z–15:14:40Z window (span 2h59m55s, mean gap 36.0 min), 17 across the day. A mean gap shorter than a typical lane's design→ship→smoke cycle makes "the notified sha is no longer live" the NORMAL case, not an edge. Resolve the collision from LIVE STATE, never from the notice:
 
 1. Read the running identity (`oc-smoke-evidence`, bare) and the notified sha.
 2. **Still live** — smoke it; row `PASS`, `sha=` = that sha.
@@ -112,11 +112,11 @@ answer requiring chat history = the reconstruction leg is not met.
 
 **`target=` in such a row is NOT the discharged sha — it is the unit, and the discharge goes in `evidence=`.** `target=` carries the DEPLOYMENT UNIT (`live-ops` by default) — definition lives in `upstream-merge-runbook.md §Ledger hygiene laws`, the `target=` bullet; do not restate it here. A lane that writes the notified sha into `target=` while `sha=` names the live binary splits one key into two meanings, and a consumer reading by key cannot tell which convention a row follows. Write `sha=` = the LIVE binary driven, `target=` = the unit, and carry the link the fan-out exists to create in `evidence=discharged-notified-sha=<sha>`.
 
-**Cost of the gap (why this is codified).** Lane `c10cd97b` resolved it by hand — lineage-checked each of its commits against the live sha, then stamped a `CORRECTION` row — because both neighbouring outcomes survived review unchallenged: citing the NOTIFIED sha in `sha=` while driving a newer binary looks like a receipt but names a build the probe never touched, and citing the LIVE sha with no discharge link loses the attribution the fan-out exists to create. Neither was prohibited, because the case was unstated.
+**Cost of the gap (why this is codified).** Lane `c10cd97b` resolved it by hand — lineage-checked its commits against the live sha, then stamped a `CORRECTION` row — because both neighbouring outcomes survived review: citing the NOTIFIED sha in `sha=` while driving a newer binary names a build the probe never touched, and citing the LIVE sha with no discharge link loses the attribution the fan-out exists to create. Neither was prohibited — the case was unstated.
 
 ## Post-swap notify (LIVE — mechanical fan-out since 2026-08-29)
 
-Mechanics canonical: `oc-deploy fanout` (GREEN leg at the swap_execute tail, RED leg via poll failed-run scan; idempotent `fanout.state`; drills off via `OC_DEPLOY_NOFANOUT=1`) + s2-swap-journal-spec §Fan-out legs. No manual notify steps anywhere. Ledger path is canonical `opencrabs-dev/workers-ledger.json` — the skill-dir duplicate was deleted 2026-08-29 (v0.4.38); fix shipped FIRST, deletion second.
+Mechanics canonical: `oc-deploy fanout` — §Fan-out legs above. No manual notify steps anywhere. Ledger path is canonical `opencrabs-dev/workers-ledger.json` — the skill-dir duplicate was deleted 2026-08-29 (v0.4.38); fix shipped FIRST, deletion second.
 
 **Fanout commit sweep excludes upstream merge ancestry (Duty-4 P-01, v0.4.133):** `oc-attrib --contributors --first-parent` strictly sweeps `--first-parent` for deployed commit attribution, preventing traversal into foreign upstream merge ancestry. Upstream sync merge commits (e.g. `8870bd40`) will NOT falsely wake completed historical editor lanes whose Session-Ids appeared in merged PRs.
 

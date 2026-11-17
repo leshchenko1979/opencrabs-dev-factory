@@ -12,7 +12,7 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 | Path | What it is |
 |---|---|
 | `SKILL.md` | Main entry: roles, hard rules, tool register, ship path, glossary |
-| `editor.md` | EDITOR role procedure — Phases 0–6b (Phase 5 body in `editor-ship.md`, Phase 6 body in `editor-smoke.md`) (issue claim → worktree → edit → gate → commit → ship → smoke) + a Phase-7 pointer; the editor's obligation ends at a PASS demonstrated on the running binary — the evidence is the record of that PASS, not the finish line |
+| `editor.md` | EDITOR role procedure — Phases 0–6b (Phase 5 body in `editor-ship.md`, Phase 6 body in `editor-smoke.md`): claim → worktree → edit → gate → commit → ship → smoke + a Phase-7 pointer; the obligation ends at a PASS demonstrated on the running binary |
 | `harvest.md` | HARVEST role procedure — Phases 7 / 7b / 7c (feature complete → owner-ordered upstream PR, if any → PR lifecycle → mechanized harvest) |
 | `hq.md` | HQ role — worker roster, duty cadence, review lenses, issue triage |
 | `triage.md` | TRIAGE role procedure — intake & assignment, dispatch hygiene, hygiene patrols, upstream lifecycle tracking |
@@ -58,8 +58,6 @@ Highlights:
 - `oc-seal-state` — order rows (QUEUED…VOID lifecycle)
 - `tests/run.sh` — run everything: `bash tools/tests/run.sh`
 
-  The tool inventory and every tool's exit-code contract live in `tools/docs/RC-CONTRACT.md`.
-
 ## Ship discipline (per version bump)
 
 1. Edit → verify → commit (one logical change per commit, `Issue-Ref:` trailer).
@@ -73,7 +71,7 @@ Highlights:
 
 - **Bare `#N` is fork-issue space.** On any upstream surface, qualify: `leshchenko1979/opencrabs#N`.
 - **CHANGELOG is newest-FIRST.**
-- **Every tool journals.** State changes write timestamped lines to `tools.log` via `oc-log.sh` before the next step; a run unreconstructable from durable state is not accounted for — being fully journaled is not the same as being done.
+- **Every tool journals** (`fleet-directives.md §Tool logging rule`): state changes write timestamped lines to `tools.log` via `oc-log.sh` before the next step — being fully journaled is not the same as being done.
 - `battery-last.json` is committed on purpose — it is the durable ship receipt.
 
 ## Repo status

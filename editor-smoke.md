@@ -31,7 +31,7 @@ right here (`opencrabs-ops` user unit).
 2. **IDENTITY RECEIPT & BEHAVIORAL PROBE:** Run `tools/smoke/oc-smoke <issue-N> --probe "<cmd>"`
    (or manual `oc-smoke-evidence`). It verifies unit exe identity vs deployed sha,
    executes the probe command, and writes the canonical row to `smoke-verdicts.log`.
-   On PASS it also stamps the `done` row and **closes the issue** (default; see step 4).
+   On PASS it also stamps the `done` row and closes the issue (step 4).
    MISMATCH → STOP: you would be smoking a binary that is not the one that was
    built — report the mismatch to the sender, do not smoke on a stale unit.
 3. Drive your feature end-to-end against the RUNNING unit on its normal
@@ -46,24 +46,20 @@ right here (`opencrabs-ops` user unit).
    verdict resting on a stored row is `UNPROVEN`, never PASS — and the `smoke-verdicts.log` row
    must name the delivered message id.
 4. PASS → reply to the sender (`session_notify`, `target_session` = the `from`
-   header): feature OK + one line of evidence + the oc-smoke
-   IDENTITY-MATCH receipt. Running `oc-smoke <issue-N>` on PASS automatically
-   executes `oc-ledger stamp done` (suppressible via `--no-ledger`), mechanically
-   closing the worker's in-flight claim in `workers-ledger.json` and unblocking
-   `oc-harvest-census` and Triage intake, **and closes the ISSUE itself** (default
-   `--close`; suppress with `--no-close`). On a behavioural PASS, record
-   the row, reply to the sender, **CONFIRM THE FORK ISSUE IS CLOSED — the tool did
-   it; close by hand only where it skipped** (a `--no-ledger` run, an unreadable
-   tracker, or a non-numeric ref), and hand the port to HARVEST — the handoff is the last *editor*
-   step, but the lane's obligation is discharged by the recorded behavioural
-   verdict, not by the post and not by any filing
-   (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
-   **Closing is part of PASS, not a follow-up (owner order 2026-11-15):** the
-   `done` row the stamp writes plus the PASS row in `smoke-verdicts.log` are the
-   closure authority (`triage.md §Autonomous closure`, class (d)) — `oc-smoke`
-   performs the close and posts a comment naming both, so the lane VERIFIES it
-   rather than re-doing it, and an issue left OPEN behind a recorded
-   PASS is an UNFINISHED task. **A FACTORY issue needs
+   header): feature OK + one line of evidence + the oc-smoke IDENTITY-MATCH receipt.
+   Running `oc-smoke <issue-N>` on PASS executes `oc-ledger stamp done` (suppressible
+   via `--no-ledger`), mechanically closing the worker's in-flight claim in
+   `workers-ledger.json` and unblocking `oc-harvest-census` and Triage intake, **and
+   closes the ISSUE itself** (default `--close`; suppress with `--no-close`) — the
+   `done` row plus the PASS row in `smoke-verdicts.log` are the closure authority
+   (`triage.md §Autonomous closure`, class (d)), so the lane **VERIFIES THE CLOSE
+   rather than re-doing it: an issue left OPEN behind a recorded PASS is an
+   UNFINISHED task** (owner order 2026-11-15) — close by hand only where the tool
+   skipped (a `--no-ledger` run, an unreadable tracker, or a non-numeric ref). Then
+   hand the port to HARVEST, the last *editor* step, though the lane's obligation is
+   discharged by the recorded behavioural verdict, not by the post and not by any
+   filing (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
+   **A FACTORY issue needs
    `--close-repo leshchenko1979/opencrabs-dev-factory`:** the default is the FORK,
    and both boards hold low numbers, so omitting it closes the fork's issue of
    that number. Nothing is ever waiting on an upstream PR.
@@ -93,12 +89,11 @@ gets returned to the lane. (A stripped binary that compiles the fix but crashes 
 FAIL — that is the exact hole this rule closes; origin: ship-38585459 smoke n=2036.)
 
 **Owner-dependent leg → PARK, never wait (v0.4.152):** if the only remaining behavioral
-evidence needs the OWNER, the leg is **NOT a blocking gate** — stamp the legs you can
-prove, append a `PARKED-OWNER-EYE` row naming the exact owner action, the packaging sha
-and the pre-fix control, then release the lane — **leaving the behavioural leg OPEN on the
-issue until an owner verdict lands (L3).** The park releases the LANE, never the obligation.
-A lane idling on an owner leg is in violation; a lane that parks and moves on is compliant. Full law, incl. the explicit-and-post-hoc verdict test
-(L3): `§Owner-Dependent Smoke Legs — Park, Don't Chase` (this file).
+evidence needs the OWNER, stamp the legs you can prove, append a `PARKED-OWNER-EYE` row
+naming the exact owner action, the packaging sha and the pre-fix control, leave the
+behavioural leg OPEN on the issue until an owner verdict lands (L3), and release the lane.
+The park releases the LANE, never the obligation — a lane idling on an owner leg is in
+violation. Full law: `§Owner-Dependent Smoke Legs — Park, Don't Chase` (this file).
 
 **Swap timing is NOT coordinated with smokes** (owner decision, closing editor
 proposal #8): NO advance announce, NO swap delay — deploys land whenever the
@@ -109,10 +104,8 @@ FAIL.
 
 ### Smoke-verdict rules
 
-The ontology (the three kinds + the sanity signal) stays in `SKILL.md §Test ontology`; the verdict
-rules live here, on the load path of the role that actually produces smoke evidence.
-
-The ontology table lives in `SKILL.md §Test ontology`; what remains prose here:
+The ontology (the three kinds + the sanity signal) stays in `SKILL.md §Test ontology`; what remains
+here, on the load path of the role that actually produces smoke evidence, is the verdict law:
 
 - **SMOKE TEST** is the ONLY evidence that may back an upstream PR approval
   request (hard rule + `harvest.md` Phase 7 step 0).

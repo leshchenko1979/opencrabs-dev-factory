@@ -4,9 +4,9 @@
 **Companion to:** `tools/docs/OPEN-QUESTIONS-INSTALL.md` (the install steps).
 **Date:** 2026-10-02.
 
-The install note covers the *asking* side: install the tool, render a page, publish it.
-It stops at the point where the page is served. This document covers what the note omits —
-**how a page served by a web server gets an answer back into the agent session that asked.**
+The install note covers the *asking* side: install the tool, render a page, publish it. This
+document covers what the note omits — **how a page served by a web server gets an answer back
+into the agent session that asked.**
 
 ---
 
@@ -38,13 +38,13 @@ and the page is public.
 | holds | the register, including the destination session ids | the mirrored pages, and a key that can reach the agent host |
 | example | `agents` (private) | `vpn` → `questions.l1979.ru` |
 
-Neither host is privileged over the other in the tool's design — you can run both roles on one
-machine (simplest), or split them (what the reference does). The split is only forced by whether
-the agent host can be made publicly reachable.
+Neither host is privileged in the tool's design — run both roles on one machine (simplest), or
+split them (what the reference does). The split is forced only by whether the agent host can be
+made publicly reachable.
 
 **The register lives on the agent host only.** It carries the destination session ids, and the
 public host needs none of that: the confirmation's lane name and question title ride in the
-token's own page meta (§4), so nothing on the public host has to know which session asked.
+token's own page meta (§4), so nothing there has to know which session asked.
 
 ---
 
@@ -121,8 +121,7 @@ sequenceDiagram
 
 **One ssh call, not two.** The CLI's `answer` verb records the answer *and* delivers it to the
 asking lane when given `--notify`; the backend passes that flag, so a submission costs one round
-trip. (Running `answer` and `notify` as separate verbs would work, but it would double the ssh
-hops per answer — the fold exists precisely to avoid that.)
+trip.
 
 **The echo is the page's own copy.** Each published page carries a `meta.json` whose `echo` block
 maps every set on the page to its lane name and the titles of its questions — written by the tool
@@ -145,7 +144,7 @@ Everything the tool does *not* give you, in the order you need it.
 |---|---|---|---|
 | 1 | A web server with TLS for a hostname | public host | Caddy in the reference; any server that can serve files and proxy one path |
 | 2 | The mirrored page tree at a served root | public host | pushed from the agent host (§6); it includes each page's `meta.json` |
-| 3 | The page meta carrying the answer echo | public host | `echo.<set>.lane` and `echo.<set>.questions.<qid>`, written by the tool at publish time — the backend reads the confirmation from here, so the register never needs to be mirrored |
+| 3 | The page meta carrying the answer echo | public host | `echo.<set>.lane` and `echo.<set>.questions.<qid>` — what the backend renders the confirmation from, so the register never needs to be mirrored (§4) |
 | 4 | The answer backend process | public host | `/opt/questions/backend.py`, bound to loopback, proxied at `/answer` |
 | 5 | **A path from the public host back into the agent host** | public → agent | an SSH key authorised on the agent host, and the agent host reachable from the public host |
 | 6 | The register CLI at a resolvable path | agent host | the backend resolves it at call time; a pinned path breaks silently when the tree moves |
@@ -166,9 +165,8 @@ outbound from the agent host, so the public host needs no inbound port *for this
 - A file watcher fires when the store changes (a systemd **user** path unit in the reference,
   watching `open.json` and `pages/latest.json`).
 - The watcher runs a mirror script: one canonical render, then `rsync` of the **page tree** to the
-  public host. The register is **not** mirrored — the confirmation reads the lane and question
-  title from the token's own page meta, so a copy on the public host would be a second copy that
-  could only go stale.
+  public host. The register is **not** mirrored — the page meta already carries the lane and
+  question title, so a copy there could only go stale.
 - The script compares source and served digests after copying and retries on divergence, so a
   dropped trigger cannot leave the served page one revision stale.
 
@@ -176,29 +174,25 @@ outbound from the agent host, so the public host needs no inbound port *for this
 
 ## 7. Findings from the reference deployment
 
-Recorded because they cost time and will cost yours.
-
 1. **The "no key back" claim was wrong.** The push script's own header *used to* say the public
-   host holds no key that can reach the private one. That is true of the *mirror* leg and false of
-   the *answer* leg: the backend requires exactly such a key and uses it on every answer. The
-   header and the unit's `Description` now say so. Do not design the split on the assumption that
-   the public host is harmless if compromised — it holds a root path into the agent host.
+   host holds no key that can reach the private one — true of the *mirror* leg, false of the
+   *answer* leg, where the backend requires exactly such a key on every answer (the header and the
+   unit's `Description` now say so). Do not design the split on the assumption that the public host
+   is harmless if compromised — it holds a root path into the agent host.
 
-2. **A pinned CLI path is a silent landmine.** An earlier backend revision hardcoded the CLI at
-   `tools/oc-questions`. When the CLI moved to `tools/state/oc-questions`, every answer started
-   failing with `rc=127` and surfaced only as a 502 to the reader. The deployed backend now
-   resolves the path at call time (search the tools tree, require **exactly one** match, exit 127
-   otherwise). Resolve, do not pin.
+2. **An earlier backend revision hardcoded the CLI at `tools/oc-questions`.** When the CLI moved to
+   `tools/state/oc-questions`, every answer started failing with `rc=127` and surfaced only as a 502
+   to the reader. The deployed backend now resolves the path at call time (search the tools tree,
+   require **exactly one** match, exit 127 otherwise). Resolve, do not pin.
 
 3. **The mirror of the backend was stale.** The deployed `/opt/questions/backend.py` and the
    in-repo copy had drifted to different revisions. If you keep a copy in your repo, sync it from
    the deployed one, not the other way round.
 
 4. **A copy of the register on the public host is a copy that can only rot.** An earlier revision
-   shipped one there so the backend could look up the lane and title locally. Once the page meta
-   carried the echo, that copy had no reader — and a copy with no reader is a copy nobody compares,
-   so it silently drifts from the register it copies. The shipped shape drops it: the public host
-   holds the pages, the backend, and the key back, and nothing else.
+   shipped one there so the backend could look up the lane and title locally; once the page meta
+   carried the echo it had no reader, and a copy nobody compares drifts silently. The shipped shape
+   drops it: the public host holds the pages, the backend, and the key back, and nothing else.
 
 ---
 

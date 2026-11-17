@@ -14,11 +14,10 @@ Records WHAT each tool targets and WHY, so a later reader does not have to re-de
 | **UPSTREAM** | `opencrabs/opencrabs` | **PULL REQUESTS ONLY** — never an issue home (owner order 2026-10-09) |
 
 **Two different things were bundled on 2026-10-08, and only ONE of them is retired.**
-This paragraph is the single place their status is stated.
 
 **(a) The ISSUE-ROUTING discriminator — RETIRED.** The notion that the fork takes only
 `FORK-ONLY defects` no longer routes anything: the fork takes EVERY binary issue, so no
-such split exists. Nothing routes on a "is this defect fork-only?" test any more.
+such split exists and nothing routes on a fork-only test.
 
 **(b) The HARVEST machinery — SURVIVES UNCHANGED.** The boundary register
 ([#761](https://github.com/leshchenko1979/opencrabs/issues/761) — `harvest-registry.json`
@@ -40,9 +39,8 @@ anchoring — but it is **NOT** a second tracker and NOT a second number space.
 `Closes #N` is **VALID same-repo** (a fork binary issue, closed by the fork commit that
 fixes it), **FORBIDDEN across trackers** (a fork or factory issue has no upstream number
 space; the upstream PR body ends `Original issue: <full URL>`). Claiming = assignment on
-the tracker, **ATTEMPTED AND VERIFIED**. A denied assignment is **recorded, never silently
-skipped**; the ledger `claim` row + `Issue-Ref` trailer then carry the claim. A mandatory
-duplicate sweep (open+closed, issues+PRs) runs BEFORE filing.
+the tracker, **ATTEMPTED AND VERIFIED**; the ledger `claim` row + `Issue-Ref` trailer then
+carry the claim. A mandatory duplicate sweep (open+closed, issues+PRs) runs BEFORE filing.
 
 ## The assignment leg — VERIFIED on both live trackers
 
@@ -62,9 +60,9 @@ signal) **plus** the internal `Issue-Ref` trailer + workers-ledger `claim` row.
   `leshchenko1979` (measured 2026-10-10).
 - **The upstream TRIAGE grant (2026-10-04) is now HISTORICAL** — `opencrabs/opencrabs`
   receives PRs only, so no issue claim happens there.
-- **Where a platform STILL denies the assignment**, **record the denial** and let the
-  ledger `claim` row + `Issue-Ref` trailer **BE** the claim. A **silent skip is a
-  violation** — it is indistinguishable from a permission limit.
+- **Where a platform STILL denies the assignment**, **record the denial, never silently
+  skip it** — a silent skip is indistinguishable from a permission limit — and let the
+  ledger `claim` row + `Issue-Ref` trailer **BE** the claim.
 
 In the BINARY row, **`tools` means `src/brain/tools/**`** — the runtime tool
 registry compiled into the binary — **not** the CLI `tools/**` directory this
@@ -82,8 +80,8 @@ document is about. `oc-issue-scope` already encodes exactly this split:
 
 **Why "PRs still land" upstream is separate from the issue streams:** the fork carries
 the opencrabs source (the PR-lane builds it); the HARVEST lane ports mature fork work
-upstream as PULL REQUESTS. A `Closes #N` in a **fork** PR closes a **fork** issue. The
-upstream PR body carries `Original issue: <fork issue URL>`, never `Closes #N`.
+upstream as PULL REQUESTS, whose bodies carry `Original issue: <fork issue URL>`, never
+`Closes #N`.
 
 ## The `Issue-Ref` trailer under two trackers
 

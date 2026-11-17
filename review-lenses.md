@@ -7,10 +7,8 @@ persistence, poll triple-check, verdict table — is canonical at `docs/instrume
 birth order (stable report/persist keys, not an ordering). Reviewer-performance
 loop lessons fold INTO these briefs at ship time (ship-time fold, §FAMILY: META),
 attributed to the reviewer that produced the evidence. Family identity is the
-OBJECT under review, not the evidence flow between lenses (regrouped v0.4.81:
-C joined TOOLS — gaps/shape/implementation pipeline; D is sole in ARTIFACTS,
-the family IS the deletion owner gate). Membership and grouping change only
-on census evidence + owner word (ship-time fold, §FAMILY: META).
+OBJECT under review, not the evidence flow between lenses. Membership and grouping
+change only on census evidence + owner word (ship-time fold, §FAMILY: META).
 
 #### FAMILY: DOCS — role files (wording / reading load / organization)
 
@@ -89,10 +87,9 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      Role files must document only the single milestone invocation and its
      recovery semantics, not internal plumbing procedures the tool handles.
    - **Reviewer G — ROLE-FILE STRUCTURE:** the ORGANIZATION of EACH role file
-     — the role files (re-derived from `ls *.md` at spawn time; count not
-     hardcoded — lens G-F8 v0.4.89) plus every
-     split-out reference page in the skill root, re-derived from `ls *.md`
-     at spawn time (objects rot, the dimension doesn't) — phase/duty ordering vs actual
+     — the role files plus every split-out reference page in the skill root, both
+     re-derived from `ls *.md` at spawn time (count not hardcoded — lens G-F8 v0.4.89;
+     objects rot, the dimension doesn't) — phase/duty ordering vs actual
      work sequence, sections grown past cohesion (one section = one concern),
      rules living in the wrong section, cross-reference integrity after
      edits, whether a file should split (e.g. per-phase reference pages) or
@@ -215,11 +212,9 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      preflight checkout check left both its rc and name legs green off LEG3's
      identical surviving sentence, and only an EMPTY-stub-log assertion
      reddened.
-     BOUNDARY vs J (v0.4.161): C's object is a PROCEDURE carrying a recurring
-     multi-step ritual; J's object is LAW TEXT carrying a single decision that is a
-     pure function of state on disk — including one-shot checks and any set or list
-     a lane is told to hold in context. One site, one lens; the two never both claim
-     the same finding.
+     BOUNDARY vs J (v0.4.161): one site, one lens — object is law text whose single
+     decision is state-derivable → J; object is a recurring multi-step procedure → C;
+     the two never both claim the same finding (full statement: §Reviewer J, BOUNDARY vs C).
 
    - **Reviewer E — INTERFACE/TOPOLOGY:** the TOOL SURFACE itself — pairs of
      tools whose invocations are bound to come one after another in practice
@@ -253,7 +248,7 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
      (tools/docs/RC-CONTRACT.md = SOLE tool register). Every Duty-6 pass re-weighs
      SKILL.md against this rule; growth beyond router scope = findings.
 
-#### FAMILY: ARTIFACTS — files, state, ledgers, flags (deletion verdicts — the family IS the owner gate; C usage-log YAGNI evidence feeds it from TOOLS; BOUNDARY vs J, v0.4.162 — this family owns the ARTIFACT and its verdict, J owns the law sentence that assigns a state-derivable decision: object is an artifact on disk → here, object is law text → J)
+#### FAMILY: ARTIFACTS — files, state, ledgers, flags (deletion verdicts — the family IS the owner gate; C usage-log YAGNI evidence feeds it from TOOLS; boundary vs J: §Reviewer J, BOUNDARY vs D/H)
 
    - **Reviewer D — DELETION SAFETY:** enumerate retired / stale /
      duplicate-looking artifacts in the skill scope (files, state files,
@@ -323,12 +318,12 @@ on census evidence + owner word (ship-time fold, §FAMILY: META).
 
 #### STANDING LENS: `brain-scrub` — OUTSIDE the A–J families
 
-*(Heading shape note, lens I F7 v0.4.206: this brief sat at `####` — the FAMILY level — with no family claiming it, so a cold reader could not tell whether it belonged to META or was a family of its own. It is neither: the rotation is `A–J + standing brain-scrub` (this file's lens list), the family map stays A–J, and this lens owns its own report. Registered in `oc-review-persist` LENSES as `brain-scrub`.)*
+*(Heading shape, lens I F7 v0.4.206: this brief sits at `####` with no family claiming it, and belongs to none — the rotation is `A–J + standing brain-scrub`, the family map stays A–J, and this lens owns its own report. Registered in `oc-review-persist` LENSES as `brain-scrub`.)*
 
-Standing lens in the Duty 4+6 skill-review rotation (registered in `oc-review-persist` LENSES). Scrubs the ops profile's brain files for opencrabs-dev process content living outside the skill:
+Scrubs the ops profile's brain files for opencrabs-dev process content living outside the skill:
 
 1. **AGENTS.md** carries only one-line pointers + always-loaded anchors for dev-process law — a full law text duplicated here is a finding (canonical home is this file; one concept, one home).
 2. **MEMORY.md** carries no discipline laws — passive memory never binds on a cold session (shipped template law); directives found there are findings.
 3. **Every finding lands as a move-with-verification:** the canonical copy is verified present in the skill BEFORE anything is removed from the brain file. Brain files are append-only — shrink/cleanup requires explicit owner approval and `dedup_intent`/`cleanup_intent`.
 
-Reports persist via `oc-review-persist brain-scrub <text|@file>`. Same mechanics as every other lens: verdict consolidated → stamped (the cadence-stamp law at `hq.md §Cadence boundary is stamped at review consolidation` applies unchanged — the close form is `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `review-battery`, which does not reset the counter).
+Reports persist via `oc-review-persist brain-scrub <text|@file>`. Same mechanics as every other lens: verdict consolidated → stamped per the cadence-stamp law at `hq.md §Cadence boundary is stamped at review consolidation` (close form `oc-ledger stamp note "v<version> ACCEPTED"`, NOT `review-battery`, which does not reset the counter).

@@ -36,10 +36,7 @@
   and `STATE_TRACKED_GLOB` assignments in `tools/state/oc-ledger`, consumed by
   `state_sweep_tracked`, with a selftest asserting the single source. BOTH callers
   sweep the SAME namespace — the auto-commit tail and `commit-pending --bundle`.
-  Before #508 the auto-commit staged
-  `workers-ledger.json` ALONE and the sweeping verb was invoked by NO enabled cron:
-  measured 2026-09-22, 345 entries had piled up on that split. Consequence for
-  authorship: a class named TRACKED above is only actually swept if it is in
+  Consequence for authorship: a class named TRACKED above is only actually swept if it is in
   `STATE_TRACKED_PATHS` — naming it here without adding it there leaves it
   accumulating while the law reads as covered.
 - **single-flight** — the one dispatch/adoption lock serializing concurrent
