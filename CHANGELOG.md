@@ -8,8 +8,10 @@
 
 | | before | after |
 |---|---|---|
-| `SKILL.md` | 53,434 B / 525 lines | **36,424 B / 371 lines** (−17,010 B, −31.8%, −154 lines) |
-| corpus total | 53,434 B | 54,828 B (+1,394 B: each new file carries a 4-line provenance header) |
+| `SKILL.md` | 53,434 B / 525 lines | **36,437 B / 371 lines** (−16,997 B, −31.81%, −154 lines) |
+| corpus total | 53,434 B | 54,841 B (+1,407 B: each new file carries a 4-line provenance header) |
+
+**Corrected figures (v0.4.308, second commit).** The first commit's table read 36,424 B / −17,010 B / 54,828 B: those were measured *before* the version bump and the final stub edits, then written from that stale read instead of re-read off the committed artifact. The figures above are `wc -c` on `HEAD:SKILL.md` and on both new files. Same law the release argues for one level up: a number is read from the artifact it describes, at the instant it describes.
 
 **The receipt question, answered by the numbers, not by taste.** The always-loaded file drops ~4.2k tokens per trigger; the corpus grows 1.4 KB in files nobody loads unless they ask. That asymmetry is the whole argument: **reference belongs on demand, law belongs inline.** No receipt, date, sha or incident record was cut — this release moves text, it does not judge it.
 
