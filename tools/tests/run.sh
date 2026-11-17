@@ -306,6 +306,57 @@ if [ "${BATTERY_CGROUP_ISOLATED:-0}" = "1" ] && [ -n "$BATTERY_SELF_CGROUP" ] \
   BATTERY_SELF_CGROUP_ISO=true
 fi
 
+# ---- pids budget preflight (#74) --------------------------------------------
+# Defect (measured 2026-11-17): the default JOBS is $(nproc)=4, but a detached
+# run's scope carries pids.max=64 (scope_tasks_max), and four concurrent chunks
+# fork past it. fork() then returns EAGAIN and every assertion that needed a
+# child reads as a CODE FAILURE. Measured on ONE tree, one commit:
+#   jobs=4 -> 390/8, with 63 "Resource temporarily unavailable" rows
+#   jobs=2 -> 398/0, ZERO such rows, 747s
+#   jobs=1 -> 398/0, ZERO such rows, 1171s
+# and all eight "failing" tools pass standalone (oc-deploy 401/0, oc-ledger
+# 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship-chain 278/0,
+# oc-watcher-audit 40/0, oc-commit OK, oc-smoke-evidence OK). `dmesg` names the
+# rejection in the run's OWN scope: "cgroup: fork rejected by pids controller in
+# .../run-r985c6cdd….scope". A red that describes the cgroup and not the tree
+# blocks every lane's bump and sends each one to debug eight healthy tools, so
+# the budget is read BEFORE the fan-out and JOBS is reduced to fit -- and the
+# reduction is STATED, because a silent cap is indistinguishable from a slower
+# box.
+#
+# Per-chunk demand is bounded by measurement, not taste: 64/4 does not fit and
+# 64/2 does, so demand lies in (16, 32] and the divisor takes the conservative
+# end, 32. NOTE the #720 isolation asks for TasksMax=128, so on a box where the
+# transient scope IS created this cap never binds -- it binds exactly where
+# isolation failed and the run inherited the 64-pid run scope.
+BATTERY_PIDS_MAX="" BATTERY_PIDS_CAP_NOTE=""
+_oc_pids_file="${OC_BATTERY_PIDS_MAX_FILE:-/sys/fs/cgroup${BATTERY_SELF_CGROUP}/pids.max}"
+# Decided ONCE, by the parent: a chunk child runs one section and never fans
+# out, so capping there would only print the same NOTE once per chunk.
+if [ "${BATTERY_IN_CHUNK:-0}" != "1" ] && [ "${OC_BATTERY_NO_PIDS_CAP:-0}" != "1" ] && [ -r "$_oc_pids_file" ]; then
+  _oc_pm="$(cat "$_oc_pids_file" 2>/dev/null)"
+  BATTERY_PIDS_MAX="$_oc_pm"
+  case "$_oc_pm" in
+    ''|max|*[!0-9]*) : ;;   # unbounded, or not a number: no cap to derive
+    *)
+      _oc_fit=$(( _oc_pm / 32 ))
+      [ "$_oc_fit" -ge 1 ] || _oc_fit=1
+      if [ "$JOBS" -gt "$_oc_fit" ]; then
+        BATTERY_PIDS_CAP_NOTE="jobs $JOBS -> $_oc_fit (pids.max=$_oc_pm, 32 pids/chunk)"
+        note "battery: NOTE: --jobs $JOBS exceeds the pids budget -- capping to $_oc_fit (pids.max=$_oc_pm) (#74)"
+        JOBS="$_oc_fit"
+      fi ;;
+  esac
+fi
+
+# Probe for the preflight's own selftest arms: report the RESOLVED values and
+# exit before any suite runs, so the cap is testable without a 12-minute run.
+if [ "${1:-}" = "--resolve-jobs" ]; then
+  _oc_capped=no; [ -n "$BATTERY_PIDS_CAP_NOTE" ] && _oc_capped=yes
+  printf 'jobs=%s\npids_max=%s\ncapped=%s\n' "$JOBS" "${BATTERY_PIDS_MAX:-unknown}" "$_oc_capped"
+  exit 0
+fi
+
 # ---- red-receipt transcript -------------------------------------------------
 # Defect (HQ item 5, 2026-09-22): emit_summary wrote battery-last.json durably
 # while the transcript went only to stdout, so a committed red receipt
@@ -454,8 +505,9 @@ emit_summary() {
   battery_capture_fail_rows
   local _fpe _changed; _fpe="$(_battery_tree_fp)"
   _changed=false; [ "$_fpe" = "$BATTERY_FP_START" ] || _changed=true
-  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
-    "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" "$FAIL_LOG_FIELD" \
+  printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
+    "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" \
+    "${BATTERY_PIDS_MAX:-}" "${BATTERY_PIDS_CAP_NOTE:-}" "$FAIL_LOG_FIELD" \
     "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_changed" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
     > "$TOOLS_DIR/tests/battery-last.json"
   [ "$_changed" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
@@ -3612,12 +3664,29 @@ section "cgroup isolation (#720)"
 # asserted below, so a sed that mangles more than the input reddens here.
 CI_FX="$(mktemp -d)"
 CI_BLOCK="$CI_FX/iso.sh"
-awk '/^# ---- cgroup isolation \(#720\)/,/^# ---- red-receipt transcript/' "$0" \
-  | sed '/^# ---- red-receipt transcript/d' > "$CI_BLOCK"
+# RANGE END = the isolation block's OWN end, never "the next marker we happen
+# to know about" (#74, measured 2026-11-17). The range used to end at the
+# red-receipt marker, which was only ever a PROXY for where this block stops.
+# The #74 pids preflight was then inserted between them and the extraction
+# silently swallowed it: the synth runs under `set -u` with no $JOBS, so it
+# died at the preflight's `[ "$JOBS" -gt ... ]` and FIVE #720 legs reported
+# failures about a healthy block. Alternation makes the end whichever section
+# marker comes first, so a future insertion between the two cannot re-arm it,
+# and the assertion below states the contract instead of trusting it.
+awk '/^# ---- cgroup isolation \(#720\)/,/^# ---- (red-receipt transcript|pids budget preflight)/' "$0" \
+  | sed -E '/^# ---- (red-receipt transcript|pids budget preflight)/d' > "$CI_BLOCK"
 if [ -s "$CI_BLOCK" ] && grep -q 'BATTERY_CGROUP_ISOLATED' "$CI_BLOCK"; then
   ok "isolation block extracted from run.sh ($(wc -l < "$CI_BLOCK") lines)"
 else
   bad "#720: isolation block NOT found in run.sh -- the extractor matched nothing"
+fi
+# The extraction must carry the ISOLATION block and nothing after it. A leg
+# that cannot fire on a range overrun is decoration: restore the old
+# red-receipt-only end pattern and this goes red.
+if grep -q 'pids budget preflight' "$CI_BLOCK"; then
+  bad "#74/#720: the extracted block runs PAST the isolation block (it carries the pids preflight) — the range end is a proxy again"
+else
+  ok "#74/#720: extraction stops at the isolation block's own end (the pids preflight is not swept in)"
 fi
 # INPUT rewrite exactness: exactly one source line may differ (two diff sides).
 sed "s|\$(battery_cgroup_path)|\${CI_SVC_CG}|" "$CI_BLOCK" > "$CI_FX/exact.sh"
@@ -3870,6 +3939,82 @@ case "$_law_real" in
     fi ;;
 esac
 
+# ---- 88. pids budget preflight (#74) ---------------------------------------
+# A red receipt that describes the CGROUP rather than the tree blocks every
+# lane's bump and sends each one to debug eight healthy tools. Measured on ONE
+# tree at ONE commit: --jobs 4 -> 390 PASS / 8 FAIL carrying 63 "Resource
+# temporarily unavailable" rows; --jobs 2 -> 398/0 and --jobs 1 -> 398/0 with
+# ZERO such rows; and every one of the eight passes standalone (oc-deploy
+# 401/0, oc-ledger 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship-chain
+# 278/0, oc-watcher-audit 40/0). `dmesg` names the run's OWN scope: "cgroup:
+# fork rejected by pids controller in .../run-r985c6cdd....scope", and that
+# scope carries pids.max=64. So the preflight reads pids.max BEFORE the
+# fan-out. Driven through the real block via --resolve-jobs, never a
+# re-implementation: a copy of the arithmetic here would stay green while the
+# tool kept the bug.
+_pf_src="${RUN_SCRIPT:-$0}"
+_pf() { # $1 = pids.max fixture content; $2 = --jobs value; remaining: NAME=VALUE env
+  # The jobs value is a PROBE ARGUMENT, never part of the env list: `env` scans
+  # NAME=VALUE pairs until the first non-assignment, so a `--jobs` arriving
+  # through "$@" is parsed as an env OPTION ("env: '--jobs': No such file or
+  # directory") and the probe never runs -- every leg then reads '' and the
+  # whole section fails for a harness reason, not a code reason.
+  local _v="$1" _j="$2"; shift 2
+  local _d; _d="$(mktemp -d)"
+  printf '%s\n' "$_v" > "$_d/pm"
+  env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
+      "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
+      "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
+      bash "${_PF_SCRIPT:-$_pf_src}" --jobs "$_j" --resolve-jobs 2>&1
+  rm -rf "$_d"
+}
+_pf_jobs() { printf '%s\n' "$1" | sed -n 's/^jobs=//p'; }
+
+# LEG 1 (POSITIVE CONTROL): the measured defect. 64 pids and --jobs 4 cannot
+# both hold, so the run must cap to 2 -- the exact shape that ran green.
+_o74a="$(_pf 64 4)"
+[ "$(_pf_jobs "$_o74a")" = "2" ] \
+  && ok "#74: --jobs 4 under pids.max=64 is capped to 2 (the measured defect)" \
+  || bad "#74: --jobs 4 under pids.max=64 resolved to '$(_pf_jobs "$_o74a")' (want 2) — the cap is inert"
+case "$_o74a" in
+  *capped=yes*) ok "#74: the cap is DISCLOSED (a silent cap is indistinguishable from a slower box)";;
+  *) bad "#74: the cap fired but reported '$(printf '%s' "$_o74a" | sed -n 's/^capped=//p')'";;
+esac
+
+# LEG 2: 'max' is an UNBOUNDED budget, never a zero one. Reading it as a number
+# would cap the fleet to 1 job on any box with pids controller disabled.
+_o74b="$(_pf max 4)"
+[ "$(_pf_jobs "$_o74b")" = "4" ] \
+  && ok "#74: pids.max=max caps nothing (an unbounded budget is not a zero budget)" \
+  || bad "#74: pids.max=max resolved to '$(_pf_jobs "$_o74b")' (want 4) — 'max' was read as a number"
+
+# LEG 3: the FLOOR. 16/32 = 0, and JOBS=0 runs NOTHING while printing a clean
+# sweep -- a silent all-green over zero tests, which is worse than the red.
+_o74c="$(_pf 16 4)"
+[ "$(_pf_jobs "$_o74c")" = "1" ] \
+  && ok "#74: a budget below one chunk's demand floors at 1, never 0" \
+  || bad "#74: pids.max=16 resolved to '$(_pf_jobs "$_o74c")' (want 1) — a zero cap runs nothing"
+
+# LEG 4: the documented opt-out must be REAL, or LEG 1 could be passing on
+# something other than the cap.
+_o74d="$(_pf 64 4 OC_BATTERY_NO_PIDS_CAP=1)"
+[ "$(_pf_jobs "$_o74d")" = "4" ] \
+  && ok "#74: OC_BATTERY_NO_PIDS_CAP=1 opts out (the knob is real, not decorative)" \
+  || bad "#74: the opt-out still capped to '$(_pf_jobs "$_o74d")'"
+
+# NEGATIVE CONTROL (neuter-the-code): with the clamp removed, LEG 1's own
+# fixture must report 4. Without this, LEG 1 could be green because --jobs never
+# reached the block rather than because the cap works.
+_o74m="$(dirname "$_pf_src")/run.sh-mut74"
+sed 's|^        JOBS="\$_oc_fit"$|        : "\$_oc_fit"|' "$_pf_src" > "$_o74m"
+_PF_SCRIPT="$_o74m"
+_o74n="$(_pf 64 4)"
+unset _PF_SCRIPT
+rm -f "$_o74m"
+[ "$(_pf_jobs "$_o74n")" = "4" ] \
+  && ok "#74 NEGATIVE CONTROL: with the clamp neutered the same fixture reads 4 (the leg can fail)" \
+  || bad "#74 NEGATIVE CONTROL: neutered clamp still read '$(_pf_jobs "$_o74n")' — LEG 1 is inert"
+
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
 battery_capture_fail_rows
@@ -3879,8 +4024,9 @@ _tch=false
 _fp_tail="$(_battery_tree_fp)"
 [ "$_fp_tail" = "$BATTERY_FP_START" ] || _tch=true
 BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
-  "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$FAIL_LOG_FIELD" \
+printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
+  "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" \
+  "${BATTERY_PIDS_MAX:-}" "${BATTERY_PIDS_CAP_NOTE:-}" "$FAIL_LOG_FIELD" \
   "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
   > "$TOOLS_DIR/tests/battery-last.json"
 [ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
@@ -3893,7 +4039,7 @@ _battery_reap_mirrors
 # ---- summary ----------------------------------------------------------------
 note ""
 note "=============================="
-note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict)"
+note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE${BATTERY_PIDS_CAP_NOTE:+, pids: $BATTERY_PIDS_CAP_NOTE})"
 battery_timing_lines
 note "=============================="
 [ "$FAIL" -eq 0 ] || note "tests FAILED (nonzero exit below)"
