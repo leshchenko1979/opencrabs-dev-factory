@@ -17,7 +17,7 @@
 #                 [--repo <fork-slug>]
 #                 [--gated-sha <sha>] [--gated-run <id>] [--wait <sec>]
 #                 [--gate-wait <sec>] [--full] [--test-threads <N>]
-#                 [--dry-run] [--no-ledger] [--selftest] [--help]
+#                 [--dry-run] [--no-ledger] [--no-rearm] [--selftest] [--help]
 #                 [--priority low|normal] [--resolve-priority]
 #   oc-ship-chain --eval-docs-skip [<sha>]
 #
@@ -40,6 +40,16 @@
 #                    Can also be paired with --sha <sha>.
 #   --fast           Default gate mode (passes fast=true to oc-prchecks).
 #   --full|--no-fast Opt-in full test suite gate (~30 min).
+#   --no-rearm       Disable the #78 Class A re-arm supervisor for this run.
+#                    Default is ON: a chain that dies of a MECHANICAL cause with
+#                    nothing external in flight (ship-lock timeout rc 9; gate
+#                    INFRA rc 6 from a pre-dispatch prchecks 4/7/8) restarts
+#                    itself in-tool instead of waking the arming lane. A run
+#                    stopped by a SIGNAL never re-arms, and neither does any
+#                    class that already touched the world (a fresh dispatch onto
+#                    a gated ref cancels the in-flight run — it would destroy
+#                    the verdict it is waiting for). Budget: 2 attempts
+#                    (OC_SHIPCHAIN_REARM_MAX). Env form: OC_SHIPCHAIN_NO_REARM=1.
 #   --test-threads <N>  LEG1 gate: libtest --test-threads for the carrier's
 #                    `Run tests` step — the #1936 Stage-1 hang mitigation,
 #                    forwarded to oc-prchecks' dispatch (factory #39).
@@ -170,6 +180,28 @@
 #         Distinct from 6 (INFRA) for the same reason 7 and 8 are: lock
 #         contention is a queue condition, not a broken component.
 #
+# Re-arms (factory #78) — which classes the tool will redo BY ITSELF, so a lane
+# reads the wake only for what actually needs a human. A re-arm `exec`s a fresh
+# chain from inside the EXIT handler; because `exec` replaces the process, the
+# wake call below it is unreachable, so a suppressed wake is structural rather
+# than a flag someone must remember to set.
+#   rc 3  NO   a precondition the lane must fix; a restart reproduces it exactly
+#   rc 4  NO   a gate/carrier verdict; the same code is still red on a re-run
+#   rc 5  NO   eight causes, every one a lane fix (rebase, re-gate, wait)
+#   rc 6  YES  ONLY when GATE_RUN_ID is empty — i.e. nothing external already
+#              happened. A witnessed failure is not retried: re-dispatching a
+#              gate that already ran buys the same answer for a full cycle.
+#   rc 7  NO   the gate is still IN FLIGHT; re-dispatching concurrency-cancels
+#              the live run (owner decision 2026-11-18 — 0 of 213 measured
+#              re-arms were this class, so the risk had no upside)
+#   rc 8  NO   the carrier build is still running — same reasoning as rc 7
+#   rc 9  YES  the lock holder is another real ship; wait-and-retry in-tool
+# Budget: OC_SHIPCHAIN_REARM_MAX (default 2) attempts, carried ACROSS the exec
+# in the environment (a fresh process re-initialises every variable it does not
+# inherit). On exhaustion the wake names the count, so "failed once" and
+# "failed after the whole budget, cause survived every restart" cannot read the
+# same. Opt out with --no-rearm / OC_SHIPCHAIN_NO_REARM=1.
+#
 # Chain-id: every leg stamps the ledger under one id (kind=shipchain)
 #   CHAIN-<shortsha>-<UTCstamp>  →  retrieve the whole run with
 #   jq -r '.events[] | select(.kind=="shipchain")
@@ -223,6 +255,11 @@ set -u
 set -o pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+# #78: the re-arm supervisor `exec`s this chain again with its ORIGINAL argv, so
+# the argv has to be captured before the parse loop consumes it. Captured here,
+# immediately after SELF, because that is the first point where both the path
+# and the argument list are known and nothing has shifted yet.
+CHAIN_ARGV=("$@")
 TOOLS_DIR="$OC_TOOLS_DIR"
 
 # Content identity for a rebased commit (Duty-4 n=2520). Sourced from the SAME
@@ -266,11 +303,72 @@ chain_remedy() { # $1 = exit code
     3) printf '%s' "a PRECONDITION refused before any gate ran, so no gate name can satisfy it -- fix the condition the journal line names (checkout not main, dirty tree, branch not pushed, missing Session-Id signature), then re-arm. Do NOT pass --gated-run: there is no gate to carry." ;;
     4) printf '%s' "a GATE or ORDER verdict, not infra -- read the run/validator output. If the branch was rebased since the gate, re-gate; --gated-run <id> is correct ONLY when that run still names the sha being landed." ;;
     5) printf '%s' "an rc 5 the chain did not classify, so its own message is unavailable -- and rc 5 covers EIGHT causes with OPPOSITE remedies (ALREADY-LANDED says do NOT re-gate; STALE-LOCAL-MAIN, LOCAL-MAIN-AHEAD and LOCAL-MAIN-DIVERGED say do NOT rebase; NON-FF says rebase). Read the journal line that names the LEG3 cause before acting; a blind rebase here rewrites a possibly correct gated tip and burns the gate." ;;
-    6) printf '%s' "INFRASTRUCTURE, not a gate -- the wrapped tool's own message is in the journal, so read THAT line; naming a gate cannot fix a dead user bus, a failed handoff or a refused swap. Fix the cause, then resume the leg the journal names." ;;
+    6) printf '%s' "INFRASTRUCTURE, not a gate -- the wrapped tool's own message is in the journal, so read THAT line; naming a gate cannot fix a dead user bus, a failed handoff or a refused swap. Fix the cause, then resume the leg the journal names. The chain re-arms this class ONLY when the gate was never dispatched (GATE_RUN_ID empty), so seeing this wake means either an external action had already happened or the re-arm budget is spent -- do NOT re-dispatch a gate that already ran." ;;
     7) printf '%s' "the gate is still IN FLIGHT -- wait for the run, then re-arm with --gated-run <id>. Re-dispatching burns a second full gate cycle for the same answer." ;;
     8) printf '%s' "the carrier build did not reach a terminal state inside the LEG4 --wait budget -- do NOT re-dispatch it; wait, then resume with: oc-deploy poll --sha <sha> --execute --wait <sec>." ;;
-    9) printf '%s' "the landing lock was held for the whole queue budget -- this is NOT infra and the gate is NOT broken. Re-arm once the holder finishes, or raise SHIP_LOCK_TIMEOUT." ;;
+    9) printf '%s' "the landing lock was held for the whole queue budget -- this is NOT infra and the gate is NOT broken. The chain ALREADY re-armed itself for this class before it woke you (budget OC_SHIPCHAIN_REARM_MAX, default 2), so a holder still holding after that many waits is worth inspecting rather than waiting a third time: check who owns the lock, or raise SHIP_LOCK_TIMEOUT / OC_SHIPCHAIN_LOCK_WAIT for the next run." ;;
     *) printf '%s' "re-read the chain journal for the failing leg -- the cause is in its last lines, not in a flag." ;;
+  esac
+}
+
+# #78: WHICH exits may be re-armed in-tool, and which keep today's wake.
+#
+# The discriminator is NOT the exit code and NOT which leg it came from. It is
+# whether the process died BEFORE any external side effect: a re-exec from line
+# 1 is only safe while nothing outside this process is live. An rc that can
+# mean "a gate run exists" must never restart, because a fresh dispatch onto
+# the same gated ref CANCELS the in-flight run (pr-checks.yml keys its
+# concurrency group on `prchecks-${{ inputs.ref }}`), so a careless re-arm
+# destroys the very verdict it was waiting for.
+#
+# This is why the plan's shorthand -- "rc 6 AND the message names a LEG1 gate"
+# -- is NOT what is implemented here. Four of the six rc-6 sites name a LEG1
+# gate and every one of them had already touched the world (each cited by the
+# die message it emits, never by line number -- the numbers rot on the next
+# edit and a stale citation is a false receipt):
+#
+#   "gate resume failed"                 a run was LIVE, being resumed
+#   "gate rc=5 but no run id on stdout"  a run existed, we cannot name it
+#   "gate infra rc=6"                    prchecks CANCELLED-superseded
+#   "ship infra rc=..."                  LEG4 build, oc-deploy touched it
+#   "swap poll failed rc=..."            swap
+#   "swap not confirmed after 12 polls"  swap
+#
+# Only "gate infra rc=" with prchecks' own pre-dispatch codes is re-armable,
+# and those codes are the whole reason the distinction exists:
+#
+#   prchecks rc 4  dispatch api lock / dispatch refused -- NO run dispatched
+#   prchecks rc 7  carrier head unresolvable            -- NO run dispatched
+#   prchecks rc 8  AMBIGUOUS, dispatch refused          -- NO run dispatched
+#   prchecks rc 5  in-flight timeout                    -- run existed, NO
+#   prchecks rc 6  CANCELLED-superseded                 -- run existed, NO
+#
+# rc 9 (SHIP-LOCK-TIMEOUT) is the other re-armable class: the chain never got
+# past the landing lock, so nothing outside it exists at all. It is matched on
+# the CODE alone, because that exit has exactly one production site.
+#
+# Everything unlisted returns empty and keeps the current wake exactly as it
+# is. Class B (rc 7 / rc 8) is deliberately absent -- owner decision
+# 2026-11-18, and 0 of the 213 measured re-arms: their remedy is an in-leg
+# wait extension, a different mechanism, never a restart.
+chain_rearm_action() { # $1 = exit code; CHAIN_DIE_MSG + GATE_RUN_ID carry the state
+  case "${1:-}" in
+    9) printf '%s' "lock-retry" ;;
+    6) case "${CHAIN_DIE_MSG:-}" in
+         "gate infra rc=4"*|"gate infra rc=7"*|"gate infra rc=8"*)
+           # A WITNESSED run is the disqualifier, not the code. prchecks'
+           # pre-dispatch codes are safe only while no run was ever named: the
+           # rc=5 resume loop sets GATE_RUN_ID and can then die rc 4 on its own
+           # "run view failed" / "jobs fetch failed" sites, where the run very
+           # much exists. Re-dispatching there cancels the verdict we waited
+           # for. Empty GATE_RUN_ID is the only state that proves nothing was
+           # dispatched, so the code class AND this guard are both required.
+           if [ -z "${GATE_RUN_ID:-}" ]; then
+             printf '%s' "gate-redispatch"
+           fi ;;
+         *) : ;;
+       esac ;;
+    *) : ;;
   esac
 }
 
@@ -368,9 +466,84 @@ _chain_wake_arming_lane() { # $1 = exit code
   command -v oc_notify_session >/dev/null 2>&1 || return 0
   bin="$(oc_notify_resolve_bin 2>/dev/null)" || return 0
   prof="${OC_SHIPCHAIN_PROFILE:-ops}"
+  # #78: when the supervisor's budget is EXHAUSTED, the wake must say so and
+  # name the count. A wake that reads identically to a first-try failure hides
+  # the one fact the lane needs: the chain already restarted itself N times and
+  # the cause survived every restart, so it is NOT a transient queue condition.
+  # Without this the operator cannot tell "failed once" from "failed after the
+  # whole in-tool budget" -- which is precisely the judgement the wake exists
+  # to support, and the reason a silent restart would be worse than the wake.
+  # Non-numeric/absent attempts fall through to no note: the wake is still
+  # correct without it, and arithmetic inside an EXIT trap can replace the rc.
+  _rearm_note=""
+  case "${OC_SHIPCHAIN_REARM_ATTEMPT:-0}" in
+    ''|0) : ;;
+    *[!0-9]*) : ;;
+    *) _rearm_note=" This run was already RE-ARMED ${OC_SHIPCHAIN_REARM_ATTEMPT} time(s) in-tool (budget ${OC_SHIPCHAIN_REARM_MAX:-2}) and the restart did not clear it, so the cause is NOT transient." ;;
+  esac
   oc_notify_session "$bin" "$prof" "oc-ship-chain" "$uuid" \
     "SHIP-CHAIN ${CHAIN:-?}: EXITED rc=$rc" \
-    "The chain armed by this lane has STOPPED with rc=$rc. ${_state} -- ${_rem:-Re-read the chain journal for the failing leg.} Re-read the chain journal for ${SHA:-?} before re-arming. This wake exists because a settled lane is not resumed by the boot classifier." >/dev/null 2>&1 || true
+    "The chain armed by this lane has STOPPED with rc=$rc. ${_state} -- ${_rem:-Re-read the chain journal for the failing leg.} Re-read the chain journal for ${SHA:-?} before re-arming. This wake exists because a settled lane is not resumed by the boot classifier.${_rearm_note}" >/dev/null 2>&1 || true
+}
+
+# ---- #78: Class A re-arm supervisor ----------------------------------------
+# A mechanically-doomed chain used to end in a human wake: the lane read "the
+# chain armed by this lane has STOPPED", worked out that the cause was a lock
+# timeout or a pre-dispatch gate failure, and re-ran it. Measured over 213
+# re-arms, 70 were exactly that shape. This supervisor performs the restart
+# in-tool so the wake is reserved for classes that need a human.
+#
+# WHAT MAY RE-ARM IS DECIDED IN chain_rearm_action(), not here: the
+# discriminator is "did anything external already happen", which is why rc 6
+# needs an unwitnessed run (GATE_RUN_ID empty) and why Class B (rc 7/rc 8) is
+# absent by owner decision 2026-11-18.
+#
+# THE WAKE IS SUPPRESSED STRUCTURALLY: `exec` replaces this process, so the
+# `_chain_wake_arming_lane` call below it is never reached on a re-arm. There
+# is no flag to forget.
+NO_REARM=""
+_chain_rearm_supervise() { # $1 = exit code; execs on re-arm, returns 1 otherwise
+  # A signal never re-arms (#79). The operator stopped this on purpose; a
+  # supervisor that resurrects it is the very bug #79 exists to prevent.
+  [ "${CHAIN_SIGNALLED:-0}" -eq 0 ] || return 1
+  [ -z "${NO_REARM:-}" ] || return 1
+  # Never re-run the selftest suite from inside itself: argv carries
+  # --selftest, so a re-arm would fork a second full suite per failing arm.
+  local _a
+  for _a in "${CHAIN_ARGV[@]}"; do
+    [ "$_a" = "--selftest" ] && return 1
+  done
+  # HERMETICITY, and it must key on the ENVIRONMENT marker for the same reason
+  # the wake guard does (_chain_wake_arming_lane): a fixture child is launched
+  # as `bash "$SELF" --sha ... --branch feat`, whose argv carries NO --selftest
+  # token, so the loop above cannot see it. Without this the suite HANGS
+  # instead of failing -- measured 2026-11-18: a fixture child that died rc 9
+  # re-armed, ran a FULL chain against the fixture's state dir, and the suite
+  # sat on it for minutes with no output. A leg that means to assert a re-arm
+  # opts in explicitly, exactly as the wake legs do.
+  if [ "${OC_SHIPCHAIN_SELFTEST:-0}" = "1" ]; then
+    [ "${OC_SHIPCHAIN_REARM_ALLOW_SELFTEST:-0}" = 1 ] || return 1
+  fi
+  local _act _n _max
+  _act="$(chain_rearm_action "$1" 2>/dev/null)" || _act=""
+  [ -n "$_act" ] || return 1
+  # Budget is carried ACROSS the exec in the environment, because the new
+  # process re-initialises every shell variable it does not inherit.
+  _n="${OC_SHIPCHAIN_REARM_ATTEMPT:-0}"
+  _max="${OC_SHIPCHAIN_REARM_MAX:-2}"
+  # A non-numeric budget must not silently disable the bound: -lt on "abc"
+  # errors, and an error inside an EXIT trap would replace the chain's rc.
+  case "$_n"   in ''|*[!0-9]*) _n=0   ;; esac
+  case "$_max" in ''|*[!0-9]*) _max=2 ;; esac
+  [ "$_n" -lt "$_max" ] || return 1
+
+  journal "RE-ARM attempt $((_n+1))/$_max after rc=$1 — $_act"
+  oc_log_extra "rearm" "1" 2>/dev/null || true
+  oc_log_extra "rearm_attempt" "$((_n+1))" 2>/dev/null || true
+  oc_log_extra "rearm_rc" "$1" 2>/dev/null || true
+  oc_log_finish "$1" 2>/dev/null || true
+  export OC_SHIPCHAIN_REARM_ATTEMPT=$((_n+1))
+  exec bash "$SELF" "${CHAIN_ARGV[@]}"
 }
 
 _chain_exit_handler() {
@@ -380,6 +553,12 @@ _chain_exit_handler() {
   fi
   if command -v journal_summary >/dev/null 2>&1; then
     journal_summary
+  fi
+  # #78: Class A supervisor. On a re-arm this `exec`s and never returns, so the
+  # wake below is skipped by construction. `|| true` keeps a refusal (rc 1)
+  # from replacing the chain's own exit code under `set -e`.
+  if command -v _chain_rearm_supervise >/dev/null 2>&1; then
+    _chain_rearm_supervise "$rc" || true
   fi
   if command -v _chain_wake_arming_lane >/dev/null 2>&1; then
     _chain_wake_arming_lane "$rc"
@@ -635,6 +814,17 @@ PRIORITY_PROBE=0
 # (OC_SHIPCHAIN_GATE_WAIT / OC_SHIPCHAIN_SHIP_WAIT); EMPTY = not requested,
 # the only value that leaves the dispatch byte-identical to pre-#39 behaviour.
 TEST_THREADS="${OC_SHIPCHAIN_TEST_THREADS:-}"
+# #78: env form of --no-rearm, so a lane can set it for a whole session without
+# threading the flag through every invocation. Shape is validated like
+# --test-threads: a typo must die at the boundary (rc 2) rather than read as
+# "0" and silently leave the supervisor armed — an accepted-but-inert knob is
+# indistinguishable from an honoured one (the #63 class).
+case "${OC_SHIPCHAIN_NO_REARM:-}" in
+  '') : ;;
+  0) : ;;
+  1) NO_REARM=1 ;;
+  *) die "OC_SHIPCHAIN_NO_REARM needs 0 or 1 (got '$OC_SHIPCHAIN_NO_REARM')" 2 ;;
+esac
 case "$TEST_THREADS" in
   '') : ;;
   *[!0-9]*) die "OC_SHIPCHAIN_TEST_THREADS needs a non-negative integer (got '$TEST_THREADS')" 2 ;;
@@ -660,6 +850,10 @@ while [ $# -gt 0 ]; do
     --gated-sha) GATED_SHA="${2:?}"; shift 2 ;;
     --gated-run) GATED_RUN="${2:?}"; shift 2 ;;
     --fast)            FAST_GATE=1; shift ;;
+    # #78: opt out of the Class A re-arm supervisor. Two legitimate uses:
+    # a lane that wants to SEE every mechanical failure (debugging the chain
+    # itself), and an operator who wants the old wake-every-time behaviour.
+    --no-rearm)        NO_REARM=1; shift ;;
     --full|--no-fast)  FAST_GATE=0; shift ;;
     --test-threads)    shift; TEST_THREADS="${1:-}"
                        # Shape is validated HERE, not left to the callee: a
@@ -3187,20 +3381,91 @@ EOF2
   # The 600-iteration bound (30s) keeps a chain that dies before reaching the
   # lock from hanging the battery.
   mkdir -p "$T/state"
+  # (#78) A BACKGROUNDED `flock ... sleep N` IS NOT RELEASED BY KILLING ITS
+  # WRAPPER. `flock file cmd` forks, so $SUBPID is the flock and the `sleep N`
+  # child INHERITS the lock fd: `kill $SUBPID` leaves the lock HELD until the
+  # sleep expires. Measured 2026-11-15 — the 12s holder in the re-arm budget
+  # arm was still holding two arms later, where `rearm-heals-then-ships` wants
+  # rc 0 and got rc 9 (SHIP-LOCK-TIMEOUT). It passed in one run and failed in
+  # the next with no code change between them, which is the definition of a
+  # flaky arm. Kill the CHILD first (that closes the fd), then the wrapper,
+  # then verify the lock is genuinely acquirable before the next arm starts.
+  #
+  # AND ONE LEVEL OF "CHILD" IS NOT ENOUGH (measured 2026-11-18, the #78 arms):
+  # the marker-held holder is bash(script) -> flock -> bash -c, so the lock fd
+  # lives in the GRANDCHILD. Killing the flock + the script left `bash -c`
+  # running with the fd, the lock stayed held for the holder's full 300s bound,
+  # and EVERY later arm contended — `rearm-heals-then-ships` read rc 9 after two
+  # re-arms, which looks exactly like a supervisor defect and is not one. So the
+  # whole descendant tree is killed, deepest first, and a lock that outlives the
+  # drop is a RED: it makes the FOLLOWING arm contend, and a leak that reads as
+  # a subject failure is worse than no fixture at all.
+  _drop_ship_lock() {
+    local _i=0 _pids _p
+    _drop_tree() {
+      local _c
+      for _c in $(pgrep -P "$1" 2>/dev/null); do _drop_tree "$_c"; done
+      printf '%s\n' "$1"
+    }
+    _pids="$(_drop_tree "$SUBPID" 2>/dev/null || true)"
+    for _p in $_pids; do kill -TERM "$_p" 2>/dev/null || true; done
+    kill "$SUBPID" 2>/dev/null || true
+    wait "$SUBPID" 2>/dev/null || true
+    while [ "$_i" -lt 200 ]; do
+      flock -n "$T/state/ship.lock" true 2>/dev/null && return 0
+      _i=$((_i+1)); sleep 0.05
+    done
+    bad "fixture-lock-not-dropped (the holder outlived _drop_ship_lock, so every later arm contends — this is a FIXTURE leak, not a chain defect)"
+    return 0
+  }
   cat > "$T/hold-lock.sh" <<'HOLD'
 #!/usr/bin/env bash
-# $1 = fixture root (state/ lives under it), $2 = chain journal
-T="$1"; J="$2"
+# $1 = fixture root (state/ lives under it), $2 = chain journal,
+# $3 = the journal row that RELEASES the lock (default: the contention row).
+# A marker, never a stopwatch. A blind `sleep N` races the chain's startup and
+# the race has two failure shapes, both measured 2026-11-15: holder too SHORT
+# and attempt 1 never sees contention, so an arm asserting a re-arm gets rc 0
+# with NO `RE-ARM` row (`rearm-healed-attempt-journalled` read an empty journal);
+# holder too LONG and the RE-ARMED attempt times out too, so the arm that wants
+# rc 0 gets rc 9 instead (`rearm-heals-then-ships`, the pre-#78 flake).
+T="$1"; J="$2"; M="${3:-SHIP-LOCK contended}"
 flock -x "$T/state/ship.lock" bash -c '
+  # (#78) 6000 iterations x 0.05s = 300s. The bound exists only so a holder that
+  # is never dropped cannot hang the battery; it must OUTLAST a full chain run,
+  # because the arms that hold "for the whole run" release on no marker at all
+  # and are stopped by _drop_ship_lock.
   i=0
-  while [ "$i" -lt 600 ]; do
-    grep -q "SHIP-LOCK contended" "$0" 2>/dev/null && exit 0
+  while [ "$i" -lt 6000 ]; do
+    grep -qF "$1" "$0" 2>/dev/null && exit 0
     i=$((i+1)); sleep 0.05
   done
   exit 0
-' "$J"
+' "$J" "$M"
 HOLD
   chmod +x "$T/hold-lock.sh"
+  # (#78) HOLD THE LOCK ON A MARKER, NEVER ON A STOPWATCH. A fixed `sleep N`
+  # cannot express "held for the whole run": the chain's startup varies with
+  # fixture state, and once the holder expires the chain reaches a FREE lock,
+  # acquires it and SHIPS. Measured 2026-11-18 on the #78 arms: under 12s
+  # holds, `rearm-max1-exits-9` and two of the three opt-out forms shipped
+  # (rc 0, no RE-ARM row) while the FIRST opt-out form passed on the very same
+  # hold -- the arms were asserting the clock, not the supervisor, and the
+  # failure looked like a code defect in the thing being tested.
+  # The marker below never appears in the journal, so only `_drop_ship_lock`
+  # releases it; and the lock is VERIFIED held before the chain starts, because
+  # an arm whose fixture never armed is indistinguishable from one whose
+  # subject misbehaved -- both read as a legitimate red.
+  _hold_lock_until_dropped() {
+    bash "$T/hold-lock.sh" "$T" "$T/journal.log" "__never_released__" &
+    SUBPID=$!
+    local _i=0
+    while [ "$_i" -lt 200 ]; do
+      flock -n "$T/state/ship.lock" true 2>/dev/null || return 0
+      _i=$((_i+1)); sleep 0.05
+    done
+    bad "fixture-lock-never-armed (the holder did not take the lock, so this arm asserts nothing)"
+    return 1
+  }
   # The journal is cleared BEFORE the holder starts: it polls that file for the
   # contention row, so a leftover row from an earlier arm would release the lock
   # before this chain ever ran -- the same flake wearing a different hat.
@@ -3230,18 +3495,25 @@ HOLD
   # broken component and re-dispatched the gate, burning a full gate cycle for a
   # queue condition. Contention is NOT infra: the same reasoning that split rc 7
   # (gate in flight) and rc 8 (ship wait) out of rc 6.
-  flock -x "$T/state/ship.lock" sleep 5 &
-  SUBPID=$!
-  sleep 0.1
   rm -f "$T/journal.log"
+  _hold_lock_until_dropped || true
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
       OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
       OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
-      SHIP_LOCK_TIMEOUT=1 \
+      SHIP_LOCK_TIMEOUT=1 OC_SHIPCHAIN_NO_REARM=1 \
       bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
-  kill $SUBPID 2>/dev/null || true; wait $SUBPID 2>/dev/null || true
+  _drop_ship_lock
+  # (#78) NO_REARM is LOAD-BEARING here, not tidiness. This arm asserts the
+  # exit CONTRACT (a timeout is rc 9 and is labelled non-infra), and it holds
+  # the lock for 5s against a 1s budget. Once #78 taught the chain to re-arm
+  # rc 9, a re-armed attempt reaching the lock AFTER the holder released
+  # legitimately ACQUIRED it and shipped -- rc 0, measured. So the arm was
+  # racing the holder rather than testing the verdict, and it HUNG the suite:
+  # the re-armed child carried the identical argv and ran the full chain
+  # inside a fixture built only for the timeout path. The supervisor has its
+  # own arms (1c/1c1/1c2); this one pins the contract with it out of the way.
   check_rc "ship-lock-timeout-is-rc9-not-infra" "$RC" 9
   case "$OUT" in
     *"SHIP-LOCK-TIMEOUT"*) ok "ship-lock-timeout-names-itself" ;;
@@ -3265,6 +3537,277 @@ HOLD
   else
     bad "ship-lock-budget-outlasts-leg4-hold (WAIT=${_lwait:-?} budget=${_lbudg:-?})"
   fi
+
+  # 1c. #78 RE-ARM SUPERVISOR — Class A. rc 9 (lock timeout) is the only class
+  # that provably touched nothing outside this process: no gate run was
+  # dispatched, no swap started, so a restart costs one queue wait and nothing
+  # else. Measured over 213 real re-arms: 70 were this shape (lock timeout, plus
+  # pre-dispatch gate rc 4/7/8), i.e. a human was woken to be told a queue
+  # condition had already cleared itself.
+  #
+  # The DEFAULT budget is asserted here rather than pinned as a constant: this
+  # arm runs with no OC_SHIPCHAIN_REARM_MAX in the environment, so "exactly two
+  # RE-ARM rows" IS the default. An edit that raises the ceiling silently turns
+  # this red, which is the point — a bound nobody can see is not a bound.
+  #
+  # The wake count is the arm that matters most. The supervisor `exec`s BEFORE
+  # _chain_wake_arming_lane runs, so attempts 1 and 2 are suppressed by
+  # construction and only the exhausted attempt notifies. A regression that
+  # woke per attempt would send a lane three notifies for one chain — the exact
+  # storm the pre-#78 wake was already famous for.
+  cat > "$T/bin/opencrabs" <<'EOF'
+#!/usr/bin/env bash
+echo "NOTIFY-CALLED: $*" >> "${WAKELOG:-/dev/null}"
+exit 0
+EOF
+  chmod +x "$T/bin/opencrabs"
+  rm -f "$T/journal.log" "$T/wake.log"
+  _hold_lock_until_dropped || true
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+      OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+      SHIP_LOCK_TIMEOUT=1 OPENCRABS_SESSION_ID="$LEG_UUID" \
+      OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+      OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "rearm-exhausted-budget-still-exits-9" "$RC" 9
+  grep -q "RE-ARM attempt 1/2 after rc=9" "$T/journal.log" \
+    && ok "rearm-first-attempt-journalled" \
+    || bad "rearm-first-attempt-journalled: [$(grep 'RE-ARM' "$T/journal.log" 2>/dev/null | tr '\n' ' ')]"
+  grep -q "RE-ARM attempt 2/2 after rc=9" "$T/journal.log" \
+    && ok "rearm-second-attempt-journalled" || bad "rearm-second-attempt-journalled"
+  _rn="$(grep -c 'RE-ARM attempt' "$T/journal.log" 2>/dev/null || true)"
+  [ "${_rn:-0}" = 2 ] && ok "rearm-default-budget-is-two" || bad "rearm-default-budget-is-two (got ${_rn:-0})"
+  _wn="$(grep -c 'NOTIFY-CALLED' "$T/wake.log" 2>/dev/null || true)"
+  [ "${_wn:-0}" = 1 ] && ok "rearm-wakes-once-not-per-attempt" || bad "rearm-wakes-once-not-per-attempt (got ${_wn:-0})"
+  case "$(cat "$T/wake.log" 2>/dev/null)" in
+    *"rc=9"*) ok "rearm-exhausted-wake-carries-rc" ;;
+    *) bad "rearm-exhausted-wake-carries-rc: [$(cat "$T/wake.log" 2>/dev/null)]" ;;
+  esac
+  # 1c3. #78 BUDGET CARRIED ACROSS *TWO* EXECS, asserted where it is OBSERVABLE.
+  # An arm that stops at "attempt 2/2" CANNOT prove carry: a reset-to-1 mutant
+  # writes 1 at the end of attempt 1 and the correct code writes 1 too, so
+  # attempt 2 reads 2/2 either way. Measured 2026-11-18 -- the mutant left
+  # `rearm-second-attempt-journalled` GREEN while the chain re-armed 155 times.
+  # Attempt 3 is the first step where the two diverge: correct code reads 3/3
+  # and then exhausts, a reset mutant re-reads 2/3 forever and never exhausts.
+  # `timeout` bounds that mutant case (it would otherwise run to the fixture
+  # holder's own bound); the correct case finishes in seconds.
+  # The lock is re-armed for THIS arm rather than inherited from the block
+  # above: under a reset mutant that block loops until the fixture holder's own
+  # bound expires, so an inherited lock reads FREE here and the arm ships rc 0
+  # with no RE-ARM rows -- measured 2026-11-18 (`got 0` where the honest
+  # mutant answer is a non-zero count of repeated 2/3). A red for the wrong
+  # reason is not a test.
+  _drop_ship_lock
+  _hold_lock_until_dropped || true
+  rm -f "$T/journal.log" "$T/wake.log"
+  RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+      OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+      SHIP_LOCK_TIMEOUT=1 OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_REARM_MAX=3 \
+      OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+      OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      timeout 150 bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "rearm-budget3-still-exits-9" "$RC" 9
+  grep -q "RE-ARM attempt 3/3 after rc=9" "$T/journal.log" \
+    && ok "rearm-third-attempt-proves-carry" \
+    || bad "rearm-third-attempt-proves-carry: [$(grep -o 'RE-ARM attempt [0-9]*/[0-9]*' "$T/journal.log" 2>/dev/null | tr '\n' ' ')]"
+  _rn3="$(grep -c 'RE-ARM attempt' "$T/journal.log" 2>/dev/null || true)"
+  [ "${_rn3:-0}" = 3 ] && ok "rearm-budget3-arms-exactly-three" || bad "rearm-budget3-arms-exactly-three (got ${_rn3:-0})"
+  _drop_ship_lock
+
+  # 1d. #78 A RE-ARM THAT HEALS MUST NOT WAKE THE LANE -- and the control comes
+  # FIRST, because "wake.log is empty" is the single most vacuous assertion this
+  # suite could carry: it passes on a fixture that could never wake at all, on a
+  # uuid-less env, on a stub binary that was never invoked. So the same fixture
+  # is run twice, changing exactly ONE thing (the supervisor):
+  #   control : --no-rearm  -> rc 9 and EXACTLY ONE wake (the path is live)
+  #   subject : re-arm ON   -> rc 0 and ZERO wakes (the path was suppressed)
+  # The holder releases on the chain's OWN `SHIP-LOCK timeout` journal row, not
+  # on a stopwatch: attempt 1 must time out against the 2s budget, and only then
+  # does the re-armed attempt reach a free lock and ship.
+  #
+  # BOTH ARMS OPT IN TO RE-ARMING, so the pair differs in EXACTLY ONE variable
+  # (the opt-out) and the comparison attributes something. Until 2026-11-18 the
+  # control alone carried NO_REARM while the subject alone carried
+  # REARM_ALLOW_SELFTEST: two variables moved, so a control that passed proved
+  # nothing about the opt-out -- it was passing because hermeticity had already
+  # blocked the restart. A control that differs from its subject in two places
+  # is not a control. That is the owner-order
+  # shape: a queue condition that cleared itself, healed in-tool, with the lane
+  # left asleep. Release-on-timeout is what makes the arm deterministic -- a
+  # fixed hold made attempt 1's failure depend on how long the chain took to
+  # reach the lock, which is exactly what flaked.
+  rm -f "$T/wake.log"
+  # Journal cleared BEFORE the holder starts: the holder polls that file for the
+  # timeout row, so a leftover row from an earlier arm would release the lock
+  # before this chain ever ran.
+  rm -f "$T/journal.log"
+  bash "$T/hold-lock.sh" "$T" "$T/journal.log" "SHIP-LOCK timeout" &
+  SUBPID=$!
+  sleep 0.1
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+      OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+      OC_SHIPCHAIN_IN_UNIT_CGROUP=0 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 \
+      SHIP_LOCK_TIMEOUT=2 OC_SHIPCHAIN_NO_REARM=1 OPENCRABS_SESSION_ID="$LEG_UUID" \
+      OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+      OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
+  _drop_ship_lock
+  check_rc "rearm-control-without-supervisor-is-rc9" "$RC" 9
+  _wn="$(grep -c 'NOTIFY-CALLED' "$T/wake.log" 2>/dev/null || true)"
+  [ "${_wn:-0}" = 1 ] && ok "rearm-control-wake-path-is-live" \
+    || bad "rearm-control-wake-path-is-live (got ${_wn:-0}): the suppression arm below would be vacuous"
+
+  rm -f "$T/wake.log"
+  # Journal cleared BEFORE the holder starts: the holder polls that file for the
+  # timeout row, so a leftover row from an earlier arm would release the lock
+  # before this chain ever ran.
+  rm -f "$T/journal.log"
+  bash "$T/hold-lock.sh" "$T" "$T/journal.log" "SHIP-LOCK timeout" &
+  SUBPID=$!
+  sleep 0.1
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+      OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+      OC_SHIPCHAIN_IN_UNIT_CGROUP=0 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 \
+      SHIP_LOCK_TIMEOUT=2 OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 OPENCRABS_SESSION_ID="$LEG_UUID" \
+      OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
+  _drop_ship_lock
+  check_rc "rearm-heals-then-ships" "$RC" 0
+  grep -q "RE-ARM attempt 1/" "$T/journal.log" \
+    && ok "rearm-healed-attempt-journalled" \
+    || bad "rearm-healed-attempt-journalled: [$(grep 'RE-ARM' "$T/journal.log" 2>/dev/null | tr '\n' ' ')]"
+  _wn="$(grep -c 'NOTIFY-CALLED' "$T/wake.log" 2>/dev/null || true)"
+  [ "${_wn:-0}" = 0 ] && ok "rearm-healed-does-not-wake" \
+    || bad "rearm-healed-does-not-wake (got ${_wn:-0}): [$(cat "$T/wake.log" 2>/dev/null | head -2 | tr '\n' ' ')]"
+
+  # 1e. #78 THE EXHAUSTED WAKE MUST NAME THE ATTEMPT COUNT. A wake that reads
+  # identically to a first-try failure withholds the one fact the lane needs:
+  # every in-tool restart was already spent, so the cause is not transient and
+  # re-running by hand will not clear it. Budget 1 is asserted here so the count
+  # is unambiguous (1/1), and the wake text must carry it.
+  rm -f "$T/wake.log"
+  rm -f "$T/journal.log"
+  _hold_lock_until_dropped || true
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+      OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+      OC_SHIPCHAIN_IN_UNIT_CGROUP=0 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 \
+      SHIP_LOCK_TIMEOUT=1 OC_SHIPCHAIN_REARM_MAX=1 OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+      OPENCRABS_SESSION_ID="$LEG_UUID" \
+      OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      bash "$SELF" --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
+  _drop_ship_lock
+  check_rc "rearm-max1-exits-9" "$RC" 9
+  grep -q "RE-ARM attempt 1/1" "$T/journal.log" \
+    && ok "rearm-max1-journals-1-of-1" || bad "rearm-max1-journals-1-of-1"
+  grep -q "RE-ARM attempt 2/" "$T/journal.log" \
+    && bad "rearm-max1-budget-is-honoured (a 2nd attempt ran under a 1 budget)" \
+    || ok "rearm-max1-budget-is-honoured"
+  _wn="$(grep -c 'NOTIFY-CALLED' "$T/wake.log" 2>/dev/null || true)"
+  [ "${_wn:-0}" = 1 ] && ok "rearm-max1-wakes-exactly-once" || bad "rearm-max1-wakes-exactly-once (got ${_wn:-0})"
+  case "$(cat "$T/wake.log" 2>/dev/null)" in
+    *"already RE-ARMED 1 time(s) in-tool (budget 1)"*) ok "rearm-max1-wake-names-attempt-count" ;;
+    *) bad "rearm-max1-wake-names-attempt-count: [$(cat "$T/wake.log" 2>/dev/null | head -2 | tr '\n' ' ')]" ;;
+  esac
+
+  # 1c1. THE OPT-OUTS, both forms, on one lock hold. An opt-out must suppress
+  # the RESTART without also suppressing the NOTIFY: turning a self-healing
+  # chain into a silent stall is a strictly worse failure than the wake it
+  # replaces, and the rc must be identical either way (a wake is never a
+  # verdict). ONE hold across all three forms, released only by
+  # _drop_ship_lock after the loop: the hold must outlast all three runs, which
+  # is exactly what a fixed sleep cannot promise (see _hold_lock_until_dropped).
+  #
+  # THE FLAG AND ENV LEGS MUST OPT IN TO RE-ARMING (OC_SHIPCHAIN_REARM_ALLOW_SELFTEST),
+  # and that is not tidiness. Without it the HERMETICITY guard blocks the restart
+  # before the opt-out is ever consulted, so both legs pass on a build with no
+  # opt-out code at all -- measured 2026-11-18: a mutant with the
+  # `[ -z "$NO_REARM" ] || return 1` line deleted still scored 347 passed /
+  # 0 failed, i.e. the two arms were decoration. With the opt-in the ONLY thing
+  # suppressing the restart is the opt-out, and the same mutant reddens both.
+  # The `selftest` leg deliberately does NOT opt in: it asserts hermeticity on
+  # its own, which is the other guard and must stay separately proven.
+  rm -f "$T/journal.log"
+  _hold_lock_until_dropped || true
+  for _opt in flag env selftest; do
+    rm -f "$T/journal.log" "$T/wake.log"
+    RC=0
+    if [ "$_opt" = "flag" ]; then
+      OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+        OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+        OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+        SHIP_LOCK_TIMEOUT=1 OPENCRABS_SESSION_ID="$LEG_UUID" \
+        OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+        OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+        bash "$SELF" --sha "$FSHA" --branch feat --wait 5 --no-rearm 2>&1)" || RC=$?
+    elif [ "$_opt" = "env" ]; then
+      OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+        OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+        OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+        SHIP_LOCK_TIMEOUT=1 OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_NO_REARM=1 \
+        OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+        OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+        bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+    else
+      # 1c1-selftest. NEITHER opt-out is set, so the restart must be suppressed
+      # by the HERMETICITY guard alone (OC_SHIPCHAIN_SELFTEST is inherited from
+      # the suite and this leg does not pass the re-arm opt-in). Without this
+      # leg the guard is only tested by the suite not hanging, and a hang is a
+      # worthless detector: it reports nothing and costs a full re-run.
+      OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+        OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+        OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+        SHIP_LOCK_TIMEOUT=1 OPENCRABS_SESSION_ID="$LEG_UUID" \
+        OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+        bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+    fi
+    check_rc "no-rearm-$_opt-exit-code-unchanged" "$RC" 9
+    grep -q 'RE-ARM attempt' "$T/journal.log" \
+      && bad "no-rearm-$_opt-suppresses-restart" || ok "no-rearm-$_opt-suppresses-restart"
+    _wn="$(grep -c 'NOTIFY-CALLED' "$T/wake.log" 2>/dev/null || true)"
+    [ "${_wn:-0}" = 1 ] && ok "no-rearm-$_opt-still-wakes" || bad "no-rearm-$_opt-still-wakes (got ${_wn:-0})"
+  done
+  _drop_ship_lock
+
+  # 1c2. The env twin is validated AT THE ARG BOUNDARY, so a typo is a usage
+  # error and never a silently-inert knob. #63 class: an accepted-but-ignored
+  # setting is indistinguishable from an honoured one, and this one guards a
+  # restart loop — the failure mode is a chain that either storms or never
+  # heals, with no evidence either way in the log.
+  # HERMETICITY (#78): OC_SHIPCHAIN_IMPL=0 is MANDATORY on this call, for the
+  # same reason the --eval-docs-skip legs state it: the suite runs INSIDE
+  # `selftest_impl`, so a child that inherits OC_SHIPCHAIN_IMPL=1 takes the
+  # SELFTEST_MODE=2 branch (:587) and re-enters the WHOLE suite at :692.
+  # Measured 2026-11-15: without it this arm recursed instead of dying rc 2,
+  # one nested suite per level at ~8 min each, and the outer run never
+  # returned — 242 ok printed, then a hang with no summary line. `timeout`
+  # alone would have masked that: the arm would go red without ever naming
+  # the cause, and a hang is a worthless detector (it reports nothing and
+  # costs a full re-run). The bound is kept as a second line of defence.
+  RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 \
+    OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+    OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+    OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+    OC_SHIPCHAIN_NO_REARM=abc timeout 120 \
+    bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "no-rearm-env-typo-is-rc2" "$RC" 2
+  case "$OUT" in
+    *"OC_SHIPCHAIN_NO_REARM needs 0 or 1"*) ok "no-rearm-env-typo-names-itself" ;;
+    *) bad "no-rearm-env-typo-names-itself: [$OUT]" ;;
+  esac
 
   # 12. ACTOR DEFAULTING (v0.4.152 §Attribution & Goal Hygiene A1; defect fix
   # 2026-09-12, toolsmith). A tool that ALREADY KNOWS the owning session MUST
@@ -3790,6 +4333,59 @@ DRIVER
   # the annotation can be dropped by any future trap reordering and every other
   # #79 arm still passes -- the exit code is right, the label is gone.
   grep -q '"signal":"TERM"' "$T/tools-sig.log" 2>/dev/null && ok "signal-term-labelled-in-log" || bad "signal-term-labelled-in-log: $(tail -2 "$T/tools-sig.log" 2>/dev/null | tr '\n' ' ')"
+
+  # ---- #78: the re-arm classifier.
+  #
+  # The predicate under test is "did anything external happen", NOT "which leg
+  # died" -- the table above chain_rearm_action() carries the reasoning. Every
+  # vertex is asserted in BOTH directions, because the two failure modes are
+  # opposite and both silent: an over-broad arm dispatches a fresh gate onto a
+  # gated ref and CANCELS the run it was waiting for, while an over-narrow one
+  # leaves a mechanical exit waking a human for nothing. A one-directional arm
+  # would pass while the classifier drifted to either extreme.
+  _ra() { CHAIN_DIE_MSG="${1:-}"; GATE_RUN_ID="${2:-}"; chain_rearm_action "${3:-}"; }
+  _ra_ck() { # $1 = arm name, $2 = want, $3 = message, $4 = rc, $5 = gate run id
+    local got; got="$(_ra "$3" "${5:-}" "$4")"
+    [ "$got" = "$2" ] && ok "$1" || bad "$1: want '$2', got '$got' (msg='$3' rc=$4 run='${5:-}')"
+  }
+  # rc 9 = SHIP-LOCK-TIMEOUT: never got past the landing lock, nothing external.
+  _ra_ck "rearm-rc9-lock-retry" "lock-retry" "ship lock timeout" 9
+  # The three prchecks codes that provably dispatch NOTHING. These are the only
+  # rc-6 exits that may restart.
+  _ra_ck "rearm-gate-infra-4" "gate-redispatch" "gate infra rc=4" 6
+  _ra_ck "rearm-gate-infra-7" "gate-redispatch" "gate infra rc=7" 6
+  _ra_ck "rearm-gate-infra-8" "gate-redispatch" "gate infra rc=8" 6
+  # THE GUARD: the SAME pre-dispatch codes with a witnessed run must NOT
+  # re-arm. prchecks rc 4 is also reachable from the rc=5 resume loop's own
+  # "run view failed" / "jobs fetch failed" sites, where a live run exists --
+  # re-dispatching there cancels the verdict. Without these three arms the code
+  # class alone would look correct and the cancel hazard would be unmeasured.
+  _ra_ck "norearm-gate-infra-4-witnessed-run" "" "gate infra rc=4" 6 "43652761485"
+  _ra_ck "norearm-gate-infra-7-witnessed-run" "" "gate infra rc=7" 6 "43652761485"
+  _ra_ck "norearm-gate-infra-8-witnessed-run" "" "gate infra rc=8" 6 "43652761485"
+  # rc-6 exits where a run DID exist: restarting cancels the live verdict.
+  _ra_ck "norearm-gate-infra-6-cancelled" "" "gate infra rc=6" 6
+  _ra_ck "norearm-gate-resume-failed" "" "gate resume failed" 6
+  _ra_ck "norearm-gate-rc5-no-run-id" "" "gate rc=5 but no run id on stdout" 6
+  # The swap sites: LEG3/LEG4 already touched the world.
+  _ra_ck "norearm-swap-poll-failed" "" "swap poll failed rc=1" 6
+  _ra_ck "norearm-swap-not-confirmed" "" "swap not confirmed after 12 polls" 6
+  # Class B (rc 7 / rc 8) is DROPPED by owner decision 2026-11-18: 0 of 213
+  # measured re-arms. These arms pin that boundary so a later "symmetry" edit
+  # cannot quietly wire them back in.
+  _ra_ck "norearm-rc7-class-b" "" "carrier head unresolvable" 7
+  _ra_ck "norearm-rc8-class-b" "" "gate ambiguous" 8
+  # rc 5 is ONE code with eight opposite remedies -- never mechanically mapped.
+  _ra_ck "norearm-rc5" "" "gate timed out in flight" 5
+  # The default wake classes keep today's behaviour exactly.
+  _ra_ck "norearm-rc3-frozen" "" "freeze active" 3
+  _ra_ck "norearm-rc4" "" "runner killed" 4
+  _ra_ck "norearm-rc0" "" "" 0
+  # An rc-6 whose message names no prchecks code is NOT a dispatch failure: the
+  # classifier must fall through rather than treat "infra" as sufficient.
+  _ra_ck "norearm-rc6-bare-infra" "" "gate infra" 6
+  _ra_ck "norearm-rc6-empty-msg" "" "" 6
+  CHAIN_DIE_MSG=""
 
   echo "selftest: $PASS passed, $FAIL failed"
   # Contract fix 2026-09-11: was `return $?`, which returned ECHO's status (0),
