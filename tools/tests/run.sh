@@ -3627,6 +3627,7 @@ fi
 # regression in any single kind is observable without paying a fleet-wide --help
 # sweep for the second time in this battery.
 EP_DYN=0
+EP_STARVED=0
 for rel in state/oc-ledger ship/oc-deploy harvest/oc-prchecks audit/oc-lint-laws \
            smoke/oc-smoke git/oc-commit issue/oc-issue-scope notify/oc-ping-proof \
            tests/run.sh; do
@@ -3637,21 +3638,50 @@ for rel in state/oc-ledger ship/oc-deploy harvest/oc-prchecks audit/oc-lint-laws
   # run.sh has NO --help arm (it would execute the whole battery); give it a
   # cheap flag that still forces the preamble to run and then exits.
   case "$rel" in tests/run.sh) _arg="--chunk 999" ;; *) _arg="--help" ;; esac
-  # shellcheck disable=SC2086
   # BATTERY_IN_CHUNK is inherited from THIS chunk and disables the nested
   # run.sh --chunk branch (its own guard is `[ -z "${BATTERY_IN_CHUNK:-}" ]`),
   # so it would fall through and execute the whole battery. Clear it.
-  ( cd "$d" && OC_TOOLS_NOLOG=1 BATTERY_IN_CHUNK= timeout 20 "./$b" $_arg >/dev/null 2>&1 ); rc=$?
+  # A WALL clock measures scheduler time GRANTED, not work done — and since #76
+  # the battery deliberately runs its parent at nice 19 + ionice -c3 with
+  # jobs=1, so under load a HEALTHY tool gets killed here and the old branch
+  # then named the fixpoint as the cause. That is a false ACCUSATION against a
+  # tool that never hung, not a false alarm (#83). Measured 2026-11-18: healthy
+  # = 0.03-0.04s CPU (identical under nice/ionice); a real fixpoint spin =
+  # 19.8s CPU in a 20s wall. CPU is the discriminator; the 200s wall bound is
+  # only a backstop so a true runaway cannot stall the battery.
+  # shellcheck disable=SC2086
+  _rcf=$(mktemp)
+  _tout=$( { TIMEFORMAT='%U'; time ( cd "$d" && OC_TOOLS_NOLOG=1 BATTERY_IN_CHUNK= timeout -k 5 200 "./$b" $_arg >/dev/null 2>&1; printf '%s' "$?" > "$_rcf" ); } 2>&1 )
+  rc=$(cat "$_rcf"); rm -f "$_rcf"
+  _cpu=$(printf '%s\n' "$_tout" | tail -1 | tr -d ' ')
+  case "$_cpu" in ''|*[!0-9.]*) _cpu=0 ;; esac
+  _cpu_i=${_cpu%%.*}; [ -n "$_cpu_i" ] || _cpu_i=0
   if [ "$rc" -eq 0 ]; then
     :
+  elif [ "$rc" -eq 124 ] && [ "$_cpu_i" -ge 5 ]; then
+    bad "$rel: ./$b HUNG (rc=124, ${_cpu}s CPU) -- the dirname('.') fixpoint is back (#708)"
   elif [ "$rc" -eq 124 ]; then
-    bad "$rel: ./$b HUNG (rc=124) -- the dirname('.') fixpoint is back (#708)"
+    EP_STARVED=$((EP_STARVED+1))
+    note "  note - $rel: ./$b killed on WALL (${_cpu}s CPU, bound 200s) — starvation, NOT a fixpoint; INCONCLUSIVE (#83)"
   else
     bad "$rel: ./$b rc=$rc (expected 0; 124 = fixpoint hang)"
   fi
 done
-[ "$EP_DYN" -eq 9 ] && ok "relative invocation returns for all $EP_DYN sampled tool(s)" \
-  || bad "relative-invocation sample ran $EP_DYN of 9"
+if [ "$EP_DYN" -ne 9 ]; then
+  bad "relative-invocation sample ran $EP_DYN of 9"
+elif [ "$EP_STARVED" -ge "$EP_DYN" ]; then
+  # EVERY sample was killed before it returned. Zero observations is not a green
+  # verdict, it is a blind instrument: a leg that cannot see must not pass (#83).
+  # Red — but the message names the INSTRUMENT, so this is never read as a
+  # fixpoint regression the way the old wall-only branch was.
+  bad "relative invocation could NOT be verified: all $EP_DYN sampled tool(s) killed on wall starvation (<5s CPU) — the instrument was blind, not the tools (#83)"
+elif [ "$EP_STARVED" -gt 0 ]; then
+  # Never claim a starved sample RETURNED: it was killed before it could (#83).
+  ok "relative invocation returns for $((EP_DYN-EP_STARVED)) of $EP_DYN sampled tool(s)"
+  note "  note - $EP_STARVED sample(s) INCONCLUSIVE on wall starvation (<5s CPU) — not a fixpoint, not a verified return (#83)"
+else
+  ok "relative invocation returns for all $EP_DYN sampled tool(s)"
+fi
 
 # CONTROL -- two-sided, and it does NOT reuse the fleet's literal line (a fixture
 # embedding the real preamble would make the static arm above match run.sh's own
