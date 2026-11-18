@@ -388,7 +388,41 @@ _chain_exit_handler() {
     oc_log_finish $rc
   fi
 }
-trap '_chain_exit_handler' EXIT INT TERM
+# ---- #79: a signal must TERMINATE, and it must be LABELLED ------------------
+# This used to be `trap '_chain_exit_handler' EXIT INT TERM`, installed AFTER
+# lib/oc-log.sh's own `trap '... exit 143' TERM` -- and `_chain_exit_handler`
+# never calls `exit`. So on SIGTERM the chain released the landing lock,
+# journalled, woke the arming lane and finished its log row, and then RESUMED
+# execution, unlocked, mid-leg, with a wake already sent: a kill read as a
+# clean stop and was not one.
+#
+# It also leaves a supervisor blind, which is why #78 cannot ship without this:
+# with the signal indistinguishable from any other exit path, nothing
+# downstream can tell "the operator stopped this" from "this class is
+# mechanical". CHAIN_SIGNALLED is that label, and the re-arm supervisor refuses
+# to resurrect a chain carrying it.
+CHAIN_SIGNALLED=0
+_chain_signal_handler() {
+  local sig="${1:-TERM}" rc
+  case "$sig" in
+    INT) rc=130 ;;
+    *)   rc=143 ;;
+  esac
+  CHAIN_SIGNALLED=1
+  # #74 regression guard: lib/oc-log.sh installs its own TERM/INT traps that
+  # stamp extra.signal, and this handler is installed AFTER them -- so the
+  # annotation would vanish with the trap it rode on. The label is half of what
+  # #79 is for ("terminate AND be labelled"), so re-stamp it here rather than
+  # letting the fix silently drop a field another fix added.
+  oc_log_extra "signal" "$sig"
+  # The EXIT trap still runs on this exit -- release the lock, journal, wake,
+  # finish the log row -- and now sees the SIGNAL's code rather than whatever
+  # the interrupted statement would have returned.
+  exit "$rc"
+}
+trap '_chain_signal_handler INT' INT
+trap '_chain_signal_handler TERM' TERM
+trap '_chain_exit_handler' EXIT
 
 # selftest dispatch BEFORE arg parsing (avoids the unknown-arg gate)
 # impl re-entry is guarded by OC_SHIPCHAIN_IMPL to prevent exec-loop
@@ -3137,11 +3171,43 @@ EOF2
 
   # Ship Lock contention selftest:
   # Hold lock in background -> chain wait -> release lock -> chain completes
+  #
+  # The holder releases on the chain's OWN "contended" row instead of a fixed
+  # `sleep 1`. That fixed window was load-sensitive and flaked: `acquire_ship_lock`
+  # is called at :1505, i.e. AFTER preflight, sha resolution and the issue probe,
+  # so on a loaded box (measured 2026-11-18: load avg 19.4 with five peer chains
+  # running) the chain reached the lock more than a second after launch, found it
+  # already free, journalled "acquired immediately" and failed THIS arm for a
+  # reason that has nothing to do with contention -- while `...-resolved` and
+  # `...-released` still passed, which is the signature of a timing flake rather
+  # than a lock defect.
+  #
+  # Waiting for the contention row does not weaken what the arm asserts (the
+  # chain must still WAIT for the lock); it makes the observation deterministic.
+  # The 600-iteration bound (30s) keeps a chain that dies before reaching the
+  # lock from hanging the battery.
   mkdir -p "$T/state"
-  flock -x "$T/state/ship.lock" sleep 1 &
+  cat > "$T/hold-lock.sh" <<'HOLD'
+#!/usr/bin/env bash
+# $1 = fixture root (state/ lives under it), $2 = chain journal
+T="$1"; J="$2"
+flock -x "$T/state/ship.lock" bash -c '
+  i=0
+  while [ "$i" -lt 600 ]; do
+    grep -q "SHIP-LOCK contended" "$0" 2>/dev/null && exit 0
+    i=$((i+1)); sleep 0.05
+  done
+  exit 0
+' "$J"
+HOLD
+  chmod +x "$T/hold-lock.sh"
+  # The journal is cleared BEFORE the holder starts: it polls that file for the
+  # contention row, so a leftover row from an earlier arm would release the lock
+  # before this chain ever ran -- the same flake wearing a different hat.
+  rm -f "$T/journal.log"
+  bash "$T/hold-lock.sh" "$T" "$T/journal.log" &
   SUBPID=$!
   sleep 0.1
-  rm -f "$T/journal.log"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
@@ -3151,6 +3217,11 @@ EOF2
   wait $SUBPID 2>/dev/null || true
   check_rc "ship-lock-contention-resolved" "$RC" 0
   grep -q "SHIP-LOCK acquired after" "$T/journal.log" && ok "journal-ship-lock-waited" || bad "journal-ship-lock-waited"
+  # The contended row is the OTHER half of the same event: without it the chain
+  # took the lock first-try and "acquired after" would be a lie about a queue
+  # that never existed. Asserted separately so a broken contended-row is a red,
+  # not a slow pass.
+  grep -q "SHIP-LOCK contended" "$T/journal.log" && ok "journal-ship-lock-contended" || bad "journal-ship-lock-contended"
   grep -q "SHIP-LOCK released" "$T/journal.log" && ok "journal-ship-lock-released" || bad "journal-ship-lock-released"
 
   # Ship Lock TIMEOUT is rc 9, NOT rc 6 (defect fix 2026-09-19, fork #391;
@@ -3676,6 +3747,49 @@ DRIVER
   check_rc "priority-stderr-line-rc1" "$RC" 1
   grep -q 'oc-ship-chain: priority=low (nice=19' <<< "$OUT" \
     && ok "priority-stderr-names-class" || bad "priority-stderr-names-class (got: $OUT)"
+
+  # ---- #79: a SIGNAL must terminate the chain, and must be LABELLED so a
+  # supervisor can refuse to re-arm it.
+  #
+  # Before the fix `_chain_exit_handler` was trapped on `EXIT INT TERM` and
+  # never called `exit`, so SIGTERM released the landing lock, journalled, woke
+  # the arming lane, finished the log row -- and then RESUMED execution,
+  # unlocked, mid-leg, with a wake already sent. A kill read as a clean stop.
+  #
+  # The arm is built as a PAIR, because rc alone cannot discriminate: a chain
+  # that exits 143 AFTER completing its work also reads 143. The signal is sent
+  # while LEG1's gate child is still running, so a chain that resumes goes on to
+  # print the completion marker -- and its ABSENCE is what proves termination
+  # rather than a late exit.
+  rm -f "$T/journal.log" "$T/prchecks-sig.log" "$T/sig.out"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  cat > "$T/sig-driver.sh" <<'DRIVER'
+#!/usr/bin/env bash
+T="$1"; SELF="$2"; SHA="$3"
+FAKE_SLOW_GATE=2 FAKE_PRCHECKS_LOG="$T/prchecks-sig.log" \
+OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" \
+OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$T/tools-sig.log" OC_SHIPCHAIN_NO_ISSUE_PROBE=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
+  bash "$SELF" --sha "$SHA" --branch feat --wait 5 >"$T/sig.out" 2>&1 &
+pid=$!
+i=0
+while [ "$i" -lt 400 ]; do [ -s "$T/prchecks-sig.log" ] && break; i=$((i+1)); sleep 0.02; done
+kill -TERM "$pid" 2>/dev/null
+wait "$pid"
+echo "rc=$?"
+DRIVER
+  chmod +x "$T/sig-driver.sh"
+  SIGLINE="$(bash "$T/sig-driver.sh" "$T" "$SELF" "$FSHA" 2>/dev/null | tail -1)"
+  check_rc "signal-term-exit-code" "${SIGLINE#rc=}" 143
+  # The completion marker is the journal's, matching the detach arms' convention:
+  # a chain that RESUMED after the signal runs LEG2 to the end and writes it.
+  grep -q "DONE SWAPPED" "$T/journal.log" 2>/dev/null && bad "signal-term-did-not-continue" || ok "signal-term-did-not-continue"
+  # #74 preservation: the log row must still NAME the signal. Without this arm
+  # the annotation can be dropped by any future trap reordering and every other
+  # #79 arm still passes -- the exit code is right, the label is gone.
+  grep -q '"signal":"TERM"' "$T/tools-sig.log" 2>/dev/null && ok "signal-term-labelled-in-log" || bad "signal-term-labelled-in-log: $(tail -2 "$T/tools-sig.log" 2>/dev/null | tr '\n' ' ')"
 
   echo "selftest: $PASS passed, $FAIL failed"
   # Contract fix 2026-09-11: was `return $?`, which returned ECHO's status (0),
