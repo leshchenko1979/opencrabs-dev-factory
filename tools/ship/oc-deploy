@@ -830,6 +830,13 @@ case "$*" in
   *actions/runs/999/jobs*) echo '{"jobs":[{"name":"ORDER gates (2f604e56...)"}]}' ;;
   *actions/runs/998/jobs*) echo '{"jobs":[{"name":"ORDER gates (2f604e56...)"}]}' ;;
   *actions/runs/998*) echo '{"status":"completed","conclusion":"success"}' ;;
+  # #84: run 997's JOB-LIST read FAILS (HTTP 500) while its metadata read
+  # succeeds — the exact shape measured on run 44420005606 (run fetch OK, jobs
+  # fetch dead in the same gh blip). Paired with 998, which was READ fine and
+  # carries no decodable sha, so the two arms differ ONLY in whether the read
+  # succeeded. That difference is the whole fix.
+  *actions/runs/997/jobs*) echo "HTTP 500: Server Error" >&2; exit 1 ;;
+  *actions/runs/997*) echo '{"status":"completed","conclusion":"success"}' ;;
   *workflows/quick-build-linux.yml/runs*) echo '{"workflow_runs":[{"id":111}]}' ;;
   *actions/runs/222/jobs*|*actions/runs/555/jobs*|*actions/runs/789/jobs*|*actions/runs/790/jobs*|*actions/runs/791/jobs*|*actions/runs/774/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (cccccccccccccccccccccccccccccccccccccccc, telegram)"}]}' ;;
   *actions/runs/333/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (dddddddddddddddddddddddddddddddddddddddd, telegram)"}]}' ;;
@@ -1302,6 +1309,28 @@ NSTUB2
     "$SELF_BIN" fanout --run 998 2>&1)"; rc=$?
   check_rc "fanout-998-retry-rc" $rc 0
   check_has "fanout-998-retry-idempotent" "$out" "reason=done"
+  # 10f-bis. #84: an UNREADABLE jobs list is TRANSIENT — rc 3 unchanged (the
+  # contract's fan-out-infrastructure code) but NOT marked, so the next scan
+  # retries instead of the range's attribution being buried forever.
+  # The pair with 10f IS the assertion: 998 was READ and carries no sha
+  # (permanent -> marked); 997 could not be READ (transient -> unmarked).
+  # Without 10f still passing, "never marks" would pass vacuously.
+  : > "$T/gh84.log"
+  out="$(GH_LOG="$T/gh84.log" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
+    "$SELF_BIN" fanout --run 997 2>&1)"; rc=$?
+  check_rc "fanout-unreadable-rc" $rc 3
+  check_has "fanout-unreadable-note" "$out" "cannot READ the jobs list"
+  if jq -e '.runs["997"]' "$SD/fanout.state" >/dev/null 2>&1; then
+    fail=$((fail+1)); echo "SELFTEST FAIL: #84 an unreadable jobs list was MARKED done — a gh blip became a permanent, silent loss of attribution"
+  else
+    pass=$((pass+1))
+  fi
+  n1="$(grep -c 'actions/runs/997/jobs' "$T/gh84.log" 2>/dev/null || true)"
+  out="$(GH_LOG="$T/gh84.log" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
+    "$SELF_BIN" fanout --run 997 2>&1)"; rc=$?
+  check_rc "fanout-unreadable-retry-rc" $rc 3
+  n2="$(grep -c 'actions/runs/997/jobs' "$T/gh84.log" 2>/dev/null || true)"
+  [ "${n2:-0}" -gt "${n1:-0}" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #84 the retry did not re-read the jobs list (n1=${n1:-0} n2=${n2:-0}) — it was answered idempotent"; }
   # 10g. #72: gates-FIRST job ordering with the bare-sha gates name
   #      (`ORDER gates (<40-hex>)`, no comma) at jobs[0] and the build job at
   #      jobs[1] — the GREEN run is FOUND (built sha decoded), never skipped
@@ -2631,13 +2660,39 @@ decode_job_sha_any() { # $1=job name -> 40-hex sha from EITHER name shape (#72):
   oc_decode_job_sha_any "${1:-}"
 }
 
-run_built_sha() { # $1=run id -> echo sha from the FIRST job name that decodes (ANY shape, ALL jobs scanned — #72); rc 0/3
-  local jn s
+run_built_sha() { # $1=run id -> echo sha from the FIRST job name that decodes (ANY shape, ALL jobs scanned — #72); rc 0/3/5
+  # (#84) rc 3 and rc 5 are DIFFERENT FACTS and conflating them cost two fan-outs
+  # their attribution permanently. rc 3 = the jobs list was READ and no job name
+  # decodes: a statement about the RUN, permanent. rc 5 = the jobs list could not
+  # be READ: a statement about gh or this box, transient.
+  #
+  # Both used to be rc 3, because `gh api`'s stderr was discarded into a pipe: a
+  # failed read produced empty input, the loop body never ran, and the function
+  # fell out as if the run carried no decodable job. An unreadable predicate was
+  # read as a negative answer. Measured: runs 33563606624 (2026-09-01) and
+  # 44420005606 (2026-11-18) both recorded decode-error with notified=0 while a
+  # plain re-run decoded the same run seconds later.
+  #
+  # Internal code only — no user-facing rc changes. The three other callers
+  # (ship --wait candidate scans, poll) already treat empty output as "skip this
+  # candidate" and never branch on this rc.
+  local jn s jobs jobs_rc names
+  jobs="$("$GH" api "repos/$FORK/actions/runs/$1/jobs" 2>&1)"; jobs_rc=$?
+  if [ "$jobs_rc" != 0 ]; then
+    printf 'gh api jobs rc=%s: %s' "$jobs_rc" \
+      "$(printf '%s' "$jobs" | head -c 200 | tr '\n\r\t' '   ' | tr -d '"\\')" >&2
+    return 5
+  fi
+  names="$(printf '%s' "$jobs" | jq -r '.jobs[].name // empty' 2>/dev/null)"; jobs_rc=$?
+  if [ "$jobs_rc" != 0 ]; then
+    printf 'jobs payload unparseable (jq rc=%s) — read failed, not an absent sha' "$jobs_rc" >&2
+    return 5
+  fi
   while IFS= read -r jn; do
     [ -n "$jn" ] || continue
     s="$(decode_job_sha_any "$jn")" || continue
     [ -n "$s" ] && { printf '%s' "$s"; return 0; }
-  done < <("$GH" api "repos/$FORK/actions/runs/$1/jobs" 2>/dev/null | jq -r '.jobs[].name // empty')
+  done <<< "$names"
   return 3
 }
 
@@ -2904,8 +2959,19 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
   NOTIFIED=0; SKIPPED=0; UNOWNED=0
   case "$conclusion" in
     success)
-      bsha="$(decode_built_sha "$run")"
-      [ -n "$bsha" ] || { jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-decode-fail\"}"; fanout_mark_done "$run" "decode-error" 0 0 0; die 3 "fanout: cannot decode built sha for run $run (marked decode-error — will not block future scans)"; }   # #63 family (v0.4.79): mark, don't re-strike forever
+      bsha="$(decode_built_sha "$run")"; dec_rc=$?
+      if [ -z "$bsha" ] && [ "$dec_rc" = 5 ]; then
+        # (#84) TRANSIENT: the jobs list could not be READ. Marking this done
+        # would convert a gh blip into a permanent, silent loss of attribution —
+        # the state row satisfies the idempotence guard forever, so the range is
+        # never notified and every later RED scan reads it as complete. NOT
+        # marked: the next scan retries. Contrast the rc-3 arm below, which IS
+        # marked, because "the jobs list was read and carries no sha" is a fact
+        # about the run and must not be re-struck forever (#63).
+        jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-unreadable\"}"
+        die 3 "fanout: cannot READ the jobs list for run $run — NOT marked done, the next scan retries (#84)"
+      fi
+      [ -n "$bsha" ] || { jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-decode-fail\",\"cause\":\"undecodable\"}"; fanout_mark_done "$run" "decode-error" 0 0 0; die 3 "fanout: no job name decodes a built sha for run $run (marked decode-error — the run itself carries no sha)"; }   # #63 family (v0.4.79): mark, don't re-strike forever
       dep="$(head -1 "$DEPLOYED" 2>/dev/null || echo none)"
       if [ "$bsha" != "$dep" ]; then
         jline fanout-end 0 "{\"run\":\"$run\",\"reason\":\"not-deployed-yet\",\"built\":\"$bsha\",\"deployed\":\"$dep\"}"
