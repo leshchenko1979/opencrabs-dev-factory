@@ -348,6 +348,34 @@ YEOF
       *"--jq .head_sha"*) printf '%s\n' 'ffffffffffffffffffffffffffffffffffffffff' ;;
       *)                  printf '{}\n' ;;
     esac ;;
+  *"api repos/"*"/check-runs/"*"/annotations"*)
+    # #93: the ONLY witness for who cancelled a run. LIVE SHAPES measured
+    # 2026-11-19 on two runs sharing the conclusion `cancelled`:
+    #   44575574209 (deliberate caller cancel)
+    #     -> "The run was canceled by @leshchenko1979."
+    #   44552738378 (concurrency supersede)
+    #     -> "Canceling since a higher priority waiting request for
+    #         prchecks-4bad9585… exists"
+    # Both job logs print only `##[error]The operation was canceled.`, which is
+    # why the class was previously NOT-ESTABLISHED. A fetch FAILURE is its own
+    # scenario so the fail-safe leg can prove the class is left alone.
+    case "\$S" in
+      cancelled_self)    printf '["The run was canceled by @leshchenko1979."]\n' ;;
+      cancelled_bot)     printf '["The run was canceled by @github-actions[bot]."]\n' ;;
+      cancelled_annfail) exit 1 ;;
+      cancelled)
+        # POSITIVE CONTROL for the NOT-ESTABLISHED gate: this scenario PROVES a
+        # same-group superseder, so the class is already SUPERSEDED. The
+        # annotation nonetheless names a human — an ungated probe would relabel
+        # it SELF_CANCEL and the supersede leg would go red.
+        printf '["The run was canceled by @leshchenko1979."]\n' ;;
+      supersede_*)
+        # LIVE shape of a concurrency cancel: GitHub names the WAITING REQUEST,
+        # not a user. It does not match "was canceled by @", so even an ungated
+        # probe leaves it alone — the two shapes are genuinely distinguishable.
+        printf '["Canceling since a higher priority waiting request for prchecks-4bad9585d8e29edf42409f4336cbf5d70429a406 exists"]\n' ;;
+      *)                 printf '[]\n' ;;
+    esac ;;
   *"api repos/"*"git/ref/heads/"*)
     [ "\$S" = "carrier_unresolvable" ] && exit 1
     # emulate gh api --jq: the tool asks for '.object.sha', gh returns ONLY the sha
@@ -431,10 +459,28 @@ YEOF
         # otherwise both sides of the comparison read the same pin and the
         # discriminator is untestable. 900001/900002 pin aaaa; 900003 pins bbbb.
         case "\$*" in
-          *900001*) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","steps":[]}]}\n' ;;
+          *900001*) printf '{"jobs":[{"id":135742000001,"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","steps":[]}]}\n' ;;
           *900002*) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
           *900003*) printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
           *)        printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
+        esac ;;
+      cancelled)
+        # #93 POSITIVE CONTROL fixture: a cancelled job carrying an `id` so the
+        # annotation probe CAN run, with a 60s window so TIMEOUT cannot produce
+        # the class. Only the NOT-ESTABLISHED gate keeps this run SUPERSEDED.
+        case "\$*" in
+          *222*)    printf '{"jobs":[{"id":135742000099,"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","startedAt":"2026-11-19T17:17:31Z","completedAt":"2026-11-19T17:18:31Z"}]}\n' ;;
+          *)        printf '{"jobs":[{"id":135742000098,"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","startedAt":"2026-11-19T17:17:31Z","completedAt":"2026-11-19T17:18:31Z"}]}\n' ;;
+        esac ;;
+      cancelled_self|cancelled_bot|cancelled_annfail)
+        # #93 fixtures: ONE cancelled job carrying an `id` (the annotation probe
+        # keys on it) and a 60s window, so the TIMEOUT leg cannot produce this
+        # class. Every other run id answers with a DIFFERENT sha pin, so the
+        # supersede probe finds no same-group peer and SUP stays empty — the
+        # class must come from the annotation alone.
+        case "\$*" in
+          *900006*) printf '{"jobs":[{"id":135742026736,"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","startedAt":"2026-11-19T17:17:31Z","completedAt":"2026-11-19T17:18:31Z"}]}\n' ;;
+          *)        printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
         esac ;;
       cancelled_timeout|cancelled_short)
         # issue #5 fixtures. The cancelled job's own window IS the discriminator:
@@ -465,7 +511,7 @@ YEOF
     esac
     case "\$S" in
       inflight)       printf '{"status":"in_progress","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' && exit 0 ;;
-      cancelled|cancelled_timeout|cancelled_short) printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
+      cancelled|cancelled_timeout|cancelled_short|cancelled_self|cancelled_bot|cancelled_annfail) printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       supersede_*)    printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       run_failed)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       red_logged)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
@@ -660,6 +706,44 @@ do_selftest() {
   if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"JOB TIMEOUT"*) false ;; *) true ;; esac; then
     t_ok "#5: a 60s cancelled job is NOT called a timeout (elapsed discriminates)"
   else t_bad "#5: elapsed not discriminating (rc=$T_RC out=$T_OUT)"; fi
+  # #93: a DELIBERATE caller cancel used to read "cause NOT ESTABLISHED" — a
+  # receipt naming a mystery where there was none. GitHub records the canceller
+  # in the check-run ANNOTATION, the ONLY witness: the run API carries no
+  # canceller field, and every cause prints the identical job-log line
+  # `##[error]The operation was canceled.` (measured on runs 44575574209 and
+  # 44552738378). This fixture reproduces the live self-cancel shape.
+  run_t cancelled_self resume 900006
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"self-cancel"*) true ;; *) false ;; esac; then
+    t_ok "#93: caller cancel named as a SELF_CANCEL, not 'NOT ESTABLISHED'"
+  else t_bad "#93: caller cancel still a mystery (rc=$T_RC out=$T_OUT)"; fi
+  case "$T_OUT" in
+    *"concurrency-cancelled"*) t_bad "#93: a self-cancel still claims a concurrency supersede" ;;
+    *) t_ok "#93: the concurrency claim is absent for a self-cancel" ;;
+  esac
+  case "$T_OUT" in
+    *"@leshchenko1979"*) t_ok "#93: the receipt NAMES the canceller (annotation is the only source)" ;;
+    *) t_bad "#93: self-cancel receipt omits the actor: $T_OUT" ;;
+  esac
+  # A BOT attribution must NOT become a self-cancel: GitHub credits concurrency
+  # cancels to the bot, so reading that as a human's deliberate action would be
+  # the very wrong-cause claim this issue removes.
+  run_t cancelled_bot resume 900006
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"self-cancel"*) false ;; *) true ;; esac; then
+    t_ok "#93: a bot-attributed cancel is NOT read as a human self-cancel"
+  else t_bad "#93: bot attribution mislabelled as self-cancel (rc=$T_RC out=$T_OUT)"; fi
+  # FAIL-SAFE: an annotation fetch that fails leaves the class alone. A guessed
+  # cause is worse than an honest gap, which is the existing house law here.
+  run_t cancelled_annfail resume 900006
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"NOT ESTABLISHED"*) true ;; *) false ;; esac; then
+    t_ok "#93: failed annotation fetch leaves the cause NOT ESTABLISHED (no guessed cause)"
+  else t_bad "#93: annotation failure produced a guess (rc=$T_RC out=$T_OUT)"; fi
+  # POSITIVE CONTROL for the gate: this run's supersede is PROVEN and its
+  # annotation names a human. Only the NOT-ESTABLISHED gate keeps SUPERSEDED —
+  # without this arm an ungated probe would silently downgrade a proven class.
+  run_t cancelled "$SHA"
+  if [ "$T_RC" -eq 6 ] && case "$T_OUT" in *"concurrency-cancelled"*) true ;; *) false ;; esac; then
+    t_ok "#93: a PROVEN supersede outranks a human annotation (gate holds)"
+  else t_bad "#93: proven supersede downgraded by the annotation (rc=$T_RC out=$T_OUT)"; fi
   run_t run_failed "$SHA"
   if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"run-failure"*) true ;; *) false ;; esac; then
     t_ok "run conclusion failure -> 3 RED reason run-failure"
@@ -2062,6 +2146,14 @@ case "$CONCLUSION" in
     # `timeout-minutes: 45`, and NO same-group peer existed in the window).
     CANCEL_CLASS="NOT-ESTABLISHED"; CANCEL_ELAPSED=""; CANCEL_BUDGET=""
     _c_job="$(printf '%s' "$JOBS" | jq -r '[.jobs[] | select(.conclusion=="cancelled")][0] | if . == null then "" else "\(.startedAt // "")|\(.completedAt // "")" end' 2>/dev/null || true)"
+    # #93: the check-run ANNOTATION is the only witness GitHub exposes for WHO
+    # cancelled a run — the run API carries `triggering_actor` but NO canceller
+    # field, and the job logs are byte-identical for every cause
+    # (`##[error]The operation was canceled.`), which is why a deliberate caller
+    # cancel read as `cause NOT ESTABLISHED`. Read as its OWN call rather than a
+    # third field of the join above: `_c_job`'s date parse uses `${_c_job#*|}`,
+    # and a widened join would silently hand it "completedAt|id".
+    _c_job_id="$(printf '%s' "$JOBS" | jq -r '[.jobs[] | select(.conclusion=="cancelled")][0].id // ""' 2>/dev/null || true)"
     case "$_c_job" in
       ""|"|") : ;;
       *)
@@ -2105,6 +2197,24 @@ $_wf_raw2"
       fi
     fi
     if [ "$CANCEL_CLASS" != "TIMEOUT" ] && [ -n "$SUP" ]; then CANCEL_CLASS="SUPERSEDED"; fi
+    # #93: caller-initiated cancel. Gated on NOT-ESTABLISHED so it can only fill
+    # the RESIDUAL hole — a mechanically-proven TIMEOUT (elapsed vs the run's own
+    # budget) or SUPERSEDED (a later same-group run pinning MY sha) outranks an
+    # annotation, so this probe can never downgrade a proven class. Two refusals
+    # keep it from inventing a cause: a failed/empty probe leaves the class
+    # untouched (fail-safe), and a BOT attribution is rejected because GitHub
+    # credits concurrency cancels to the bot — reading that as a human's
+    # deliberate cancel would be the same wrong-cause claim this issue removes.
+    if [ "$CANCEL_CLASS" = "NOT-ESTABLISHED" ] && [ -n "$_c_job_id" ]; then
+      _c_ann="$("$GH_BIN" api "repos/$REPO/check-runs/$_c_job_id/annotations" --jq '[.[].message]|join(" ")' 2>/dev/null || true)"
+      case "$_c_ann" in
+        *"was canceled by @"*)
+          case "$_c_ann" in
+            *"github-actions"*) : ;;
+            *) CANCEL_CLASS="SELF_CANCEL" ;;
+          esac ;;
+      esac
+    fi
     oc_log_extra "verdict" "CANCELLED"
     oc_log_extra "verdict_reason" "cancel-class=$CANCEL_CLASS${CANCEL_ELAPSED:+; elapsed=${CANCEL_ELAPSED}s}${CANCEL_BUDGET:+; budget=${CANCEL_BUDGET}m}${SUP:+; superseding=$SUP}"
     case "$CANCEL_CLASS" in
@@ -2112,6 +2222,12 @@ $_wf_raw2"
         echo "VERDICT CANCELLED (run $RUN_ID hit its JOB TIMEOUT — cancelled job ran ${CANCEL_ELAPSED}s against a ${CANCEL_BUDGET}m budget; the gate did NOT complete, this is NOT a supersede)" ;;
       SUPERSEDED)
         echo "VERDICT CANCELLED (run $RUN_ID was concurrency-cancelled — superseded, not failed)" ;;
+      SELF_CANCEL)
+        # #93: name the actor. The annotation is the only place GitHub states it,
+        # so a receipt that says "a caller cancelled this" without the handle
+        # would still send a lane asking who.
+        _c_who="$(printf '%s' "$_c_ann" | sed -n 's/.*was canceled by \(@[A-Za-z0-9_.-]*\).*/\1/p' | head -1)"
+        echo "VERDICT CANCELLED (run $RUN_ID was cancelled deliberately by a caller${_c_who:+ ${_c_who}}${CANCEL_ELAPSED:+ after ${CANCEL_ELAPSED}s} — self-cancel, not a supersede and not a gate failure; the gate did NOT run to a verdict, so re-dispatch if this sha still needs one)" ;;
       *)
         echo "VERDICT CANCELLED (run $RUN_ID was cancelled${CANCEL_ELAPSED:+ after ${CANCEL_ELAPSED}s} — no same-group superseder found and no job timeout matched; cause NOT ESTABLISHED)" ;;
     esac
