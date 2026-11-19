@@ -844,7 +844,23 @@ while [ $# -gt 0 ]; do
     --branch)    BRANCH="${2:?}"; shift 2 ;;
     --issue)     ISSUE="${2:?}"; shift 2 ;;
     --issue-repo) ISSUE_REPO_FLAG="${2:?}"; shift 2 ;;
-    --repo)      REPO="${2:?}"; shift 2 ;;
+    --repo)      REPO="${2:?}"
+                 # #90: --repo is a gh SLUG, never a checkout path. A path
+                 # reaches `gh -R` verbatim, gh refuses it ("expected the
+                 # [HOST/]OWNER/REPO format"), and before this guard the
+                 # stderr was swallowed so the chain died rc 4 blaming the
+                 # RUN — sending the lane to hunt a phantom gate problem.
+                 # Fail loud at the arg boundary instead, and name the knob
+                 # that actually takes a path (the #63 class: an accepted-
+                 # but-misread knob is indistinguishable from an honoured one).
+                 case "$REPO" in
+                   /*|./*|../*|~*)
+                     die "--repo takes an owner/repo SLUG (e.g. leshchenko1979/opencrabs), not a checkout path: '$REPO'. The checkout is OC_FORK_REPO=<path>; --repo is only ever passed to gh -R." 2 ;;
+                 esac
+                 if [ -d "$REPO" ]; then
+                   die "--repo takes an owner/repo SLUG, not a directory: '$REPO' exists on disk. The checkout is OC_FORK_REPO=<path>; --repo is only ever passed to gh -R." 2
+                 fi
+                 shift 2 ;;
     --wait)      WAIT="${2:?}"; shift 2 ;;
     --gate-wait) GATE_WAIT="${2:?}"; shift 2 ;;
     --gated-sha) GATED_SHA="${2:?}"; shift 2 ;;
@@ -1344,7 +1360,16 @@ if [ -z "$GATED_RUN" ] && [ -z "$GATED_SHA" ] && [ "${OC_SHIPCHAIN_NO_DOCS_SKIP:
 elif [ -n "$GATED_RUN" ]; then
   # Verify specific run ID passed explicitly (or watch/resume it if still in flight)
   journal "LEG1 gate resume: checking run $GATED_RUN for $SHA"
-  RUN_INFO="$("$GH_BIN" run view "$GATED_RUN" -R "${REPO:-leshchenko1979/opencrabs}" --json status,conclusion,jobs -q '[.status, .conclusion, ([.jobs[]? | select(.name | contains("'"$SHA"'")) | .conclusion] | first // "no-job")] | join(" ")' 2>/dev/null || true)"
+  # #90: NEVER swallow gh's stderr here. When the call fails (bad run id,
+  # auth, unreachable API, or a malformed -R) RUN_INFO comes back EMPTY and
+  # the fall-through die below reports `run status '' != 'completed success
+  # success'` — a phantom RED on a gate that was never inspected. Capture the
+  # rc and the stderr so the failure is named for what it is.
+  RUN_ERRF="$(mktemp)"
+  RUN_RC=0
+  RUN_INFO="$("$GH_BIN" run view "$GATED_RUN" -R "${REPO:-leshchenko1979/opencrabs}" --json status,conclusion,jobs -q '[.status, .conclusion, ([.jobs[]? | select(.name | contains("'"$SHA"'")) | .conclusion] | first // "no-job")] | join(" ")' 2>"$RUN_ERRF")" || RUN_RC=$?
+  RUN_ERR="$(cat "$RUN_ERRF" 2>/dev/null || true)"
+  rm -f "$RUN_ERRF"
   case "$RUN_INFO" in
     "completed success success")
       journal "LEG1 gate pre-verified GREEN (gh run: $GATED_RUN completed success on $SHA)"
@@ -1407,6 +1432,14 @@ EOF_JOBNAMES
           # the fix would announce the carry and refuse anyway.
           ;;
         *)
+          # #90: distinguish "gh could not answer" from "the run is not green".
+          # Both used to reach this arm and both reported the same phantom
+          # status mismatch, so a lane whose -R was malformed was sent hunting
+          # a gate problem that did not exist. Only a REAL answer may be read
+          # as a verdict.
+          if [ "${RUN_RC:-0}" -ne 0 ] || [ -z "$RUN_INFO" ]; then
+            die "gated-run verification failed: 'gh run view $GATED_RUN' could not be read (rc=${RUN_RC:-?}) — ${RUN_ERR:-no stderr captured}. The run was NEVER inspected, so this is NOT a red gate. Check -R ${REPO:-leshchenko1979/opencrabs}, the run id, and gh auth." 4
+          fi
           die "gated-run verification failed: run status '$RUN_INFO' != 'completed success success'" 4
           ;;
       esac
@@ -2959,6 +2992,46 @@ EOF
   RC=0; OUT="$(OC_GH="$T/fake-gh-run-unrelated" run_chain --sha "$FSHA" --branch feat --gated-run 11111 2>&1)" || RC=$?
   check_rc "gated-run-unrelated-content" "$RC" 4
   case "$OUT" in *"LEG1 gate carried forward"*) bad "gated-run-unrelated-no-carry: carried a gate across UNRELATED content" ;; *) ok "gated-run-unrelated-no-carry" ;; esac
+
+  # 6b-repo. factory #90: --repo is a gh SLUG, never a checkout path. A path
+  # used to reach `gh -R` verbatim, gh refused it, the refusal went to
+  # /dev/null, and the chain died rc 4 reporting a phantom status mismatch on
+  # a run that was actually green. Refuse at the arg boundary, naming the knob
+  # that DOES take a path.
+  RC=0; OUT="$(OC_GH="$T/fake-gh-run" run_chain --sha "$FSHA" --branch feat --gated-run 11111 --repo /root/opencrabs-wt/857-notify-transport-cause 2>&1)" || RC=$?
+  check_rc "repo-path-refused" "$RC" 2
+  case "$OUT" in
+    *"OC_FORK_REPO"*) ok "repo-path-names-checkout-knob" ;;
+    *) bad "repo-path-names-checkout-knob: $OUT" ;;
+  esac
+  # CONTROL: the same invocation with a real slug must NOT be refused here.
+  # Without it the arm passes on a guard that rejects every --repo.
+  RC=0; OUT="$(OC_GH="$T/fake-gh-run" run_chain --sha "$FSHA" --branch feat --gated-run 11111 --repo leshchenko1979/opencrabs 2>&1)" || RC=$?
+  check_rc "repo-slug-accepted" "$RC" 0
+
+  # 6b-ghfail. When gh CANNOT ANSWER, the chain must say so and must not read
+  # the empty answer as a RED gate. Before #90 both cases reached the same die
+  # and printed `run status '' != 'completed success success'`.
+  cat > "$T/fake-gh-run-broken" <<'EOF'
+#!/usr/bin/env bash
+echo "failed to determine base repo: expected the \"[HOST/]OWNER/REPO\" format" >&2
+exit 1
+EOF
+  chmod +x "$T/fake-gh-run-broken"
+  RC=0; OUT="$(OC_GH="$T/fake-gh-run-broken" run_chain --sha "$FSHA" --branch feat --gated-run 11111 2>&1)" || RC=$?
+  check_rc "gated-run-gh-failure-rc4" "$RC" 4
+  case "$OUT" in
+    *"could not be read"*) ok "gated-run-gh-failure-named" ;;
+    *) bad "gated-run-gh-failure-named: $OUT" ;;
+  esac
+  case "$OUT" in
+    *"expected the"*) ok "gated-run-gh-failure-carries-stderr" ;;
+    *) bad "gated-run-gh-failure-carries-stderr: gh's own message was swallowed — $OUT" ;;
+  esac
+  case "$OUT" in
+    *"!= 'completed success success'"*) bad "gated-run-gh-failure-no-phantom-verdict: still reported a status mismatch for a run it never read" ;;
+    *) ok "gated-run-gh-failure-no-phantom-verdict" ;;
+  esac
 
   # 6b. gated-run with in_progress status triggers oc-prchecks resume
   cat > "$T/fake-gh-run-inprogress" <<'EOF'
