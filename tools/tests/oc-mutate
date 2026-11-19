@@ -244,7 +244,7 @@ if [ -z "$mut_fails" ]; then
   fi
 else
   n_red="$(printf '%s\n' "$mut_fails" | wc -l | tr -d ' ')"
-  if [ -n "$LEG" ] && ! printf '%s\n' "$mut_fails" | grep -qF -- "$LEG"; then
+  if [ -n "$LEG" ] && ! grep -qF -- "$LEG" <<< "$mut_fails"; then
     VERDICT="LEG-MISSED"
     printf '  LEG-MISSED — %s leg(s) went red, but not the aimed one (%s):\n' "$n_red" "$LEG"
   else

@@ -73,7 +73,7 @@ run_mut() {  # run_mut <args...> ; sets OUT, RC
 # --- 1. CAUGHT, and it names the aimed leg -----------------------------------
 run_mut state/fixture-tool 's/^GUARD=on$/GUARD=off/' --leg leg-alpha \
         --tools-src "$ST_WORK/good" --no-stamp
-if [ "$RC" = 0 ] && printf '%s' "$OUT" | grep -q 'CAUGHT' && printf '%s' "$OUT" | grep -q 'leg-alpha'; then
+if [ "$RC" = 0 ] && grep -q 'CAUGHT' <<< "$OUT" && grep -q 'leg-alpha' <<< "$OUT"; then
   ok "a mutation that reddens the aimed leg is CAUGHT (rc=0)"
 else
   bad "expected CAUGHT rc=0 naming leg-alpha, got rc=$RC"; printf '%s\n' "$OUT" | sed 's/^/     /'
@@ -85,7 +85,7 @@ fi
 # The third name is the 2026-11-19 regression: it is a GREEN leg whose label
 # contains the word FAIL. Before the fix extract_fails matched the bare token
 # and reported it red, so this arm is the one that would have caught the bug.
-if printf '%s' "$OUT" | grep -q 'leg-beta-guard-holds' || printf '%s' "$OUT" | grep -q 'leg-gamma' || printf '%s' "$OUT" | grep -q 'FAIL verdict never closes'; then
+if grep -q 'leg-beta-guard-holds' <<< "$OUT" || grep -q 'leg-gamma' <<< "$OUT" || grep -q 'FAIL verdict never closes' <<< "$OUT"; then
   bad "green legs (leg-beta-guard-holds / leg-gamma / FAIL verdict never closes) appeared in the reddened set"
 else
   ok "legs that stayed green are absent from the reddened set (incl. a FAIL-named green leg)"
@@ -94,7 +94,7 @@ fi
 # --- 3. no-op mutation is refused, never scored ------------------------------
 run_mut state/fixture-tool 's/THIS_PATTERN_IS_ABSENT/whatever/' --leg leg-alpha \
         --tools-src "$ST_WORK/good" --no-stamp
-if [ "$RC" = 1 ] && printf '%s' "$OUT" | grep -q 'NO-OP MUTATION'; then
+if [ "$RC" = 1 ] && grep -q 'NO-OP MUTATION' <<< "$OUT"; then
   ok "a mutation that changes no bytes is refused (rc=1, no verdict)"
 else
   bad "expected NO-OP rc=1, got rc=$RC"; printf '%s\n' "$OUT" | sed 's/^/     /'
@@ -103,7 +103,7 @@ fi
 # --- 4. a mutation nothing asserts is SURVIVED -------------------------------
 run_mut state/fixture-tool 's/^set -u$/set -u   # mutated/' --leg leg-alpha \
         --tools-src "$ST_WORK/good" --no-stamp
-if [ "$RC" = 1 ] && printf '%s' "$OUT" | grep -q 'SURVIVED'; then
+if [ "$RC" = 1 ] && grep -q 'SURVIVED' <<< "$OUT"; then
   ok "a mutation no leg asserts is SURVIVED (rc=1), not CAUGHT"
 else
   bad "expected SURVIVED rc=1, got rc=$RC"; printf '%s\n' "$OUT" | sed 's/^/     /'
@@ -112,7 +112,7 @@ fi
 # --- 5. the wrong aimed leg is LEG-MISSED, not a pass ------------------------
 run_mut state/fixture-tool 's/^GUARD=on$/GUARD=off/' --leg leg-beta-guard-holds \
         --tools-src "$ST_WORK/good" --no-stamp
-if [ "$RC" = 1 ] && printf '%s' "$OUT" | grep -q 'LEG-MISSED'; then
+if [ "$RC" = 1 ] && grep -q 'LEG-MISSED' <<< "$OUT"; then
   ok "a red that misses the aimed leg is LEG-MISSED (rc=1)"
 else
   bad "expected LEG-MISSED rc=1, got rc=$RC"; printf '%s\n' "$OUT" | sed 's/^/     /'
@@ -123,7 +123,7 @@ fi
 # as "the mutant was caught" is a false receipt for a guard that may not exist.
 run_mut state/fixture-tool 's/^set -u$/set -u   # mutated/' --leg leg-alpha \
         --tools-src "$ST_WORK/red" --no-stamp
-if [ "$RC" = 3 ] && printf '%s' "$OUT" | grep -q 'BASELINE RED'; then
+if [ "$RC" = 3 ] && grep -q 'BASELINE RED' <<< "$OUT"; then
   ok "a red pristine baseline is INCONCLUSIVE (rc=3), not a catch"
 else
   bad "expected BASELINE RED rc=3, got rc=$RC"; printf '%s\n' "$OUT" | sed 's/^/     /'
@@ -155,7 +155,7 @@ fi
 
 # --- 8. a missing tool is a usage error, not a verdict ----------------------
 run_mut state/no-such-tool 's/a/b/' --tools-src "$ST_WORK/good" --no-stamp
-if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep -q 'no such tool'; then
+if [ "$RC" = 2 ] && grep -q 'no such tool' <<< "$OUT"; then
   ok "a missing tool is a usage error (rc=2)"
 else
   bad "expected rc=2 for a missing tool, got rc=$RC"; printf '%s\n' "$OUT" | sed 's/^/     /'
@@ -165,7 +165,7 @@ fi
 OUT="$("$MUT" --help 2>&1)"; RC=$?
 missing=""
 for f in --leg --selftest-arg --timeout --no-stamp; do
-  printf '%s' "$OUT" | grep -q -- "$f" || missing="$missing $f"
+  grep -q -- "$f" <<< "$OUT" || missing="$missing $f"
 done
 if [ "$RC" = 0 ] && [ -z "$missing" ]; then
   ok "--help exits 0 and documents --leg/--selftest-arg/--timeout/--no-stamp"
@@ -175,7 +175,7 @@ fi
 
 # --- 10. recursion is refused ----------------------------------------------
 OUT="$(OC_MUTATE_DEPTH=1 "$MUT" state/fixture-tool 's/a/b/' --tools-src "$ST_WORK/good" --no-stamp 2>&1)"; RC=$?
-if [ "$RC" = 2 ] && printf '%s' "$OUT" | grep -q 'refusing to recurse'; then
+if [ "$RC" = 2 ] && grep -q 'refusing to recurse' <<< "$OUT"; then
   ok "a nested run is refused (rc=2)"
 else
   bad "expected recursion refusal rc=2, got rc=$RC"

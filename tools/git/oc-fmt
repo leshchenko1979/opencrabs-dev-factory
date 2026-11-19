@@ -36,12 +36,60 @@ while [ $# -gt 0 ]; do
     --check) MODE="check"; shift ;;
     --base)  [ $# -ge 2 ] || { echo "oc-fmt: --base needs a value (try --help)" >&2; exit 2; }; BASE="$2"; shift 2 ;;
     --all)   SCOPE="all"; shift ;;
+    --selftest) MODE="selftest"; shift ;;
     -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)      shift; while [ $# -gt 0 ]; do EXPLICIT="$EXPLICIT $1"; SCOPE="explicit"; shift; done ;;
     -*)      echo "oc-fmt: unknown option '$1' (try --help)" >&2; exit 2 ;;
     *)       EXPLICIT="$EXPLICIT $1"; SCOPE="explicit"; shift ;;
   esac
 done
+
+# --selftest (#T-8): prove the two base-resolution legs can actually REDDEN.
+# The defect this guards was a false clean -- a bogus --base selected nothing and
+# exited 0 -- so an arm that only checks "rc 0 on a good base" would have passed
+# throughout. Each leg below fails for its own reason, and oc-mutate can mutate
+# either one and watch it go red.
+if [ "$MODE" = "selftest" ]; then
+  _st_fail=0
+  _st_ok()  { printf 'selftest: %s OK\n' "$1"; }
+  _st_bad() { printf 'selftest: %s FAIL\n' "$1"; _st_fail=$((_st_fail + 1)); }
+  _st_repo=$(mktemp -d) || { echo "oc-fmt: selftest cannot mktemp" >&2; exit 2; }
+  (
+    cd "$_st_repo" || exit 2
+    git init -q .
+    printf 'fn main() {}\n' > a.rs
+    git add a.rs
+    git -c user.email=st@t -c user.name=st commit -qm base
+  ) >/dev/null 2>&1
+  # $0 is RELATIVE when the tool is invoked as ./oc-fmt, and the legs below cd
+  # into the fixture repo before re-invoking it -- so a bare $0 resolves to
+  # nothing there and EVERY leg fails with rc 127 (measured: exactly this).
+  # Resolve to an absolute path first.
+  _st_self=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/$(basename "$0")
+  # LEG 1: an UNRESOLVABLE base is rc 2, never a clean exit. This is the defect.
+  ( cd "$_st_repo" && "$_st_self" --base no-such-ref --check >/dev/null 2>&1 )
+  [ $? -eq 2 ] && _st_ok "an unresolvable --base exits 2" || _st_bad "an unresolvable --base exits 2"
+  # LEG 2: a base that RESOLVES with an empty diff is rc 0 and NAMES the base,
+  # so "nothing to do" can never be printed for a ref that was never read.
+  _st_out=$( cd "$_st_repo" && "$_st_self" --base HEAD --check 2>&1 )
+  _st_rc=$?
+  # POSIX sh (dash): no herestrings -- a `case` glob is the portable form.
+  case "$_st_out" in *base=HEAD*) _st_named=0 ;; *) _st_named=1 ;; esac
+  if [ "$_st_rc" -eq 0 ] && [ "$_st_named" -eq 0 ]; then
+    _st_ok "a resolved base with an empty diff exits 0 and names it"
+  else
+    _st_bad "a resolved base with an empty diff exits 0 and names it"
+  fi
+  # LEG 3: a real change is still FOUND -- the positive control. Without this a
+  # tool that refused everything would pass legs 1 and 2.
+  printf 'fn  main( ) {}\n' > "$_st_repo/a.rs"
+  ( cd "$_st_repo" && "$_st_self" --base HEAD --check >/dev/null 2>&1 )
+  [ $? -eq 1 ] && _st_ok "a changed file is still detected (rc 1)" || _st_bad "a changed file is still detected (rc 1)"
+  rm -rf "$_st_repo"
+  if [ "$_st_fail" -eq 0 ]; then printf 'selftest OK\n'; exit 0; fi
+  printf 'selftest: %s arm(s) failed\n' "$_st_fail" >&2
+  exit 1
+fi
 
 # rustfmt needs the edition the crate declares, or it cannot parse let-chains.
 EDITION=$(grep -m1 '^edition' Cargo.toml 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
@@ -61,6 +109,24 @@ case "$SCOPE" in
     FILES=$(printf '%s\n' $EXPLICIT)
     ;;
   changed)
+    # A base that does not RESOLVE is an ERROR, never an empty diff (#T-8).
+    # The old form was `MB=$(git merge-base "$BASE" HEAD 2>/dev/null || echo "$BASE")`:
+    # a bogus ref made merge-base die rc 128, the fallback substituted that bogus
+    # string as if it were a sha, every `git diff` below then failed into
+    # `2>/dev/null`, FILES came out empty, and the tool exited 0 "nothing to do".
+    # A typo in --base therefore produced a CONFIDENT CLEAN -- the one verdict a
+    # formatter must never fabricate.
+    #
+    # The fallback itself is KEPT and is still correct for the case it was
+    # written for: a base that resolves but shares no history with HEAD has no
+    # merge-base, and `git diff <that-ref>` is a meaningful tree comparison.
+    # Only an UNRESOLVABLE ref is refused, because only that one fabricates a
+    # clean from a typo.
+    if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null 2>&1; then
+      echo "oc-fmt: --base '$BASE' does not resolve to a commit — refusing to report a clean run." >&2
+      echo "oc-fmt:   (a bogus base silently selected nothing and exited 0 before #T-8)" >&2
+      exit 2
+    fi
     MB=$(git merge-base "$BASE" HEAD 2>/dev/null || echo "$BASE")
     FILES=$(
       {
