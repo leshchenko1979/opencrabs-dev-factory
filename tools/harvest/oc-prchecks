@@ -411,6 +411,14 @@ YEOF
       fmt_failed)  printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"failure"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;
       fmt_skipped) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"skipped"}]}]}\n' ;;
       job_failed)  printf '{"jobs":[{"name":"lint","conclusion":"failure","steps":[{"name":"cargo fmt","conclusion":"success"}]}]}\n' ;;
+      # #91 fixtures. The LIVE shape from run 44531344769: the advisory
+      # all-features job failed on a 40-minute step timeout while the run
+      # conclusion was success, and the gate job itself was green.
+      advisory_timeout) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"gate / PR-lane all-features tests (non-blocking)","conclusion":"failure","steps":[{"name":"Run tests (all features, advisory)","conclusion":"failure"}]}]}\n' ;;
+      # POSITIVE CONTROL for the exclusion's NARROWNESS: an advisory failure
+      # alongside a real blocking one must stay RED, naming only the blocking
+      # job. Without this, over-exclusion (a false GREEN) would pass the suite.
+      advisory_plus_blocking) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"gate / PR-lane all-features tests (non-blocking)","conclusion":"failure","steps":[]},{"name":"gate / blocking-lint","conclusion":"failure","steps":[]}]}\n' ;;
       fmt_gate_ok) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"success"},{"name":"Apply cargo fmt (fix mode)","conclusion":"skipped"},{"name":"Upload fmt-fix patch","conclusion":"skipped"}]}]}\n' ;;
       fmt_gate_failed) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"Check formatting","conclusion":"failure"}]}]}\n' ;;
       red_logged|red_nomarker|red_logfail)
@@ -543,6 +551,53 @@ do_selftest() {
     t_ok "live step names: real fmt failure -> 3 RED (soft-fail exposed)"
   else t_bad "live step names fmt failure (rc=$T_RC out=$T_OUT)"; fi
   run_t job_failed "$SHA";           [ "$T_RC" -eq 3 ] && t_ok "job failed -> 3 RED" || t_bad "job failed (rc=$T_RC)"
+  # --- #91: a workflow-declared advisory job must not RED a green run --------
+  # Measured on run 44531344769: the advisory all-features job timed out at 40
+  # min (conclusion failure) while the run concluded success, and LEG1 read RED
+  # on a green gate. The run conclusion is authoritative; an advisory job's own
+  # failure is not a gate failure.
+  run_t advisory_timeout "$SHA"
+  # NB: these are checked INDEPENDENTLY, not as one ordered glob — the advisory
+  # disclosure prints BEFORE the verdict line, so an ordered match would fail on
+  # correct output (measured: this arm reddened on its own ordering).
+  if [ "$T_RC" -eq 0 ] \
+     && printf '%s' "$T_OUT" | grep -q 'VERDICT GREEN' \
+     && printf '%s' "$T_OUT" | grep -q 'advisory job(s) NOT counted as gate failure' \
+     && printf '%s' "$T_OUT" | grep -q '(non-blocking)'; then
+    t_ok "#91 advisory job failure on a success run -> GREEN (no phantom RED)"
+  else t_bad "#91 advisory-only failure (rc=$T_RC out=$T_OUT)"; fi
+  # and it must SAY so: a silent exclusion is indistinguishable from a gate
+  # that never looked, which is the whole defect class.
+  case "$T_OUT" in
+    *"jobs-failed"*) t_bad "#91 advisory exclusion silent in the verdict reason" ;;
+    *) t_ok "#91 advisory exclusion is disclosed, not silent" ;;
+  esac
+  # POSITIVE CONTROL: the exclusion is NARROW. A blocking failure beside an
+  # advisory one must still RED, and must name ONLY the blocking job — without
+  # this arm, a pattern that excluded everything would pass the suite.
+  run_t advisory_plus_blocking "$SHA"
+  if [ "$T_RC" -eq 3 ] && case "$T_OUT" in *"blocking-lint"*) true ;; *) false ;; esac; then
+    t_ok "#91 blocking failure beside an advisory one -> still 3 RED (exclusion is narrow)"
+  else t_bad "#91 blocking+advisory (rc=$T_RC out=$T_OUT)"; fi
+  # The REASON line only. A whole-output glob would match the advisory
+  # DISCLOSURE line (which legitimately names the job) and report a defect that
+  # is not there — measured: this arm reddened on exactly that.
+  _vr="$(printf '%s' "$T_OUT" | grep -m1 '^VERDICT ')"
+  case "$_vr" in
+    *"(non-blocking)"*) t_bad "#91 RED reason names the advisory job as failed: $_vr" ;;
+    *"blocking-lint"*)  t_ok "#91 RED reason names only the blocking job" ;;
+    *)                  t_bad "#91 RED reason unreadable: $_vr" ;;
+  esac
+  # A caller-supplied pattern that does not compile must fail LOUD at the
+  # boundary. An inert regex would read as "no advisory jobs" and resurrect the
+  # phantom RED with no diagnostic at all.
+  mk_shim "$D/gh" advisory_timeout
+  T_OUT="$(OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_TOOLS_NOLOG=1 OC_PRCHECKS_ADVISORY_RE='(unclosed' "$SELF" "$SHA" 2>&1)" && T_RC=0 || T_RC=$?
+  if [ "$T_RC" -eq 2 ] && case "$T_OUT" in *"not a valid regex"*"(unclosed"*) true ;; *) false ;; esac; then
+    t_ok "#91 unparseable advisory regex -> 2 (loud, names the pattern)"
+  else t_bad "#91 bad advisory regex (rc=$T_RC out=$T_OUT)"; fi
   run_t carrier_unresolvable "$SHA"
   if [ "$T_RC" -eq 7 ] && case "$T_OUT" in *"carrier head unresolvable"*"re-run once the carrier ref resolves: oc-prchecks"*) true ;; *) false ;; esac; then
     t_ok "carrier head unresolvable -> 7 with re-run resume line"
@@ -1934,8 +1989,44 @@ VERDICT="GREEN"
 REASON=""
 case "$CONCLUSION" in
   success)
-    # tiebreak ONLY: steps/jobs with conclusion=failure fail; skipped/neutral pass
-    BAD_JOBS="$(printf '%s' "$JOBS" | jq -r '[.jobs[] | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out" or .conclusion=="startup_failure") | .name] | join(",")')"
+    # tiebreak ONLY: steps/jobs with conclusion=failure fail; skipped/neutral pass.
+    #
+    # #91 ADVISORY JOBS. A job the WORKFLOW declares non-blocking is not a gate
+    # failure, and this tiebreak used to read it as one. Measured (lane
+    # 212b3c83, run 44531344769): job `gate / PR-lane all-features tests
+    # (non-blocking)` concluded `failure` from a 40-minute step timeout while
+    # the RUN concluded `success`, and `oc-ship-chain` LEG1 read RED 19s later
+    # on a gate that was green — the lane could not ship.
+    #
+    # The tiebreak is structurally redundant in this arm and that is the point:
+    # the run conclusion is already `success` here, and that is only possible
+    # when EVERY failed job carries `continue-on-error: true`. So a failed job
+    # in a success run is non-blocking by construction; counting it as a gate
+    # failure can only ever produce a phantom RED.
+    #
+    # The discriminator is the workflow's OWN declaration, never a guess.
+    # GitHub exposes no `continue-on-error` field — verified absent from both
+    # `run view --json jobs` and the check-runs API — so the job NAME marker is
+    # the only visible carrier. The match is deliberately NARROW: over-exclusion
+    # would be a false GREEN, which is far worse than the phantom RED this
+    # fixes, and a blocking job can never be named "(non-blocking)" without the
+    # workflow itself lying. And the exclusion is PRINTED and logged — a silent
+    # exclusion is indistinguishable from a gate that never looked.
+    ADVISORY_RE="${OC_PRCHECKS_ADVISORY_RE:-\(non-blocking\)}"
+    # A bad regex must fail loud at the boundary, never silently match nothing:
+    # an inert pattern here would read as "no advisory jobs" and resurrect the
+    # phantom RED with no diagnostic at all.
+    if ! jq -n --arg re "$ADVISORY_RE" '"probe" | test($re)' >/dev/null 2>&1; then
+      echo "$PROG: OC_PRCHECKS_ADVISORY_RE is not a valid regex: '$ADVISORY_RE'" >&2
+      exit 2
+    fi
+    _BAD_SEL='[.jobs[] | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out" or .conclusion=="startup_failure")'
+    BAD_JOBS="$(printf '%s' "$JOBS" | jq -r --arg re "$ADVISORY_RE" "$_BAD_SEL"' | select(.name | test($re) | not) | .name] | join(",")')"
+    ADVISORY_JOBS="$(printf '%s' "$JOBS" | jq -r --arg re "$ADVISORY_RE" "$_BAD_SEL"' | select(.name | test($re)) | .name] | join(",")')"
+    if [ -n "$ADVISORY_JOBS" ]; then
+      echo "advisory job(s) NOT counted as gate failure (workflow-declared non-blocking; run conclusion is already success): $ADVISORY_JOBS"
+      oc_log_extra "advisory_jobs" "$ADVISORY_JOBS"
+    fi
     if [ -n "$BAD_JOBS" ]; then VERDICT="RED"; REASON="jobs-failed: $BAD_JOBS"; fi
     if printf '%s\n' "$FMT_LINES" | awk -F'\t' '$3 == "failure" { found=1 } END { exit !found }'; then
       VERDICT="RED"; REASON="${REASON:+$REASON; }fmt step FAILED (soft-fail exposed)"
