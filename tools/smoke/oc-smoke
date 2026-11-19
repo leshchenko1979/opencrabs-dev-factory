@@ -818,6 +818,62 @@ FAKEGHEOF
     t_bad "--close-repo domain check (rc=$rc out=$out)"
   fi
 
+  # (9) T-7: a probe-less PASS is UNPROVEN — it must NOT close, and must say so.
+  # Everything else here is satisfied (PASS, and the fake ledger writes a done
+  # row so LEDGER_RC=0), so the ONLY thing withholding the close is the
+  # behavioural gate. Without arm (10) this arm would also pass on a tool whose
+  # close block never runs at all, which is why the pair ships together.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 268 --evidence "structural only, no probe" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; } \
+     && case "$out" in *UNPROVEN*) true ;; *) false ;; esac \
+     && case "$out" in *"behavioral=absent"*) true ;; *) false ;; esac; then
+    t_ok "a probe-less PASS leaves the issue OPEN and states UNPROVEN (T-7)"
+  else
+    t_bad "a probe-less PASS leaves the issue OPEN and states UNPROVEN (T-7) — absent behavioural leg must not close (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # (10) POSITIVE CONTROL for T-7: `--behavioral na` is a DECLARED escape — the
+  # caller has stated the leg is structurally untestable, so it is not an
+  # unproven one and the close proceeds. This is what keeps arm (9) from being
+  # satisfiable by refusing every close.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 269 --behavioral na --evidence "declared structural N/A" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q 'issue close 269' "$d/gh.calls" \
+     && ! case "$out" in *UNPROVEN*) true ;; *) false ;; esac; then
+    t_ok "a DECLARED --behavioral na still closes — the escape is not the refusal (T-7 control)"
+  else
+    t_bad "a DECLARED --behavioral na still closes — the escape is not the refusal (T-7 control) — declared na must close (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # (11) T-7 ORDERING: --no-ledger AND no probe together. Both legs are
+  # missing, but --no-ledger withholds the close even after a probe is added,
+  # so it is the fundamental blocker and must be the one that speaks. This arm
+  # is what makes that ordering load-bearing: reverse the two elifs and the
+  # note names only the behavioural leg, telling the caller to add --probe —
+  # advice that still would not close.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 270 --no-ledger --evidence "structural only, no probe" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; } \
+     && case "$out" in *"--no-ledger means no done row"*) true ;; *) false ;; esac \
+     && case "$out" in *"ALSO absent"*) true ;; *) false ;; esac; then
+    t_ok "--no-ledger AND no probe: the receipt blocker speaks first and both legs are named (T-7 ordering)"
+  else
+    t_bad "--no-ledger AND no probe: the receipt blocker speaks first and both legs are named (T-7 ordering) — expected the --no-ledger note to lead and to disclose the absent leg (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
   echo "selftest: $pass passed, $fail failed"
   [ "$fail" -eq 0 ] && exit 0 || exit 1
 }
@@ -1158,7 +1214,19 @@ fi
 #    means CLOSED cannot be told from OPEN, and closing blind is the
 #    fabricate-on-a-guess shape the fleet refuses everywhere else — so it SKIPs
 #    with a warning rather than guessing, and says the close is owed.
-if [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$LEDGER_RC" -eq 0 ]; then
+#
+#    T-7: class (d) is behavioural-smoke-landed, so the close needs a
+#    BEHAVIOURAL receipt and not merely a green verdict. BEHAVIORAL is resolved
+#    above to `absent` when no probe ran and the caller declared nothing (#598),
+#    and a probe-less PASS proves the STRUCTURE — identity, sha, markers — while
+#    saying nothing about whether the feature works for a user. Closing on it
+#    would mark an issue resolved on evidence that never addressed the claim the
+#    issue makes. The check is PRESENCE-only: it reads the leg this run already
+#    resolved and never re-runs or re-interprets the probe, so `verified` closes,
+#    `absent` refuses, and the two DECLARED states are honoured as declared —
+#    `--behavioral na` (structurally untestable, stated) closes, because a leg
+#    the caller has explicitly ruled out is not an unproven one.
+if [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$LEDGER_RC" -eq 0 ] && [ "$BEHAVIORAL" != "absent" ]; then
   case "$ISSUE" in
     ''|*[!0-9]*)
       # ISSUE is documented as "issue number or slug". A slug cannot be closed
@@ -1204,7 +1272,31 @@ elif [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 1 
   # Stated, not silent: a PASS with --no-ledger has no receipt PAIR, so class
   # (d) does not apply and nothing closes. A quiet skip would look identical to
   # a close that ran and found the issue already closed.
+  #
+  # T-7 ORDERING: this branch precedes the UNPROVEN one ON PURPOSE. With
+  # --no-ledger AND no probe, both legs are missing, but --no-ledger withholds
+  # the close even if the probe is added — so it is the fundamental blocker and
+  # must speak first. The reverse order told the caller to add --probe, which
+  # would still not close: a refusal naming an escape that does not work is the
+  # same dead end this block exists to avoid. When both are missing, say both.
   echo "$PROG: NOTE --close skipped: --no-ledger means no done row, and class (d) needs both receipts" >&2
+  if [ "$BEHAVIORAL" = "absent" ]; then
+    echo "$PROG:       the behavioural leg is ALSO absent (behavioral=absent), so adding --probe" >&2
+    echo "$PROG:       alone would still not close: drop --no-ledger as well." >&2
+  fi
+elif [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$BEHAVIORAL" = "absent" ]; then
+  # T-7: UNPROVEN, and stated rather than skipped. A probe-less PASS leaves leg
+  # 4 unresolved, so the issue is left OPEN on purpose — the close is not
+  # withheld by an accident of configuration, it is withheld because the
+  # evidence class does not reach it. Both escapes are named, because a refusal
+  # that does not say how to satisfy it is a dead end: run the feature and pass
+  # --probe, or declare the leg structurally untestable with --behavioral na.
+  # (The done row IS present here — a --no-ledger run never reaches this branch.)
+  echo "$PROG: NOTE --close skipped: behavioural leg UNPROVEN — this PASS ran no probe" >&2
+  echo "$PROG:       (behavioral=absent), so it proves the structure and never that the feature" >&2
+  echo "$PROG:       works. Class (d) needs the behavioural receipt: re-run with --probe <cmd>," >&2
+  echo "$PROG:       or declare the leg structurally untestable with --behavioral na." >&2
+  echo "$PROG:       The issue is left OPEN deliberately; the PASS verdict row stands." >&2
 fi
 
 if [ "$VERDICT" = "PASS" ]; then

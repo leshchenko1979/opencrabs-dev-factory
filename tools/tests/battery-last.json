@@ -1,7 +1,7 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-19T19:21:06Z",
-  "pass": 417,
+  "ts": "2026-11-19T23:29:28Z",
+  "pass": 419,
   "fail": 0,
   "verdict": "PASS",
   "mode": "sequential",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r2bf2fb58b84949ea9d94eab42f3b966d.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-rf3293f8f005b4b7983def0d5a6caf890.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 2001343,
+  "wall_ms": 1079355,
   "timing": []
 }
