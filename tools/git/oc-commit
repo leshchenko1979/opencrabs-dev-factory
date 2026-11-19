@@ -127,6 +127,13 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
 JSON
   R="$d/repo"; git init -q -b main "$R"
   git -C "$R" -c user.email=t@t -c user.name=T commit -q --allow-empty -m seed
+  # (#89) The fixture's WORKING BRANCH corroborates the derived issue (#149), and
+  # that is load-bearing rather than cosmetic: once an uncorroborated derivation
+  # is refused, every leg below that expects a commit to LAND would otherwise be
+  # testing the refusal instead of what it was written to test (trailers, actor
+  # normalisation, comment routing). `main` is kept as a branch because the #89
+  # arms below need a branch that names NO issue — that is the refusal fixture.
+  git -C "$R" checkout -q -b fix/149-fixture
   OC="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"; export OC_LEDGER="$d/wl.json"
   # (#65) the probe shells out to gh. Every arm below is HERMETIC, so it is off
   # by default here and the probe arms turn it back on against a STUB binary —
@@ -177,7 +184,9 @@ exit 3
   ( cd "$R" && git checkout -q --detach && echo y > g && git add g \
       && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 3 ] || { echo "selftest: detached HEAD != 3" >&2; exit 1; }
-  ( cd "$R" && git checkout -q main && git reset -q )
+  #     (#89) restore to the fixture branch, NOT `main`: every leg below that
+  #     expects a derived ref to land relies on the branch corroborating #149.
+  ( cd "$R" && git checkout -q fix/149-fixture && git reset -q )
   # 3. nothing staged -> 3
   OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" >/dev/null 2>&1
   [ $? -eq 3 ] || { echo "selftest: nothing-staged != 3" >&2; exit 1; }
@@ -361,6 +370,10 @@ JSON
 JSON
   printf '{"workers":[{"uuid":"f1c7c0de-0000-4000-8000-000000000149","role":"editor"}],"events":[{"t":"%s","kind":"claim","by":"editor f1c7c0de-0000-4000-8000-000000000149","what":"claim #311 — fresh"}]}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$d/wl631-new.json"
+  #     (#89) These arms derive #311, so the branch must corroborate #311 rather
+  #     than the fixture's default #149 — otherwise they would exercise the
+  #     corroboration refusal instead of the AGE bound they exist to test.
+  git -C "$R" checkout -q -b fix/311-fixture
   ( cd "$R" && echo a631 > a631 && git add a631 && OC_LEDGER="$d/wl631-old.json" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>"$d/631a.err"
   _rc=$?; [ "$_rc" -eq 3 ] || { echo "selftest: #631 stale-claim derivation must REFUSE (want 3, got $_rc)" >&2; exit 1; }
   grep -q 'older than' "$d/631a.err" || { echo "selftest: #631 refusal must say the claim is TOO OLD (got: $(tr '\n' ' ' < "$d/631a.err"))" >&2; exit 1; }
@@ -377,6 +390,9 @@ JSON
   #     because SOME refusal fires, not because the age did.
   ( cd "$R" && echo c631 > c631 && git add c631 && OC_LEDGER="$d/wl631-old.json" OC_COMMIT_CLAIM_MAX_AGE_D=0 OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m test --repo "$R" ) >/dev/null 2>&1
   _rc=$?; [ "$_rc" -eq 0 ] || { echo "selftest: #631 OC_COMMIT_CLAIM_MAX_AGE_D=0 must disable the bound (want 0, got $_rc)" >&2; exit 1; }
+  #     (#89) back to the fixture branch, whose name corroborates #149 for every
+  #     leg below that expects a derivation to land.
+  git -C "$R" checkout -q fix/149-fixture
   # 6c. (#346) a message that ALREADY carries the trailers must not get them twice.
   #     git's trailer.ifexists default compares only the NEIGHBOURING trailer, so
   #     the second append (Issue-Ref) collides with a caller-supplied copy while
@@ -469,14 +485,40 @@ Full battery on the tree carrying both fixes:
   #    9c. --issue is the override and skips the cross-check entirely
   ( cd "$R" && echo m3 > m3 && git add m3 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "fix(x): land the thing (#777)" --issue 42 --no-comment --repo "$R" ) >/dev/null 2>&1
   [ $? -eq 0 ] || { echo "selftest: #501 --issue override != 0" >&2; exit 1; }
-  #    9d. NO SIGNAL -> 0. A subject with no trailing (#N) on a neutral branch
-  #        leaves the derivation standing: the check refuses on CONTRADICTION
-  #        only, never on absence. NOTE: `checkout -` is NOT neutral here — it
-  #        returns to fix/777-dup-turn, whose branch candidate would still fire
-  #        (measured while writing this leg, which is why it names main).
+  #    9d. NO SIGNAL -> 3 (#89). INVERTED from its original form, which asserted
+  #        rc 0: that leg encoded the defect. A subject with no trailing (#N) on
+  #        a neutral branch leaves the derivation standing, and the derivation is
+  #        the NEWEST open claim — a guess whenever the actor holds several. The
+  #        check now refuses on ABSENCE, not only on contradiction.
+  #        NOTE: `checkout -` is NOT neutral here — it returns to
+  #        fix/777-dup-turn, whose branch candidate would still corroborate.
   git -C "$R" checkout -q main
-  ( cd "$R" && echo m4 > m4 && git add m4 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: no ref here" --no-comment --repo "$R" ) >/dev/null 2>&1
-  [ $? -eq 0 ] || { echo "selftest: #501 no-signal must commit (rc 0)" >&2; exit 1; }
+  ( cd "$R" && echo m4 > m4 && git add m4 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: no ref here" --no-comment --repo "$R" ) >/dev/null 2>"$d/89a.err"
+  [ $? -eq 3 ] || { echo "selftest: #89-uncorroborated must REFUSE (rc 3)" >&2; exit 1; }
+  grep -q 'UNCORROBORATED' "$d/89a.err" || { echo "selftest: #89-diagnostic must name the refusal UNCORROBORATED" >&2; exit 1; }
+  grep -q -- '--issue' "$d/89a.err" || { echo "selftest: #89-diagnostic must offer --issue as the escape hatch" >&2; exit 1; }
+  grep -q -- '--session-id-only' "$d/89a.err" || { echo "selftest: #89-diagnostic must offer --session-id-only for a commit that belongs to no issue" >&2; exit 1; }
+  grep -q '#149' "$d/89a.err" || { echo "selftest: #89-diagnostic must name the ref it refused to stamp" >&2; exit 1; }
+  #    9e. POSITIVE CONTROL — the branch ALONE corroborates. Without this arm 9d
+  #        would pass identically on a tool that refused every derivation, which
+  #        is the failure mode of a "must refuse" leg with no paired pass.
+  git -C "$R" checkout -q -b fix/149-branchonly
+  ( cd "$R" && echo m5 > m5 && git add m5 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: no ref here" --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #89-branch-corroborates the branch naming the issue must satisfy the gate (rc 0)" >&2; exit 1; }
+  git -C "$R" log -1 --format=%B | grep -q "Issue-Ref: leshchenko1979/opencrabs-dev-factory#149" \
+    || { echo "selftest: #89-branch-corroborates the corroborated ref must still be stamped" >&2; exit 1; }
+  #    9f. POSITIVE CONTROL — the SUBJECT ALONE corroborates, on a neutral branch.
+  #        9e covers the branch half and this covers the subject half; a gate
+  #        reading only one of the two would pass 9d and 9e and fail here.
+  git -C "$R" checkout -q main
+  ( cd "$R" && echo m6 > m6 && git add m6 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "fix(x): land the thing (#149)" --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #89-subject-corroborates a trailing (#N) naming the issue must satisfy the gate (rc 0)" >&2; exit 1; }
+  #    9g. the gate must not fire on an EXPLICIT --issue, whatever the branch and
+  #        subject say: the caller has already named the issue, so there is
+  #        nothing to corroborate. On `main` with a subject naming nothing.
+  ( cd "$R" && echo m7 > m7 && git add m7 && OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore: no ref here" --issue 42 --no-comment --repo "$R" ) >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: #89-explicit-issue an explicit --issue must bypass the corroboration gate (rc 0)" >&2; exit 1; }
+  git -C "$R" checkout -q fix/149-fixture
   # 10. (#728) --session-id-only: Session-Id ALONE — no Issue-Ref, no comment.
   #     The fixture ledger carries an OPEN claim for #149, so the derivation IS
   #     available in every leg below. That is what makes 10c a real control: the
@@ -670,6 +712,21 @@ if [ "$ISSUE_EXPLICIT" = 0 ] && [ "$SESSION_ID_ONLY" = 0 ]; then
   _br_issue="$(printf '%s' "$_br" | grep -oE '(feat|fix|ci|chore|test|docs|refactor)/[0-9]+-' | tail -n 1 | grep -oE '[0-9]+' || true)"
   _subj="$(printf '%s' "$MBODY" | head -n 1 | sed 's/[[:space:]]*$//')"
   _subj_issue="$(printf '%s' "$_subj" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9' || true)"
+  # #89: CORROBORATION, not merely non-contradiction. The #501 check above only
+  # refuses when a commit's own words DISAGREE with the derived ref; when they
+  # say nothing at all it stays silent and the derivation stands unexamined.
+  # That is the same guess with the alarm removed: `claim-ref --open` returns the
+  # actor's NEWEST open claim, so a lane holding several claims stamps whichever
+  # it touched last onto work that never mentions it. Measured 2026-11-19
+  # (commit 27ae3252 -> f75a87a3): a tools commit derived an Issue-Ref from an
+  # unrelated open claim and the per-commit note was posted onto that issue.
+  # A durable false provenance record in git history outlives the commit, so the
+  # absence of any signal is a REFUSAL, not a licence: the branch naming the
+  # issue, or the subject's trailing (#N), must AGREE with the derived ref.
+  # `--issue N` remains the one-word override, and --session-id-only remains the
+  # declaration that the commit belongs to no issue at all.
+  _corrob=0
+  if [ "$_br_issue" = "$ISSUE" ] || [ "$_subj_issue" = "$ISSUE" ]; then _corrob=1; fi
   _conflict=""
   for _c in "$_br_issue" "$_subj_issue"; do
     [ -n "$_c" ] || continue
@@ -682,6 +739,15 @@ if [ "$ISSUE_EXPLICIT" = 0 ] && [ "$SESSION_ID_ONLY" = 0 ]; then
     echo "          branch '$_br' · subject '$_subj'" >&2
     echo "          the derivation takes the NEWEST open claim, which is a guess with several held." >&2
     echo "          pass --issue <N> to commit against the intended issue explicitly (#501)." >&2
+    exit 3
+  fi
+  if [ "$_corrob" = 0 ]; then
+    echo "gate-fail: derived Issue-Ref #$ISSUE is UNCORROBORATED — nothing in this commit names it (#89)" >&2
+    echo "          branch '$_br' · subject '$_subj'" >&2
+    echo "          the derivation takes the NEWEST open claim, which is a guess whenever several are held," >&2
+    echo "          and a durable false Issue-Ref outlives the commit that carries it." >&2
+    echo "          pass --issue <N> to commit against the intended issue, or --session-id-only" >&2
+    echo "          if this commit belongs to no issue at all." >&2
     exit 3
   fi
 fi
