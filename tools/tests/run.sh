@@ -2071,7 +2071,9 @@ if tool oc-ledger; then
   wait "$HLD" 2>/dev/null
   [ "$R1" -eq 4 ] && ok "#619: a 1s waiter budget times out with rc 4" || bad "#619: want rc 4, got $R1"
   case "$O1" in *"after 1s"*) ok "#619: the refusal names the budget it used" ;; *) bad "#619: refusal does not name the budget: $(printf '%s' "$O1" | head -1)" ;; esac
-  case "$O1" in *"worst case 32s"*) ok "#619: budget disclosed as 2x1s push + 30s non-push = 32s" ;; *) bad "#619: want worst case 32s, got: $(printf '%s' "$O1" | head -1)" ;; esac
+  # (#95) git no longer runs under the ledger lock, so the budget is no longer
+  # derived from TWO in-lock pushes: one bounded I/O (_OC_PUSH_TIMEOUT) + 30s.
+  case "$O1" in *"worst case 31s"*) ok "#619/#95: budget disclosed as 1s bounded I/O + 30s = 31s" ;; *) bad "#619/#95: want worst case 31s, got: $(printf '%s' "$O1" | head -1)" ;; esac
   # (b) DERIVATION: raise the push bound and the reported worst case must move with
   # it. This is the invariant the defect broke -- an operator could widen the holder
   # without touching the waiter, driving the two arbitrarily far apart.
@@ -2079,7 +2081,32 @@ if tool oc-ledger; then
   HLD=$!; sleep 0.5
   O2="$(OC_LEDGER_LOCK_WAIT=1 OC_LEDGER_PUSH_TIMEOUT=10 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$LB/l.json" stamp note "b" --by "hq probe" 2>&1)"
   wait "$HLD" 2>/dev/null
-  case "$O2" in *"worst case 50s"*) ok "#619: budget TRACKS the push bound (10s -> 50s)" ;; *) bad "#619: budget did not track the push bound: $(printf '%s' "$O2" | head -1)" ;; esac
+  case "$O2" in *"worst case 40s"*) ok "#619/#95: budget TRACKS the bounded I/O (10s -> 40s)" ;; *) bad "#619/#95: budget did not track the I/O bound: $(printf '%s' "$O2" | head -1)" ;; esac
+  # ---- #95: GIT MUST NOT RUN UNDER THE LEDGER LOCK -------------------------
+  # The discriminating leg: a SLOW git tail must not delay a second appender.
+  # A 3s pre-commit hook makes _git_state_commit_now slow; the second stamp runs
+  # with a 1s waiter budget. If git still ran inside the fleet flock, stamp #2
+  # would die rc 4 ("lock timeout after 1s"). rc 0 proves the lock was released
+  # before the tail. The CONTROL is the (c) leg above: same invocation, free lock.
+  GB="$(mktemp -d)"; git -C "$GB" init -q 2>/dev/null
+  printf '{"workers":[],"events":[]}' > "$GB/l.json"
+  printf '#!/bin/sh\nsleep 3\n' > "$GB/.git/hooks/pre-commit"; chmod +x "$GB/.git/hooks/pre-commit"
+  git -C "$GB" add l.json 2>/dev/null; git -C "$GB" -c user.email=t@t -c user.name=t commit -q -m init 2>/dev/null
+  OC_LEDGER_GIT_TAIL_WAIT=20 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
+    stamp note "slow-tail holder" --by "hq probe" >/dev/null 2>&1 &
+  SLP=$!; sleep 1
+  O3="$(OC_LEDGER_LOCK_WAIT=1 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
+    stamp note "concurrent appender" --by "hq probe" 2>&1)"; R3=$?
+  [ "$R3" -eq 0 ] && ok "#95: a 3s git tail does NOT block a concurrent appender (rc 0)" \
+    || bad "#95: concurrent appender blocked by the git tail (rc $R3): $(printf '%s' "$O3" | head -1)"
+  wait "$SLP" 2>/dev/null
+  # The holder's own row must have landed despite the slow tail: durability is
+  # the append, not the commit. NOTE the field is `what` (stamp note writes
+  # {n,t,by,kind,what}), and it is null-guarded: `.detail` does not exist and a
+  # bare test() dies on null, which would make this leg pass on an EMPTY ledger.
+  [ "$(jq -r '[.events[]? | select((.what // "") | test("slow-tail holder"))] | length' "$GB/l.json" 2>/dev/null)" -ge 1 ] \
+    && ok "#95: the slow-tail holder's row is durable" || bad "#95: slow-tail holder's row is MISSING"
+  rm -rf "$GB"
   rm -rf "$LB"
 fi
 

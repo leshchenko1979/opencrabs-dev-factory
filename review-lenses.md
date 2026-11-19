@@ -63,6 +63,11 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      branch — not word-trimming).
      PLUS the CACHE test (vocabulary refresh 2026-09-10, upstream
      writing-for-agents f054def): the environment is a source of truth too
+     BOUNDARY (I-2 v0.4.320): B weighs references as LOAD-WEIGHT only and never
+     concludes on reachability — a grep showing no dangling pointers answers
+     "nothing points at the old line", NOT "the load path is intact". G owns
+     every load-path verdict (see its LOAD-PATH MANDATE below); B reports what a
+     reference costs and stops there.
      (config files, scripts, directory layout, --help) and a document that
      restates it is a cache — a copy of a lookup earning its load only when
      the lookup is expensive; cache what the agent cannot find by looking
@@ -287,7 +292,12 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      in this file (A–J) still matches what its reviewer actually checked in
      the latest persisted report (scope drift, stale check classes), (2)
      OVERLAP — findings double-covered by two lenses, or coverage GAPS where
-     no lens owns an artifact class, (3) FALSE-POSITIVE/NEGATIVE HISTORY —
+     no lens owns an artifact class; **and any FIX that names a MEASURED NUMBER
+     must name the lens/report that verified it first-hand** (I-1 v0.4.320) —
+     two briefs can each be internally correct and prescribe incompatible
+     figures for one rule (A-5 wrote a withdrawn 300 s envelope while F-7 had
+     read 480 s off the carrier); the number that wins is the one measured
+     against the deployed artifact, never the one typed from memory, (3) FALSE-POSITIVE/NEGATIVE HISTORY —
      the CORRECTION rows in `workers-ledger.json` (vocabulary
      `WITHDRAWN|REVOKED|SELF-CORRECTION|FALSIFIED` over the `what`/`by`/`kind`
      fields; re-derive the count at read time — the ledger grows every turn).

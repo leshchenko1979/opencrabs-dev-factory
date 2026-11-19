@@ -513,7 +513,52 @@ state_out_of_scope_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a g
   return 0
 }
 
-git_state_commit() { # $1=message — inside lock; never fatal
+# ---- #95: git runs OUTSIDE the fleet-wide ledger lock -----------------------
+# `git_state_commit` used to be called from INSIDE every `_*_locked` helper, i.e.
+# while the exclusive flock on $LEDGER.lock was held. That made the HOLDER's
+# worst case a state-repo commit plus two bounded pushes, so one saturated disk
+# froze the ledger for EVERY lane. Measured 2026-11-19: the lock was held 25
+# minutes while `git status` sat in D-state under io pressure (some avg300=84.59),
+# with 18 lanes queued behind it and their stamps dying rc=4 — and the writes
+# that "never landed" were simply never attempted. #641 fixed the *fd
+# inheritance* half (children outliving the parent) but left git inside the
+# lock, which is the root cause. #80 (a 19.4MB tools.log committed per row) and
+# #81 (a waiter budget 60s short of the holder's worst case) are its symptoms.
+#
+# The lock now protects the LEDGER ONLY: append + fsync, release, then the git
+# tail runs under its OWN lock ($LEDGER.git-tail.lock). A lane's row is durable
+# the moment its append lands, so a slow state repo can no longer cost another
+# lane its journal trail. The tail stays serialised — two concurrent appends
+# still commit in a defined order — but nobody waits for it to keep their row.
+_OC_GIT_PENDING=()
+_OC_IN_LOCK=0
+
+git_state_commit() { # $1=message — DEFERRED when called under the ledger lock (#95)
+  if [ "$_OC_IN_LOCK" = "1" ]; then
+    _OC_GIT_PENDING+=("$1")
+  else
+    _git_state_commit_now "$1"
+  fi
+}
+
+_oc_flush_git_tail() { # runs AFTER $LEDGER.lock is released; never fatal
+  [ "${#_OC_GIT_PENDING[@]}" -gt 0 ] || return 0
+  local m n="${#_OC_GIT_PENDING[@]}" wait="${OC_LEDGER_GIT_TAIL_WAIT:-60}"
+  if ! exec 8>>"$LEDGER.git-tail.lock"; then
+    echo "git-tail: cannot open $LEDGER.git-tail.lock — $n state commit(s) deferred; THE LEDGER ROW IS SAFE (already appended and fsynced)" >&2
+    _OC_GIT_PENDING=(); return 0
+  fi
+  if ! flock -w "$wait" 8; then
+    echo "git-tail: state-repo tail busy after ${wait}s — $n state commit(s) deferred; THE LEDGER ROW IS SAFE (already appended and fsynced). Raise with OC_LEDGER_GIT_TAIL_WAIT." >&2
+    exec 8>&-; _OC_GIT_PENDING=(); return 0
+  fi
+  for m in "${_OC_GIT_PENDING[@]}"; do _git_state_commit_now "$m"; done
+  _OC_GIT_PENDING=()
+  exec 8>&-
+  return 0
+}
+
+_git_state_commit_now() { # $1=message — the commit/sweep/push tail itself; never fatal
   local sd; sd="$(STATE_DIR)"
   [ -d "$sd/.git" ] || return 0
   if git -C "$sd" add "$(basename "$LEDGER")" 2>/dev/null \
@@ -670,20 +715,21 @@ with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
   local rc; exec 9>"$LEDGER.lock"
   # (#619) The waiter budget must EXCEED the holder's worst case, or a normal
   # ship storm starves concurrent appends and DROPS JOURNAL ROWS SILENTLY.
-  # The holder (git_state_commit) pushes TWO repos under this same lock --
-  # push_backlog_if_due "$sd" state and "$SKILL_DIR" skill, both from the #524
-  # durability fix -- each bounded by $_OC_PUSH_TIMEOUT, so its worst case is
-  # 2x that bound. A flat 30 was HALF the holder's worst case, and the
-  # asymmetry is structural: the push bound is tunable (OC_LEDGER_PUSH_TIMEOUT)
-  # while the waiter budget was not, so an operator raising the former widened
-  # the holder without touching the waiter. Measured consequence (2026-09-26,
-  # 3 occurrences in one lane's chain logs): "ledger journaling FAILED (rc=4)
-  # ... 3 journal line(s) lost", the first lost line being "LEG1 gate GREEN".
-  # Derived, so the invariant holds by construction; +30 for the non-push work
-  # (sweep + commit) that also runs inside the hold.
-  _OC_LOCK_WORST=$(( 2 * _OC_PUSH_TIMEOUT + 30 ))
+  # (#95) THAT PREMISE CHANGED, so the derivation changed with it: the pushes no
+  # longer run under this lock at all (git_state_commit defers into _OC_GIT_PENDING
+  # and _oc_flush_git_tail runs AFTER `exec 9>&-`), so the holder is no longer
+  # bounded by the network. What remains inside is atomic_jq: one read+write over
+  # a multi-MB ledger. Measured 2026-11-19 on the live 6,381,816-byte ledger:
+  # 0.45s / 0.51s / 0.57s over three passes. Even a saturated disk inflating that
+  # by an order of magnitude stays far inside the old 2x-push bound, so the budget
+  # is re-derived DOWN to a single bounded I/O operation (_OC_PUSH_TIMEOUT stays
+  # the fleet's unit for that) plus 30s of slack. Keeping the inflated 2x form
+  # would leave every waiter asleep 90s for work that now takes half a second --
+  # which is #81's complaint from the other side.
+  _OC_LOCK_WORST=$(( _OC_PUSH_TIMEOUT + 30 ))
   _OC_LOCK_WAIT="${OC_LEDGER_LOCK_WAIT:-$_OC_LOCK_WORST}"
-  flock -w "$_OC_LOCK_WAIT" 9 || die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_WAIT}s (own worst case ${_OC_LOCK_WORST}s = 2x push bound ${_OC_PUSH_TIMEOUT}s + 30s non-push; a LONGER wait means a pre-#641 holder still holds it via an inherited fd — raise with OC_LEDGER_LOCK_WAIT)"
+  flock -w "$_OC_LOCK_WAIT" 9 || die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_WAIT}s (own worst case ${_OC_LOCK_WORST}s = one bounded I/O ${_OC_PUSH_TIMEOUT}s + 30s; git does NOT run under this lock since #95, so a timeout means real contention, a pre-#641 inherited fd, or a holder stuck on I/O — raise with OC_LEDGER_LOCK_WAIT)"
+  _OC_IN_LOCK=1
   # #641 (measured 2026-09-27): `9>&-` is LOAD-BEARING, not tidiness. bash does not
   # set close-on-exec on fds > 2, so a child spawned inside the lock INHERITS fd 9,
   # and flock is released only when the LAST fd on the open file description closes.
@@ -692,8 +738,17 @@ with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
   # 2.7 GB repo (three lanes timed out at 90s/180s/240s while it held), which is a
   # fleet-wide claim/stamp stall. Closing the fd for the work bounds the hold to
   # oc-ledger's own runtime, which is what the wait is derived from.
+  # (#95) The flag brackets ONLY the work: it goes up after the lock is held and
+  # down before the release, so anything a _*_locked helper hands to
+  # git_state_commit is queued rather than committed under the fleet flock.
   "$@" 9>&-; rc=$?
+  _OC_IN_LOCK=0
   exec 9>&-
+  # (#95) The git tail runs HERE, after the lock is released. It is bounded and
+  # non-fatal by construction (its own $LEDGER.git-tail.lock, never fatal), so a
+  # slow or saturated disk delays the commit but cannot fail the append and
+  # cannot hold the fleet lock while it waits.
+  _oc_flush_git_tail
   return $rc
 }
 
@@ -2994,12 +3049,22 @@ FIXTURE
   # rather than on the tool (measured 2026-09-26). The BEHAVIOURAL coverage lives
   # in tools/tests/run.sh ("oc-ledger lock budget (#619)"): it holds the lock and
   # varies the push bound, which a grep cannot do.
-  _p_derived='_OC_LOCK_WOR''ST=$(( 2 * _OC_PUSH_TIMEOUT'
+  _p_derived='_OC_LOCK_WOR''ST=$(( _OC_PUSH_TIMEOUT'
   chk "lock-wait-derived-not-flat" "1" "$(grep -cF "$_p_derived" "$ME")"
   _p_tunable='_OC_LOCK_WAIT="${OC_LEDGER_LOCK_''WAIT'
   chk "lock-wait-tunable" "1" "$(grep -cF "$_p_tunable" "$ME")"
   _p_die='die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_''WAIT}s'
   chk "lock-die-names-worst-case" "1" "$(grep -cF "$_p_die" "$ME")"
+  # (#95) The budget must NOT be push-shaped any more: git left the lock, so the
+  # 2x-push derivation is a STALE premise. Built by concatenation (see above) so
+  # this leg cannot satisfy itself; asserting ZERO is what makes it discriminating
+  # -- a future edit that reintroduces the doubled form reddens here.
+  _p_2x='$(( 2 * _OC_PUSH''_TIMEOUT'
+  chk "lock-budget-not-push-shaped" "0" "$(grep -cF "$_p_2x" "$ME")"
+  _p_flag_on='_OC_IN_LO''CK=1'
+  chk "git-tail-flag-set-under-lock" "1" "$(grep -cF "$_p_flag_on" "$ME")"
+  _p_flag_off='_OC_IN_LO''CK=0'
+  chk "git-tail-flag-cleared" "2" "$(grep -cF "$_p_flag_off" "$ME")"
   git init -q --bare "$T/mirror2.git"
   git -C "$T/state" remote remove origin 2>/dev/null || true
   git -C "$T/state" remote add origin "$T/mirror2.git"

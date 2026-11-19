@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# oc-mutate — prove a selftest leg can actually REDDEN.
+#
+# A leg that cannot fail is decoration. Every "this is guarded" claim in this
+# fleet rests on a selftest leg, and a leg whose assertion was never exercised
+# by a failing implementation is indistinguishable from one that asserts
+# nothing. This tool mechanises the proof: apply a mutation to a COPY of the
+# tools tree, run the tool's own selftest, and require the aimed leg to be the
+# thing that goes red.
+#
+# WHY A TOOL AND NOT A RITUAL (c29 T-3). The hand-built version of this was
+# rebuilt from scratch for every fix, and it produced two documented false
+# passes:
+#
+#   * `oc-questions-mut627` was written into the PRODUCTION state dir — a
+#     mutation harness leaking into the real ledger. Every state seam is
+#     redirected into a fixture dir below, and one selftest arm proves it.
+#   * `negctl-728` records a SYMLINK-FARM mirror silently failing EVERY leg
+#     because the tool bootstraps its tools dir by walking up for a REAL
+#     (non-symlink) `lib/`, so `OC_TOOLS_DIR` resolves wrong and the baseline
+#     dies. That reads as "the mutant was caught" while proving nothing. The
+#     copy here is a real `cp -a`, and the baseline is a POSITIVE CONTROL: a
+#     red baseline exits 3 (inconclusive) rather than being reported as a catch.
+#
+# USAGE
+#   oc-mutate <tool> <sed-expr> --leg <selftest-leg-name> [options]
+#   oc-mutate --selftest
+#
+#   <tool>      path RELATIVE to the tools tree, e.g. state/oc-questions
+#   <sed-expr>  GNU sed program applied with `sed -i -e`, e.g.
+#               's/if max_age_d > 0:/if False:/'
+#   --leg NAME  the selftest leg that MUST be among the reddened ones. Without
+#               it any red counts, which cannot tell "the aimed guard caught it"
+#               from "my sed broke the parser".
+#
+# OPTIONS
+#   --selftest-arg A  argv for the selftest (default: --selftest). Five tools
+#                     take a bare subcommand instead: oc-commit, oc-deploy,
+#                     oc-ledger, oc-roster, oc-watcher-audit — pass 'selftest'.
+#   --timeout SEC     per-suite timeout (default: 1800)
+#   --tools-src DIR   tools tree to copy (default: this checkout's tools/)
+#   --no-stamp        do not write the ledger receipt
+#   --keep            keep the work dir and print its path
+#   --selftest        run this tool's own arms
+#   -h, --help        this text
+#
+# EXIT CODES
+#   0  CAUGHT       the aimed leg reddened on the mutant, baseline was green
+#   1  not proven   SURVIVED (mutant stayed green) / LEG-MISSED (something went
+#                   red, but not the aimed leg) / SUITE-DIED (the mutant broke
+#                   the tool instead of tripping a leg) / no-op mutation
+#   2  usage        bad arguments, missing tool, recursion refused
+#   3  INCONCLUSIVE the PRISTINE tree is already red — nothing can be concluded
+#
+# Standalone by design: `tools/tests/run.sh` sweeps `tools/*/oc-*` for `--help`
+# but excludes `*/tests/*`, so this is run deliberately, like the negctl-*
+# family, whenever the legs it guards change.
+set -u
+
+PROG="$(basename "$0")"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+SKILL_DIR="$(cd "$SELF_DIR/../.." && pwd)"
+
+# Recursion guard: a mutation harness running inside a mutation would copy the
+# tree it is already mutating and report nonsense. Refuse loudly, not silently.
+if [ "${OC_MUTATE_DEPTH:-0}" -ge 1 ]; then
+  printf '%s: refusing to recurse (OC_MUTATE_DEPTH=%s) — oc-mutate must not be\n  run from inside a mutation run.\n' "$PROG" "${OC_MUTATE_DEPTH}" >&2
+  exit 2
+fi
+
+TOOLS_SRC="${OC_TOOLS_DIR:-$SKILL_DIR/tools}"
+TOOL=""
+SEDEXPR=""
+LEG=""
+SELFTEST_ARG="--selftest"
+TMO=1800
+NO_STAMP=0
+KEEP=0
+DO_SELFTEST=0
+
+usage() {
+  sed -n '2,/^set -u$/p' "$0" | sed -e 's/^# \{0,1\}//' -e '/^set -u$/d'
+}
+
+# ---------------------------------------------------------------- arguments --
+POS=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)       usage; exit 0 ;;
+    --selftest)      DO_SELFTEST=1; shift ;;
+    --leg)           [ $# -ge 2 ] || { printf '%s: --leg needs a value\n' "$PROG" >&2; exit 2; }
+                     LEG="$2"; shift 2 ;;
+    --selftest-arg)  [ $# -ge 2 ] || { printf '%s: --selftest-arg needs a value\n' "$PROG" >&2; exit 2; }
+                     SELFTEST_ARG="$2"; shift 2 ;;
+    --timeout)       [ $# -ge 2 ] || { printf '%s: --timeout needs a value\n' "$PROG" >&2; exit 2; }
+                     TMO="$2"; shift 2 ;;
+    --tools-src)     [ $# -ge 2 ] || { printf '%s: --tools-src needs a value\n' "$PROG" >&2; exit 2; }
+                     TOOLS_SRC="$2"; shift 2 ;;
+    --no-stamp)      NO_STAMP=1; shift ;;
+    --keep)          KEEP=1; shift ;;
+    --)              shift; while [ $# -gt 0 ]; do
+                       case $POS in 0) TOOL="$1" ;; 1) SEDEXPR="$1" ;; esac
+                       POS=$((POS+1)); shift
+                     done ;;
+    -*)              printf '%s: unknown flag %s (see --help)\n' "$PROG" "$1" >&2; exit 2 ;;
+    *)               case $POS in
+                       0) TOOL="$1" ;;
+                       1) SEDEXPR="$1" ;;
+                       *) printf '%s: unexpected extra argument %s\n' "$PROG" "$1" >&2; exit 2 ;;
+                     esac
+                     POS=$((POS+1)); shift ;;
+  esac
+done
+
+case "$TMO" in ''|*[!0-9]*) printf '%s: --timeout must be a positive integer, got %s\n' "$PROG" "$TMO" >&2; exit 2 ;; esac
+
+# ------------------------------------------------------------ fail extraction --
+# FOUR failure shapes exist in this fleet, and a harness that knows only one of
+# them silently reports "0 legs reddened" for every other tool — which then
+# reads as a SURVIVED mutant, i.e. a false accusation against a good guard:
+#
+#   selftest: <leg> FAIL              (oc-smoke, oc-prchecks)
+#   selftest: <leg> FAILED — <why>    (oc-commit, stderr)
+#   (  FAIL - <msg>)                  (oc-questions)
+#     FAIL selftest - <msg>           (oc-ledger)
+#
+# So the matcher is deliberately shape-agnostic: any line carrying the token
+# FAIL, ANSI-stripped, deduped. Leg attribution is then a substring test.
+#
+# The token alone is NOT sufficient, and this cost a live misreport (2026-11-19):
+# leg NAMES contain the word. oc-smoke emits `selftest: a FAIL verdict never
+# closes the issue  OK` for a PASSING leg, so a bare token match counted seven
+# GREEN legs as reddened and produced a LEG-MISSED verdict on a sound mutant.
+# A verdict line is a line that does NOT end in the passing token, so the
+# passing suffix is excluded explicitly. Shape-agnosticism is preserved: the
+# four shapes above all end in FAIL / FAILED — <why> / ) / <msg>.
+extract_fails() {  # extract_fails <logfile>
+  [ -r "$1" ] || return 0
+  sed -e 's/\x1b\[[0-9;]*[A-Za-z]//g' -- "$1" 2>/dev/null \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -E '(^|[^A-Za-z])FAIL' \
+    | grep -Ev '(^|[[:space:]])(OK|PASS)$' \
+    | sort -u
+}
+
+# ------------------------------------------------------------------ the run --
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/oc-mutate.XXXXXX")" || { printf '%s: mktemp failed\n' "$PROG" >&2; exit 2; }
+cleanup() { [ "$KEEP" = 1 ] || rm -rf "$WORK"; }
+trap cleanup EXIT
+mkdir -p "$WORK/state"
+
+# Process budget: a suite that forks per leg can exhaust a shared box. Cap only
+# when the current limit is unlimited, so a deliberate lower cap is respected.
+_u="$(ulimit -u 2>/dev/null || echo unlimited)"
+[ "$_u" = "unlimited" ] && ulimit -u 4000 2>/dev/null || true
+
+# Every state seam is redirected into the fixture dir. This is the fix for the
+# `oc-questions-mut627` incident: a child suite that writes its ledger, its
+# deploy state or its tools log must land here, never in the production tree.
+# The exports are subshell-scoped, so the parent's env — and the ledger receipt
+# written at the end — still address the REAL ledger.
+run_selftest() {  # run_selftest <tool-path> <outfile> -> echoes rc
+  local tool="$1" out="$2" rc=0
+  ( cd "$WORK" || exit 2
+    export OC_DEV_STATE="$WORK/state"
+    export OC_DEPLOY_STATE_DIR="$WORK/state"
+    export OC_LEDGER="$WORK/state/workers-ledger.json"
+    export OC_TOOLS_LOG="$WORK/state/tools.log"
+    export OC_TOOLS_NOLOG=1
+    export OC_MUTATE_DEPTH=1
+    timeout "$TMO" "$tool" "$SELFTEST_ARG" >"$out" 2>&1
+  ) || rc=$?
+  printf '%s' "$rc"
+}
+
+# ------------------------------------------------------------------ selftest --
+if [ "$DO_SELFTEST" = 1 ]; then
+  . "$SELF_DIR/oc-mutate-selftest.sh"
+  exit $?
+fi
+
+# -------------------------------------------------------------- real mutation --
+[ -n "$TOOL" ]    || { printf '%s: missing <tool> (see --help)\n' "$PROG" >&2; exit 2; }
+[ -n "$SEDEXPR" ] || { printf '%s: missing <sed-expr> (see --help)\n' "$PROG" >&2; exit 2; }
+[ -d "$TOOLS_SRC" ] || { printf '%s: tools tree not found: %s\n' "$PROG" "$TOOLS_SRC" >&2; exit 2; }
+[ -f "$TOOLS_SRC/$TOOL" ] || { printf '%s: no such tool: %s/%s\n' "$PROG" "$TOOLS_SRC" "$TOOL" >&2; exit 2; }
+
+printf '=== oc-mutate %s ===\n' "$TOOL"
+printf '  sed: %s\n' "$SEDEXPR"
+[ -n "$LEG" ] && printf '  aimed leg: %s\n' "$LEG"
+
+# --- baseline: the PRISTINE copy must be GREEN -------------------------------
+# This is the positive control for the whole harness. A symlink-farm mirror (the
+# negctl-728 trap) or a copy that lost a sibling file fails HERE, and exits 3,
+# instead of being reported as a caught mutant further down.
+cp -a "$TOOLS_SRC" "$WORK/base" || { printf '%s: could not copy the tools tree\n' "$PROG" >&2; exit 2; }
+rc_base="$(run_selftest "$WORK/base/$TOOL" "$WORK/base.out")"
+if [ "$rc_base" != "0" ]; then
+  printf '  BASELINE RED (rc=%s) — INCONCLUSIVE, nothing can be concluded about the mutant\n' "$rc_base"
+  printf '  first failures on the pristine tree:\n'
+  extract_fails "$WORK/base.out" | head -5 | sed 's/^/    /'
+  printf '  (a red baseline is the symlink-farm trap negctl-728 documents; the copy must be a real cp -a)\n'
+  exit 3
+fi
+base_fails="$(extract_fails "$WORK/base.out")"
+printf '  baseline: GREEN (rc=0)%s\n' "$( [ -n "$base_fails" ] && printf ' — but %s FAIL line(s) present' "$(printf '%s\n' "$base_fails" | wc -l)" )"
+
+# --- mutant ------------------------------------------------------------------
+cp -a "$TOOLS_SRC" "$WORK/mut" || { printf '%s: could not copy for mutation\n' "$PROG" >&2; exit 2; }
+if ! sed -i -e "$SEDEXPR" "$WORK/mut/$TOOL" 2>"$WORK/sed.err"; then
+  printf '  MUTATION NOT APPLIED — sed rejected the expression: %s\n' "$(cat "$WORK/sed.err")"
+  exit 2
+fi
+
+# A no-op mutation makes every assertion below vacuous while still reporting a
+# verdict: the "mutant" is the pristine tool, so it stays green and reads as
+# SURVIVED (a false accusation) or, if it happens to redden for unrelated
+# reasons, as CAUGHT (a false receipt). Byte-identity is the detector.
+if cmp -s "$TOOLS_SRC/$TOOL" "$WORK/mut/$TOOL"; then
+  printf '  NO-OP MUTATION — the sed expression changed nothing; the mutant is byte-identical\n'
+  printf '  to the pristine tool, so no verdict is possible. Fix the expression.\n'
+  exit 1
+fi
+printf '  mutant applied: %s byte(s) differ\n' "$(cmp -l "$TOOLS_SRC/$TOOL" "$WORK/mut/$TOOL" 2>/dev/null | wc -l)"
+
+rc_m="$(run_selftest "$WORK/mut/$TOOL" "$WORK/mut.out")"
+mut_fails="$(extract_fails "$WORK/mut.out")"
+
+# --- verdict -----------------------------------------------------------------
+VERDICT=""
+RC=1
+if [ -z "$mut_fails" ]; then
+  if [ "$rc_m" = "0" ]; then
+    VERDICT="SURVIVED"
+    printf '  SURVIVED — the mutant is GREEN (rc=0). No leg asserts the mutated behaviour.\n'
+  else
+    # The suite died without a single FAIL line: a syntax error, a missing
+    # command, a crash. That is the mutation breaking the tool, not a leg
+    # catching a regression — and it must never be banked as a catch.
+    VERDICT="SUITE-DIED"
+    printf '  SUITE-DIED — rc=%s with NO FAIL line. The mutation broke the tool rather than\n' "$rc_m"
+    printf '  tripping a leg, so nothing is proven about any guard. Last output:\n'
+    tail -5 "$WORK/mut.out" | sed 's/^/    /'
+  fi
+else
+  n_red="$(printf '%s\n' "$mut_fails" | wc -l | tr -d ' ')"
+  if [ -n "$LEG" ] && ! printf '%s\n' "$mut_fails" | grep -qF -- "$LEG"; then
+    VERDICT="LEG-MISSED"
+    printf '  LEG-MISSED — %s leg(s) went red, but not the aimed one (%s):\n' "$n_red" "$LEG"
+  else
+    VERDICT="CAUGHT"
+    RC=0
+    if [ -n "$LEG" ]; then
+      printf '  CAUGHT — aimed leg reddened: %s\n' "$LEG"
+    else
+      printf '  CAUGHT — %s leg(s) reddened (no --leg given, so any red counts)\n' "$n_red"
+    fi
+  fi
+  printf '  reddened:\n'
+  printf '%s\n' "$mut_fails" | head -12 | sed 's/^/    /'
+  [ "$n_red" -gt 12 ] && printf '    ... and %s more\n' "$((n_red - 12))"
+fi
+
+# --- ledger receipt (ONE row per run) ----------------------------------------
+# --what-file, never --what: text on a bash command line is expanded by the
+# caller's shell BEFORE the tool sees it, and a substitution yielding empty
+# output leaves no trace in the stored row (#341). The sed expression itself
+# routinely carries `$(...)`, so this is not hypothetical here.
+if [ "$NO_STAMP" = 0 ]; then
+  LEDGER_BIN="$SKILL_DIR/tools/state/oc-ledger"
+  if [ -x "$LEDGER_BIN" ]; then
+    {
+      printf 'oc-mutate %s: %s — tool=%s leg=%s\n' "$VERDICT" "$TOOL" "$TOOL" "${LEG:-<any>}"
+      printf 'mutant → %s\n' "$(printf '%s\n' "${mut_fails:-<none>}" | head -6 | tr '\n' ';')"
+      printf 'sed=%s baseline_rc=0 mutant_rc=%s\n' "$SEDEXPR" "$rc_m"
+    } > "$WORK/stamp.txt"
+    if [ -n "${OC_ACTOR:-}" ]; then
+      "$LEDGER_BIN" stamp note --what-file "$WORK/stamp.txt" --by "toolsmith $OC_ACTOR" >/dev/null 2>&1 \
+        || printf '  WARNING: ledger receipt not written (stamp failed)\n' >&2
+    else
+      "$LEDGER_BIN" stamp note --what-file "$WORK/stamp.txt" >/dev/null 2>&1 \
+        || printf '  WARNING: ledger receipt not written (stamp failed)\n' >&2
+    fi
+  else
+    printf '  WARNING: no oc-ledger at %s — receipt skipped\n' "$LEDGER_BIN" >&2
+  fi
+fi
+
+if [ "$KEEP" = 1 ]; then printf '  work dir kept: %s\n' "$WORK"; fi
+printf 'VERDICT: %s (rc=%s)\n' "$VERDICT" "$RC"
+exit "$RC"

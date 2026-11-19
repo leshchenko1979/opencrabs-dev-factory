@@ -30,7 +30,7 @@ cargo/rustc/clippy are FORBIDDEN in ANY form — PATH prepends, explicit paths (
 
 CODE TESTS = the CI gate (`pr-checks.yml`, Phase 5 via `oc-ship-chain`; `harvest.md §Phase 7 step 2c` reuses it on upstream PR heads). Everything else — build, test, clippy — is a CI dispatch: need `cargo test`? Dispatch CI. Iterating clippy? Edit, re-dispatch pr-checks, read the run log. Never compile locally.
 
-**`#[cfg(test)]` boundary — both directions, and the cost asymmetry is the point.** A test-only fn must never be called from production code: it reads as the production API and, with no local cargo, fails only at CI as `error[E0599]` — one ~30 min gate cycle. Mirror: a fn used ONLY by `src/tests` needs a `#[cfg(test)]` gate, not deletion (clippy `dead_code` fires in the non-test lib target). Incidents: `war-stories.md §OpenCrabs fork ops — tooling lessons`.
+**`#[cfg(test)]` boundary — both directions, and the cost asymmetry is the point.** A test-only fn must never be called from production code: it reads as the production API and, with no local cargo, fails only at CI as `error[E0599]` — one ~30 min gate cycle. Mirror: a fn used ONLY by `src/tests` needs a `#[cfg(test)]` gate, not deletion (clippy `dead_code` fires in the non-test lib target). Incidents: `war-stories.md §OpenCrabs fork ops — tooling lessons` (brain dir — `load_brain_file`).
 
 ## Execution isolation — the cgroup boundary (declared 2026-10-15)
 
@@ -122,8 +122,8 @@ files read on demand — nothing is cached in-session — so "reload" = re-read:
    (empty result ⇒ the rc=127 discovery class, first catalogued 2026-09-06).
 They are path-invoked skill scripts. Canonical anchor:
 `~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/<group>/<tool>` — the fleet is
-grouped one level per FUNCTION (`audit/` `git/` `harvest/` `issue/` `notify/` `ship/`
-`smoke/` `state/`); relative `tools/<group>/<tool>` forms in these docs assume the skill
+grouped one level per FUNCTION (the group list's SOLE home is `SKILL.md §Directory layout`);
+relative `tools/<group>/<tool>` forms in these docs assume the skill
 dir as cwd. ALWAYS
 invoke that CANONICAL copy — never a worktree's `tools/` copy, and never
 the invoking script's own location (worktree self-resolution produced
@@ -283,19 +283,9 @@ the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
 
 **The ship path is ONE tool.** `oc-ship-chain` runs the whole commit-to-swapped stretch — LEG1 CI gate -> LEG2 issue comment -> LEG3 fast-forward into fork `main` -> LEG4 carrier build -> LEG5 swap+seal — with NO legitimate manual exit point between gate verdict and swap (the #134 orphan class: stopping at GREEN without swapping).
 
-**THE LAUNCH SURFACE IS LOAD-BEARING — arm the chain in its OWN transient unit.** The harness's `background:true` auto-detach is KILLED ~75 s after the wrapper exits; only the `--unit=... --collect` form survives and polls (measured 2026-09-26, lane 63d775f9: two chains `rc=143`, `gate infra rc=143`, two gates left `in_progress` with nobody polling them):
-
-    systemd-run --user --unit=oc-ship-<issue>-$(date -u +%H%M%S) --collect \
-      tools/ship/oc-ship-chain --sha <commit-sha> --branch <branch> [--issue <n>] --test-threads 2
-
-**`--test-threads 2` IS LAW on the ship invocation until the wedge symptom clears** (fork #781): #1936's four-slot deadlock wedges the gate at the workflow's own 45-min wall; the SAME gate input re-dispatched at `--test-threads 2` came back GREEN in 31.4 min. INERT on `--gated-run`, no-op on `--fast`; **expiry is keyed on the SYMPTOM, never on #1936's issue state — it reads CLOSED while the wedge recurs.**
-
-**The chain's DEFAULT gate is FAST, and FAST is not the CI-gate leg of the 4-Leg Smoke Rubric** — fmt + clippy only, tests `skipped`: pass `--full` when the receipt needs the test leg. A pure-docs commit SKIPS LEG1: record it as SKIPPED, never as GREEN, and never count it as a passed leg.
-
-**Everything else about Phase 5 is in `editor-ship.md`** — the rc register, the EIGHT exit-5 causes with the rebase recipe, the conflict-quality gate, the post-landing-lock ancestor re-check, the gate-idle question sweep, the docs-only LEG1 skip, post-rewrite swap recovery, carrier coalescence and the features-compat gate. **Read it before shipping.**
+**The Phase-5 trap stack has ONE home: `editor-ship.md`.** The launch-surface law (arm the chain in its OWN transient unit — the harness's `background:true` auto-detach dies ~75 s after the wrapper exits), the `--test-threads 2` law and its **ANY-gate-dispatch** scope, the FAST-gate caveat (a FAST run is NOT the 4-Leg Rubric's CI leg), the docs-only LEG1 SKIP, the rc register, the EIGHT exit-5 causes with the rebase recipe, the conflict-quality gate, post-landing-lock ancestor re-check, post-rewrite swap recovery, carrier coalescence and the features-compat gate all live there. **Read it before shipping.** Nothing in this section restates them: a second copy is a defect by definition, and `editor-ship.md` is the file a lane actually has open at ship time.
 
 - **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
-
 
 ## Phase 6 — Smoke Verification (oc-smoke)
 
@@ -364,18 +354,14 @@ Your answer is always the SAME sequence:
 1. **DRY GATE (§Phase 3 binds unchanged)**: before editing any file you MUST run
    `memory_search scope="external"` over `/root/opencrabs/src/**/*.rs` to map callers and symbol definitions.
 
-```bash
-# 1. fresh worktree at the relevant sha (worktree lifecycle, Phase 2)
-tools/git/oc-wt add <task> <branch>
-# 2. reproduce → fix → SIGNED commit (E1, v0.4.78)
-tools/git/oc-commit -m "<msg>"   # gated wrapper: Session-Id from ambient session ID, Issue-Ref
-#    derived from your latest ledger claim, implementation comment folded in
-# 3. push branch, then re-run oc-ship-chain (Leg 1 CI gate -> Leg 2 comment -> Leg 3 ff-merge -> Leg 4 carrier build -> Leg 5 swap)
-git -C ~/opencrabs-wt/<task> push origin <branch>
-tools/ship/oc-ship-chain --sha <NEW-head-sha> --branch <branch> [--issue <issue-n>]
-# 4. on exit 0 SWAPPED, remove the worktree — proceed to Phase 6 smoke re-test
-tools/git/oc-wt remove <task>
-```
+1. `oc-wt add <task> <branch>` — fresh worktree at the relevant sha (§Phase 2 lifecycle).
+2. reproduce → fix → `oc-commit -m "<msg>"` — the gated wrapper takes `Session-Id` from the
+   ambient session, derives `Issue-Ref` from your latest ledger claim, and folds the
+   implementation comment in (§Phase 4 signing laws).
+3. push the branch, then `oc-ship-chain --sha <NEW-head-sha> --branch <branch> [--issue <n>]`
+   — Legs 1–5: CI gate → comment → ff-merge → carrier build → swap. Exact invocation, rc
+   register and the eight exit-5 causes: `editor-ship.md`.
+4. exit 0 SWAPPED → `oc-wt remove <task>`, then the §Phase 6 smoke re-test on the swapped binary.
 
 **Per-commit laws live in their phases:** branch-attached HEAD + signing → §Phase 4; worktree-writer exclusivity → §Phase 2. They bind EVERY commit in ANY phase — read them there.
 - **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + `oc-ship-chain` exits 0 (SWAPPED) + **Phase 6 smoke re-test PASSED on the swapped binary** + worktree removed — **UNLESS the unit carries an open `not-upstreamable` row, in which case the worktree is RETAINED (§Phase 2 teardown exemption) and the row's release condition is the remaining gate.**
@@ -391,8 +377,7 @@ part ends at smoke evidence — post it and hand the feature over.
 
 - **Autonomous Goal Mandate**: Every editor claiming or waking on an issue MUST issue `/goal follow the skill until the smoke test phase` (or set its session goal).
 - **Design-gate precondition (owner order 2026-09-12)**: The goal is issued **ONLY AFTER the owner has confirmed the design** (owner design gate, v0.4.128). Until that confirmation lands, the editor stays in the design/approval phase and MUST NOT open the autonomous run: issuing the goal early would carry the editor straight past the gate that exists to require owner approval BEFORE code. Sequence is fixed — design → owner confirms → `/goal` → continuous execution to the smoke test phase.
-- **Design-gated WRITE SCOPE (v0.4.243, cycle `20260922-c22`; converged from lanes
-  `9fa7c71a` and `40427d4f`).** The scope is a SURFACE distinction, not "files vs no files" — a design-gated lane
+- **Design-gated WRITE SCOPE (v0.4.243).** The scope is a SURFACE distinction, not "files vs no files" — a design-gated lane
   **MAY** write fleet-process surfaces (the ledger, `reviews/**` including its own
   proposal file, the state dir, journals, and run artifacts) and **MAY NOT** write
   project/source files or open the autonomous checklist. `grep -rln "plan mode|plan-mode"`

@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.319
+version: 0.4.320
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -24,7 +24,7 @@ metadata:
     - https://github.com/leshchenko1979/opencrabs-dev-factory (dev-factory issues — tooling, CI, release automation, process)
     - https://github.com/leshchenko1979/opencrabs (fork — push target + the BINARY issue tracker; ALL opencrabs binary issues live here since 2026-10-09)
   provenance:
-    - "Release history and the current version live in CHANGELOG.md (git-tracked, newest-first). The v0.4.43 B6 rationale is in war-stories.md."
+    - "Release history and the current version live in CHANGELOG.md (git-tracked, newest-first). The v0.4.43 B6 rationale is in war-stories.md (brain dir — `load_brain_file`)."
 ---
 
 # opencrabs-dev — OpenCrabs source procedure
@@ -86,7 +86,7 @@ the TOOLSMITH lane's scope, v0.4.87). Fleet-wide rc conventions and the FULL per
 only in `tools/docs/RC-CONTRACT.md` (the SOLE register; lens A H1/B F1, v0.4.79). Archived compiler-step
 anchors: `tools/archive/compiler.md`.
 
-**Directory layout — one level per KIND (v0.4.254):** `tools/` holds the `oc-*` fleet executables (the public interface) grouped ONE LEVEL PER FUNCTION — `audit/` `git/` `harvest/` `issue/` `notify/` `ship/` `smoke/` `state/` — beside `tools/lib/` shared helpers, `tools/tests/` the battery, `tools/archive/` retired tools, `tools/docs/` the law that documents the tools, and **`tools/instruments/` corpus-agnostic analysis tools that are NOT fleet tools** — an instrument that reviews an arbitrary corpus has no place in the `oc-*` namespace, and lands there instead.
+**Directory layout — one level per KIND (v0.4.254):** `tools/` holds the `oc-*` fleet executables (the public interface) grouped ONE LEVEL PER FUNCTION — `audit/` `git/` `harvest/` `issue/` `notify/` `ship/` `smoke/` `state/` `reports/` — beside `tools/lib/` shared helpers, `tools/tests/` the battery, `tools/archive/` retired tools, `tools/docs/` the law that documents the tools, and **`tools/instruments/` corpus-agnostic analysis tools that are NOT fleet tools** — an instrument that reviews an arbitrary corpus has no place in the `oc-*` namespace, and lands there instead. **This sentence is the SOLE home of the group enumeration** — `editor.md` and `README.md` point here instead of restating it, so a new group is documented in exactly one place.
 
 **Tool register: `reference-tools.md`** — one row per `oc-*` tool: invocation shape and the slot it
 fills. Load it when you need a tool's exact form, or when adding one. rc semantics are never here — the
@@ -154,10 +154,11 @@ Inter-role communication is **session_notify ONLY**. No lane ever uses telegram 
 to another session, another role's topic, the forum General area, an unrelated chat, or the owner DM.
 
 - An Editor's surface is ITS OWN TOPIC and nothing else; normal replies auto-route there as session
-  text, the ONLY sanctioned output. Editors NEVER invoke send/edit telegram tools (`telegram_send`,
-  `tg_send_message`, `tg_edit_message`, `telegram_edit`) — not even into their own topic; no
-  `tg_search_global`/cross-chat reads; `tg_get_messages` limited to the own topic. Reactions are
-  allowed (owner consent signal).
+  text, the ONLY sanctioned output. Editors NEVER invoke a channel send/edit tool — not even into
+  their own topic; no cross-chat reads; own-topic message reads only. Reactions are allowed (owner
+  consent signal). **The enforced tool-name list has ONE home — `triage.md §Duty T4`, which derives
+  it from the live registry, so a renamed or newly-added send tool is covered without editing this
+  file.**
 - Sanctioned senders (NOT editors — none of this is lane-to-lane): the task-queue skill's documented
   `/tq-approve` flow; alerting lanes reporting to the owner DM per the ops runbook; HQ's session text.
 - Violation pattern (Triage patrol, `triage.md §Duty T4`): a TOOL_ACCUM row showing an editor lane
@@ -177,11 +178,10 @@ to another session, another role's topic, the forum General area, an unrelated c
 | Evidence | one line: drove X, observed Y (+ run id / sha) | job/step conclusions read via API | marker found/not-found + checksum line in baseline.json |
 | On FAIL | issue FIRST, then evidence to the HQ lane (`session_notify`) | fix before merge / PR | NO swap — feature missing from build; regression stated plainly |
 
-**The smoke-verdict rules and their incident history —
-presence-is-not-behaviour, the live-verification stamp for live-testable UX, bookkeeping-legs-are-not-a-pass,
-the owner-dependent leg's PARK disposition, the no-log-probe rule for tool-description changes, leg-4
-probe hygiene, and the single-sided-probe sufficiency ruling — are canonical at `editor-smoke.md`
-§Smoke-verdict rules.** Read them there before writing or judging a verdict.
+**The smoke-verdict rules and their incident history are canonical at `editor-smoke.md`
+§Smoke-verdict rules — read them there before writing or judging a verdict.** The subject list
+lives in that heading and nowhere else: a pointer that re-enumerates it drifts the moment the
+section grows (this one did, twice — c29 lens G).
 
 ## Glossary — official terms (v0.4.62; one concept = one name)
 
@@ -219,7 +219,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 
 ## Hard rules (all roles)
 
-**How to write one (research 2026-11-17, `receipts-worth-keeping`):** **unconditional** ("Never X", never "if Y then X" — conditional measured worst), **concrete**, **negative**. Rule inline; incident narrative to `war-stories.md`; a date is an expiry signal for humans, not a compliance lever for the model. If a prohibition actually matters, add a VERIFIER — refusal rules scored 0% under every wording intervention tested.
+**How to write one (research 2026-11-17, `receipts-worth-keeping`):** **unconditional** ("Never X", never "if Y then X" — conditional measured worst), **concrete**, **negative**. Rule inline; incident narrative to `war-stories.md` (brain dir); a date is an expiry signal for humans, not a compliance lever for the model. If a prohibition actually matters, add a VERIFIER — refusal rules scored 0% under every wording intervention tested.
 
 - Reports to Alexey: every issue/PR reference
   carries the LINK behind the number (binary issues: `https://github.com/leshchenko1979/opencrabs/issues/N`;
@@ -235,10 +235,13 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
   receipt), phases, tool names. No ad-hoc synonyms; a NEW concept is proposed via the poll
   format and named on owner word. Reviewer A (REDUNDANCY + ONTOLOGY) enforces this lens-side.
 - **Context Manifest Curation (Compaction Section 10, owner order 2026-09-17):** on compaction the compactor MUST retain `opencrabs-dev`, `opencrabs-dev/fleet-directives.md`, and the active role file in `active_skills`; only non-active role files go in `discard_skills`. Essential tools (`session_notify`, `session_search`, `bash`, `read_file`, `telegram_send`) MUST stay pre-activated. Canonical: `fleet-directives.md §Post-compaction skill reload & context manifest curation`. **The retention above is INTENT, not a guarantee: the compactor's own prompt carries no retention list and no pipeline layer enforces one (measured 2026-10-06) — [opencrabs/opencrabs#1960](https://github.com/opencrabs/opencrabs/issues/1960).**
-- ONLY HQ edits skill files: `SKILL.md` · `editor.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·
-  `review-lenses.md` · `fleet-directives.md` · `upstream-merge-runbook.md` · `war-stories.md` ·
+- ONLY HQ edits skill files: `SKILL.md` · `editor.md` · `editor-ship.md` · `editor-smoke.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·
+  `review-lenses.md` · `fleet-directives.md` · `upstream-merge-runbook.md` ·
   `s2-swap-journal-spec.md` · `README.md` · `CHANGELOG.md` · `session-notify.md` · `environment.md` · `tools/docs/*.md` — including all worker lanes AND
-  the TRIAGE and TOOLSMITH lanes (2026-08-26; Compiler retired 2026-08-28). Workers propose via poll format or
+  the TRIAGE and TOOLSMITH lanes (2026-08-26; Compiler retired 2026-08-28). **The two editor phase appendices
+  (`editor-ship.md`, `editor-smoke.md`) are skill files on this list too (c29 G-1, v0.4.320). `war-stories.md` is
+  HQ-owned as well but is a BRAIN-DIR file (`~/.opencrabs/profiles/ops/`), not one of this tree's — the census above
+  counts SKILL-TREE files only.** Workers propose via poll format or
   direct notify; they never write. ONE exception: `tools/**` CODE is the TOOLSMITH lane's (v0.4.87 carve-out),
   shipped with battery receipts — README's tool-fleet section and `tools/docs/*.md` count as that surface; the
   rest of README and all skill markdown stay HQ-only.
@@ -247,7 +250,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
   same-turn — run id against the API, sha against `ls-remote`/job-name embed,
   binary against sha256. A claim verified by someone else's message is
   unverified.
-- ISSUE ROUTING (owner order 2026-10-09 — canonical; superseded rulings live in `war-stories.md`):
+- ISSUE ROUTING (owner order 2026-10-09 — canonical; superseded rulings live in `war-stories.md` — brain dir, `load_brain_file`):
 
 | Rule | Applies to | Gate |
 |---|---|---|
@@ -262,7 +265,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 - CONSENT REGISTER — **Never rule from codified memory — grep the live record (chat / ledger) before denying any permission** (v0.4.17, 2026-08-26). Deploy consent RETIRED 2026-08-28: GREEN carrier run + artifact verify IS the authorization. APPROVAL above governs everything owner-gated.
   - **UPSTREAM FILING IS AN EXCEPTION, NEVER A GOAL (owner 2026-11-12).** The fork has diverged and will keep diverging: **keeping a change on the fork is the normal, finished state** — not "degraded", not a backlog, not debt. **The retired vocabulary (`DEGRADED` / `HIGH-TRUST`) must not be reintroduced** in a report, a ruling or a commit message.
     Two states, ONE declared current, switchable by the OWNER's word alone: **FORK-STANDING** (default — nothing is filed; not filing is normal) or **UPSTREAM-ON-REQUEST** (only the NAMED groups are filed; the owner's request names the group, reply or positive reaction; silence is NOT consent; an unnamed change is never filed). CI gate, smoke rubric, atomicity and rollback are unchanged in both.
-    **CURRENT STATE: FORK-STANDING.** Resolution is LIVE, never remembered: read the newest `MODE:` row via `oc-ledger events --n 2000 --kind note` — **`--n` is MANDATORY, because `events` is a TAIL whose default window is ~21 rows, so a bare `events --kind note` returns an EMPTY result INDISTINGUISHABLE from "no `MODE:` row exists"** (a real `MODE:` row sat ~590 rows back and the bare form missed it; receipt: `war-stories.md`). **No `MODE:` row ⇒ FORK-STANDING** — fail closed, because the closed direction is "nothing is filed" and an unapproved filing is a public act. **A legacy row reads FORWARD, never backwards:** `MODE: DEGRADED` = FORK-STANDING; `MODE: HIGH-TRUST` = UPSTREAM-ON-REQUEST with NO named groups, i.e. still nothing filed until a group is named. Switch: `oc-ledger stamp note "MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>" --by "hq <uuid>"`. Procedure: `harvest.md` §Phase 7 step 0a.
+    **CURRENT STATE: FORK-STANDING.** Resolution is LIVE, never remembered: read the newest `MODE:` row via `oc-ledger events --n 2000 --kind note` — **`--n` is MANDATORY, because `events` is a TAIL whose default window is ~21 rows, so a bare `events --kind note` returns an EMPTY result INDISTINGUISHABLE from "no `MODE:` row exists"** (a real `MODE:` row sat ~590 rows back and the bare form missed it; receipt: `war-stories.md`, brain dir). **No `MODE:` row ⇒ FORK-STANDING** — fail closed, because the closed direction is "nothing is filed" and an unapproved filing is a public act. **A legacy row reads FORWARD, never backwards:** `MODE: DEGRADED` = FORK-STANDING; `MODE: HIGH-TRUST` = UPSTREAM-ON-REQUEST with NO named groups, i.e. still nothing filed until a group is named. Switch: `oc-ledger stamp note "MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>" --by "hq <uuid>"`. Procedure: `harvest.md` §Phase 7 step 0a.
 - ROLE-SCOPED BROADCASTS: messages reach non-owning roles ONLY when tagged
   [ALL]; otherwise send strictly to the owning role. CC-everyone is noise.
 - ONE formal SMOKE verdict per editor-feature lane: exactly one PASS/FAIL;
@@ -272,13 +275,14 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
 - Issue-first, no exceptions (2026-08-25; routing revised 2026-10-09): a DISCOVERED problem gets its issue FILED before any fix work starts — tracker per ISSUE ROUTING above (upstream PRs ONLY). Discoverer files it (symptom + evidence) after the duplicate sweep above; fixer claims via the tracker ASSIGNMENT plus an `oc-ledger claim` row + an `Issue-Ref` trailer on the commit — NO CLAIMING `gh` comment or label; the item-7 approved-design comment and `oc-issue-log`'s per-commit note (owner 2026-08-28) are sanctioned. Covers task starts (`editor.md` Phase 1) AND mid-loop finds: red-build bugs, failed smoke tests, defects in another editor's feature.
 - Continuous Issue Relationship Linking (owner 2026-09-16; creation gate 2026-09-25; `--root` 2026-09-26): whenever a parent subsystem relationship, blocker dependency, or child sub-issue is established or discovered at ANY point in the lifecycle, the lane identifying it MUST establish native links in the same turn via `gh issue edit <issue> --parent <parent-issue>` and/or `--add-blocked-by <blocker-issue>`.
   **CREATION-TIME PARENT GATE — a `fix(`/`bug(`-titled issue MUST declare its origin ON the creating command (`tools/issue/oc-issue-create`): `--parent <N>` for a fork feature issue, `--root upstream:<sha|PR|path>` where the surface is upstream-inherited (`upstream-rooted`), or `--no-parent "<reason>"` as the last resort. A DECLARED root or orphan is legal; a SILENT one is the violation. The `--root` object must RESOLVE, or the flag is `--no-parent` in better clothes.** Full clause + Duty T5 backstop: `upstream-merge-runbook.md`, `triage.md`.
-  **THE GATE HAS THREE LEGS — ASSIGNMENT and NATIVE LINK joined ORIGIN (owner 2026-10-05, origin opencrabs/opencrabs#1932).** **(a) ASSIGNMENT:** a `fix(`/`bug(`-titled issue MUST carry an assignee ON the creating command (`--assignee <login>`): `leshchenko1979` on BOTH live trackers, each tracker's ONLY assignable account (measured 2026-10-10); the pre-2026-10-09 `adolfousier` constant does NOT resolve on the fork — `--add-assignee adolfousier` silently no-ops (rc 0, assignees unchanged). This leg exists because a tracker's `auto-assign.yml` can assign the AUTHOR rather than the intended claimer — VERIFY the assignee landed. **(b) NATIVE LINK:** where the declared origin resolves to a SAME-TRACKER issue, the native parent link is OBLIGATORY — `--parent <N>` at creation, or `gh issue edit <issue> --parent <N>` as the immediate next action. A comment-only `root:` satisfies DECLAREDNESS, never the link when a same-tracker parent exists: for `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer. Where the origin has no same-tracker issue counterpart (an upstream PR or path), the comment declaration IS the link and no native link is possible. **TOOL follow-up (Toolsmith):** `oc-issue-create` gains `--assignee` as a first-class flag with the per-tracker default, and derives `--parent` from a `--root upstream:<sha>` commit's `Closes #N` trailer. Until it lands, the filing lane passes `--assignee` / `--parent` by hand — the LANE owns the leg, the tool only automates it.**
-  **READ a relation with `gh issue view <N> --json parent,subIssues,blockedBy,blocking` — NEVER the issue object's `.parent` projection.** `gh api ... --jq '.parent.number'` returns a confident **null for every issue**, since the REST issue object omits the field; the same call returns a real title, so the null reads as "no parent". A recorded false negative defeated a GUARD that skipped on "already parented" — a guard and a verifier need the same authority (`war-stories.md`).
+  **THE GATE HAS THREE LEGS — ASSIGNMENT and NATIVE LINK joined ORIGIN (owner 2026-10-05, origin opencrabs/opencrabs#1932).** **(a) ASSIGNMENT:** a `fix(`/`bug(`-titled issue MUST carry an assignee ON the creating command (`--assignee <login>`): `leshchenko1979` on BOTH live trackers, each tracker's ONLY assignable account (measured 2026-10-10); the pre-2026-10-09 `adolfousier` constant does NOT resolve on the fork — `--add-assignee adolfousier` silently no-ops (rc 0, assignees unchanged). This leg exists because a tracker's `auto-assign.yml` can assign the AUTHOR rather than the intended claimer — VERIFY the assignee landed. **(b) NATIVE LINK:** where the declared origin resolves to a SAME-TRACKER issue, the native parent link is OBLIGATORY — `--parent <N>` at creation, or `gh issue edit <issue> --parent <N>` as the immediate next action. A comment-only `root:` satisfies DECLAREDNESS, never the link when a same-tracker parent exists: for `--root upstream:<sha>` the parent is derivable from that commit's own `Closes #N` / `Fixes #N` trailer. Where the origin has no same-tracker issue counterpart (an upstream PR or path), the comment declaration IS the link and no native link is possible. **TOOL STATUS — BOTH LEGS SHIPPED (v0.4.297, tool commit `9f7e90be`; the clause below read "until it lands" for three weeks after it had):** `oc-issue-create` carries `--assignee` as a FIRST-CLASS flag with a per-tracker default (`leshchenko1979` on both live trackers), an `--assignee` that does NOT resolve is REFUSED (rc 3, nothing filed) rather than passed through, and `--no-assignee "<reason>"` records an explicit declaration; `--root upstream:<sha>` derives `--parent` from that commit's own `Closes #N` / `Fixes #N` trailer. **The lane still owns the leg:** the tool automates the ARGUMENT, never the VERIFICATION — read the created issue back and confirm the assignee and the native parent actually landed (`gh issue view <N> --json assignees,parent`), because a no-op that returns rc 0 is exactly the failure this leg exists to catch.**
+  **READ a relation with `gh issue view <N> --json parent,subIssues,blockedBy,blocking` — NEVER the issue object's `.parent` projection.** `gh api ... --jq '.parent.number'` returns a confident **null for every issue**, since the REST issue object omits the field; the same call returns a real title, so the null reads as "no parent". A recorded false negative defeated a GUARD that skipped on "already parented" — a guard and a verifier need the same authority (`war-stories.md`, brain dir).
 - Restart scope: **`opencrabs-ops` ONLY.** The `family` and default-profile daemons require Alexey's explicit approval EVERY time. Exception (v0.4.71, lens B2 #3; sanctioned v0.4.59 #47): HQ may mechanically restart the `opencrabs-family.service` SIDECAR (journal-sequence verified) — never the default-profile daemon.
 - Never trust watcher exit codes alone — read the run's own `conclusion` via API.
 - BUILD TRIGGERS = exactly TWO, NO exceptions (v0.4.3, S3-rewired 2026-08-28; A3 owner ruling 2026-08-29): an editor's `oc-deploy ship --sha <full-sha>` background task, or Alexey's word. No other dispatch — the direct PR-head dispatch is retired (superseded by `oc-prchecks`; ORDER gate 3 containment rejects any sha outside fork `main` anyway). All builds serialize under single-flight.
 
 ## Shared war stories (why these rules exist)
 
-Incident histories behind the hard rules live in `war-stories.md` (history is reference, not
-procedure; the version-level record is `CHANGELOG.md`).
+Incident histories behind the hard rules live in `war-stories.md` — **a BRAIN-DIR file, NOT shipped
+in this skill tree** (`~/.opencrabs/profiles/ops/war-stories.md`; load it with `load_brain_file`).
+History is reference, not procedure; the version-level record is `CHANGELOG.md`.

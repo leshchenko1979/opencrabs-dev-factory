@@ -1,4 +1,3 @@
-oc-deploy-shadow.log
 *.lock
 run/
 __pycache__/
@@ -6,9 +5,15 @@ __pycache__/
 *.pyo
 *.bak
 # Lane-created pre-edit backups (e.g. tools/oc-x.pre-20260925-115731). Generated
-# residue: they accumulate, nothing reaps them, and because oc-ledger's
-# stray-guard reads a full `git status --porcelain`, a single UNTRACKED one
-# blocks every version bump with die 7. Same class as *.bak above.
+# residue: they accumulate and nothing reaps them.
+#
+# MEASURED 2026-11-19 (c29 lens D) — the die-7 claim this comment used to carry was
+# FALSE, and it propagated into a work order before anyone checked it. `oc-ledger:1540`
+# builds its stray set from plain `git status --porcelain`, which OMITS ignored paths,
+# so `*.bak` and `*.pre-*` are invisible to it: clutter, never blockers. The one sidecar
+# class that CAN block a version bump is `*.bak-*`, because the `*.bak` line above does
+# not match it and it is therefore not ignored (0 live 2026-11-19, which is why no bump
+# has tripped). A reaper that sweeps `*.bak` alone misses the only class that matters.
 *.pre-*
 
 # The battery red-receipt transcript (#517/#614). Since #614 the receipt embeds

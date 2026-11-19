@@ -18,14 +18,14 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 | `triage.md` | TRIAGE role procedure — intake & assignment, dispatch hygiene, hygiene patrols, upstream lifecycle tracking |
 | `toolsmith.md` | TOOLSMITH role procedure — owns `tools/` code, battery stewardship, tool-problem reports |
 | `review-lenses.md` | Full Duty-6 lens briefs (A–J) — split from hq.md v0.4.78 |
-| `war-stories.md` | Incident histories behind the hard rules (disclosed from SKILL.md, v0.4.80) |
+| `war-stories.md` | Incident histories behind the hard rules — **lives in the BRAIN dir (`~/.opencrabs/profiles/ops/`), NOT in this tree**; load with `load_brain_file` (disclosed from SKILL.md, v0.4.80) |
 | `fleet-directives.md` | Binding owner directives that apply to EVERY lane — the `[LANE]` cross-role law + a residual of cross-cutting rulings, with a pointer table to the role/topic file that owns scoped law. Re-homed from ops AGENTS.md/MEMORY.md, 2026-09-02; split 2026-09-18 |
 | `upstream-merge-runbook.md` | Procedure for the REBASE sync model: gates, roles, conflict classes, migration-union rule |
 | `s2-swap-journal-spec.md` | Journal vocabulary spec for the oc-deploy swap leg |
 | `session-notify.md` | `session_notify` TOOL mechanics — split from SKILL.md v0.4.262 (the delivery LAW stays in fleet-directives) |
 | `environment.md` | Shared environment facts for `~/opencrabs` — split from SKILL.md v0.4.262 |
 | `CHANGELOG.md` | Version history, **newest entry FIRST** |
-| `tools/` | The `oc-*` tool fleet, grouped by function (`audit/` `git/` `harvest/` `issue/` `notify/` `ship/` `smoke/` `state/`) |
+| `tools/` | The `oc-*` tool fleet, grouped one level per function — group list: `SKILL.md §Directory layout` |
 | `tools/instruments/` | Corpus-agnostic analysis instruments — NOT fleet tools, so they carry no `oc-*` name |
 | `tools/lib/` | Shared shell libs: `oc-log.sh` (journal + rc register + flood guard), `oc-embed.sh` (job-embed decoder) |
 | `tools/docs/RC-CONTRACT.md` | SOLE per-tool rc register: fleet conventions + verdict codes (v0.4.78) |

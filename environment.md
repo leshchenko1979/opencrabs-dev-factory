@@ -16,6 +16,13 @@ build/carrier surface, and the daemon facts.
   passes `oc-commit`'s presence-only guard and lands the role word in the
   `Session-Id` trailer, which `oc-order-validate` gate 4 reads as UNSIGNED
   (measured 2026-09-26: ship rc 2, main stranded undeployed).
+- **A tool whose import path is derived from `__file__` cannot be run from a copy outside its tree.**
+  Copying `tools/registry_attest.py` (or any sibling that computes its own module root
+  relative to its own location) to `/tmp` and running it there resolves the import to
+  `/tmp/...` and fails with no hint that the location is the problem. Run it from a
+  checkout — `python3 tools/registry_attest.py` with the skill dir as cwd. (c29
+  brain-scrub-11, promoted from the superseded `factory-registry-attest` entry; the cron
+  trigger itself was rewritten under #574 and is disabled.)
 - Checkout `~/opencrabs`: remote **`origin`** = fork `leshchenko1979/opencrabs`
   (push target) · remote **`adolfousier`** = sync source (upstream).
 - **`gh` in `~/opencrabs` defaults to UPSTREAM — `-R` is MANDATORY (2026-09-22).**
@@ -171,3 +178,18 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   `order-gates` `build` `pr-gates` — and **no audit job at all** (the only `audit` strings in it
   name the `oc-ship-audit` TOOL). So a red Cargo Audit in `ci.yml` never blocked a lane's merge;
   asserting otherwise is a measured error (ledger n=16514, corrected at n=16518).
+
+- **`EAGAIN` / `Errno 11` / `can't start new thread` in a gate is BOX SATURATION, never a gate
+  defect (c29 brain-scrub-2, from the 2026-10-30 incident).** A failure where the INSTRUMENT
+  cannot start is not a finding about the SUBJECT (rule 7, one surface over). The diagnosis is
+  a SAME-TURN read of the leaf cgroup's own `pids.current` / `pids.max` at the cgroup the
+  process actually runs in (`/proc/self/cgroup`), walked UPWARD — the leaf is not always the
+  binding one, and `systemctl show` can be answering confidently about a unit that does not
+  exist. **Treat a runtime `pids.max` raise as SESSION-LIFETIME, never durable:** re-read
+  before trusting any earlier raise, and re-apply it when the symptom returns. Measured
+  2026-11-01: the cap silently came back at **`pids.max` 192** (with `pids.current` at 31) on a
+  re-created cgroup, after having produced **twelve** phantom `can't start new thread` gate
+  failures that read as a tooling regression. A lane that hits this again will file a gate
+  defect and hold a ship — the stall class this bullet exists to prevent. **Open obligation:**
+  whoever owns the daemon's launch path should make `TasksMax` real, so the raise stops being
+  per-session folklore.

@@ -1,5 +1,66 @@
 # Changelog — opencrabs-dev
 
+## v0.4.320 — the eight HQ-owned HIGH findings of c29, each verified on the bytes before it was edited
+
+**What forced it.** Cycle `20261119-c29` returned **102 findings (25 HIGH / 55 MED / 22 LOW)** across
+eleven lens reports. Eight of the HIGHs sit in files only HQ may write, so no lane could land them.
+Every one was re-read against the live tree first: all eight reproduced, one (`G-1`) was already
+two-thirds landed by v0.4.308 and needed one line.
+
+**A-1 — `war-stories.md` was cited eleven times and existed at none of those paths.** The file lives
+at `~/.opencrabs/profiles/ops/war-stories.md` (the brain dir, 26,831 B), while every citation named it
+bare, as though it sat in the skill tree next to the files that reference it. A lane following the
+pointer found nothing. Seven `SKILL.md` sites now carry the real path plus the `load_brain_file`
+route; `editor.md`, `README.md` and `tools/docs/RC-CONTRACT.md` carry it too.
+
+**A-2 + brain-scrub-1 — one repair, not two findings.** `editor.md §Phase 5` restated
+`editor-ship.md §Phase 5`, including the launch-surface law, the `--test-threads 2` law, the FAST-gate
+caveat, the docs-only LEG1 skip and a byte-identical Checkable Completion Formula. Worse,
+`editor-ship.md:6` declared *"where the two disagree `editor.md` wins and this file is the defect"* —
+so a fix applied to the file that actually owns the trap stack and is read at ship time was, by that
+clause, itself a defect. Single-home now wins: `editor.md §Phase 5` carries the one-tool statement,
+a pointer and the completion formula; `editor-ship.md` owns the trap stack and wins on Phase-5
+content; the conflict rule is reversed. **brain-scrub-1 lands in the same edit**: the
+`--test-threads 2` scope widened from "the ship invocation" to **ANY gate dispatch, manual
+`oc-prchecks <sha>` included** — the narrow reading is what burned fork runs `43850384543` and
+`43858587934` at the full `45m16s` wall.
+
+**B-1 — the law said "until it lands" three weeks after it landed.** `SKILL.md` still told the filing
+lane to pass `--assignee` / `--parent` by hand "until it lands", while `tools/issue/oc-issue-create`
+had shipped both flags in v0.4.297 (`DEFAULT_ASSIGNEE` at `:71`). A law describing a tool that no
+longer exists in that shape teaches the workaround and hides the fix.
+
+**G-1 — the role census was one file short.** The editor's two phase appendices
+(`editor-ship.md`, `editor-smoke.md`) exist and are loaded, but `SKILL.md`'s ONLY-HQ census still
+listed the five-file role set. Completed the clause v0.4.308 started.
+
+**H-1 — the bump/sync leg had no heartbeat, so its silence was invisible.** Four of sixteen
+`skill-bump` rows are catch-ups, and the versions left untagged are exactly the ones it skipped.
+Landing: cron `oc-version-heartbeat` (id `f7484c83`, daily 06:20 UTC) writes a receipt row to
+`reviews/version-heartbeat.log` on **every** run and wakes a lane **only** on disagreement between
+`SKILL.md`'s version, the newest `## vX.Y.Z` heading, `oc-ledger check-version`, and the tag's
+existence. Its first live run correctly raised `UNBUMPED-LAW` against this very batch before the bump
+— the instrument reports on its own author.
+
+**H-2 — a retraction nobody reads is not a retraction.** `n=16194` was withdrawn by `n=16582` and the
+withdrawn `#331` figures still leaked back into a comment two days later. The ledger is append-only,
+so the fix is a writing rule: **every correction row names the `n` values it supersedes** in its own
+text. The reverse index (`→ superseded by n=<x>` at every read of a superseded row) is a TOOL
+obligation and is routed to Toolsmith; until it lands the writer carries it.
+
+**brain-scrub-2 — the `pids.max` law had no skill home.** The rule that `EAGAIN` / `Errno 11` /
+`can't start new thread` in a gate is **box saturation, never a gate defect** lived only in passive
+MEMORY, which nothing loads: `grep -rn` for `pids.max`, `EAGAIN`, `can't start new thread`, `Errno 11`
+and `box saturation` across the corpus returned **zero** hits. It now sits in
+`environment.md §Environment facts (all roles)`, with the session-lifetime rule for a runtime raise
+and the 2026-11-01 relapse (`pids.max` back at 192 on a re-created cgroup after twelve phantom gate
+failures) as its measurement.
+
+**Not in this batch, by design.** The MEDs (`I-4`..`I-9`), the twelve tool-owned HIGHs and the two
+state-repo HIGHs are routed, not landed here — one version batch per owner, never a 102-item
+mega-commit. The MEMORY shrink that brain-scrub-1/2 owe is a protected-file shrink and needs owner
+approval; a pointer to the new skill homes was appended instead.
+
 ## v0.4.319 — the c29 meta-review's three HIGH findings, all of them in HQ's own law
 
 **What forced it.** Cycle `20261119-c29`'s Reviewer I — the lens whose object is the review machinery itself — returned 3 HIGH / 6 MED, and every HIGH landed on a file this lane writes. Each was verified against bytes before it was acted on, and two of the three were defects this lane had put there itself.
@@ -49,7 +110,7 @@ So the sentence was written **20 minutes before** the eleventh persist it report
 
 **What is withdrawn.** "32–48 min of total log silence", the "~15× separation", "12/12 cap-hits executed zero tests", "the last line is `rustc`", "`hangdump` is structurally blind". Each was derived from the truncated window, and each was quoted in `v0.4.311` as the reason the detector exists.
 
-**Why the detector is unharmed.** Its threshold rests on the green side, which *is* complete: 300 s = **3.9×** the re-measured 1.28 min worst healthy gap. The separation figure was never load-bearing — a CPU-flat detector needs only that healthy work advances CPU. What stays open is the phase question (compilation vs tests vs deadlock vs I/O), and it is answerable only on a first `STALLWATCH FIRE`, whose live `/proc` dump separates `futex` from `read`/`io_schedule`. **No phase claim may be made from a delivered log.**
+**Why the detector is unharmed.** Its threshold rests on the green side, which *is* complete: 300 s = **3.9×** the re-measured 1.28 min worst healthy gap. *(SUPERSEDED: the carrier now sets `STALLWATCH_SECS: "480"` — 6.25× the same gap. Read the carrier, never this sentence, for the live threshold; c29 lens F, F-7.)* The separation figure was never load-bearing — a CPU-flat detector needs only that healthy work advances CPU. What stays open is the phase question (compilation vs tests vs deadlock vs I/O), and it is answerable only on a first `STALLWATCH FIRE`, whose live `/proc` dump separates `futex` from `read`/`io_schedule`. **No phase claim may be made from a delivered log.**
 
 **Verification.** #311 comment `7017198262` carries the full table. All four log measurements were re-run in this lane, not relayed, and use line-prefix timestamps only — an earlier pass of mine matched timestamps inside log *content* and produced a 79-day span, which is how a figure gets published that no instrument could produce.
 
@@ -121,7 +182,7 @@ So the sentence was written **20 minutes before** the eleventh persist it report
 
 **What forced it.** 40 of 295 gate dispatches (13.6%) hit the 45-minute job cap — a step-level measurement, no log read (`#331`). The green-side figure stands: the longest legitimate silence in a successful gate run is **1.28 min**, re-measured at v0.4.317 across three 46k-line logs. **The hung-side figures this entry first carried — "32-48 min of total log silence", "12/12 sampled cap-hits executed zero tests", "the last line is `rustc`", "`hangdump` is blind to this class" — were WITHDRAWN 2026-11-19** (`v0.4.317`): `gh run view --log` delivers only ~9 min of a 45-minute cancelled job, so it cannot say what the process did afterwards. What the detector actually needs is that healthy work never goes CPU-flat, and that holds on the green side alone.
 
-**What shipped (carrier `ci/quick-build-linux`, `64110e59d` + `cf645906d` + `665449763`).** A phase-agnostic `stallwatch` on the test leg: it watches `sum(utime+stime)` over the step's own descendant process tree and SIGTERMs the build after 300 s of flat CPU (owner's number; **3.9×** the longest legitimate green silence, re-measured at v0.4.317 — 1.28 min across three 46k-line successful logs — and a compiling `rustc` advances CPU on every sample so healthy work cannot accumulate flat time). On fire it dumps `wchan`, `/proc/<pid>/syscall`, the kernel stack and a vmstat sample — `futex` vs `read`/`io_schedule` is the #781-deadlock vs I/O-thrash discriminator — then kills, so a stall costs ~5 min instead of 45 and yields the stack that identifies the mechanism. Fail-open: no python3 or an unparsable heredoc warns and continues. `665449763` added the syscall + kernel-stack payload because gdb is installed only in hangdump mode, so the original dump printed an **empty** stacks section that reads as "no stacks existed".
+**What shipped (carrier `ci/quick-build-linux`, `64110e59d` + `cf645906d` + `665449763`).** A phase-agnostic `stallwatch` on the test leg: it watches `sum(utime+stime)` over the step's own descendant process tree and SIGTERMs the build after 300 s of flat CPU (owner's number AT SHIP TIME; **3.9×** the longest legitimate green silence, re-measured at v0.4.317 — 1.28 min across three 46k-line successful logs — and a compiling `rustc` advances CPU on every sample so healthy work cannot accumulate flat time). **The live threshold is 480 s / 6.25× (`ci-lane-impl.yml:503`); this entry records what v0.4.317 shipped, not what the carrier runs.** On fire it dumps `wchan`, `/proc/<pid>/syscall`, the kernel stack and a vmstat sample — `futex` vs `read`/`io_schedule` is the #781-deadlock vs I/O-thrash discriminator — then kills, so a stall costs ~5 min instead of 45 and yields the stack that identifies the mechanism. Fail-open: no python3 or an unparsable heredoc warns and continues. `665449763` added the syscall + kernel-stack payload because gdb is installed only in hangdump mode, so the original dump printed an **empty** stacks section that reads as "no stacks existed".
 
 **Driven, not asserted.** ARM A (busy `comm=rustc`, 22 s at a 6 s threshold) never fired; ARM B (sleeping `comm=rustc`) fired at exactly `flat=6s`, dumped `syscall 230` + `kstack=hrtimer_nanosleep`, and SIGTERMed. Three earlier arm runs reporting NO FIRE were the **driver's** fault, not the detector's — `STALLWATCH_ROOT=$BASHPID` on a backgrounded command expands to the forked child's pid (the watcher watched itself) and `STALLWATCH_SAMPLE` never reached the child. Production sets neither; it resolves root from `os.getppid()`.
 
@@ -2807,6 +2868,17 @@ Five lanes filed this independently in one window (4b0990b7, 61161247, a5b34466,
   - Codified that if an active editor lane is currently modifying a subsystem (e.g. active claim/branch touching that module/flow), harvesting for that subsystem is held until the active lane finishes, hot-swaps, and lands.
 - **Deployment-Anchored Soak Clock (`fleet-directives.md` & `editor-upstream-pr.md`):**
   - Codified that the 24-hour deployment soak clock for the bundle is anchored strictly to the live deployment timestamp (`deployed.ts` / swap journal) of the **youngest behavioral change** in the bundle, NOT from commit or filing timestamps.
+
+## v0.4.185 (2026-09-15) — Cycle `20260915-c18` eleven-lens codification release
+
+Landed the c18 review-cycle findings as one version batch. Receipt: ledger row `n=6349`
+(cycle close, battery receipt ts `2026-09-15T15:38:29Z`); acceptance stamp `n=6484`
+(`v0.4.185 ACCEPTED`).
+
+**Heading recovered 2026-11-19 (c29 lens H, H-6).** Both ledger rows existed while this
+heading did not, so the changelog's version sequence read `v0.4.186` → `v0.4.184` and the
+release was unrecorded on the surface humans read. The receipt lines above are the ledger's
+own words; the entry body was never written and is not reconstructed here.
 
 ## v0.4.186 (2026-09-15) — Duty 6 Ledger Cadence Stamp & 24h Soak Deployment Time Amendment
 

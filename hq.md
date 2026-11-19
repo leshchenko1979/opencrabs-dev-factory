@@ -164,7 +164,7 @@ What STAYS at this factory, because it is process law about US and not about the
   reading nothing and reporting clean.
 - **Landing discipline: see §Duty 6 — ONE version batch, no design gate, no plan card, no owner
   approval; a fix whose owner is elsewhere is ROUTED and recorded as routed.**
-- **Checkable Completion Formula** (restored on-file, Duty-6 c28 G4 — the copy the 2026-09-27 carve moved to the unreachable meta-factory path left this duty with none): `DONE = every worker proposal for the cycle is read + each finding re-verified first-hand (an unreproduced finding is NOT a finding) + accepted findings landed in the Duty-6 version batch OR recorded as routed with their owner named + registry notes updated.`
+- **Checkable Completion Formula**: `DONE = every worker proposal for the cycle is read + each finding re-verified first-hand (an unreproduced finding is NOT a finding) + accepted findings landed in the Duty-6 version batch OR recorded as routed with their owner named + registry notes updated.`
 ## Duty 5 — Procedure rulings (decision 6)
 
 On protocol disputes — role boundaries, exception clauses, gate semantics —
@@ -206,6 +206,16 @@ What STAYS at this factory:
   new cycle into it, and always pass `--dir` explicitly.
 - **The corpus pack is a TRIAL, not this instrument** — it runs by absolute path from its own
   project dir, and its routing into `tools/` is a separate decision.
+- **The reviewer BRIEF is a COMMITTED artifact of the cycle dir, never a `/tmp` file.** Write it
+  to `$OC_DEV_STATE/reviews/<cycle>/BRIEF.md` and commit it in the same turn it is handed to the
+  reviewers. Measured c29 (2026-11-19): the brief that 11 reviewers worked from existed ONLY at
+  `/tmp/c29/BRIEF.md`, so the cycle's own terms were unrecoverable from the repository, and its
+  central claim — *"a faithful `rsync -a` snapshot, findings against it are findings against the
+  live tree"* — was false in its SCOPE half (175 corpus files against 234 mirror blobs,
+  `reviews/` absent entirely, 0 of 85 sidecars included). A corpus brief MUST name its exclusions
+  and require `NOT ASSESSABLE (corpus exclusion)` rather than `CLEAN` for them, because a
+  reviewer cannot distinguish "I found nothing" from "I was never given that class" — and the
+  brief is the only surface that can tell them.
 - **KEY-SET CLOSURE STAYS HERE.** No instrument at THIS factory carries the "every key ⊆ the
   ruled set" closure: the meta-factory engine's `review.py schema` (which would emit it) is NOT
   operative here (see the ⚠ banner in §Duty 4), and `tools/state/oc-review-persist` emits no
@@ -214,7 +224,7 @@ What STAYS at this factory:
   Stated because a carve must not delete a live rule that has no mechanical carrier. (Tool half
   — a `validate` verb emitting `additionalProperties: false` on the cycle schema — ROUTED to
   Toolsmith, c27 J-1.)
-- **Checkable Completion Formula** (restored on-file, Duty-6 c28 G4 — the 2026-09-27 carve moved the contract to the unreachable meta-factory path and left this duty with none): `DONE = all catalog lenses A–J + brain-scrub dispatched and every report persisted under $OC_DEV_STATE/reviews/<cycle>/reports/ + oc-review-persist check-cycle returns rc 0 (a deliberately-skipped lens carries a waivers.log row, not a hole) + every load-bearing finding re-verified first-hand + accepted findings landed as ONE version batch + verdict table posted to owner topic 30220 + cadence reset stamped (oc-ledger stamp note "v<version> ACCEPTED").`
+- **Checkable Completion Formula**: `DONE = every catalog lens in the set derived by oc-review-persist check-cycle (the set is never enumerated here) has a persisted report under $OC_DEV_STATE/reviews/<cycle>/reports/ or a waivers.log row + check-cycle returns rc 0 + every load-bearing finding re-verified first-hand + accepted findings landed as ONE version batch + verdict table posted to owner topic 30220 + cadence reset stamped (oc-ledger stamp note "v<version> ACCEPTED").`
 ## Duty 7 — RETIRED (owner order 2026-09-14, v0.4.176)
 
 Duty 7 and the centralized Idea Box coordination queue are RETIRED; feedback routes directly to the
@@ -269,3 +279,24 @@ Rule text carries NO biography — provenance (date, origin quote, war story)
 lives in CHANGELOG.md, written at ship time of the version carrying the
 rule. This resolves the Duty-1 "every rule carries its war story" clause in
 favor of lens A: rules stay lean, history stays in CHANGELOG.
+
+## Correction rows name what they supersede (c29 H-2)
+
+The ledger is append-only, so a correction is a NEW row — but a reader arriving at the corrected
+row has no way to learn that a later row withdrew it. That is how `#331`'s withdrawn figures
+(`n=16194`) kept leaking back into a comment **two days after** `n=16582` retracted them: the
+retraction existed, and nothing at the site of the claim pointed at it.
+
+**Rule: every correction row names, in its own text, the `n` values it supersedes** —
+`supersedes: [n=16194]` — and the correcting row states what was wrong, not merely that something
+was. A correction that says only "withdrawn" leaves the original readable as current.
+
+**The reverse index is a TOOL obligation, not a discipline** (routed to Toolsmith): `oc-ledger`
+should annotate every read of a superseded row with `→ superseded by n=<x>`, so the correction
+reaches the reader wherever the claim is read. Until it lands, the writer carries the burden: put
+the superseded `n` in the correcting row's text, and when you quote an old row, grep for a later
+row naming it first.
+
+This is rule 8's law one surface over — a row's `n` MOVES on re-mint, so cite the subject, never
+the number, in *another* row's durable text; but a correction must name the `n` of the exact row
+it kills, because that row is the thing being withdrawn.
