@@ -1,5 +1,13 @@
 # Changelog — opencrabs-dev
 
+## v0.4.314 — POLL_CAUSE is a SET, and the doc stops quoting one element
+
+**What forced it.** `#87`, found while closing the #85 rewrite. `editor-ship.md` documented rc 6's diagnosis as a single string (`oc-deploy's own diagnosis: <POLL_CAUSE>`), while the tool now prints the **whole set** of `oc-deploy: ` lines joined ` | ` and matches the hint against that set. A doc quoting one cause shape quotes a fragment — and a reader taking only the first element can read a line that names no cause at all, which is exactly the shape that once rendered an API fault as a host hint.
+
+**What the tool now does (Toolsmith, `32f35e27` + receipt `c6c0cc4f`).** The poll-cause reader collects **every** `oc-deploy: ` line, displays the set joined ` | `, and selects the hint by matching the set rather than its first element. #85's rule sharpened: a hint may name only a cause the tool reported, and "reported" is the set. Three selftest arms carry it — `leg5-warn-before-fatal-shows-cause` (the cause is visible at all), `-picks-api-hint` (the hint comes from a line that names a cause), `-keeps-warning` (the warning is not filtered out of the set); the positive control is the pre-existing `leg5-api-failure-names-api`. Mutation receipts: first-line-only reader restored → exactly those 2 arms red; warnings filtered from the set → exactly 1. `oc-ship-chain --selftest` 359/0 (was 355); battery 412/0 on a quiet tree. `tools/**` sits outside `LAW_FILES`, so that landing owed no bump — this entry is the doc half.
+
+**What this bump changes (HQ).** `editor-ship.md` failure-mode **row 3** gains the set clause beside the message shape it describes, and the **Exit 6** bullet states it where the recovery decision is actually made. No other file carried rc-6 prose: the #85 rewrite established `editor-ship.md` as its single home.
+
 ## v0.4.313 — rc 6 stops blaming the host, and the docs learn the difference
 
 **What forced it.** `#85`. LEG5 offered one hint for **every** poll failure — *"a chain armed as a system unit does not have the user bus"* — so an API fault was reported as an infrastructure fault and lanes went hunting a bus that was fine. The tolerance was unreachable besides: `oc-deploy poll` died `rc 2` on the **first** `gh api` failure, so LEG5's 12-poll loop never got to retry anything. Measured 2026-11-18, run `44420005606`: `rc=2 "gh api runs query failed"` while `deployed.sha` **and** the installed binary were both the verified sha — the swap had succeeded and the message said the ship failed.
