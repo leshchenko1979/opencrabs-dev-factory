@@ -561,9 +561,9 @@ do_selftest() {
   # disclosure prints BEFORE the verdict line, so an ordered match would fail on
   # correct output (measured: this arm reddened on its own ordering).
   if [ "$T_RC" -eq 0 ] \
-     && printf '%s' "$T_OUT" | grep -q 'VERDICT GREEN' \
-     && printf '%s' "$T_OUT" | grep -q 'advisory job(s) NOT counted as gate failure' \
-     && printf '%s' "$T_OUT" | grep -q '(non-blocking)'; then
+     && oc_has "$T_OUT" 'VERDICT GREEN' \
+     && oc_has "$T_OUT" 'advisory job(s) NOT counted as gate failure' \
+     && oc_has "$T_OUT" '(non-blocking)'; then
     t_ok "#91 advisory job failure on a success run -> GREEN (no phantom RED)"
   else t_bad "#91 advisory-only failure (rc=$T_RC out=$T_OUT)"; fi
   # and it must SAY so: a silent exclusion is indistinguishable from a gate
