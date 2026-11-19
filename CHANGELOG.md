@@ -1,5 +1,15 @@
 # Changelog — opencrabs-dev
 
+## v0.4.316 — a pre-commit hook formats what a commit stages
+
+**What forced it.** Owner order 2026-11-19: *"Can we make a pre-commit git hook for formatting?"* → *"Auto fix"*. The pinned formatter shipped at v0.4.315 but **nothing triggered it**: a lane had to remember `oc-fmt --check` before a chain, and the gate's own fmt leg is soft-fail, so a forgotten call surfaced 45 minutes later at CI.
+
+**What shipped.** `hooks/pre-commit` (source of record, this skill dir), installed at `/root/opencrabs/.git/hooks/pre-commit` — the path **every worktree resolves to** (`git rev-parse --git-path hooks`), so one file covers all lanes. It formats the `*.rs` files the commit stages (`--diff-filter=ACMR`) and restages them.
+
+**The guard that matters.** A file carrying BOTH staged and unstaged hunks is refused and named: format-then-`git add` would pull the unstaged hunks into the commit. That is the only blocking path. Everything else **fails open** — missing or mismatched formatter, no `Cargo.toml`, a rebase/merge/cherry-pick in progress → warn on stderr and allow the commit — because a broken formatter must never halt the box. Bypass: `git commit --no-verify` or `OC_PRECOMMIT_SKIP=1`.
+
+**Six arms driven in a scratch repo** (never the shared tree): nothing `.rs` staged → rc 0 fast; already formatted → no restage; dirty file → reformatted, and the **committed bytes** are the formatted ones (positive control); partial staging → rc 1, file untouched; `oc-fmt` off PATH → commit allowed and the unformatted bytes land (fail-open proof, and the negative control for the positive one); `OC_PRECOMMIT_SKIP=1` → allowed.
+
 ## v0.4.315 — a pinned local formatter, and the law stops claiming none exists
 
 **What forced it.** Owner order 2026-11-19: *"install the formatting routine locally, synchronize its version with what we have in the CI, and leave everything else blocked."* Two facts made it urgent rather than tidy. First, the corpus said the opposite in **four live sites** (`editor.md §Box law`, `editor.md` Phase-4, `environment.md`, `upstream-merge-runbook.md`): *"the `rustfmt` wrapper RETIRED 2026-09-19 … no sanctioned local Rust tool exists, fmt included"* — so a lane had no legal way to check formatting before a 45-minute dispatch. Second, **the gate cannot tell you either**: `pr-checks.yml` runs fmt with `continue-on-error: true`, so the step reads `success` while its own log prints the diffs (measured: run `44526159805`, step `success`, log line 3128 `Diff in …/src/a2a/handler/notify.rs:31`). A green fmt leg was never evidence of a formatted tree.

@@ -88,7 +88,10 @@ build/carrier surface, and the daemon facts.
   **`rustfmt` is back as the ONE sanctioned local tool (v0.4.315)**: pinned to the gate's
   own release (Rust 1.100.0 / `0ef1bc3860`), installed under `/opt` with no compiler, and
   driven through **`oc-fmt`** (`--check` reports, plain applies, scoped to your changed
-  files) — see `editor.md §Box law`. Compiling/testing remains CI-only; `pr-checks.yml`
+  files) — see `editor.md §Box law`. **A `pre-commit` hook auto-formats the `.rs` files a
+  commit stages and restages them** (v0.4.316, source of record `hooks/pre-commit`); it
+  refuses partial staging and otherwise fails open — full terms in
+  `editor.md §Phase 4`. Compiling/testing remains CI-only; `pr-checks.yml`
   runs fmt as a **soft-fail** leg whose step reads `success` while printing diffs, so
   never cite it as proof; **cosmetic diffs it reports on
   CI-green code are KEPT AS-IS, not applied — fix only formatting artifacts you
