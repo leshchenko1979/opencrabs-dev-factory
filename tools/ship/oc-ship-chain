@@ -41,6 +41,11 @@
 #   --fast           Default gate mode (passes fast=true to oc-prchecks).
 #   --full|--no-fast Opt-in full test suite gate (~30 min).
 #   --no-rearm       Disable the #78 Class A re-arm supervisor for this run.
+#                    #92: a CANCELLED-superseded gate is re-armed by RESUMING
+#                    the superseder prchecks named (`--gated-run <id>`), never
+#                    by dispatching a fresh gate onto the same ref -- that is
+#                    what cancelled it. An unnamed superseder (`none found`,
+#                    the TIMEOUT-cancel class) still refuses.
 #                    Default is ON: a chain that dies of a MECHANICAL cause with
 #                    nothing external in flight (ship-lock timeout rc 9; gate
 #                    INFRA rc 6 from a pre-dispatch prchecks 4/7/8) restarts
@@ -341,7 +346,12 @@ chain_remedy() { # $1 = exit code
 #   prchecks rc 7  carrier head unresolvable            -- NO run dispatched
 #   prchecks rc 8  AMBIGUOUS, dispatch refused          -- NO run dispatched
 #   prchecks rc 5  in-flight timeout                    -- run existed, NO
-#   prchecks rc 6  CANCELLED-superseded                 -- run existed, NO
+#   prchecks rc 6  CANCELLED-superseded                 -- run existed, so a
+#                                                         fresh dispatch is
+#                                                         the one thing that
+#                                                         must NOT happen; #92
+#                                                         RESUMES the named
+#                                                         superseder instead
 #
 # rc 9 (SHIP-LOCK-TIMEOUT) is the other re-armable class: the chain never got
 # past the landing lock, so nothing outside it exists at all. It is matched on
@@ -366,6 +376,18 @@ chain_rearm_action() { # $1 = exit code; CHAIN_DIE_MSG + GATE_RUN_ID carry the s
            if [ -z "${GATE_RUN_ID:-}" ]; then
              printf '%s' "gate-redispatch"
            fi ;;
+         "gate infra rc=6"*)
+           # #92: CANCELLED-superseded. A run DID exist here -- that is the
+           # whole point -- so this arm must NOT inherit the empty-GATE_RUN_ID
+           # guard above: that guard proves nothing was dispatched, which is
+           # exactly false in this class. Resume the superseder prchecks named;
+           # re-dispatching onto the same gated ref would cancel it a second
+           # time. A non-numeric value means prchecks said `none found` (the
+           # TIMEOUT-cancel class), and resuming nothing is not an action.
+           case "${GATE_SUPERSEDING:-}" in
+             ''|*[!0-9]*) : ;;
+             *) printf 'gate-resume:%s' "$GATE_SUPERSEDING" ;;
+           esac ;;
          *) : ;;
        esac ;;
     *) : ;;
@@ -502,6 +524,27 @@ _chain_wake_arming_lane() { # $1 = exit code
 # `_chain_wake_arming_lane` call below it is never reached on a re-arm. There
 # is no flag to forget.
 NO_REARM=""
+# #92: the child argv for a gate RESUME. Every existing --gated-run / --gated-sha
+# pair is REMOVED -- both the `--flag value` and `--flag=value` spellings -- and a
+# single --gated-run <id> is appended, so the child waits on exactly the run that
+# was named. Two --gated-run flags are last-wins at best and a silent misparse at
+# worst, and a surviving --gated-sha beside a --gated-run describes two different
+# gates. No wait is added here: the child's own --gated-run path already attaches
+# to an in-flight run, and a supervisor-side wait would duplicate that path and
+# give a SECOND timeout to reason about.
+_chain_rearm_argv() { # $1 = run id; prints one argv token per line
+  local _id="$1" _skip=0 _a
+  for _a in "${CHAIN_ARGV[@]}"; do
+    if [ "$_skip" = 1 ]; then _skip=0; continue; fi
+    case "$_a" in
+      --gated-run|--gated-sha) _skip=1; continue ;;
+      --gated-run=*|--gated-sha=*) continue ;;
+    esac
+    printf '%s\n' "$_a"
+  done
+  printf '%s\n' "--gated-run" "$_id"
+}
+
 _chain_rearm_supervise() { # $1 = exit code; execs on re-arm, returns 1 otherwise
   # A signal never re-arms (#79). The operator stopped this on purpose; a
   # supervisor that resurrects it is the very bug #79 exists to prevent.
@@ -543,6 +586,14 @@ _chain_rearm_supervise() { # $1 = exit code; execs on re-arm, returns 1 otherwis
   oc_log_extra "rearm_rc" "$1" 2>/dev/null || true
   oc_log_finish "$1" 2>/dev/null || true
   export OC_SHIPCHAIN_REARM_ATTEMPT=$((_n+1))
+  # #92: a resume substitutes the gate the child waits on (see _chain_rearm_argv
+  # for why it is a replacement and not an append).
+  case "$_act" in
+    gate-resume:*)
+      local -a _child=()
+      mapfile -t _child < <(_chain_rearm_argv "${_act#gate-resume:}")
+      exec bash "$SELF" "${_child[@]}" ;;
+  esac
   exec bash "$SELF" "${CHAIN_ARGV[@]}"
 }
 
@@ -675,6 +726,9 @@ GATE_SKIPPED_DOCS=""
 # previously parsed only inside the rc=5 resume loop), so LEG4 can name its
 # gate to oc-deploy instead of landing silently.
 GATE_RUN_ID="${GATE_RUN_ID:-}"
+# #92: the superseder prchecks NAMED on a CANCELLED-superseded gate. Empty
+# unless LEG1 captured one, so every other rc-6 exit keeps its old answer.
+GATE_SUPERSEDING="${GATE_SUPERSEDING:-}"
 FAST=0
 # LEG1 gate budget (defect fix 2026-09-11, lane 4b4463d5). The PR-lane gate on
 # this box takes ~30 min end-to-end; oc-prchecks' own --wait default is 600 s,
@@ -1580,7 +1634,30 @@ else
         else
           die "gate precondition failed rc=2 — the branch/sha is not usable on the fork remote (see the oc-prchecks line above); push it and re-run: oc-ship-chain --sha $SHA --branch $BRANCH. This is NOT an infrastructure fault." 3
         fi ;;
-    *) journal "LEG1 gate INFRA rc=$GATE_RC"; printf '%s\n' "$GATE_OUT"; die "gate infra rc=$GATE_RC" 6 ;;
+    *) journal "LEG1 gate INFRA rc=$GATE_RC"; printf '%s\n' "$GATE_OUT"
+       # #92: a CANCELLED-superseded gate NAMES its superseder on the prchecks
+       # line printed just above (`  superseding run: <id> — <url>`,
+       # oc-prchecks:2134). Capture it so the supervisor can RESUME that run:
+       # re-dispatching onto the same gated ref is precisely what cancels the
+       # run being waited for, while resuming touches no ref and starts nothing.
+       # `head -1` is DEFENSIVE, not required by today's emit shape: the only
+       # line carrying `superseding run: <digits>` is oc-prchecks:2134, and the
+       # second occurrence of the phrase on that same line (inside REARM_HINT,
+       # `... or resume superseding run: oc-prchecks resume <id> ...`) has
+       # non-digit text between the colon and the number, so it cannot match
+       # this pattern. It is kept because the alternative failure is silent: a
+       # future second match would make GATE_SUPERSEDING a multi-line value,
+       # which the numeric guard below would then refuse as `none` -- a resume
+       # that quietly does nothing. `<<<` rather than a printf pipe: this
+       # tree's SIGPIPE guard forbids the pipeline form (#660/#693).
+       GATE_SUPERSEDING=""
+       if [ "$GATE_RC" = "6" ]; then
+         GATE_SUPERSEDING="$(grep -oE 'superseding run: [0-9]+' <<< "$GATE_OUT" | head -1 | awk '{print $3}')"
+         if [ -n "$GATE_SUPERSEDING" ]; then
+           journal "LEG1 superseding run $GATE_SUPERSEDING -- resume candidate"
+         fi
+       fi
+       die "gate infra rc=$GATE_RC" 6 ;;
   esac
 fi
 
@@ -2137,6 +2214,20 @@ echo "$*" >> "${FAKE_PRCHECKS_LOG:-/dev/null}"
 # #21: optional gate latency, so the cgroup-detach survival test has a window
 # to kill inside. Unset for every other test -> byte-identical behaviour.
 [ -n "${FAKE_SLOW_GATE:-}" ] && sleep "$FAKE_SLOW_GATE"
+# #92: CANCELLED-superseded, emitted in prchecks' OWN line shape
+# (oc-prchecks:2134) so the capture is exercised against the real format
+# rather than a convenient one -- including the REARM_HINT appended to the
+# SAME line, which is where the phrase `superseding run:` occurs a second
+# time. That second occurrence is `resume superseding run: oc-prchecks
+# resume <id>`: non-digit text sits between the colon and the number, so it
+# cannot match the capture pattern. The fixture therefore reproduces the
+# real shape and does NOT claim to exercise `head -1`, which is defensive
+# (see the capture site's comment).
+if [ "${FAKE_GATE:-green}" = "infra6" ]; then
+  printf 'oc-prchecks: VERDICT RED (infra) -- the gate run was cancelled by a superseding run\n'
+  printf '  superseding run: 222 -- https://example.invalid/runs/222 (re-arm: oc-prchecks abc --wait 600 — or resume superseding run: oc-prchecks resume 222 --wait 600)\n'
+  exit 6
+fi
 # green unless FAKE_GATE=red
 [ "${FAKE_GATE:-green}" = "red" ] && exit 3
 exit 0
@@ -2930,6 +3021,89 @@ echo "completed success success"
 exit 0
 EOF
   chmod +x "$T/fake-gh-run"
+
+  # 1f. #92 THE WHOLE POINT, ASSERTED END TO END. A CANCELLED-superseded gate
+  # must RE-ARM AS A RESUME: the child waits on the superseder, and NO second
+  # gate is dispatched. Both halves are load-bearing -- a re-arm that merely
+  # avoids re-dispatching but waits on nothing is a silent no-op, and a resume
+  # that also re-dispatches cancels the very run it resumed.
+  cat > "$T/fake-gh-resume" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "${FAKE_GH_LOG:-/dev/null}"
+echo "completed success success"
+exit 0
+EOF
+  chmod +x "$T/fake-gh-resume"
+  rm -f "$T/journal.log" "$T/prchecks.log" "$T/gh.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_GH="$T/fake-gh-resume" FAKE_GH_LOG="$T/gh.log" \
+      FAKE_PRCHECKS_LOG="$T/prchecks.log" FAKE_GATE=infra6 \
+      OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+      run_chain --sha "$FSHA" --branch feat --issue 42 2>&1)" || RC=$?
+  check_rc "rearm-rc6-resume-ships" "$RC" 0
+  grep -q "gate-resume:222" "$T/journal.log" \
+    && ok "rearm-rc6-resume-journalled" \
+    || bad "rearm-rc6-resume-journalled: [$(grep 'RE-ARM' "$T/journal.log" 2>/dev/null | tr '\n' ' ')]"
+  grep -q "run view 222" "$T/gh.log" \
+    && ok "rearm-rc6-child-waits-on-superseder" \
+    || bad "rearm-rc6-child-waits-on-superseder: [$(cat "$T/gh.log" 2>/dev/null | tr '\n' ' ')]"
+  _pd="$(grep -c . "$T/prchecks.log" 2>/dev/null || true)"
+  [ "${_pd:-0}" = 1 ] && ok "rearm-rc6-dispatches-exactly-once" \
+    || bad "rearm-rc6-dispatches-exactly-once (got ${_pd:-0}: a resume must start nothing)"
+
+  # 1g. #92 GUARD 3 -- the operator opt-out still wins over a NAMED superseder.
+  # Without this arm the resume class can be wired in a way that bypasses
+  # --no-rearm, and every other arm still passes: the positive control only
+  # proves the class fires, never that it can be switched off.
+  rm -f "$T/journal.log" "$T/prchecks.log" "$T/gh.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_GH="$T/fake-gh-resume" FAKE_GH_LOG="$T/gh.log" \
+      FAKE_PRCHECKS_LOG="$T/prchecks.log" FAKE_GATE=infra6 \
+      OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 \
+      run_chain --sha "$FSHA" --branch feat --issue 42 --no-rearm 2>&1)" || RC=$?
+  check_rc "norearm-rc6-resume-flag-exit-unchanged" "$RC" 6
+  grep -q "RE-ARM" "$T/journal.log" \
+    && bad "norearm-rc6-resume-flag-suppresses-restart" \
+    || ok "norearm-rc6-resume-flag-suppresses-restart"
+
+  # 1h. #92 GUARD 4 -- the budget bounds a resume exactly as it bounds any other
+  # re-arm. MAX=0 is the sharpest form: the class fires but no attempt is spent.
+  rm -f "$T/journal.log" "$T/prchecks.log" "$T/gh.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(OC_GH="$T/fake-gh-resume" FAKE_GH_LOG="$T/gh.log" \
+      FAKE_PRCHECKS_LOG="$T/prchecks.log" FAKE_GATE=infra6 \
+      OC_SHIPCHAIN_REARM_ALLOW_SELFTEST=1 OC_SHIPCHAIN_REARM_MAX=0 \
+      run_chain --sha "$FSHA" --branch feat --issue 42 2>&1)" || RC=$?
+  check_rc "norearm-rc6-resume-max0-exit-unchanged" "$RC" 6
+  grep -q "RE-ARM" "$T/journal.log" \
+    && bad "norearm-rc6-resume-max0-suppresses-restart" \
+    || ok "norearm-rc6-resume-max0-suppresses-restart"
+
+  # 1i. #92 GUARD 5 -- REPLACEMENT, NOT APPEND. A pre-existing --gated-run must
+  # not survive beside the new one: two flags are last-wins at best and a silent
+  # misparse at worst, and a surviving --gated-sha would describe a DIFFERENT
+  # gate than the run actually waited on. Asserted against the real function
+  # text, extracted from this file, so the arm cannot drift from production.
+  sed -n '/^_chain_rearm_argv()/,/^}/p' "$SELF" > "$T/rearm-argv.sh"
+  if [ -s "$T/rearm-argv.sh" ]; then
+    _av="$(bash -c 'source "$1"; CHAIN_ARGV=(--sha abc --branch feat --gated-run 111 --test-threads 2); _chain_rearm_argv 222' _ "$T/rearm-argv.sh" 2>/dev/null | tr '\n' ' ')"
+    _gn="$(grep -o -- '--gated-run' <<< "$_av" | wc -l | tr -d ' ')"
+    [ "$_gn" = 1 ] && ok "rearm-rc6-argv-has-one-gated-run" \
+      || bad "rearm-rc6-argv-has-one-gated-run (got $_gn): [$_av]"
+    case "$_av" in
+      *"222"*) ok "rearm-rc6-argv-carries-superseder" ;;
+      *) bad "rearm-rc6-argv-carries-superseder: [$_av]" ;;
+    esac
+    case "$_av" in
+      *"111"*) bad "rearm-rc6-argv-drops-stale-gated-run: [$_av]" ;;
+      *) ok "rearm-rc6-argv-drops-stale-gated-run" ;;
+    esac
+  else
+    bad "rearm-rc6-argv-extract: _chain_rearm_argv not found in \$SELF"
+  fi
 
   rm -f "$T/journal.log"
   git -C "$T/clone" checkout -q main
@@ -4588,6 +4762,20 @@ DRIVER
   _ra_ck "norearm-gate-infra-8-witnessed-run" "" "gate infra rc=8" 6 "43652761485"
   # rc-6 exits where a run DID exist: restarting cancels the live verdict.
   _ra_ck "norearm-gate-infra-6-cancelled" "" "gate infra rc=6" 6
+  # #92: rc 6 becomes re-armable ONLY as a RESUME of the superseder prchecks
+  # named. The arm directly above is the control -- an UNNAMED rc 6 must still
+  # refuse -- and these pin the named cases in both directions. `none` is what
+  # prchecks prints for the TIMEOUT-cancel class, and resuming nothing is not
+  # an action.
+  _ra_ck6() { # $1 = arm name, $2 = want, $3 = superseder, $4 = message
+    local got; GATE_SUPERSEDING="$3"
+    got="$(_ra "$4" "" 6)"
+    [ "$got" = "$2" ] && ok "$1" || bad "$1: want '$2', got '$got' (sup='$3')"
+    GATE_SUPERSEDING=""
+  }
+  _ra_ck6 "rearm-rc6-resumes-named-superseder" "gate-resume:222" "222" "gate infra rc=6"
+  _ra_ck6 "norearm-rc6-none-found-refuses"     ""                "none" "gate infra rc=6"
+  _ra_ck6 "norearm-rc6-empty-superseder"       ""                ""     "gate infra rc=6"
   _ra_ck "norearm-gate-resume-failed" "" "gate resume failed" 6
   _ra_ck "norearm-gate-rc5-no-run-id" "" "gate rc=5 but no run id on stdout" 6
   # The swap sites: LEG3/LEG4 already touched the world.
