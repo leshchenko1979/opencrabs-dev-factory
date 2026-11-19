@@ -34,7 +34,7 @@ EXPLICIT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) MODE="check"; shift ;;
-    --base)  BASE="${2:-}"; shift 2 ;;
+    --base)  [ $# -ge 2 ] || { echo "oc-fmt: --base needs a value (try --help)" >&2; exit 2; }; BASE="$2"; shift 2 ;;
     --all)   SCOPE="all"; shift ;;
     -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --)      shift; while [ $# -gt 0 ]; do EXPLICIT="$EXPLICIT $1"; SCOPE="explicit"; shift; done ;;
