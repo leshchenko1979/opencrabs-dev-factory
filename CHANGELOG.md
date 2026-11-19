@@ -1,5 +1,19 @@
 # Changelog — opencrabs-dev
 
+## v0.4.315 — a pinned local formatter, and the law stops claiming none exists
+
+**What forced it.** Owner order 2026-11-19: *"install the formatting routine locally, synchronize its version with what we have in the CI, and leave everything else blocked."* Two facts made it urgent rather than tidy. First, the corpus said the opposite in **four live sites** (`editor.md §Box law`, `editor.md` Phase-4, `environment.md`, `upstream-merge-runbook.md`): *"the `rustfmt` wrapper RETIRED 2026-09-19 … no sanctioned local Rust tool exists, fmt included"* — so a lane had no legal way to check formatting before a 45-minute dispatch. Second, **the gate cannot tell you either**: `pr-checks.yml` runs fmt with `continue-on-error: true`, so the step reads `success` while its own log prints the diffs (measured: run `44526159805`, step `success`, log line 3128 `Diff in …/src/a2a/handler/notify.rs:31`). A green fmt leg was never evidence of a formatted tree.
+
+**What shipped (host infra, no repo change).** `rustfmt` **1.100.0 / commit `0ef1bc3860`** — the release `channel-rust-stable.toml` resolved — installed at `/opt/rustfmt-1.100.0`. It is **not** a toolchain: only `librustc_driver` + `libLLVM` were extracted from the rustc tarball, so `rustc`/`cargo`/`clippy` remain impossible and Box law is intact. `/usr/local/bin/rustfmt` is a pin-verifying wrapper (`--pin` prints the pin; a mismatch exits 3), replacing the 2026-09-19 BLOCKED stub (pre-image kept at `rustfmt.stub-20260919.bak`, sha256 `a6f067a6…`). **Parity is measured, not assumed**: local and CI both name the same first diff, byte for byte.
+
+**`oc-fmt` — the sanctioned entry point.** Direct `rustfmt` invocations drift into repo-wide sweeps, so lanes call `oc-fmt`: it scopes to the files actually changed (merge-base with `origin/main`, plus staged and untracked), reads the edition from `Cargo.toml`, and offers `--check` / apply / `--all` (the sweep, explicitly not per-lane work). Flags parse in any position after the rewrite — the first build had `--files X --check` swallowing `--check` and `$*` word-splitting the file list, which reported `mode write, 0 file(s)` and then ran rustfmt on stdin.
+
+**The edition trap this bump records.** `Cargo.toml` says `edition = "2024"`; `.rustfmt.toml` still says `2021`. Under 2021, rustfmt **skips** every file containing let-chains and reports **zero diffs** — a false clean. Measured both ways on 2026-11-19: `--edition 2021` → 0 hunks; `--edition 2024` → **589 diffs across 215 files**, 0 parse errors. So `oc-fmt` takes the edition from `Cargo.toml`, and the law now forbids reading `--edition 2021` silence as a pass.
+
+**What the bump changes (HQ).** Four sites corrected to match the host, each stating the pin, the no-compiler property, and `oc-fmt` as the interface. `editor.md` Phase-4 also gains the measured fact that the soft-fail leg prints diffs under a green step — so no lane cites it as proof again.
+
+**Residual gap, stated.** The **215-file / 589-diff** sweep is NOT done and is not this bump's business: it would collide with every live branch, and the config mismatch (`2021` vs `2024`) is a separate decision. CI's fmt leg also stays `continue-on-error` — promoting it is an owner call, and doing it now would fail every lane on pre-existing drift.
+
 ## v0.4.314 — POLL_CAUSE is a SET, and the doc stops quoting one element
 
 **What forced it.** `#87`, found while closing the #85 rewrite. `editor-ship.md` documented rc 6's diagnosis as a single string (`oc-deploy's own diagnosis: <POLL_CAUSE>`), while the tool now prints the **whole set** of `oc-deploy: ` lines joined ` | ` and matches the hint against that set. A doc quoting one cause shape quotes a fragment — and a reader taking only the first element can read a line that names no cause at all, which is exactly the shape that once rendered an API fault as a host hint.

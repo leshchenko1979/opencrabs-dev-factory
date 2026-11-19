@@ -84,9 +84,13 @@ build/carrier surface, and the daemon facts.
   compile/test executor (Compiler role RETIRED 2026-08-28). No cargo/rustc/clippy in ANY form —
   install, PATH-prepend, explicit path, even an invocation that exits 0 is a
   violation. **Canonical full law (ban list, fmt/lint evidence): `editor.md §Box law — no local cargo, ever`**
-  (Duty-6 c25 A-8: one home, pointers everywhere else). `/root/.rustup` is gone and the
-  `rustfmt` wrapper was RETIRED 2026-09-19 (exits 1 `BLOCKED`), so fmt runs only
-  in CI as the soft-fail leg of `pr-checks.yml`; **cosmetic diffs it reports on
+  (Duty-6 c25 A-8: one home, pointers everywhere else). `/root/.rustup` is gone, but
+  **`rustfmt` is back as the ONE sanctioned local tool (v0.4.315)**: pinned to the gate's
+  own release (Rust 1.100.0 / `0ef1bc3860`), installed under `/opt` with no compiler, and
+  driven through **`oc-fmt`** (`--check` reports, plain applies, scoped to your changed
+  files) — see `editor.md §Box law`. Compiling/testing remains CI-only; `pr-checks.yml`
+  runs fmt as a **soft-fail** leg whose step reads `success` while printing diffs, so
+  never cite it as proof; **cosmetic diffs it reports on
   CI-green code are KEPT AS-IS, not applied — fix only formatting artifacts you
   introduced yourself**. modum RETIRED 2026-08-28.
 - Daemons run as systemd **user** units (`systemctl --user`) — system-scope queries
