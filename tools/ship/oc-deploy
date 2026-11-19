@@ -577,6 +577,30 @@ shadow_log() { # <op> <sha> <features> <result>
 # already downloaded the artifact and pruned backups. Same class as the closed
 # #42 fanout double-notify (missing in-flight guard, sibling path).
 #
+# poll_host_state: one line of LOCAL evidence about what is actually installed
+# (#85). A poll failure used to say only "gh api runs query failed", and a
+# reader holding that plus rc 6 concluded the SHIP failed — while the host was
+# already running the verified good binary. Every read here is local (marker
+# files + sha256 of the installed binary), so it stays available exactly when
+# the API is what broke.
+poll_host_state() {
+  local dep bin hash art verdict
+  dep="$(cat "$DEPLOYED" 2>/dev/null || true)"
+  bin="$SWAP_TARGET"
+  hash="$(sha256sum "$bin" 2>/dev/null | awk '{print $1}')"
+  art="$(jq -r '.artifact_sha256 // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+  if [ -n "$art" ] && [ -n "$hash" ]; then
+    if [ "$art" = "$hash" ]; then verdict="matches deployed.meta artifact_sha256"
+    else verdict="MISMATCH vs deployed.meta artifact_sha256=$art"; fi
+  elif [ -n "$hash" ]; then
+    verdict="no deployed.meta to compare"
+  else
+    verdict="binary unreadable at $bin"
+  fi
+  printf 'host: deployed.sha=%s binary=%s sha256=%s (%s)' \
+    "${dep:-<absent>}" "$bin" "${hash:-<unreadable>}" "$verdict"
+}
+
 # swap_inflight_units prints the live swap units for a sha8. "In flight" is
 # systemd's own ACTIVE/ACTIVATING state, NOT `--all`: a FAILED unit must not
 # block its own legitimate retry, and a finished transient unit is GC'd by
@@ -874,6 +898,33 @@ case "$*" in
 esac
 STUB
   chmod +x "$SD/gh"
+  # #85: a SEPARATE gh stub whose API read can be made to fail, so the main
+  # stub's semantics stay untouched. OC_TEST_API_FAIL_N = number of leading
+  # failures on `runs?status=success`; UNSET = every call fails (the genuine-RED
+  # control). The counter file is per-leg so legs cannot leak state into each
+  # other — the failure that would hide is "leg 2 passes because leg 1 already
+  # consumed the failures".
+  cat > "$SD/gh-api-flaky" <<'FSTUB'
+#!/usr/bin/env bash
+[ -n "${GH_LOG:-}" ] && echo "$*" >> "$GH_LOG"
+case "$*" in
+  *runs?status=success*)
+    _cf="${OC_TEST_API_COUNTER:?OC_TEST_API_COUNTER unset}"
+    _n=0; [ -f "$_cf" ] && _n="$(cat "$_cf" 2>/dev/null || echo 0)"
+    _n=$((_n + 1)); echo "$_n" > "$_cf"
+    if [ -z "${OC_TEST_API_FAIL_N:-}" ] || [ "$_n" -le "$OC_TEST_API_FAIL_N" ]; then
+      echo "HTTP 502: Bad Gateway (https://api.github.com/repos/x/actions/workflows/y/runs)" >&2
+      exit 1
+    fi
+    echo '{"workflow_runs":[{"id":111}]}' ;;
+  *actions/runs/111/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, telegram)","conclusion":"success"}]}' ;;
+  *actions/runs/111*) echo '{"status":"completed","conclusion":"success"}' ;;
+  *runs?status=failure*) echo '{"workflow_runs":[]}' ;;
+  *) echo '{}' ;;
+esac
+exit 0
+FSTUB
+  chmod +x "$SD/gh-api-flaky"
   # sandbox git: bare remote at c1, repo ahead at c2 (FF-able)
   git init -q --bare -b main "$T/remote.git"
   git init -q -b main "$T/repo"
@@ -1191,6 +1242,35 @@ STUB
   check_rc "poll-plan-rc" $rc 0
   check_has "poll-decodes-sha" "$out" "built sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   check_has "poll-swap-locked" "$out" "swap LOCKED"
+  # 8b. #85: inside the poll WINDOW an unreadable API is "not yet", not a
+  #     verdict. The defect: ONE `gh api` blip on poll #1 killed a chain whose
+  #     swap had already completed (measured run 44420005606 — rc=2 while
+  #     deployed.sha AND the installed binary were both the verified sha), so
+  #     LEG5's 12 polls of tolerance bought nothing. Fixture fails twice then
+  #     answers; with TRIES=3 the SAME iteration must recover.
+  : > "$T/api-counter-a"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh-api-flaky" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_TEST_API_COUNTER="$T/api-counter-a" OC_TEST_API_FAIL_N=2 \
+    OC_DEPLOY_POLL_API_TRIES=3 OC_DEPLOY_POLL_API_BACKOFF=0 \
+    "$SELF_BIN" poll --wait 60 2>&1)"; rc=$?
+  check_rc "poll-api-blip-tolerated-rc" $rc 0
+  check_has "poll-api-blip-recovers" "$out" "built sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  # 8c. NEGATIVE CONTROL — and the reason this fix is not a silent green. An
+  #     API that NEVER answers must still be RED: rc 0 here would mean the
+  #     tolerance had converted a genuine failure into a pass.
+  : > "$T/api-counter-b"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh-api-flaky" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_TEST_API_COUNTER="$T/api-counter-b" \
+    OC_DEPLOY_POLL_API_TRIES=3 OC_DEPLOY_POLL_API_BACKOFF=0 \
+    "$SELF_BIN" poll --wait 0 2>&1)"; rc=$?
+  check_rc "poll-api-dead-still-red-rc" $rc 2
+  # 8d. gh's own words survive. The old `2>/dev/null` discarded them, so the
+  #     message named a cause nobody had measured.
+  check_has "poll-api-dead-keeps-stderr" "$out" "HTTP 502"
+  check_has "poll-api-dead-counts-tries" "$out" "after 3 tries"
+  # 8e. and LOCAL host state rides along, so a reader can tell "the swap never
+  #     happened" from "the swap happened and the poll could not see it".
+  check_has "poll-api-dead-carries-host-state" "$out" "host: deployed.sha="
   # 9. poll at S2: stage fixture (consent gate retired 2026-08-28 — GREEN run
   #    + artifact verify is the authorization now)
   printf '{"meta":{"oc_deploy_stage":"S2"}}' > "$SD/workers-ledger.json"
@@ -4203,9 +4283,35 @@ case "$MODE" in
     # (validation moved to poll top — Duty-6 lens F task 5)
     POLL_DEADLINE=$(( $(date +%s) + WAIT_SECS ))
     POLL_INTERVAL="${OC_DEPLOY_POLL_INTERVAL:-30}"
+    # #85: the poll's tolerance is a WINDOW, so an unreadable API is "not yet"
+    # until that window closes — not a verdict on the first blip. Before this,
+    # one `gh api` hiccup on poll #1 killed a chain whose swap had already
+    # completed (measured 2026-11-18, run 44420005606: rc=2 "gh api runs query
+    # failed" while deployed.sha AND the installed binary were both the
+    # verified sha), so 12 polls of tolerance bought nothing.
+    POLL_API_TRIES="${OC_DEPLOY_POLL_API_TRIES:-3}"
+    POLL_API_BACKOFF="${OC_DEPLOY_POLL_API_BACKOFF:-5}"
     while :; do
-      RUNS_JSON="$("$GH" api "repos/$FORK/actions/workflows/$WF/runs?status=success&per_page=3" 2>/dev/null)" \
-        || { shadow_log poll "-" "-" "api-fail"; die 2 "gh api runs query failed"; }
+      RUNS_JSON=""; POLL_API_ERR=""; POLL_API_OK=0; POLL_API_TRY=0
+      while [ "$POLL_API_TRY" -lt "$POLL_API_TRIES" ]; do
+        POLL_API_TRY=$((POLL_API_TRY + 1))
+        if RUNS_JSON="$("$GH" api "repos/$FORK/actions/workflows/$WF/runs?status=success&per_page=3" 2>&1)"; then
+          POLL_API_OK=1; POLL_API_ERR=""; break
+        fi
+        POLL_API_ERR="$RUNS_JSON"; RUNS_JSON=""
+        [ "$POLL_API_TRY" -lt "$POLL_API_TRIES" ] && sleep "$POLL_API_BACKOFF"
+      done
+      if [ "$POLL_API_OK" != 1 ]; then
+        # gh's own stderr is RETAINED: the old `2>/dev/null` threw away the
+        # only evidence of what broke, and the message then blamed a cause
+        # nobody measured.
+        if [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; then
+          echo "poll: gh api unavailable (try ${POLL_API_TRY}/${POLL_API_TRIES}: ${POLL_API_ERR:-<no stderr>}) — retrying in ${POLL_INTERVAL}s, deadline in $(( POLL_DEADLINE - $(date +%s) ))s" >&2
+          sleep "$POLL_INTERVAL"; continue
+        fi
+        shadow_log poll "-" "-" "api-fail"
+        die 2 "gh api runs query failed after ${POLL_API_TRY} tries within --wait ${WAIT_SECS}s: ${POLL_API_ERR:-<no stderr>} — $(poll_host_state)"
+      fi
       # #63 fix (v0.4.79) + #72 fix (this change): iterate the latest runs,
       # scanning ALL jobs of each run (gates-first ordering puts the build job
       # at jobs[1]) and accepting BOTH name shapes (embed + bare-sha gates

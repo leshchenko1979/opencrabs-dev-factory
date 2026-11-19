@@ -1946,6 +1946,27 @@ esac
 # than the real tool and encoded the bug away.
 # The authoritative signal is the deployed.sha marker, read through
 # oc-deploy's own read-only `status --json`.
+# leg5_host_state: one line of LOCAL evidence for a LEG5 failure (#85). Every
+# read is local (marker files + sha256 of the installed binary), so it stays
+# available exactly when the API is what broke. A LEG5 RED used to carry only
+# the expected sha, so a reader could not tell "the swap never happened" from
+# "the swap happened and the poll could not see it" — and one lane concluded
+# the ship had failed while the host was already running the verified binary.
+leg5_host_state() {
+  local dep bin hash art verdict
+  dep="$(cat "$STATE_DIR/deployed.sha" 2>/dev/null | tr -d ' \n\r\t' || true)"
+  bin="${OC_SWAP_TARGET:-/usr/local/bin/opencrabs}"
+  hash="$(sha256sum "$bin" 2>/dev/null | awk '{print $1}')"
+  art="$(jq -r '.artifact_sha256 // empty' "$STATE_DIR/deployed.meta.json" 2>/dev/null || true)"
+  if [ -n "$art" ] && [ -n "$hash" ]; then
+    if [ "$art" = "$hash" ]; then verdict="matches deployed.meta artifact_sha256"
+    else verdict="MISMATCH vs deployed.meta artifact_sha256=$art"; fi
+  elif [ -n "$hash" ]; then verdict="no deployed.meta to compare"
+  else verdict="binary unreadable at $bin"; fi
+  printf 'host: deployed.sha=%s binary=%s sha256=%s (%s)' \
+    "${dep:-<absent>}" "$bin" "${hash:-<unreadable>}" "$verdict"
+}
+
 journal "LEG5 swap poll start (oc-deploy poll --execute)"
 SWAPPED=0
 CUR_DEPLOYED=""
@@ -1962,7 +1983,18 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   [ "$POLL_RC" = "0" ] || {
     journal "LEG5 poll rc=$POLL_RC"
     POLL_CAUSE="$(printf '%s\n' "$POLL_OUT" | sed -n 's/^oc-deploy: //p' | head -1)"
-    die "swap poll failed rc=$POLL_RC — oc-deploy's own diagnosis: ${POLL_CAUSE:-none on stdout} — resume via: oc-deploy poll --execute from a shell that HAS the user bus (a chain armed as a system unit does not)" 6
+    # #85: rc=2 is oc-deploy's "could not read the API" verdict. The bus hint
+    # below was offered for EVERY poll failure, so a gh-api blip read as an
+    # infrastructure fault and the lane went hunting a user bus that was fine.
+    # A hint is a hypothesis about a cause; it may only name a cause the tool
+    # actually reported.
+    case "$POLL_RC:$POLL_CAUSE" in
+      2:*"gh api"*|2:*"API"*)
+        HINT="the API was unreadable, not the ship — re-run: oc-deploy poll --execute" ;;
+      *)
+        HINT="resume via: oc-deploy poll --execute from a shell that HAS the user bus (a chain armed as a system unit does not)" ;;
+    esac
+    die "swap poll failed rc=$POLL_RC — oc-deploy's own diagnosis: ${POLL_CAUSE:-none on stdout} — $(leg5_host_state) — $HINT" 6
   }
   set +e
   ST_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" status --json 2>/dev/null)"
@@ -1975,7 +2007,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
 done
 if [ "$SWAPPED" != "1" ]; then
   journal "LEG5 swap NOT confirmed after 12 polls (deployed=${CUR_DEPLOYED:-none} expected=$SHA)"
-  die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA (inspect via: oc-deploy status)" 6
+  die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA — $(leg5_host_state) — inspect via: oc-deploy status" 6
 fi
 journal "DONE SWAPPED sha=$SHA"
 echo "SHIP-CHAIN $CHAIN: SWAPPED sha=$SHA gate=$SHIP_GATE_MODE"
@@ -2114,6 +2146,26 @@ esac
 exit 9
 EOF
   chmod +x "$T/fake-prchecks" "$T/fake-deploy"
+  # #85 fixtures: two stubs that fail ONLY at the poll verb, so the chain still
+  # reaches LEG5. One reports oc-deploy's rc=2 "gh api" verdict; the other the
+  # rc=2 user-bus precondition. Both exist because the arm that matters is the
+  # DISCRIMINATION: a case statement that always chose one branch would pass a
+  # one-stub test either way.
+  for _v in api bus; do
+    cat > "$T/fake-deploy-$_v" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "poll" ]; then
+  if [ "$_v" = "api" ]; then
+    echo "oc-deploy: gh api runs query failed after 3 tries within --wait 600s: HTTP 502: Bad Gateway — host: deployed.sha=\$(cat "\${OC_DEPLOY_STATE_DIR:-/tmp}/deployed.sha" 2>/dev/null || echo '<absent>') binary=/usr/local/bin/opencrabs sha256=<unreadable> (binary unreadable at /usr/local/bin/opencrabs)" >&2
+  else
+    echo "oc-deploy: user bus unreachable — 'systemd-run --user' cannot reach the systemd user manager" >&2
+  fi
+  exit 2
+fi
+exec "$T/fake-deploy" "\$@"
+EOF
+    chmod +x "$T/fake-deploy-$_v"
+  done
   printf '#!/usr/bin/env bash\nexit 0\n' > "$T/fake-issuelog"
   chmod +x "$T/fake-issuelog"
 
@@ -2152,8 +2204,67 @@ EOF
   grep -q "LEG5 swap poll start" "$T/journal.log" && ok "leg5-ran" || bad "leg5-ran"
   grep -q "LEG4 ship GREEN" "$T/journal.log" && ok "journal-ship-leg" || bad "journal-ship-leg"
   grep -q "DONE SWAPPED" "$T/journal.log" && ok "journal-done" || bad "journal-done"
+
   grep -q -e "--fast" "$T/prchecks.log" && ok "default-gate-is-fast" || bad "default-gate-is-fast"
   grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -q -- "--fast"     && ok "journal-leg1-resolved-argv-fast" || bad "journal-leg1-resolved-argv-fast"
+  # 1a-#85. LEG5 MUST SURVIVE AN UNREADABLE API, and must say WHICH failure it
+  #     hit. Measured 2026-11-18, run 44420005606: a single gh-api blip on poll
+  #     #1 killed the chain with rc=2 while deployed.sha AND the installed
+  #     binary were both the verified sha, and the message offered the "user
+  #     bus" hint — a cause nobody had measured. rc 6 is PRESERVED here: the
+  #     fix is a better message plus oc-deploy's own window tolerance, never a
+  #     green.
+  # run_chain hardcodes OC_DEPLOY_BIN, so an env prefix on it is silently
+  # overridden — these two legs carry their own invocation.
+  chain_with_deploy() {
+    OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$1" \
+    OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" \
+    OC_TOOLS_NOLOG=1 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 OC_SHIPCHAIN_LEDGER="$T/journal.log" \
+    OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
+    OC_SWAP_TARGET="$T/fake-swapped" \
+    OC_SHIPCHAIN_IN_UNIT_CGROUP=0 \
+      bash "$SELF" --sha "$FSHA" --branch feat --wait 5
+  }
+  # The host-state line must be read from THIS fixture, never from the box: an
+  # arm that stats /usr/local/bin/opencrabs passes or fails on whatever the
+  # host happens to be running, which is a fixture reading live state. Note
+  # deployed.sha is deliberately NOT pre-written here — the fake `ship` verb
+  # clears the marker and only the SWAP restores it, so at LEG5 it is legitimately
+  # absent and asserting a sha there would test the fixture's bookkeeping.
+  mkdir -p "$T/state"
+  printf 'fixture-swapped-binary\n' > "$T/fake-swapped"
+  printf '{"artifact_sha256":"%s"}\n' "$(sha256sum "$T/fake-swapped" | awk '{print $1}')" \
+    > "$T/state/deployed.meta.json"
+  rm -f "$T/journal.log"
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(chain_with_deploy "$T/fake-deploy-api" 2>&1)" || RC=$?
+  check_rc "leg5-api-failure-still-rc6" "$RC" 6
+  case "$OUT" in *"user bus"*) bad "leg5-api-failure-no-bus-blame: message blames a user bus it did not measure" ;;
+                 *) ok "leg5-api-failure-no-bus-blame" ;; esac
+  case "$OUT" in *"the API was unreadable"*) ok "leg5-api-failure-names-api" ;;
+                 *) bad "leg5-api-failure-names-api: $OUT" ;; esac
+  # Two arms, because "carries host state" is not one fact: the line must be
+  # present at all, AND it must report the CONFIGURED target — a hardcoded
+  # /usr/local/bin/opencrabs would satisfy presence while reading the box.
+  case "$OUT" in *"host: deployed.sha="*) ok "leg5-api-failure-carries-host-state" ;;
+                 *) bad "leg5-api-failure-carries-host-state: $OUT" ;; esac
+  case "$OUT" in *"binary=$T/fake-swapped"*) ok "leg5-api-failure-reads-configured-target" ;;
+                 *) bad "leg5-api-failure-reads-configured-target: $OUT" ;; esac
+  # POSITIVE CONTROL for the discrimination above: a NON-API rc=2 poll failure
+  # must still get the bus hint. Without this arm, a `case` collapsed to the API
+  # branch would satisfy all three arms above and mislabel every bus failure.
+  rm -f "$T/journal.log"
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(chain_with_deploy "$T/fake-deploy-bus" 2>&1)" || RC=$?
+  check_rc "leg5-bus-failure-still-rc6" "$RC" 6
+  # The hint itself, not the substring "user bus": the fixture's own cause text is
+  # echoed into the message, so a loose grep passes on a `case` that never chose
+  # the bus branch (measured: mutant 353/2 left this arm green until tightened).
+  case "$OUT" in *"from a shell that HAS the user bus"*) ok "leg5-bus-failure-keeps-bus-hint" ;;
+                 *) bad "leg5-bus-failure-keeps-bus-hint: $OUT" ;; esac
+  # and it must NOT wear the API label: the discrimination has to point both ways
+  case "$OUT" in *"the API was unreadable"*) bad "leg5-bus-failure-no-api-mislabel: a bus failure was labelled an API failure" ;;
+                 *) ok "leg5-bus-failure-no-api-mislabel" ;; esac
 
   # 1b. full GREEN chain with --full (opts out of --fast)
   rm -f "$T/journal.log" "$T/prchecks.log"
