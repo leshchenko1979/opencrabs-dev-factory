@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# pre-commit — format the Rust files THIS commit stages, then restage them.
+#
+# WHY: a lane that ships unformatted code pays a ~45 min CI cycle to learn what
+# rustfmt says in 200 ms. This moves that check to the moment of commit, on
+# exactly the bytes being committed.
+#
+# INSTALLED at /root/opencrabs/.git/hooks/pre-commit, which EVERY worktree
+# resolves to (git rev-parse --git-path hooks -> /root/opencrabs/.git/hooks),
+# so one file covers every lane. Source of record: hooks/pre-commit in the
+# opencrabs-dev skill dir. Restore with:
+#     install -m 0755 hooks/pre-commit /root/opencrabs/.git/hooks/pre-commit
+#
+# BEHAVIOUR (owner order 2026-11-19: "auto fix"):
+#   * scope is only files staged for this commit ('*.rs', --diff-filter=ACMR)
+#   * a file carrying BOTH staged and unstaged hunks is never touched: format
+#     then 'git add' would pull the unstaged hunks into the commit. Name it,
+#     exit 1 — the one blocking path.
+#   * everything else FAILS OPEN: missing or mismatched formatter, no
+#     Cargo.toml, a rebase/merge/cherry-pick in progress -> warn on stderr and
+#     allow the commit. A broken formatter must never halt the box.
+#   * bypass: git commit --no-verify, or OC_PRECOMMIT_SKIP=1
+set -uo pipefail
+
+[ "${OC_PRECOMMIT_SKIP:-0}" = "1" ] && exit 0
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$REPO_ROOT" || exit 0
+
+# Never rewrite bytes mid-rebase/merge/cherry-pick: the index is not ours then.
+for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD; do
+  if [ -e "$(git rev-parse --git-path "$marker")" ]; then
+    echo "pre-commit: $marker in progress — skipping format (commit allowed)" >&2
+    exit 0
+  fi
+done
+
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+[ "${#staged[@]}" -eq 0 ] && exit 0
+
+# oc-fmt's explicit-file path word-splits, so a path with whitespace cannot be
+# carried through it safely. Skip it loudly rather than format the wrong file.
+files=()
+for f in "${staged[@]}"; do
+  case "$f" in
+    *[[:space:]]*) echo "pre-commit: '$f' has whitespace in its path — not formatted (commit allowed)" >&2 ;;
+    *) files+=("$f") ;;
+  esac
+done
+[ "${#files[@]}" -eq 0 ] && exit 0
+
+# Fail open on anything that makes the formatter untrustworthy.
+if ! command -v oc-fmt >/dev/null 2>&1; then
+  echo "pre-commit: oc-fmt not on PATH — skipping format (commit allowed)" >&2
+  exit 0
+fi
+if ! command -v rustfmt >/dev/null 2>&1; then
+  echo "pre-commit: rustfmt not on PATH — skipping format (commit allowed)" >&2
+  exit 0
+fi
+if ! rustfmt --pin >/dev/null 2>&1; then
+  echo "pre-commit: rustfmt is NOT the CI pin — skipping format (commit allowed)." >&2
+  echo "pre-commit: 'rustfmt --pin' names the mismatch; formatting with it would print diffs CI disagrees with." >&2
+  exit 0
+fi
+if [ ! -f Cargo.toml ]; then
+  echo "pre-commit: no Cargo.toml at $REPO_ROOT — skipping format (commit allowed)" >&2
+  exit 0
+fi
+
+# The one blocking path: partial staging.
+blocked=()
+for f in "${files[@]}"; do
+  [ -n "$(git diff --name-only -- "$f" 2>/dev/null)" ] && blocked+=("$f")
+done
+if [ "${#blocked[@]}" -gt 0 ]; then
+  printf 'pre-commit: REFUSING — staged file(s) also carry UNSTAGED changes:\n' >&2
+  printf '  %s\n' "${blocked[@]}" >&2
+  printf 'pre-commit: formatting then restaging would pull those unstaged hunks into this commit.\n' >&2
+  printf 'pre-commit: stage the whole file (git add <file>), or stash the rest, then commit.\n' >&2
+  exit 1
+fi
+
+# Format. A formatter failure is a warning, never a block (fail open).
+oc-fmt -- "${files[@]}" || echo "pre-commit: formatter reported a failure — restaging what it did change (commit allowed)" >&2
+
+changed=$(git diff --name-only -- "${files[@]}" 2>/dev/null)
+if [ -n "$changed" ]; then
+  if ! git add -- "${files[@]}"; then
+    echo "pre-commit: restage FAILED — aborting the commit" >&2
+    exit 1
+  fi
+  n=$(printf '%s\n' "$changed" | grep -c . || true)
+  echo "pre-commit: reformatted and restaged $n file(s):"
+  printf '  %s\n' "$changed"
+else
+  echo "pre-commit: already formatted (${#files[@]} staged .rs file(s))"
+fi
+
+exit 0
