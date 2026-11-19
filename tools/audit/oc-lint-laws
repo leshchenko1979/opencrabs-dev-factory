@@ -71,6 +71,32 @@ SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 TOOLS_DIR="${OC_LINT_LAWS_TOOLS_DIR:-$OC_TOOLS_DIR}"
 SKILL_DIR="$(dirname "$TOOLS_DIR")"
 
+# HOST TOOLS (#88): tools that legitimately live on the HOST, not in tools/.
+# The linter's job is to catch a law citing a tool that does not exist. It must
+# not accuse a correct law -- a false finding against real law is the one
+# failure this tool cannot afford, because the remedy (edit the law) destroys
+# correct text. So a small, EXPLICIT declaration admits a named host tool and
+# nothing else: a blanket "ignore unknown oc-* spans" would disable the very
+# check that caught `oc-ship-chain --resume` and `oc-ledger stamp proposal`.
+# Membership is a claim about the box, not an exemption from existence: a
+# declared tool that is NOT on PATH is still reported, with a message that says
+# which half is missing.
+#   OC_LINT_LAWS_HOST_TOOLS  (TEST HOOK) replaces the declaration wholesale.
+HOST_TOOLS="${OC_LINT_LAWS_HOST_TOOLS-oc-fmt}"
+
+# is_host_declared <name> -- is <name> in the HOST_TOOLS declaration?
+is_host_declared() {
+  case " $HOST_TOOLS " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# host_tool_path <name> -- resolve a DECLARED host tool via PATH. Undeclared
+# names never reach PATH: the declaration is the only door in.
+host_tool_path() {
+  is_host_declared "$1" || return 1
+  command -v "$1" 2>/dev/null || return 1
+}
+
 # The LAW corpus: the skill's normative markdown. Two exclusions, both
 # deliberate — CHANGELOG.md and war-stories.md quote historical invocations that
 # were correct when written and may legitimately name a retired flag; failing on
@@ -331,6 +357,35 @@ EOT
   printf 'The law cites `oc-good stays the fallback only when --beta` in prose.\n' > "$T/wide-gap-owned.md"
   run "$T/wide-gap-owned.md"; chk "wide-gap flag SOME tool owns -> dropped, rc 0" 0 "" "UNATTRIBUTABLE"
 
+  # --- #88: HOST TOOLS ------------------------------------------------------
+  # A tool that legitimately lives on the host (oc-fmt) is backed by no file in
+  # tools/, so the walk reports it UNKNOWN-TOOL and the law gets accused of
+  # citing a phantom. Three arms, and the CONTROL is the load-bearing one: an
+  # allowlist with no arm proving an UNDECLARED name still fails is
+  # indistinguishable from a resolver that accepts everything, which is the
+  # blanket-ignore this fix must not become.
+  mkdir -p "$T/hostbin"
+  cat > "$T/hostbin/oc-hostonly" <<'EOT'
+#!/bin/sh
+# a host tool that is NOT in tools/ -- supports --check
+case "$1" in --check) exit 0 ;; esac
+exit 0
+EOT
+  chmod +x "$T/hostbin/oc-hostonly"
+  printf 'Run `oc-hostonly --check` before committing.\n' > "$T/host-tool.md"
+  OUTP="$(OC_LINT_LAWS_TOOLS_DIR="$T/tools" OC_LINT_LAWS_HOST_TOOLS="oc-hostonly" \
+    PATH="$T/hostbin:$PATH" bash "$SELF" --file "$T/host-tool.md" 2>"$T/err")"; RC=$?
+  ERR="$(cat "$T/err")"
+  chk "declared host tool resolves clean (no UNKNOWN-TOOL)" 0 "" "UNKNOWN-TOOL"
+  OUTP="$(OC_LINT_LAWS_TOOLS_DIR="$T/tools" OC_LINT_LAWS_HOST_TOOLS="" \
+    PATH="$T/hostbin:$PATH" bash "$SELF" --file "$T/host-tool.md" 2>"$T/err")"; RC=$?
+  ERR="$(cat "$T/err")"
+  chk "CONTROL: the SAME name UNDECLARED is still UNKNOWN-TOOL" 1 "UNKNOWN-TOOL oc-hostonly"
+  OUTP="$(OC_LINT_LAWS_TOOLS_DIR="$T/tools" OC_LINT_LAWS_HOST_TOOLS="oc-hostonly" \
+    PATH="/usr/bin:/bin" bash "$SELF" --file "$T/host-tool.md" 2>"$T/err")"; RC=$?
+  ERR="$(cat "$T/err")"
+  chk "declared but OFF PATH -> UNKNOWN-TOOL naming the missing half" 1 "declared in HOST_TOOLS but NOT on PATH"
+
   # --- usage / arg contract ------------------------------------------------
   run "$T/clean.md" --bogus-arg; chk "unknown arg -> rc 2" 2 "unknown arg"
   OUTP="$(OC_LINT_LAWS_TOOLS_DIR="$T/tools" bash "$SELF" --file "$T/nope.md" 2>&1)"; RC=$?
@@ -453,6 +508,10 @@ tool_path() {
     case "${_d%/}" in */lib|*/tests|*/archive|*/docs|*/instruments) continue ;; esac
     if [ -f "$_d$1" ]; then printf '%s\n' "$_d$1"; return 0; fi
   done
+  # Only now, and only for a DECLARED name: a host tool is real but lives
+  # outside the versioned corpus, so it resolves by PATH rather than by file.
+  _hp="$(host_tool_path "$1" || true)"
+  [ -n "$_hp" ] && { printf '%s\n' "$_hp"; return 0; }
   return 1
 }
 
@@ -500,7 +559,11 @@ EOC
     key="$cfile:$cln:$ctool"
     case " $SEEN_UNKNOWN " in *" $key "*) continue ;; esac
     SEEN_UNKNOWN="$SEEN_UNKNOWN $key"
-    add "$rel" "$cln" "UNKNOWN-TOOL" "$ctool" "$cflag" "no such file in tools/ — the law invokes a tool that does not exist"
+    if is_host_declared "$ctool"; then
+      add "$rel" "$cln" "UNKNOWN-TOOL" "$ctool" "$cflag" "declared in HOST_TOOLS but NOT on PATH — install it; the law prescribes a tool this box lacks"
+    else
+      add "$rel" "$cln" "UNKNOWN-TOOL" "$ctool" "$cflag" "no such file in tools/ — the law invokes a tool that does not exist"
+    fi
     continue
   fi
   if ! flag_known "$CTOOL_PATH" "$cflag"; then

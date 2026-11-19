@@ -2528,6 +2528,48 @@ if tool oc-lint-laws; then
   rm -rf "$_LLT"
 fi
 
+# ---- 67b. oc-fmt: the repo copy is the SOURCE OF RECORD (#88) ----------------
+# oc-fmt existed only in /usr/local/bin, so the law corpus prescribed a tool that
+# no repo backed and a rebuilt box lost while the law still named it. It now lives
+# at tools/git/oc-fmt, and the installed copy is the operational one. TWO copies of
+# one program drift silently, and the harm runs in the direction nobody expects:
+# the installed copy keeps working while the repo copy rots, so a "restore" from
+# the repo DELETES a fix. Measured 2026-11-19 -- a 53-second window in which the
+# installed copy grew its false-clean edition warning and the repo copy did not;
+# restoring would have silently re-armed the false clean. Hence byte-identity.
+section "oc-fmt repo/installed identity (#88)"
+_OCF="$TOOLS_DIR/git/oc-fmt"
+if [ -f "$_OCF" ]; then
+  if command -v oc-fmt >/dev/null 2>&1; then
+    _ocf_inst="$(command -v oc-fmt)"
+    if diff -q "$_OCF" "$_ocf_inst" >/dev/null 2>&1; then
+      ok "installed copy is byte-identical to the repo copy ($_ocf_inst)"
+    else
+      bad "installed copy DRIFTED from the repo copy: $(diff "$_OCF" "$_ocf_inst" 2>&1 | head -2 | tr '\n' ' ')"
+    fi
+    # CONTROL, and it is the load-bearing half: the comparison must cover the
+    # WHOLE file. A guard that compares a prefix (cmp -n, head) passes every
+    # divergence after its window -- and a tail-only edit is precisely the drift
+    # this leg exists to catch. Without this arm the guard could shrink to a
+    # subset and stay green.
+    _ocf_t="$(mktemp -d)"
+    cp "$_OCF" "$_ocf_t/tail"
+    printf '\n# drift-probe\n' >> "$_ocf_t/tail"
+    if diff -q "$_OCF" "$_ocf_t/tail" >/dev/null 2>&1; then
+      bad "drift control: a TAIL divergence went undetected (the guard compares a subset)"
+    else
+      ok "drift control: a tail divergence is detected (the comparison covers the whole file)"
+    fi
+    rm -rf "$_ocf_t"
+  else
+    note "  skip - oc-fmt is not installed on this host; the repo copy is the source of record"
+  fi
+  sh -n "$_OCF" >/dev/null 2>&1 && ok "tools/git/oc-fmt parses (sh -n)" || bad "tools/git/oc-fmt does not parse (sh -n)"
+  "$_OCF" --help >/dev/null 2>&1 && ok "tools/git/oc-fmt --help rc=0" || bad "tools/git/oc-fmt --help rc!=0"
+else
+  bad "tools/git/oc-fmt is MISSING (the law prescribes oc-fmt; the repo must carry it)"
+fi
+
 # ---- 68. oc-harvest-dispatch (automated harvest order dispatcher)
 section "oc-harvest-dispatch (harvest order dispatcher)"
 run_selftest oc-harvest-dispatch
