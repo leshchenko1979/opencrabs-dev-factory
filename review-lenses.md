@@ -288,8 +288,19 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      the latest persisted report (scope drift, stale check classes), (2)
      OVERLAP — findings double-covered by two lenses, or coverage GAPS where
      no lens owns an artifact class, (3) FALSE-POSITIVE/NEGATIVE HISTORY —
-     the retraction/rejection rows in `workers-ledger.json` (query:
-     `grep -i 'retract\|reject'`) plus the ship-time folds already in these briefs
+     the CORRECTION rows in `workers-ledger.json` (vocabulary
+     `WITHDRAWN|REVOKED|SELF-CORRECTION|FALSIFIED` over the `what`/`by`/`kind`
+     fields; re-derive the count at read time — the ledger grows every turn).
+     **The old `grep -i 'retract\|reject'` query is RETIRED** — measured
+     2026-11-19 over 15,749 events: it MISSED **97 of the 103** correction rows
+     (**94.2%**), while **63** of its own 248 hits were mechanical
+     `LEG1 gate resume rejected` rows. Noisy and lossy in one query; the
+     vocabulary above is the predicate that isolates the subject. Owed to
+     Toolsmith: `oc-ledger corrections` phantom — the verb does not exist
+     today (the tool has no such subcommand); it would print
+     `n · ts · supersedes:<n|—> · verbatim`, rc 1 `NO-CORRECTIONS`, and the
+     vocabulary above is the query until it lands. Plus the ship-time folds
+     already in these briefs
      (precedents: brain-scrub "cargo ban homeless" overstatement, the
      B-8 misattribution — both rejected 2026-09-08; later retractions are
      recorded in the ledger and MUST be folded in at ship time, e.g. the

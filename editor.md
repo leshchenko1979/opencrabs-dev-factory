@@ -2,7 +2,7 @@
 
 **Load only after SKILL.md confirmed the role is EDITOR.**
 
-> **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `editor.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
+> **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `editor.md`, `fleet-directives.md` in `active_skills`, **plus `editor-ship.md` and `editor-smoke.md` — since the 2026-11-15 split these hold the Phase-5 and Phase-6 bodies, so this router without them is a table of contents with no chapters**; re-read on compaction/spawn).
 
 Scope: work from an issue — a BINARY issue on the FORK `leshchenko1979/opencrabs` (the single
 binary tracker since the owner's 2026-10-09 fork-first order) or a FACTORY issue on
@@ -335,14 +335,22 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
   stale. v0.4.6 predicates govern claims WE pass on; nothing sanitizes claims
   that ARRIVE — the receiver checks.
 - **A `Run tests` RED carrying `STALLWATCH FIRE` is a STALL, not a test failure**
-  (2026-11-17): the gate's phase-agnostic watchdog SIGTERMs the build after 300 s
-  of flat CPU across the step's own process tree, so the step dies with no
-  failing test name, usually in ~5 min instead of burning to the 45-min job cap.
+  (2026-11-17; threshold and calibration re-read 2026-11-19): the gate's
+  phase-agnostic watchdog SIGTERMs the build after **480 s** of flat CPU across
+  the step's own process tree (`STALLWATCH_SECS: "480"`, `ci-lane-impl.yml:503`
+  — the CARRIER is the authority, so a `300 s` figure in older text is
+  superseded), so the step dies with no failing test name, usually in ~5 min
+  instead of burning to the 45-min job cap. **Calibration: 480 s = 6.25× the
+  worst healthy inter-line gap**, measured across three GREEN runs (1.28 min,
+  ~46k lines each) — the green side is the only side whose delivered log is
+  COMPLETE, so the threshold rests on it and never on the hung side.
   Read the dump before touching a test: `wchan`/`kstack` (futex vs
   read/io_schedule) is the #781-deadlock vs I/O-thrash discriminator and
-  `syscall` names the blocking call. A "test hang" reading is usually wrong —
-  12/12 sampled cap-hits executed ZERO tests, the last line always cargo running
-  rustc over the dev-dependency tree.
+  `syscall` names the blocking call. **Do not read a "test hang" off the log:**
+  a cancelled run delivers only ~9 min of its 45, so the phase — compile, test,
+  deadlock or I/O — is UNMEASURED from logs alone (the earlier "12/12 cap-hits
+  executed zero tests" reading was withdrawn 2026-11-18 for exactly this
+  reason); the stallwatch dump is the first instrument that can answer it.
 
 ## Phase 6-Fix — Fix Loop (Red Carrier Build or Failed Smoke)
 
