@@ -92,6 +92,13 @@ _battery_reap_mirrors() {
 trap '_battery_reap_mirrors' EXIT
 ok()    { PASS=$((PASS+1)); note "  ok   - $*"; }
 bad()   { FAIL=$((FAIL+1)); note "  FAIL - $*"; if [ -n "${FAIL_LOG:-}" ]; then printf '  FAIL - %s\n' "$*" >> "$FAIL_LOG"; fi; }
+# (#120) `chk <desc> <want> <got>`. Called at :2105-2106 since the #525 legs
+# were written, and DEFINED NOWHERE until now -- so both calls printed
+# "chk: command not found" and asserted nothing, while the section reported
+# green. A command-not-found is not a failed assertion, it is an ABSENT one:
+# `bad` is never reached, FAIL is never incremented, and nothing in the verdict
+# records that a leg never ran. Same helper shape as oc-health:144.
+chk()   { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $2 got $3)"; }
 # tools/ is grouped by KIND (owner order 2026-09-25): oc-* live in functional
 # subdirs. Resolve by NAME so a tool can be moved without touching every leg.
 tool_path() {
