@@ -49,6 +49,7 @@ EVIDENCE_TOOL="$SCRIPT_DIR/smoke/oc-smoke-evidence"
 LEDGER_TOOL="$SCRIPT_DIR/state/oc-ledger"
 
 . "$SCRIPT_DIR/lib/oc-log.sh" 2>/dev/null || true
+. "$SCRIPT_DIR/lib/oc-gh-close.sh" 2>/dev/null || true
 oc_log_init "oc-smoke" "$@"
 
 PROG="oc-smoke"
@@ -1227,47 +1228,21 @@ fi
 #    `--behavioral na` (structurally untestable, stated) closes, because a leg
 #    the caller has explicitly ruled out is not an unproven one.
 if [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$LEDGER_RC" -eq 0 ] && [ "$BEHAVIORAL" != "absent" ]; then
-  case "$ISSUE" in
-    ''|*[!0-9]*)
-      # ISSUE is documented as "issue number or slug". A slug cannot be closed
-      # by gh, and resolving one would be a guess about which tracker to ask.
-      echo "$PROG: NOTE --close skipped: '$ISSUE' is not a numeric ref, so there is no issue to close" >&2
-      ;;
-    *)
-      CLOSE_STATE=""
-      set +e
-      CLOSE_STATE="$("$GH_BIN" issue view "$ISSUE" -R "$CLOSE_REPO" --json state --jq .state 2>&1)"
-      CLOSE_VRC=$?
-      set -e
-      CLOSE_STATE="$(printf '%s' "$CLOSE_STATE" | tr -d '[:space:]')"
-      if [ "$CLOSE_VRC" -ne 0 ]; then
-        echo "$PROG: WARNING: --close skipped — cannot read state of $CLOSE_REPO#$ISSUE (gh rc=$CLOSE_VRC): $CLOSE_STATE" >&2
-        echo "$PROG:          the PASS verdict row stands and the exit code is unchanged (guard 7);" >&2
-        echo "$PROG:          close $CLOSE_REPO#$ISSUE by hand once the tracker is reachable" >&2
-      elif [ "$CLOSE_STATE" = "CLOSED" ]; then
-        # Idempotent (guard 4): a second close is noise on the tracker and a
-        # second receipt on the record, so say it and stop.
-        echo "$PROG: NOTE $CLOSE_REPO#$ISSUE is already CLOSED — no second close" >&2
-      else
-        # printf, never a heredoc: FULL_EVIDENCE carries PROBE OUTPUT, and an
-        # unquoted heredoc would expand `$(...)`/backticks out of a probe that
-        # merely printed them. printf takes its arguments literally.
-        CLOSE_COMMENT="$(printf '%s\n\n- smoke verdict: PASS %s sha=%s run=%s — %s\n- ledger: done #%s smoke PASS verified\n' \
-          "Closed on behavioural receipt (class (d) behavioural-smoke-landed)." \
-          "$TS" "$DEPLOYED_SHA" "$RUN_ID" "$FULL_EVIDENCE" "$ISSUE")"
-        set +e
-        CLOSE_OUT="$("$GH_BIN" issue close "$ISSUE" -R "$CLOSE_REPO" --comment "$CLOSE_COMMENT" 2>&1)"
-        CLOSE_RC=$?
-        set -e
-        if [ "$CLOSE_RC" -eq 0 ]; then
-          echo "$PROG: closed $CLOSE_REPO#$ISSUE on the behavioural receipt (class (d) behavioural-smoke-landed)"
-        else
-          echo "$PROG: WARNING: close of $CLOSE_REPO#$ISSUE failed (gh rc=$CLOSE_RC): $CLOSE_OUT" >&2
-          echo "$PROG:          the PASS verdict row stands and the exit code is unchanged (guard 7)" >&2
-        fi
-      fi
-      ;;
-  esac
+  # T-10: ONE implementation of class (d) closure, shared with
+  # `oc-closure-sweep --apply`. The sweep's whole purpose is closing through the
+  # SAME path this does, and two copies of a gh-close block is exactly how the
+  # two drift — the copy nobody reads stops matching the one that is. The lib
+  # carries the guard set (numeric-only, unreadable-state skip, idempotent
+  # already-CLOSED, printf-built comment); rc policy stays HERE, because the lib
+  # never exits and guard 7 (a gh failure never changes the verdict) is this
+  # file's promise, not the helper's.
+  if command -v oc_close_on_receipt >/dev/null 2>&1; then
+    oc_close_on_receipt "$PROG" "$GH_BIN" "$CLOSE_REPO" "$ISSUE" \
+      "smoke verdict: PASS $TS sha=$DEPLOYED_SHA run=$RUN_ID — $FULL_EVIDENCE" \
+      "ledger: done #$ISSUE smoke PASS verified" || true
+  else
+    echo "$PROG: WARNING: --close unavailable — lib/oc-gh-close.sh is missing" >&2
+  fi
 elif [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 1 ]; then
   # Stated, not silent: a PASS with --no-ledger has no receipt PAIR, so class
   # (d) does not apply and nothing closes. A quiet skip would look identical to

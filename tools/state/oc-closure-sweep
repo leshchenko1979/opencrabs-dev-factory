@@ -1,0 +1,752 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-closure-sweep — close issues whose class (d) receipt pair ALREADY exists
+# =============================================================================
+# WHY THIS EXISTS (T-10, 2026-11-20; triage.md §Autonomous closure class (d))
+# -----------------------------------------------------------------------------
+# Class (d) closure is "a working behavioural smoke is confirmed -> the issue is
+# closed on the receipt". `oc-smoke --close` does that at the moment of the PASS.
+# It can only do it if the close feature existed, was reachable, and the gh call
+# succeeded — so every PASS that landed before any of those became an issue that
+# is landed, has BOTH receipts on the record, and is still OPEN. A `done` row
+# alone closes the CLAIM, so the dispatch predicate reads the issue as landed and
+# nothing ever looks at it again. The evidence for the class: #279 got a
+# PASS-LATE-ENTRY verdict and its done row and stayed open until a human noticed.
+#
+# This tool is the catch-up path. It joins the two receipt surfaces and closes
+# what the live path missed — through the SAME function `oc-smoke --close` uses
+# (tools/lib/oc-gh-close.sh), so the guards cannot drift between them.
+#
+# THE JOIN (three-way, both receipts required)
+#   1. smoke-verdicts.log — the issue's NEWEST verdict-bearing row must carry a
+#      SANCTIONED PASS token. A later FAIL / UNPROVEN / RETRACTION disqualifies.
+#   2. workers-ledger.json — a `done` row naming the issue. No done row, no
+#      pair, no close: that is acceptance criterion 3, and it is why the ledger
+#      half is a REQUIREMENT rather than corroboration.
+#   3. the live tracker — `gh issue view --json state`. OPEN is the only state
+#      that is eligible; CLOSED means the live path already did it.
+#
+# WHAT COUNTS AS A PASS — the sanctioned taxonomy only
+#   Eligible: PASS · PASS-LATE-ENTRY · PASS-OWNER-EYE · PASS-CALLBACK-LIVE
+#   (upstream-merge-runbook.md §Verdict taxonomy). Off-taxonomy tokens that read
+#   like PASSes — PASS-ADDENDUM, OWNER-EYE-CONFIRM, ADDENDUM — are reported on
+#   their own line and are NEVER closable: a public close is not the place to
+#   promote a token the taxonomy does not sanction. They are a defect to fix at
+#   the source, not a licence to close.
+#
+# ROW SHAPES the parser must survive (all four measured in the live log)
+#   (1) a full verdict row:  ts \t PASS \t run= \t sha= \t actor= \t issue= \t target= \t evidence=
+#   (2) a late entry:        ts \t PASS-LATE-ENTRY \t sha= \t actor= \t issue= \t target=   (no run=)
+#   (3) an identity block:   /usr/local/bin/opencrabs \t PASS \t ... — field 2 IS a
+#       verdict token, field 1 is NOT a timestamp. 1805 lines of that log hold
+#       hundreds of these; a parser that trusts field 2 alone closes on a
+#       sha block. The timestamp in field 1 is the discriminator.
+#   (4) a minimal row:       ts \t PASS \t issue=            (no sha, no run, no target)
+#
+# Usage: oc-closure-sweep [--repo <owner/repo>] [--log <path>] [--ledger <path>]
+#                         [--apply] [--json] [--selftest]
+#   DRY RUN IS THE DEFAULT. Without --apply this tool writes NOTHING to any
+#   tracker; it prints what it would close and exits 0.
+#   --repo      tracker to read state from and close on
+#               (default leshchenko1979/opencrabs-dev-factory — tooling issues)
+#   --log       smoke-verdicts.log (default $STATE_DIR/smoke-verdicts.log)
+#   --ledger    workers-ledger.json (default $STATE_DIR/workers-ledger.json)
+#
+# Exit codes:
+#   0 sweep ran; every eligible issue closed or already CLOSED (dry run: ran clean)
+#   1 at least one close FAILED (or a state read failed) under --apply
+#   2 usage error
+#   3 an input file is missing or unreadable (log / ledger)
+# =============================================================================
+# --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+_OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
+if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
+
+set -u
+set -o pipefail
+set -e
+
+SCRIPT_DIR="$OC_TOOLS_DIR"
+PROG="oc-closure-sweep"
+STATE_DIR="${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}"
+
+# The selftest must not journal rows into the fleet log. This is set BEFORE
+# oc_log_init, not after: init is what enables the writer, so exporting later is
+# a no-op and the selftest quietly pollutes the very log it is testing against.
+for _a in "$@"; do [ "$_a" = "--selftest" ] && export OC_TOOLS_NOLOG=1; done
+
+. "$SCRIPT_DIR/lib/oc-log.sh" 2>/dev/null || true
+. "$SCRIPT_DIR/lib/oc-gh-close.sh" 2>/dev/null || true
+oc_log_init "$PROG" "$@"
+
+GH_BIN="${OC_GH_BIN:-gh}"
+# BOTH live trackers by default, and the reason is measured, not tidy: the
+# smoke log is a SINGLE log for the whole fleet, so its verdict rows name binary
+# issues (fork) and tooling issues (factory) in one number space. A one-repo
+# sweep reported 200+ binary issues as "state read FAILED" on a live dry run
+# (2026-11-20) — noise that looks like a broken tracker and hides the real debt.
+# A `--repo` given on the command line REPLACES the default list.
+REPOS=("leshchenko1979/opencrabs-dev-factory" "leshchenko1979/opencrabs")
+REPO_GIVEN=0
+LOG="$STATE_DIR/smoke-verdicts.log"
+LEDGER="$STATE_DIR/workers-ledger.json"
+APPLY=0
+JSON=0
+MODE=sweep
+
+die() { local rc="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$rc"; }
+
+usage() {
+  sed -n '/^# Usage: oc-closure-sweep/,/^#   3 an input file/p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+for a in "$@"; do
+  case "$a" in
+    --selftest) MODE=selftest ;;
+  esac
+done
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)
+      [ $# -ge 2 ] || die 2 "--repo needs <owner/repo>"
+      [ "$REPO_GIVEN" -eq 1 ] || { REPOS=(); REPO_GIVEN=1; }
+      REPOS+=("$2"); shift 2 ;;
+    --log)    [ $# -ge 2 ] || die 2 "--log needs a path"; LOG="$2"; shift 2 ;;
+    --ledger) [ $# -ge 2 ] || die 2 "--ledger needs a path"; LEDGER="$2"; shift 2 ;;
+    --apply)  APPLY=1; shift ;;
+    --json)   JSON=1; shift ;;
+    --selftest) MODE=selftest; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die 2 "unknown argument '$1' (see --help)" ;;
+  esac
+done
+
+[ "${#REPOS[@]}" -gt 0 ] || die 2 "--repo given with no value"
+for _r in "${REPOS[@]}"; do
+  case "$_r" in
+    */*) ;;
+    *) die 2 "--repo must be owner/repo, got '$_r'" ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# selftest lives at the tail of this file (appended below) and exits before
+# any real input is touched.
+# ---------------------------------------------------------------------------
+run_selftest() {
+  export OC_TOOLS_NOLOG=1
+  # GLOBAL, not local: an EXIT trap runs after the function frame is gone, so a
+  # `local D` referenced by that trap is UNBOUND under `set -u` — and the trap
+  # error then masks the leg that actually failed (measured in this file's own
+  # mutation run: the abort looked like a tool bug for two rounds).
+  _ST_D="$(mktemp -d)" || die 3 "mktemp failed"
+  trap 'rm -rf "$_ST_D"' EXIT
+  D="$_ST_D"
+  local SELF="$OC_TOOLS_DIR/state/oc-closure-sweep" T; T="$(printf '\t')"
+  local pass=0 fail=0 rc=0 out="" err=""
+
+  t_ok()  { pass=$((pass + 1)); printf 'selftest: %s  OK\n' "$*"; }
+  t_bad() { fail=$((fail + 1)); printf 'selftest: %s  FAIL\n' "$*" >&2; }
+
+  # ---- fixtures -----------------------------------------------------------
+  # The four MEASURED row shapes, plus the two disqualifiers, plus the case
+  # acceptance criterion 3 names (a done row with no smoke PASS at all).
+  {
+    # (1) a full verdict row
+    printf '%s\n' "2026-11-01T10:00:00Z${T}PASS${T}run=111${T}sha=aaaa${T}actor=lane${T}issue=260${T}target=live-ops${T}evidence=behavioural probe green"
+    # (2) a late entry — NO run= (the #279 shape, and the regression case)
+    printf '%s\n' "2026-09-19T08:00:00Z${T}PASS-LATE-ENTRY${T}sha=bbbb${T}actor=lane${T}issue=279${T}target=live-ops${T}evidence=recorded late, receipts cited"
+    # (3) an IDENTITY BLOCK line: field 2 IS a verdict token, field 1 is not a
+    #     timestamp. A parser trusting field 2 alone reads this as a PASS for
+    #     #260 carrying sha=9999/run=999 — leg 4 is the discriminator.
+    printf '%s\n' "/usr/local/bin/opencrabs${T}PASS${T}pid=1${T}exe_sha256=dead${T}run_id=999${T}VERDICT=PASS${T}sha=9999${T}issue=260${T}target=live-ops${T}evidence="
+    # (4) a minimal row: no sha, no run, no target
+    printf '%s\n' "2026-11-02T09:00:00Z${T}PASS${T}issue=300"
+    # off-taxonomy PASS look-alike: reported, never closable
+    printf '%s\n' "2026-11-04T09:00:00Z${T}PASS-ADDENDUM${T}issue=302${T}target=live-ops"
+    # #303 carries a PASS and then a RETRACTION below. The PASS-then-RETRACTION
+    # pair is the ONLY thing that makes the kill testable: #303 also has a done
+    # row, so without the kill it becomes a candidate and the tool would close
+    # an issue whose verdict was withdrawn. (Measured: the first version of this
+    # fixture retracted an issue that had no PASS at all, so mutation M6 —
+    # `if tok in KILL` neutered — survived with all 14 legs green.)
+    printf '%s\n' "2026-11-03T09:00:00Z${T}PASS${T}run=333${T}sha=cccc${T}actor=lane${T}issue=#303${T}target=live-ops${T}evidence=probe green, later withdrawn"
+    # a retraction kills an earlier PASS. The LIVE shape carries issue=#N WITH
+    # the hash (measured: `issue=#94`), and this fixture's evidence= names an
+    # UNRELATED issue on purpose: a line-wide hash scan would revoke #260's
+    # PASS on a row that is about #303, so leg 1's expected join set is the
+    # witness that the kill stayed scoped.
+    printf '%s\n' "2026-11-05T09:00:00Z${T}RETRACTION${T}sha=dddd${T}issue=#303${T}evidence=withdrawn; supersedes the note about #260"
+    # a FAIL is not a PASS
+    printf '%s\n' "2026-11-06T09:00:00Z${T}FAIL${T}run=444${T}sha=eeee${T}issue=304${T}target=live-ops"
+    # a PASS that no done row backs
+    printf '%s\n' "2026-11-07T09:00:00Z${T}PASS${T}run=555${T}sha=ffff${T}issue=306${T}target=live-ops"
+    # the SAME NUMBER exists OPEN on BOTH trackers: never closable on a guess
+    printf '%s\n' "2026-11-08T09:00:00Z${T}PASS${T}run=666${T}sha=gggg${T}issue=310${T}target=live-ops"
+    # --- the T-7 park mirrors, one per guard so neither can hide the other --
+    # #320: PARKED-OWNER-EYE with NO behavioral= token at all (the #398 shape).
+    #   Only matcher (a) can catch this row.
+    printf '%s\n' "2026-11-09T09:00:00Z${T}PASS${T}run=888${T}sha=hhhh${T}issue=320${T}target=live-ops${T}evidence=4-leg smoke pass: lineage=verified identity=MATCH LEG4 PARKED-OWNER-EYE, the lever is owner-gated"
+    # #321: behavioral=absent and NO park literal (the #515 shape).
+    #   Only matcher (b) can catch this row.
+    printf '%s\n' "2026-11-09T09:10:00Z${T}PASS${T}run=889${T}sha=iiii${T}issue=321${T}target=live-ops${T}evidence=3-leg smoke pass: lineage=verified behavioral=absent identity=MATCH leg 4 ABSENT, not passed"
+    # #322: behavioral=na is a DECLARED structural N/A and must stay CLOSABLE
+    #   (the live path's T-7 positive control). Without this row, a guard that
+    #   refuses every `behavioral=` token would pass every park leg.
+    printf '%s\n' "2026-11-09T09:20:00Z${T}PASS${T}run=890${T}sha=jjjj${T}issue=322${T}target=live-ops${T}evidence=4-leg smoke pass: lineage=verified identity=MATCH behavioral=na, no behavioural leg is applicable to a doc change"
+    # #323: the BARE WORD `parked` in a sound close. Matching the word instead
+    #   of the literals refuses this row — a false debt, and the reason the
+    #   matcher is two literals rather than a substring.
+    printf '%s\n' "2026-11-09T09:30:00Z${T}PASS${T}run=891${T}sha=kkkk${T}issue=323${T}target=live-ops${T}evidence=4-leg smoke pass: lineage=verified identity=MATCH no leg claimed or parked, all four ran"
+  } > "$D/log"
+
+  cat > "$D/ledger" <<'LEDGER'
+{"events":[
+ {"n":1,"t":"2026-11-01T10:05:00Z","kind":"done","what":"#260 — feature landed"},
+ {"n":2,"t":"2026-09-19T09:00:00Z","kind":"done","what":"#279 — landed late"},
+ {"n":3,"t":"2026-11-02T09:05:00Z","kind":"done","what":"#300 done"},
+ {"n":4,"t":"2026-11-04T09:05:00Z","kind":"done","what":"#302 addendum row"},
+ {"n":5,"t":"2026-11-05T09:05:00Z","kind":"done","what":"#303 done"},
+ {"n":6,"t":"2026-11-06T09:05:00Z","kind":"done","what":"#304 done"},
+ {"n":7,"t":"2026-11-07T09:05:00Z","kind":"done","what":"#305 done, no smoke at all"},
+ {"n":8,"t":"2026-11-08T09:05:00Z","kind":"progress","what":"#260 not a done row"},
+ {"n":9,"t":"2026-11-08T09:06:00Z","kind":"done","what":"#310 collides across trackers"},
+ {"n":10,"t":"2026-11-09T09:05:00Z","kind":"done","what":"#320 landed, leg 4 PARKED-OWNER-EYE"},
+ {"n":11,"t":"2026-11-09T09:15:00Z","kind":"done","what":"#321 landed, leg 4 ABSENT"},
+ {"n":12,"t":"2026-11-09T09:25:00Z","kind":"done","what":"#322 doc change landed"},
+ {"n":13,"t":"2026-11-09T09:35:00Z","kind":"done","what":"#323 landed, all four legs ran"}
+]}
+LEDGER
+
+  # The stub serves `issue list` (the tracker-resolution call) for TWO repos, so
+  # the ambiguity leg below is a real collision rather than a simulated one:
+  #   o/one  holds 260 OPEN, 279 OPEN, 300 CLOSED, 302 OPEN, 303 OPEN, 304 OPEN
+  #   o/two  holds 260 OPEN as well  -> #260 is AMBIGUOUS, and must not close
+  #   (305 and 306 live nowhere -> ABSENT)
+  cat > "$D/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALLS"
+case "$1 $2" in
+  "issue list")
+    case "$4" in
+      o/one) echo '[{"number":260,"state":"OPEN"},{"number":279,"state":"OPEN"},{"number":300,"state":"CLOSED"},{"number":302,"state":"OPEN"},{"number":303,"state":"OPEN"},{"number":304,"state":"OPEN"},{"number":310,"state":"OPEN"},{"number":320,"state":"OPEN"},{"number":321,"state":"OPEN"},{"number":322,"state":"OPEN"},{"number":323,"state":"OPEN"}]' ;;
+      o/two) echo '[{"number":310,"state":"OPEN"},{"number":777,"state":"CLOSED"}]' ;;
+      *) echo '[]' ;;
+    esac ;;
+  "issue view") case "$3" in 300) echo CLOSED ;; *) echo OPEN ;; esac ;;
+  "issue close") echo "closed #$3" ;;
+esac
+exit 0
+STUB
+  chmod +x "$D/gh"
+
+  # `|| rc=$?` is NOT decoration: under `set -e`, a bare `out="$(cmd)"` whose
+  # cmd fails EXITS the whole selftest at that line, so the leg that would have
+  # named the failure never runs and the run prints NOTHING — an abort that
+  # reads exactly like a crashed tool (measured here: the done-row mutant went
+  # rc 3 with zero output until this was fixed).
+  sweep() { # extra args...
+    rc=0
+    out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" --repo o/one --repo o/two "$@" 2>"$D/err")" || rc=$?
+  }
+  # Tolerant on purpose: a leg that PARSES the JSON must never be the thing that
+  # aborts the run. Without the fallback, a mutant that corrupts stdout kills the
+  # script at the first json.load and the later legs never get to name their own
+  # failure — one red masking four.
+  rows() { python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(json.dumps({r["issue"]:r for r in d["rows"]}, sort_keys=True))
+except Exception:
+    print("{}")
+' ; }
+
+  # ---- leg 1: the join is exactly the three pairs that have BOTH receipts ---
+  : > "$D/calls"
+  sweep --json
+  GOT="$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(str(r["issue"]) for r in json.load(sys.stdin)["rows"]))' 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$rc" -eq 0 ] && [ "$GOT" = "260,279,300,310,320,321,322,323" ]; then
+    t_ok "the three-way join yields exactly the issues carrying BOTH receipts (rc=$rc)"
+  else
+    t_bad "join set (rc=$rc got=$GOT want=260,279,300,310 err=$(tr '\n' '|' < "$D/err"))"
+  fi
+
+  # ---- leg 2: PASS-LATE-ENTRY is eligible (#279 is the regression case) -----
+  J="$(printf '%s' "$out" | rows)"
+  V279="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("279",{}).get("verdict",""))')"
+  if [ "$V279" = "PASS-LATE-ENTRY" ]; then
+    t_ok "a PASS-LATE-ENTRY row is ELIGIBLE — the #279 miss cannot recur (verdict=$V279)"
+  else
+    t_bad "PASS-LATE-ENTRY eligibility (got='$V279' want=PASS-LATE-ENTRY)"
+  fi
+
+  # ---- leg 3: shape (4), the minimal row, parsed with optionals omitted ------
+  V300="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("300",{}).get("verdict",""))')"
+  A300="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("300",{}).get("action",""))')"
+  if [ "$V300" = "PASS" ] && [ "$A300" = "skip-already-closed" ]; then
+    t_ok "the minimal row (ts/PASS/issue=) parses, and a CLOSED issue is skipped not re-closed"
+  else
+    t_bad "minimal row / already-closed (verdict='$V300' action='$A300')"
+  fi
+
+  # ---- leg 4: shape (3), the identity block, must NOT be read as a verdict ---
+  # The block appears AFTER #260's real row in the fixture and carries
+  # issue=260, so with the timestamp discriminator removed it OVERWRITES that
+  # row (append-only log, last wins) and #260's smoke_ts becomes the block's
+  # field 1 — "/usr/local/bin/opencrabs". Assert the discriminator's own
+  # observable, not a sha: grepping $out for "9999" was VACUOUS because $out is
+  # --json and no row carries a sha field at all (mutation M1 proved it: the
+  # leg stayed green while the join was corrupted, and only leg 9 noticed).
+  T260="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("260",{}).get("smoke_ts",""))')"
+  if [ "$T260" = "2026-11-01T10:00:00Z" ]; then
+    t_ok "an identity-block line whose field 2 is 'PASS' is NOT read as a verdict row (260 keeps its own ts)"
+  else
+    t_bad "identity block leaked into the join (260 smoke_ts='$T260' want=2026-11-01T10:00:00Z)"
+  fi
+
+  # ---- leg 5: acceptance 3 — a done row with no smoke PASS is not eligible ---
+  if ! printf '%s' "$J" | grep -q '"305"'; then
+    t_ok "a done row with NO smoke PASS is not a candidate (acceptance 3)"
+  else
+    t_bad "issue 305 (done, no smoke) became a candidate"
+  fi
+
+  # ---- leg 6: disqualifiers — off-taxonomy, retraction, FAIL, no-done-row ---
+  bad=""
+  for n in 302 303 304 306; do
+    printf '%s' "$J" | grep -q "\"$n\"" && bad="$bad $n"
+  done
+  if [ -z "$bad" ]; then
+    t_ok "off-taxonomy / RETRACTED / FAIL / no-done-row issues are all excluded"
+  else
+    t_bad "these must not be candidates:$bad"
+  fi
+  if grep -q 'OFF-TAXONOMY #302 PASS-ADDENDUM' "$D/err" && grep -q 'NO-DONE-ROW #306' "$D/err"; then
+    t_ok "the excluded rows are REPORTED on stderr, not silently dropped"
+  else
+    t_bad "exclusion reasons missing from stderr ($(tr '\n' '|' < "$D/err"))"
+  fi
+
+  # ---- leg 6b: the SAME NUMBER on two OPEN trackers is reported, never closed
+  A310="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("310",{}).get("action",""))')"
+  if [ "$A310" = "skip-ambiguous" ] && grep -q 'AMBIGUOUS-TRACKER #310' "$D/err"; then
+    t_ok "a number OPEN on BOTH trackers is AMBIGUOUS — reported on stderr, never closed on a guess"
+  else
+    t_bad "cross-tracker collision handling (action='$A310' want=skip-ambiguous)"
+  fi
+
+  # ---- leg 7: dry run writes nothing to the tracker ------------------------
+  if ! grep -q 'issue close' "$D/calls"; then
+    t_ok "the default is a DRY RUN — no close call without --apply"
+  else
+    t_bad "dry run issued a close: $(tr '\n' '|' < "$D/calls")"
+  fi
+
+  # ---- leg 8/9: --apply closes through the shared path, citing both receipts
+  : > "$D/calls"
+  sweep --apply --json
+  closed="$(grep -o 'issue close [0-9]*' "$D/calls" | awk '{print $3}' | sort -n | tr '\n' ' ')"
+  if [ "$closed" = "260 279 322 323 " ]; then
+    t_ok "--apply closes exactly the OPEN pairs and leaves CLOSED #300 alone (closed: $closed)"
+  else
+    t_bad "--apply close set (got='$closed' want='260 279 322 323 ')"
+  fi
+  if grep -q 'smoke verdict: PASS 2026-11-01T10:00:00Z sha=aaaa run=111' "$D/calls" \
+     && grep -q 'ledger: done #260 n=1' "$D/calls"; then
+    t_ok "the close comment cites BOTH receipts — the smoke verdict AND the ledger row"
+  else
+    t_bad "close comment is missing a receipt"
+  fi
+  if grep -q 'class (d) behavioural-smoke-landed' "$D/calls"; then
+    t_ok "the comment carries the class (d) framing the live path writes"
+  else
+    t_bad "class (d) framing absent from the close comment"
+  fi
+
+  # ---- leg 9b: an ABSENT optional stays absent — no field shifting ----------
+  # A PASS-LATE-ENTRY row has no run=. If the join used a TAB delimiter, the
+  # empty run field would collapse and `evidence` would land in `run`, printing
+  # `run=recorded late, receipts cited` and an EMPTY ledger excerpt. That is a
+  # fabricated receipt on a public tracker, so it gets its own leg.
+  if grep -q 'smoke verdict: PASS-LATE-ENTRY 2026-09-19T08:00:00Z sha=bbbb — recorded late, receipts cited' "$D/calls" \
+     && grep -q 'ledger: done #279 n=2 — #279 — landed late' "$D/calls"; then
+    t_ok "an ABSENT optional field stays absent — the late-entry receipt has no run= and no field shift"
+  else
+    t_bad "late-entry receipt shifted a field (calls=$(grep -c . "$D/calls") lines; look for run= on the #279 close)"
+  fi
+
+  # ---- leg 10: missing input is rc 3, never an empty clean sweep ------------
+  rc=0
+  OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/nope.log" --ledger "$D/ledger" --repo o/one >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    t_ok "a missing smoke log is rc 3 — an absent input is never a clean zero"
+  else
+    t_bad "missing log must be rc 3 (got $rc)"
+  fi
+
+  # ---- legs 11-13: the T-7 park mirrors — a catch-up path no WEAKER than live
+  # The entire eligible set of the fork sweep was five reopened parks, so these
+  # rows are the exact production shape. Each park is named by ONE matcher only
+  # (#320 by PARKED-OWNER-EYE, #321 by behavioral=absent), which is why removing
+  # either matcher reddens exactly one of these legs rather than both.
+  #
+  # These legs re-derive their OWN dry run rather than reusing $J: $J was
+  # captured at leg 2, and $out was overwritten by the --apply run at leg 8, so
+  # reading either one here compares a dry-run action against an apply outcome
+  # (measured: 322/323 read 'would-close' and were reported as over-refused).
+  : > "$D/calls"
+  sweep --json
+  PJ="$(printf '%s' "$out" | rows)"
+  act() { printf '%s' "$PJ" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(sys.argv[1],{}).get("action",""))' "$1"; }
+
+  A320="$(act 320)"; A321="$(act 321)"
+  if [ "$A320" = "skip-parked" ] && [ "$A321" = "skip-parked" ]; then
+    t_ok "a PASS whose evidence names a PARKED leg is NOT closable (PARKED-OWNER-EYE and behavioral=absent both caught)"
+  else
+    t_bad "park guards (320 action='$A320' want=skip-parked; 321 action='$A321' want=skip-parked)"
+  fi
+
+  # A catch-up path that quietly declines to close is indistinguishable from one
+  # that found nothing. The count and the stderr lines are the difference.
+  PCOUNT="$(printf '%s' "$out" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("parked","MISSING"))' 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$PCOUNT" = "2" ] && grep -q 'PARKED-OWNER-EYE #320' "$D/err" && grep -q 'PARKED-OWNER-EYE #321' "$D/err"; then
+    t_ok "parked rows are a NAMED bucket (count=$PCOUNT) and each is reported on stderr, never silently dropped"
+  else
+    t_bad "parked bucket (count='$PCOUNT' want=2; stderr=$(tr '\n' '|' < "$D/err"))"
+  fi
+
+  # POSITIVE CONTROL — the guard must not refuse sound closes. Without this, a
+  # guard matching every `behavioral=` token, or the bare word `parked`, passes
+  # both legs above while refusing real work. Leg 8 already proves these two
+  # actually CLOSE on --apply; this leg proves the guard is why they survive.
+  A322="$(act 322)"; A323="$(act 323)"
+  if [ "$A322" = "would-close" ] && [ "$A323" = "would-close" ]; then
+    t_ok "behavioral=na stays closable, and the BARE WORD 'parked' in a sound close is not refused"
+  else
+    t_bad "park guard over-refused (322 action='$A322' want=would-close; 323 action='$A323' want=would-close)"
+  fi
+
+  printf 'oc-closure-sweep selftest: %s passed, %s failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ] || exit 1
+  exit 0
+}
+
+if [ "$MODE" = selftest ]; then
+  run_selftest
+fi
+
+[ -f "$LOG" ]    || die 3 "smoke log not found: $LOG"
+[ -r "$LOG" ]    || die 3 "smoke log not readable: $LOG"
+[ -f "$LEDGER" ] || die 3 "ledger not found: $LEDGER"
+[ -r "$LEDGER" ] || die 3 "ledger not readable: $LEDGER"
+
+command -v oc_close_on_receipt >/dev/null 2>&1 \
+  || die 3 "lib/oc-gh-close.sh missing — refusing to close through a second code path"
+
+# ---------------------------------------------------------------------------
+# THE JOIN. Python does the two file parses (a 1805-line log with mixed row
+# shapes and a JSON ledger); bash does the tracker reads and the closes, because
+# the gh stub in the selftest must be observable.
+#
+# Output: one US-delimited line per CANDIDATE (issue present on BOTH surfaces):
+#   issue \x1f ledger_n \x1f ledger_ts \x1f verdict \x1f smoke_ts \x1f sha \x1f run \x1f evidence \x1f what
+#
+# The separator is the ASCII UNIT SEPARATOR, never a TAB. TAB is IFS WHITESPACE,
+# so `IFS=$'\t' read` COLLAPSES a run of tabs into one delimiter and an EMPTY
+# field silently shifts every field after it — measured in this file's own
+# selftest: a PASS-LATE-ENTRY row carries no run=, so #279's receipt read
+# `run=recorded late, receipts cited` and its ledger excerpt came out empty.
+# A non-whitespace separator makes an empty field representable, which is the
+# whole requirement (optionals are OMITTED, never emitted as empty values).
+# stderr: diagnostics (off-taxonomy rows, retraction kills, unparsable lines)
+# ---------------------------------------------------------------------------
+JOIN="$(python3 - "$LOG" "$LEDGER" <<'PY'
+import json, re, sys
+
+# Sanctioned PASS family only (upstream-merge-runbook.md §Verdict taxonomy).
+PASS = {"PASS", "PASS-LATE-ENTRY", "PASS-OWNER-EYE", "PASS-CALLBACK-LIVE"}
+# Look like PASSes, are not in the taxonomy: reported, never closable.
+OFF  = {"PASS-ADDENDUM", "OWNER-EYE-CONFIRM", "ADDENDUM"}
+KILL = {"RETRACTION"}
+TS   = re.compile(r"^\d{4}-\d{2}-\d{2}T")
+HASH = re.compile(r"#(\d+)\b")
+
+log_path, ledger_path = sys.argv[1], sys.argv[2]
+
+verdict_of = {}   # issue -> newest eligible PASS record
+off_of     = {}   # issue -> newest off-taxonomy record
+killed     = set()
+unparsed   = 0
+
+for raw in open(log_path, encoding="utf-8", errors="replace"):
+    line = raw.rstrip("\n")
+    if not line.strip():
+        continue
+    f = line.split("\t")
+    if len(f) < 2:
+        unparsed += 1
+        continue
+    # Shape (3): an identity block line carries key=value pairs whose SECOND
+    # field can be a verdict token. Field 1 is the discriminator: every real
+    # verdict row begins with an ISO timestamp.
+    if not TS.match(f[0]):
+        continue
+    tok = f[1].strip()
+    kv = {}
+    for field in f[2:]:
+        if "=" in field:
+            k, _, v = field.partition("=")
+            kv.setdefault(k, v)          # first occurrence wins
+    if tok in KILL:
+        # SCOPE THE KILL to the row's own issue= field when it carries one.
+        # A hash scan of the whole LINE also harvests every #N quoted inside
+        # evidence=, so a retraction OF #94 whose rationale merely MENTIONS
+        # #260 would silently kill #260 as well — a PASS revoked by an
+        # unrelated row. Measured shapes: live retraction rows carry
+        # `issue=#94`, and CORRECTION rows carry `issue=#236,#246,...`, so the
+        # field is comma-separated and each token keeps its `#`.
+        # Fall back to the line scan ONLY when the field is absent: a
+        # retraction that names no issue must still kill something (failing to
+        # kill is the dangerous direction — it would let a revoked PASS close).
+        _named = [t.strip().lstrip("#") for t in (kv.get("issue") or "").split(",")]
+        _named = [t for t in _named if t.isdigit()]
+        if _named:
+            killed.update(_named)
+        else:
+            for m in HASH.finditer(line):
+                killed.add(m.group(1))
+        continue
+    if tok not in PASS and tok not in OFF:
+        continue
+    iss = kv.get("issue", "").strip().lstrip("#")
+    if not iss.isdigit():
+        continue                         # unattributable row: cannot be joined
+    rec = {
+        "verdict": tok, "ts": f[0], "sha": kv.get("sha", ""),
+        "run": kv.get("run", ""), "target": kv.get("target", ""),
+        "evidence": kv.get("evidence", ""),
+    }
+    if tok in OFF:
+        off_of[iss] = rec                # last wins; still never closable
+    else:
+        verdict_of[iss] = rec            # append-only log: last wins = newest
+
+done_of = {}   # issue -> (n, t, what) newest done row naming it
+try:
+    doc = json.load(open(ledger_path, encoding="utf-8"))
+except Exception as exc:                  # noqa: BLE001 - report, never guess
+    sys.stderr.write("ledger unreadable: %s\n" % exc)
+    sys.exit(3)
+
+for e in doc.get("events", []):
+    if not isinstance(e, dict) or e.get("kind") != "done":
+        continue
+    what = e.get("what") or ""
+    n = e.get("n") or 0
+    t = e.get("t") or ""
+    for m in HASH.finditer(what):
+        iss = m.group(1)
+        prev = done_of.get(iss)
+        if prev is None or n >= prev[0]:
+            done_of[iss] = (n, t, what)
+
+for iss in sorted(off_of, key=lambda x: int(x)):
+    sys.stderr.write("OFF-TAXONOMY #%s %s — not closable (taxonomy does not sanction the token)\n"
+                     % (iss, off_of[iss]["verdict"]))
+for iss in sorted(killed, key=lambda x: int(x)):
+    if iss in verdict_of:
+        sys.stderr.write("RETRACTED  #%s — a RETRACTION row names it; the earlier PASS does not close\n" % iss)
+for iss in sorted(verdict_of, key=lambda x: int(x)):
+    if iss in killed:
+        continue
+    if iss not in done_of:
+        sys.stderr.write("NO-DONE-ROW #%s has a %s but no ledger done row — no receipt PAIR\n"
+                         % (iss, verdict_of[iss]["verdict"]))
+        continue
+    v = verdict_of[iss]
+    n, t, what = done_of[iss]
+    what = what.replace("\t", " ")
+    if len(what) > 200:
+        what = what[:197] + "..."
+    print("\x1f".join([iss, str(n), t, v["verdict"], v["ts"],
+                       v["sha"], v["run"],
+                       v["evidence"].replace("\t", " ").replace("\x1f", " "), what]))
+PY
+)" || die 3 "join FAILED (python3 rc=$?)"
+
+# ---------------------------------------------------------------------------
+# Tracker resolution. ONE list call per tracker, then the join is local.
+#
+# WHY NOT `gh issue view` PER CANDIDATE: the candidate set is ~300, and a live
+# dry run of the per-issue form spent minutes on reads that mostly FAILED
+# because the number lives on the OTHER tracker. Two list calls answer the same
+# question for every candidate at once, and — the point — they answer the
+# question a per-issue read cannot: does this number exist on MORE THAN ONE
+# tracker? Closing on a guess there would close a different issue's number.
+# ---------------------------------------------------------------------------
+declare -A TRACKER_OF=()   # "repo|number" -> STATE
+CAND=0; ELIGIBLE=0; ALREADY=0; APPLIED=0; FAILED=0; ABSENT=0; AMBIG=0; PARKED=0
+JSON_ROWS=""
+
+add_json() { # issue state verdict smoke_ts ledger_n action [repo]
+  JSON_ROWS="${JSON_ROWS}${JSON_ROWS:+,}{\"issue\":$1,\"state\":\"$2\",\"verdict\":\"$3\",\"smoke_ts\":\"$4\",\"ledger_n\":$5,\"action\":\"$6\",\"repo\":\"${7:-}\"}"
+}
+
+for _r in "${REPOS[@]}"; do
+  _lst="$("$GH_BIN" issue list --repo "$_r" --state all --limit 1000 --json number,state 2>&1)" || {
+    die 3 "cannot list issues on $_r — a tracker that cannot be READ is not a clean sweep (${_lst//$'\n'/ })"
+  }
+  while IFS=$'\x1f' read -r _num _st; do
+    [ -n "${_num:-}" ] || continue
+    TRACKER_OF["$_r|$_num"]="$_st"
+  done < <(printf '%s' "$_lst" | python3 -c '
+import json,sys
+try:
+    for r in json.load(sys.stdin):
+        print("%s\x1f%s" % (r["number"], r["state"]))
+except Exception:
+    pass
+')
+done
+
+[ "$JSON" -eq 1 ] || {
+  printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' ISSUE REPO STATE VERDICT SMOKE-TS LEDGER ACTION
+  printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' ------- -------- ----------- ------------------ --------------------- ------ ------
+}
+
+short_repo() { case "$1" in leshchenko1979/opencrabs-dev-factory) echo factory ;; *) echo "${1##*/}" ;; esac; }
+
+while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT; do
+  [ -n "${ISSUE:-}" ] || continue
+  CAND=$((CAND + 1))
+
+  # Which trackers hold this number, and in what state?
+  HOLDERS=(); OPEN_HOLDERS=()
+  for _r in "${REPOS[@]}"; do
+    _st="${TRACKER_OF["$_r|$ISSUE"]:-}"
+    [ -n "$_st" ] || continue
+    HOLDERS+=("$_r:$_st")
+    [ "$_st" = "OPEN" ] && OPEN_HOLDERS+=("$_r")
+  done
+
+  if [ "${#HOLDERS[@]}" -eq 0 ]; then
+    ABSENT=$((ABSENT + 1))
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" - ABSENT "$VTKN" "$VTS" "$LN" "not on any checked tracker — no issue to close"
+    add_json "$ISSUE" "ABSENT" "$VTKN" "$VTS" "$LN" "skip-absent" ""
+    continue
+  fi
+
+  if [ "${#HOLDERS[@]}" -gt 1 ]; then
+    # The SAME NUMBER on two trackers. If every copy is CLOSED nothing is owed
+    # and the ambiguity costs nothing; if any copy is OPEN, closing it is a
+    # guess about WHICH issue the receipt belongs to — and a wrong close on a
+    # public tracker is worse than a reported debt. Never guess: report.
+    if [ "${#OPEN_HOLDERS[@]}" -eq 0 ]; then
+      ALREADY=$((ALREADY + 1))
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" both CLOSED "$VTKN" "$VTS" "$LN" "closed on every tracker holding the number"
+      add_json "$ISSUE" "CLOSED" "$VTKN" "$VTS" "$LN" "skip-already-closed" "both"
+    else
+      AMBIG=$((AMBIG + 1))
+      printf '%s: AMBIGUOUS-TRACKER #%s exists on %s — NOT closing, the receipt does not say which\n' \
+        "$PROG" "$ISSUE" "$(printf '%s ' "${HOLDERS[@]}" | sed 's/ $//')" >&2
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" both AMBIGUOUS "$VTKN" "$VTS" "$LN" "AMBIGUOUS — reported, never closed"
+      add_json "$ISSUE" "AMBIGUOUS" "$VTKN" "$VTS" "$LN" "skip-ambiguous" "both"
+    fi
+    continue
+  fi
+
+  TARGET_REPO="${HOLDERS[0]%:*}"; STATE="${HOLDERS[0]##*:}"
+
+  if [ "$STATE" = "CLOSED" ]; then
+    ALREADY=$((ALREADY + 1))
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" CLOSED "$VTKN" "$VTS" "$LN" "already closed — nothing owed"
+    add_json "$ISSUE" "CLOSED" "$VTKN" "$VTS" "$LN" "skip-already-closed" "$TARGET_REPO"
+    continue
+  fi
+
+  # T-7 MIRROR — the catch-up path must be no WEAKER than the live one it
+  # mirrors. `oc-smoke` gates its close on `BEHAVIORAL != absent`; this path
+  # keyed on the verdict token ALONE, so a row that PASSED legs 1-3 while leg 4
+  # was PARKED read as closable. Measured on the fork 2026-11-20: the entire
+  # eligible set of a 221-candidate sweep was the five reopened parks, i.e.
+  # `--apply` would have performed 5 wrong closes and 0 right ones.
+  #
+  # BOTH literals are load-bearing, and neither is redundant:
+  #   #398 is named ONLY by PARKED-OWNER-EYE (a 4-leg probe pass whose evidence
+  #        carries no `behavioral=` token at all);
+  #   #515 is named ONLY by behavioral=absent (3-leg; its park is named in a
+  #        later ADDENDUM row, which never enters the verdict map).
+  # Dropping either matcher closes a real park — that is the mutation design.
+  #
+  # The park text lives INSIDE the evidence blob; there is no field for it.
+  # Match the LITERALS, never the bare word `parked`: sound closes read
+  # "no leg claimed or parked", and refusing those would be a false debt.
+  # `behavioral=na` is a DECLARED structural N/A, not an absence, and stays
+  # closable (the live path's T-7 positive control).
+  _park=""
+  case "$VEV" in *PARKED-OWNER-EYE*) _park="PARKED-OWNER-EYE" ;; esac
+  case "$VEV" in *behavioral=absent*) _park="${_park:+$_park+}behavioral=absent" ;; esac
+  if [ -n "$_park" ]; then
+    PARKED=$((PARKED + 1))
+    printf '%s: PARKED-OWNER-EYE #%s on %s — NOT closable: the smoke evidence names a parked leg (%s)\n' \
+      "$PROG" "$ISSUE" "$(short_repo "$TARGET_REPO")" "$_park" >&2
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "$VTKN" "$VTS" "$LN" "PARKED — not closable (owner-eye park / behavioral=absent)"
+    add_json "$ISSUE" "OPEN" "$VTKN" "$VTS" "$LN" "skip-parked" "$TARGET_REPO"
+    continue
+  fi
+
+  ELIGIBLE=$((ELIGIBLE + 1))
+
+  # Receipt 1 — the smoke verdict, optionals OMITTED when empty rather than
+  # emitted as `run=` (an empty value reads as a value).
+  R1="smoke verdict: $VTKN $VTS"
+  [ -n "$VSHA" ] && R1="$R1 sha=$VSHA"
+  [ -n "$VRUN" ] && R1="$R1 run=$VRUN"
+  [ -n "$VEV" ]  && R1="$R1 — $VEV"
+  # Receipt 2 — the ledger row by POINTER (n) and by EXCERPT (what): the pointer
+  # alone does not survive a re-mint, and the excerpt alone is unverifiable.
+  R2="ledger: done #$ISSUE n=$LN — $LWHAT"
+
+  if [ "$APPLY" -eq 0 ]; then
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "$VTKN" "$VTS" "$LN" "WOULD CLOSE (dry run — pass --apply)"
+    add_json "$ISSUE" "OPEN" "$VTKN" "$VTS" "$LN" "would-close" "$TARGET_REPO"
+    continue
+  fi
+
+  if oc_close_on_receipt "$PROG" "$GH_BIN" "$TARGET_REPO" "$ISSUE" "$R1" "$R2"; then
+    APPLIED=$((APPLIED + 1))
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "$VTKN" "$VTS" "$LN" "CLOSED on both receipts"
+    add_json "$ISSUE" "OPEN" "$VTKN" "$VTS" "$LN" "closed" "$TARGET_REPO"
+  else
+    FAILED=$((FAILED + 1))
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "$VTKN" "$VTS" "$LN" "CLOSE FAILED (see stderr)"
+    add_json "$ISSUE" "OPEN" "$VTKN" "$VTS" "$LN" "close-failed" "$TARGET_REPO"
+  fi
+done <<< "$JOIN"
+
+if [ "$JSON" -eq 1 ]; then
+  # `${REPOS[*]}` joins with the FIRST character of IFS only, so an
+  # `IFS='","'` trick produces `"o/one"o/two"` — invalid JSON that every
+  # consumer then has to tolerate (measured: it made this tool's own legs read
+  # PARSE-FAIL). Build the array literally instead.
+  _repos_json=""
+  for _r in "${REPOS[@]}"; do _repos_json="${_repos_json}${_repos_json:+,}\"$_r\""; done
+  printf '{"repos":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"rows":[%s]}\n' \
+    "$_repos_json" "$([ "$APPLY" -eq 1 ] && echo true || echo false)" \
+    "$CAND" "$ELIGIBLE" "$ALREADY" "$APPLIED" "$FAILED" "$ABSENT" "$AMBIG" "$PARKED" "$JSON_ROWS"
+fi
+
+oc_log_extra "candidates" "$CAND"
+oc_log_extra "eligible" "$ELIGIBLE"
+oc_log_extra "closed" "$APPLIED"
+oc_log_extra "parked" "$PARKED"
+oc_log_extra "apply" "$APPLY"
+
+[ "$FAILED" -eq 0 ] || exit 1
+exit 0
