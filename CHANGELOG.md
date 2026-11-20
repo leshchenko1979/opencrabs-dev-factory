@@ -61,7 +61,7 @@ state-repo HIGHs are routed, not landed here — one version batch per owner, ne
 mega-commit. The MEMORY shrink that brain-scrub-1/2 owe is a protected-file shrink and needs owner
 approval; a pointer to the new skill homes was appended instead.
 
-**Bundled tool fixes (seven, all Toolsmith's — named here because `tools/**` sits outside
+**Bundled tool fixes (eight, all Toolsmith's — named here because `tools/**` sits outside
 `LAW_FILES`, so no bump is owed and this entry is the only place their ship date exists).**
 `84f82975` replaces 11 `printf | grep -q` sites with herestrings: `grep -q` exits on first match,
 the upstream `printf` takes SIGPIPE, and under `pipefail` that reds a guard that actually passed —
@@ -78,7 +78,10 @@ one detached `oc-prchecks` invocation writing two indistinguishable journal rows
 implements the title-twin half of `oc-upstream-delta`'s absorbed verdict
 ([factory#100](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/100)). `9a70dcb4` gives
 `oc-wt add` an `--adopt` arm, so a lane that already has its tree can re-enter it
-([factory#101](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/101)).
+([factory#101](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/101)). `d9c3953a` gives
+`oc-deploy` a `features` verb, one documented entry for the carrier feature set — it landed after this
+entry was first written, so it is named here rather than omitted
+([factory#102](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/102)).
 
 ## v0.4.319 — the c29 meta-review's three HIGH findings, all of them in HQ's own law
 
