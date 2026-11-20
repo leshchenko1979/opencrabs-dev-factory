@@ -1,17 +1,22 @@
 # Changelog — opencrabs-dev
 
-## v0.4.321 — Duty 4's intake contract was the defect: c29's 39 accepted proposals land
+## v0.4.321 — Duty 4's intake contract was the defect: six clusters of c29's intake land
 
 **What forced it.** `a5eed495` committed **74 seconds after** the v0.4.320 sync, so it landed outside
 the version record it belonged to — the record named a range that no longer ended where it claimed.
 Bundled here rather than leaving a version whose tail commit is unaccounted for.
 
-The substantive half: cycle c29 returned 39 **accepted** proposals across 32 lanes and **zero had
-landed**. The reason was not neglect, it was the law. `hq.md §Duty 4`'s completion formula required
-accepted findings to be "landed in the Duty-6 version batch", and the poll is normally taken
-**because** a review just closed — so the poll postdates the batch by construction and the formula
-was unsatisfiable exactly when it was needed. Six clusters landed, every one re-verified against the
-live bytes before editing.
+The substantive half: cycle c29 returned 39 **accepted** proposals and **zero had landed**. The
+reason was not neglect, it was the law. `hq.md §Duty 4`'s completion formula required accepted
+findings to be "landed in the Duty-6 version batch", and the poll is normally taken **because** a
+review just closed — so the poll postdates the batch by construction and the formula was
+unsatisfiable exactly when it was needed.
+
+**Scope of THIS batch, stated so the record is not read as more than it is:** six law clusters
+landed. The balance of the 39 is **routed** to Toolsmith (`tools/**` carve-out) or Triage, or still
+open — this version lands the law-side clusters only, and the census that counts them counts
+**PROPOSALS, not files** (62 files in the proposals directory carry 39 proposals; a file count
+under-reports a lane that raised several).
 
 **The intake contract (`hq.md`, 5 blocks).** The formula now reads: poll **ISSUED** · intake
 **POSTDATES** the poll · census counts **PROPOSALS, not files** (32 files / 39 proposals — a file
