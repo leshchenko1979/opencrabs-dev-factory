@@ -1105,6 +1105,41 @@ FSTUB
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     "$SELF_BIN" ship --sha "$SHA2" --features code-graph,telegram 2>&1)"; check_rc "featdef-match-reorder-rc" $? 0
+  # 4d. #108 (2026-11-20, toolsmith): the pre-dispatch gate is DROP-ONLY,
+  # mirroring the features-compat gate in swap_execute() that it precedes.
+  # A carrier default or an explicit --features that ADDS a feature over the
+  # deployed set must proceed; only a DROP is the failure class. The three 4c
+  # arms above stay DROP cases (carrier stub 'telegram' vs deployed
+  # 'telegram,code-graph') and must keep failing — this block adds the
+  # ADDITION direction, which the old symmetric compare refused outright.
+  printf '#!/usr/bin/env bash\necho telegram,code-graph,eval\n' > "$SD/tools/carrier-superset"; chmod +x "$SD/tools/carrier-superset"
+  # (a) POSITIVE CONTROL: an explicit superset proceeds and reaches the plan
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
+    "$SELF_BIN" ship --sha "$SHA2" --features telegram,code-graph,eval 2>&1)"; check_rc "featadd-explicit-rc" $? 0
+  check_has "featadd-explicit-line" "$out" "adding feature(s) eval"
+  check_has "featadd-explicit-features" "$out" "features=telegram,code-graph,eval"
+  grep -q "features-add-adopted:eval" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no features-add-adopted shadow row"; }
+  # (b) an explicit SUBSET still refuses pre-dispatch (the drop direction is not
+  # weakened by the addition fix)
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
+    "$SELF_BIN" ship --sha "$SHA2" --features telegram 2>&1)"; check_rc "featadd-subset-rc" $? 2
+  check_has "featadd-subset-msg" "$out" "DROPS deployed feature(s): code-graph"
+  # (c) --allow-features-drop is honoured PRE-DISPATCH, not only at the swap gate
+  # — a deliberate drop must not be refused one stage before the stage permitting it
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
+    "$SELF_BIN" ship --sha "$SHA2" --features telegram --allow-features-drop 2>&1)"; check_rc "featdrop-allowed-rc" $? 0
+  check_has "featdrop-allowed-line" "$out" "dropping deployed feature(s) code-graph deliberately"
+  # (d) OMITTED --features adopts the carrier SUPERSET — NOT rewritten back to
+  # the deployed set. That rewrite was the defect: it made the carrier default
+  # structurally unable to add a feature, so `eval` could never reach the binary.
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
+    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; check_rc "featadd-default-rc" $? 0
+  check_has "featadd-default-features" "$out" "features=telegram,code-graph,eval"
+  rm -f "$SD/tools/carrier-superset"   # restore pre-case state for later sections
   rm -f "$SD/deployed.meta.json"   # restore pre-case state for later sections
 
   # 5a. ship plan non-FF -> exit 2 (plan mode does not auto-rebase)
@@ -4051,9 +4086,20 @@ printf 'oc-deploy %s: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
 # run 34143410835): the carrier default (telegram) DESYNCED from the live
 # deployment (deployed.meta.json: telegram,code-graph) — artifact name embeds
 # features verbatim, so the Phase-B swap units died 'artifact download
-# failed'. Ship now DEFERS to deployed.meta.json when the two disagree, and
-# an EXPLICIT --features that mismatches the deployment fails fast here,
-# BEFORE dispatch — never a silently non-swappable artifact.
+# failed'.
+# #108 (2026-11-20, toolsmith): the remedy is DROP-ONLY, not a symmetric
+# compare. A symmetric compare made the deployed feature set IMMUTABLE: an
+# addition was refused pre-dispatch AND an omitted --features was rewritten
+# back to the deployed set, so no carrier default could ever ADD a feature
+# and `eval` could never reach the live binary. The old justification does
+# not hold for an addition — within one ship->poll->swap chain the same
+# $FEATURES feeds the dispatch (-f features=), swap-execute --features and
+# oc-seal-state --features, so build and swap cannot disagree. So: an
+# explicit --features that DROPS a deployed feature fails fast here (unless
+# --allow-features-drop), an addition proceeds and is shadow-logged, and an
+# omitted --features still defers to deployed.meta.json WHEN THE CARRIER
+# WOULD DROP — but adopts the carrier set when it ADDS. Same predicate as the
+# features-compat gate in swap_execute() this one precedes.
 if [ -z "$FEATURES" ]; then
   CARRIER_TOOL="$(CARRIER_TOOL_PATH)"
   case "$MODE" in
@@ -4071,21 +4117,46 @@ fi
 # ship-only reconciliation against the live deployment (runs AFTER carrier
 # resolution so both default and explicit paths are covered; poll keeps the
 # pre-incident behavior — the incident window was ship dispatch).
+# #108 (2026-11-20, toolsmith): DROP-ONLY, mirroring the features-compat gate in
+# swap_execute() that this one precedes. The previous SYMMETRIC compare made the
+# deployed feature set IMMUTABLE: an addition was refused (rc 2) and an omitted
+# --features was rewritten back to the deployed set, so no carrier default could
+# ever ADD a feature to the live binary. The old justification ("artifact name
+# embeds features verbatim, this build could never be swapped") does not hold
+# for an addition: within one ship->poll->swap chain the SAME $FEATURES feeds
+# the dispatch (-f features=), `swap-execute --features` and `oc-seal-state
+# --features`, so a build and its swap cannot disagree. Additions are fine;
+# drops are the failure class (HQ LAW 2026-09-04, unchanged) — and an explicit
+# drop stays possible through --allow-features-drop, which is now honoured HERE
+# as well as at the swap gate, so a deliberate drop is not refused one stage
+# before the stage that permits it.
 if [ "$MODE" = ship ] && [ -n "$FEATURES" ] && [ -f "$DEPLOYED_META" ]; then
   DEP_FEATS="$(jq -r '.features // ""' "$DEPLOYED_META" 2>/dev/null || true)"
-  if [ -n "$DEP_FEATS" ]; then
+  if [ -n "$DEP_FEATS" ] && [ "$DEP_FEATS" != "null" ]; then
     # order-insensitive set compare (comma lists), same normalization the
     # features-compat swap gate uses — 'a,b' == 'b,a' is not a mismatch
-    if [ "$(printf '%s' "$DEP_FEATS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)" \
-      != "$(printf '%s' "$FEATURES" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u)" ]; then
+    SHIP_DROP_LIST="$(comm -23 \
+      <(printf '%s\n' "$DEP_FEATS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u) \
+      <(printf '%s\n' "$FEATURES"  | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u) | tr '\n' ',' | sed 's/,$//')"
+    SHIP_ADD_LIST="$(comm -13 \
+      <(printf '%s\n' "$DEP_FEATS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u) \
+      <(printf '%s\n' "$FEATURES"  | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$' | sort -u) | tr '\n' ',' | sed 's/,$//')"
+    if [ -n "$SHIP_DROP_LIST" ]; then
       if [ "$FEATURES_EXPLICIT" = 1 ]; then
-        shadow_log ship "-" "$FEATURES" "features-mismatch-refused"
-        die 2 "OC_DEPLOY_GATE=feature-mismatch: explicit --features '$FEATURES' != deployed '$DEP_FEATS' (deployed.meta.json) — refusing pre-dispatch: artifact name embeds features verbatim, this build could never be swapped. Deploy a matching set first or pass the deployed set."
+        if [ "$ALLOW_DROP" != 1 ]; then
+          shadow_log ship "-" "$FEATURES" "features-mismatch-refused"
+          die 2 "OC_DEPLOY_GATE=feature-mismatch: explicit --features '$FEATURES' DROPS deployed feature(s): ${SHIP_DROP_LIST} — live binary has '$DEP_FEATS' (deployed.meta.json) — refusing pre-dispatch. Additions are fine; drops are the failure class. Pass the deployed set, or --allow-features-drop to override deliberately."
+        fi
+        shadow_log ship "-" "$FEATURES" "features-drop-allowed:$SHIP_DROP_LIST"
+        echo "oc-deploy: --allow-features-drop — dropping deployed feature(s) ${SHIP_DROP_LIST} deliberately (pre-dispatch gate, #108)"
       else
         shadow_log ship "-" "$FEATURES" "features-default-corrected:$DEP_FEATS"
-        echo "oc-deploy: carrier default '$FEATURES' != deployed '$DEP_FEATS' — adopting deployed set (FEATURE-DEFAULT)"
+        echo "oc-deploy: carrier default '$FEATURES' drops deployed '$DEP_FEATS' — adopting deployed set (FEATURE-DEFAULT)"
         FEATURES="$DEP_FEATS"
       fi
+    elif [ -n "$SHIP_ADD_LIST" ]; then
+      shadow_log ship "-" "$FEATURES" "features-add-adopted:$SHIP_ADD_LIST"
+      echo "oc-deploy: adding feature(s) ${SHIP_ADD_LIST} over deployed '$DEP_FEATS' (drop-only gate, #108)"
     fi
   fi
 fi
