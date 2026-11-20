@@ -343,6 +343,64 @@ swap_ensure_detached() { # re-exec outside the bounce cgroup (argv from ORIG_ARG
   OC_SWAP_DETACHED=1 exec $cmd "$SELF" "$MODE" "${ORIG_ARGS[@]}"
 }
 
+# T-5 (2026-11-20): ONE value, ONE entry. `oc-deploy features` is the
+# DOCUMENTED way to ask "what feature set does the carrier define"; the
+# standalone oc-carrier-features is an INTERNAL helper behind it. Before this,
+# the live journal carried 660 direct oc-carrier-features invocations against
+# 2734 oc-deploy ones — two commands, one value, and a lane that asked the
+# helper directly got a value the ship path could disagree with.
+#
+# The helper stays the ONE reader (it owns the carrier-yml parse and its rc
+# contract); this verb is a THIN, argument-transparent wrapper. "Same value"
+# is therefore structural, not a coincidence of two implementations: there is
+# only one implementation.
+CARRIER_TOOL_PATH() { echo "${OC_DEPLOY_CARRIER:-$(cd "$(dirname "$0")" && pwd)/oc-carrier-features}"; }
+
+# carrier_features [--repo P] [--ref B] [--no-fetch] -> prints the set
+carrier_features() {
+  local repo="" ref="" fet=1 tool out hrc errf
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift ;;
+      --ref)  ref="${2:-}";  shift ;;
+      --fetch) fet=1 ;;
+      --no-fetch) fet=0 ;;
+      *) die 1 "features: unknown arg: $1" ;;
+    esac
+    shift || true
+  done
+  tool="$(CARRIER_TOOL_PATH)"
+  local args=()
+  [ "$fet" -eq 1 ] && args+=(--fetch)
+  [ -n "$repo" ] && args+=(--repo "$repo")
+  [ -n "$ref" ]  && args+=(--ref "$ref")
+  # The helper's OWN rc is preserved (3 = carrier yml unfetchable, 4 = no
+  # features input): collapsing both into a generic 2 would destroy the
+  # distinction a caller scripts on — "unfetchable" is retryable, "no features
+  # input" is not.
+  errf="$(mktemp "${TMPDIR:-/tmp}/.oc-deploy-carrier-err.XXXXXX")" || errf=""
+  out="$("$tool" "${args[@]}" 2>"$errf")"; hrc=$?
+  if [ -n "$errf" ]; then [ -s "$errf" ] && cat "$errf" >&2; rm -f "$errf"; fi
+  # The helper's OWN rc is PRESERVED (3 = carrier yml unfetchable, 4 = no
+  # features input): collapsing both into a generic 2 would destroy the
+  # distinction a caller scripts on — "unfetchable" is retryable, "no features
+  # input" is not. The CALLER decides its own rc family: the ship path keeps
+  # its documented rc 2, the `features` verb passes the helper's rc through.
+  if [ "$hrc" -ne 0 ]; then
+    echo "carrier features read FAILED (tool: $tool, rc=$hrc) — aborting, no silent fallback set" >&2
+    return "$hrc"
+  fi
+  if [ -z "$out" ]; then
+    echo "carrier features read FAILED (tool: $tool) — empty set, aborting, no silent fallback set" >&2
+    return 4
+  fi
+  printf '%s\n' "$out"
+}
+
+features_run() { # [--repo P] [--ref B] [--no-fetch]
+  carrier_features "$@" || exit $?
+}
+
 lineage_check_run() { # [--prev P] [--sha S] [--repo R] [--json]
   local repo="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}" prev="" sha="" json=0
   while [ $# -gt 0 ]; do
@@ -2658,6 +2716,69 @@ OCPY
   rc=0; out="$(renice -n 0 -p $$ >/dev/null 2>&1 || :; "$SELF_BIN" ship 2>&1)" || rc=$?
   check_has "priority-stderr-names-class" "$out" "priority=low (nice=19"
 
+  # T-5: `oc-deploy features` is the DOCUMENTED entry; the standalone helper is
+  #     internal. The leg that matters is the ONE VALUE: the verb and the
+  #     helper must print the SAME set — that is the whole defect (two
+  #     commands, one value, and a lane asking the helper directly could get a
+  #     value the ship path disagreed with).
+  printf '#!/usr/bin/env bash\necho telegram,browser\n' > "$SD/tools/carrier-multi"; chmod +x "$SD/tools/carrier-multi"
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-multi" "$SELF_BIN" features 2>&1)"; rc=$?
+  check_rc "features-rc0" "$rc" 0
+  check_has "features-prints-the-set" "$out" "telegram,browser"
+  # same value as the helper itself, read in the same run — with the SAME
+  # flags the acceptance names (`oc-carrier-features --fetch`)
+  helper_out="$("$SD/tools/carrier-multi" --fetch 2>/dev/null)"
+  if [ "$out" = "$helper_out" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: features value != helper value"; fi
+
+  # an arg-echoing stub: it REPORTS what the verb forwarded, so the
+  # transparency of the wrapper is asserted, not assumed
+  printf '#!/usr/bin/env bash\necho "args:$*\"\necho telegram\n' > "$SD/tools/carrier-args"; chmod +x "$SD/tools/carrier-args"
+
+  # the DEFAULT is --fetch: the verb asks the carrier for a FRESH default, the
+  # same read the ship path performs
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features 2>&1)"
+  check_has "features-default-fetches" "$out" "args:--fetch"
+
+  # --repo is forwarded (the verb is a transparent wrapper, not a second reader)
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features --repo /tmp/somewhere 2>&1)"
+  check_has "features-forwards-repo" "$out" "--repo /tmp/somewhere"
+
+  # --no-fetch reaches the helper (the fetch flag is not silently dropped)
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features --no-fetch 2>&1)"
+  check_has "features-no-fetch-drops-fetch" "$out" "args:"
+  if grep -q -- "--fetch" <<<"$out"; then fail=$((fail+1)); echo "SELFTEST FAIL: features --no-fetch still passed --fetch"; else pass=$((pass+1)); fi
+
+  # A carrier read FAILURE aborts loudly — never a silent fallback set.
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-fail" "$SELF_BIN" features 2>&1)"; rc=$?
+  check_rc "features-carrier-fail-rc" "$rc" 3
+  check_has "features-carrier-fail-names-tool" "$out" "carrier features read FAILED"
+
+  # An unknown flag is refused (rc 1), never ignored.
+  out="$("$SELF_BIN" features --zzz-bogus 2>&1)"; rc=$?
+  check_rc "features-unknown-arg-rc1" "$rc" 1
+  check_has "features-unknown-arg-names-flag" "$out" "unknown arg"
+
+  # The usage line lists the verb (a verb nobody can discover is not a verb).
+  out="$("$SELF_BIN" --help 2>&1)"
+  check_has "features-in-usage" "$out" "features [--repo P]"
+
+  # T-5 ONE-READER guard. The behavioural legs above prove the VERB works; they
+  #     cannot prove the SHIP PATH reads through the SAME reader, because the
+  #     direct-call mutant produces byte-identical output (measured: MUT B
+  #     reddens NOTHING). So the invariant is asserted STRUCTURALLY: the
+  #     carrier tool is invoked from EXACTLY ONE place in this file — the
+  #     shared reader — and the ship path calls THAT reader. A second call
+  #     site is a second reader, and two readers are the defect this verb
+  #     exists to remove.
+  # the [c] bracket keeps the guard's OWN pattern from matching itself
+  n_direct="$(grep -c -- '"\$CARRIER_TOOL" --fetc[h]' "$SELF_BIN" || true)"
+  n_reader="$(grep -c -- 'carrier_features --fetc[h]' "$SELF_BIN" || true)"
+  if [ "$n_direct" -eq 0 ] && [ "$n_reader" -eq 1 ]; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); echo "SELFTEST FAIL: one-reader guard broken (direct carrier calls=$n_direct want 0, ship-path reader calls=$n_reader want 1)"
+  fi
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]
@@ -3802,7 +3923,7 @@ MODE="${1:-}"; [ $# -gt 0 ] && shift
 # globals — the cgroup detach must re-exec with the original flags.
 ORIG_ARGS=("$@")
 # C-F5 (v0.4.71): --help / -h exits 0 on stdout, before any validation
-case "$MODE" in -h|--help) echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;; esac
+case "$MODE" in -h|--help) echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] [--no-fetch] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;; esac
 # issue #24 D1: contributors takes its own arg shape (positional range /
 # --deployed / --repo) — dispatch BEFORE the ship/poll flag loop so the
 # positional range survives. contributors is RETIRED (dies rc 1); the
@@ -3815,6 +3936,9 @@ if [ "$MODE" = lineage-check ]; then lineage_check_run "$@"; exit $?; fi
 # v0.4.153: recover-receipt takes its own arg shape (--journal/--run/--sha/--dry-run/--json) —
 # dispatch BEFORE the ship/poll flag loop so its flags are not rejected.
 if [ "$MODE" = recover-receipt ]; then recover_receipt_run "$@"; exit $?; fi
+# T-5: features has its own arg shape (--repo/--ref/--no-fetch) — dispatch
+# BEFORE the ship/poll flag loop so its flags are not rejected as unknown.
+if [ "$MODE" = features ]; then features_run "$@"; exit $?; fi
 SHA=""; FEATURES=""; FEATURES_EXPLICIT=0; EXECUTE=0; RUN_ID=""; DRILL=0; ARTDIR=""; DRYRUN=0; WITH_DELTA=0; ALLOW_DROP=0   # FEATURES="" = resolve from carrier (KERNEL D2, 2026-08-28)
 WAIT_SECS=0; NOTIFY_SESSION=""   # C-#2: poll --wait / --notify-session
 ALLOW_REWRITTEN_LINEAGE=0; RW_JUSTIFY=""; RW_ACTOR="${OC_DEPLOY_ACTOR:-$(id -un 2>/dev/null || echo unknown)}"   # v0.4.151: audited swap-guard override
@@ -3860,7 +3984,7 @@ while [ $# -gt 0 ]; do
     # exits 0 before the carrier read or any network call. The selftest drives
     # THIS; a re-implementation in the test would prove nothing.
     --resolve-priority) PRIORITY_PROBE=1 ;;
-    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
+    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] [--no-fetch] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
     *)          die 1 "unknown arg: $1" ;;
   esac
   shift || true
@@ -3931,11 +4055,14 @@ printf 'oc-deploy %s: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
 # an EXPLICIT --features that mismatches the deployment fails fast here,
 # BEFORE dispatch — never a silently non-swappable artifact.
 if [ -z "$FEATURES" ]; then
-  CARRIER_TOOL="${OC_DEPLOY_CARRIER:-$(cd "$(dirname "$0")" && pwd)/oc-carrier-features}"
+  CARRIER_TOOL="$(CARRIER_TOOL_PATH)"
   case "$MODE" in
     ship|poll)
-      FEATURES="$("$CARRIER_TOOL" --fetch 2>/dev/null)" \
-        || die 2 "carrier features read FAILED (tool: $CARRIER_TOOL) — aborting, no silent fallback set"
+      # T-5: the SAME helper the `features` verb uses — one reader, one value.
+      # The ship path keeps its OWN rc family (2 — the usage/validation family
+      # its callers script on); only the READER is shared, not the rc.
+      FEATURES="$(carrier_features --fetch)" \
+        || die 2 "carrier features read FAILED — aborting, no silent fallback set"
       shadow_log features-resolve "-" "$FEATURES" "carrier-default"
       ;;
     swap-execute) : ;;  # stage-gate in swap_execute decides first; empty FEATURES fails loudly downstream, never silently
@@ -4445,5 +4572,5 @@ case "$MODE" in
     status_run "$@"
     ;;
   --selftest|selftest) selftest "$@" ;;
-  *) die 1 "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)" ;;
+  *) die 1 "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] | features [--repo P] [--ref B] [--no-fetch] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)" ;;
 esac
