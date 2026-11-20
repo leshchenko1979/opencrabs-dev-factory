@@ -34,6 +34,11 @@ import tempfile
 import time
 
 PROG = os.path.basename(sys.argv[0]) or "questions"
+# T-2: the name the REGISTER knows us by. PROG is what the user TYPED and must
+# stay derived so every message names the command that actually exists here;
+# the unified-log `tool` field is a KEY, so a copy invoked through a symlink
+# called `questions` would otherwise write a row no register can attribute.
+LOG_TOOL = "oc-questions"
 VERSION = "2.0.0"
 
 # The verb set, named once so the selftest can assert a DELETED verb stays
@@ -1139,7 +1144,7 @@ def oc_log_finish(exit_code):
     )
     entry = {
         "ts": now_iso(),
-        "tool": PROG,
+        "tool": LOG_TOOL,
         "actor": (os.environ.get("OC_ACTOR") or os.environ.get("OPENCRABS_SESSION_ID") or "unknown"),
         "args": _LOG_ARGS[:500],
         "exit": int(exit_code) if isinstance(exit_code, int) else 1,
@@ -6226,9 +6231,39 @@ printf '{"state": "%s"}\\n' "$state"
             with open(logfile, encoding="utf-8") as fh:
                 rows = [json.loads(line) for line in fh if line.strip()]
         ck(len(rows) == 1, "…and appends exactly one JSONL row (%d)" % len(rows))
-        ck(bool(rows) and rows[0].get("tool") == PROG
+        ck(bool(rows) and rows[0].get("tool") == LOG_TOOL
            and "secs" in rows[0] and rows[0].get("exit") == 0,
            "…carrying tool/secs/exit per the unified-log schema")
+
+        # T-2. THE PIN: the logged tool name must NOT follow argv[0]. PROG is
+        # derived on purpose (every message must name the command that exists
+        # here), but `tool` is a REGISTER KEY -- a copy reached through a
+        # differently-named symlink would journal a row no register can
+        # attribute, and the row would look like a phantom tool. Run the same
+        # logging path through a copy called `questions` and require the
+        # canonical name back.
+        alias = os.path.join(root, "questions")
+        if os.path.exists(alias):
+            os.remove(alias)
+        shutil.copy2(tool, alias)
+        os.chmod(alias, 0o755)
+        aliaslog = os.path.join(root, "tools-alias.log")
+        if os.path.isfile(aliaslog):
+            os.remove(aliaslog)
+        aliasenv = dict(logenv)
+        aliasenv["OC_TOOLS_LOG"] = aliaslog
+        proc = subprocess.run([alias, "list"], env=aliasenv,
+                              capture_output=True, text=True, timeout=90)
+        ck(proc.returncode == 0,
+           "T-2: a copy invoked as `questions` exits 0 (rc=%d)"
+           % proc.returncode)
+        arows = []
+        if os.path.isfile(aliaslog):
+            with open(aliaslog, encoding="utf-8") as fh:
+                arows = [json.loads(line) for line in fh if line.strip()]
+        ck(bool(arows) and arows[0].get("tool") == "oc-questions",
+           "T-2: …and still logs tool=oc-questions, not argv[0] (%r)"
+           % (arows[0].get("tool") if arows else None))
 
         # WHICH renderer ran is observable ONLY in the log. The contract legs
         # above pass on the Python fallback too -- MEASURED: forcing the fallback

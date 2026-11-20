@@ -267,6 +267,63 @@
         {
           "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"pid\":\\ os\\.getpid\\(\\),$",
           "why": "T-1 (c29 task 8, 2026-11-20): the unified-log row must name the process that WROTE it, so an invocation that hands off to a detached child is readable apart from a genuine repeat run. This copy carries the field ahead of the template because the fleet schema (tools/docs/RC-CONTRACT.md) names `pid` for every row and one tool writing a row without it would be the exact ambiguity T-1 removes. UPSTREAM ASK: add `\"pid\": os.getpid(),` to the log entry in TEMPLATE/tools/questions, beside the `extra` line."
+        },
+        {
+          "block": [
+            "# T-2: the name the REGISTER knows us by. PROG is what the user TYPED and must",
+            "# stay derived so every message names the command that actually exists here;",
+            "# the unified-log `tool` field is a KEY, so a copy invoked through a symlink",
+            "# called `questions` would otherwise write a row no register can attribute.",
+            "LOG_TOOL = \"oc-questions\""
+          ],
+          "side": "local",
+          "why": "T-2 (c29 task 8, 2026-11-20): the unified-log `tool` field is a REGISTER KEY, so it is pinned to the canonical name instead of following argv[0]. PROG stays derived (the deployment delta above) because every message must name the command that exists here; only the log key is fixed. Without the pin a copy reached through a differently-named symlink journals a row no register can attribute, and the row reads as a phantom tool. UPSTREAM ASK: add the same constant beside PROG."
+        },
+        {
+          "match": "^        \"tool\": LOG_TOOL,$",
+          "match_upstream": "^        \"tool\": PROG,$",
+          "why": "T-2: the log entry uses the pinned constant. Same one-line change upstream (see the constant's delta)."
+        },
+        {
+          "match": "^        ck\\(bool\\(rows\\) and rows\\[0\\]\\.get\\(\"tool\"\\) == LOG_TOOL$",
+          "match_upstream": "^        ck\\(bool\\(rows\\) and rows\\[0\\]\\.get\\(\"tool\"\\) == PROG$",
+          "why": "T-2: the existing schema leg now asserts against the pinned constant, so it fails if the entry ever goes back to PROG. Upstream's form is correct for upstream until it carries the constant."
+        },
+        {
+          "block": [
+            "        # T-2. THE PIN: the logged tool name must NOT follow argv[0]. PROG is",
+            "        # derived on purpose (every message must name the command that exists",
+            "        # here), but `tool` is a REGISTER KEY -- a copy reached through a",
+            "        # differently-named symlink would journal a row no register can",
+            "        # attribute, and the row would look like a phantom tool. Run the same",
+            "        # logging path through a copy called `questions` and require the",
+            "        # canonical name back.",
+            "        alias = os.path.join(root, \"questions\")",
+            "        if os.path.exists(alias):",
+            "            os.remove(alias)",
+            "        shutil.copy2(tool, alias)",
+            "        os.chmod(alias, 0o755)",
+            "        aliaslog = os.path.join(root, \"tools-alias.log\")",
+            "        if os.path.isfile(aliaslog):",
+            "            os.remove(aliaslog)",
+            "        aliasenv = dict(logenv)",
+            "        aliasenv[\"OC_TOOLS_LOG\"] = aliaslog",
+            "        proc = subprocess.run([alias, \"list\"], env=aliasenv,",
+            "                              capture_output=True, text=True, timeout=90)",
+            "        ck(proc.returncode == 0,",
+            "           \"T-2: a copy invoked as `questions` exits 0 (rc=%d)\"",
+            "           % proc.returncode)",
+            "        arows = []",
+            "        if os.path.isfile(aliaslog):",
+            "            with open(aliaslog, encoding=\"utf-8\") as fh:",
+            "                arows = [json.loads(line) for line in fh if line.strip()]",
+            "        ck(bool(arows) and arows[0].get(\"tool\") == \"oc-questions\",",
+            "           \"T-2: …and still logs tool=oc-questions, not argv[0] (%r)\"",
+            "           % (arows[0].get(\"tool\") if arows else None))",
+            ""
+          ],
+          "side": "local",
+          "why": "T-2: the PIN leg (30 lines incl. its trailing blank). Runs the same logging path through a copy named `questions` and requires tool=oc-questions back — the only leg that can see the argv[0] leak, since every other leg invokes the real filename. Mutation-verified: restoring PROG in the log entry reddens exactly this leg. UPSTREAM ASK: port the leg with the constant."
         }
       ]
     },
