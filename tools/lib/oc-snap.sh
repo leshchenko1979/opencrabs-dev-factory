@@ -55,9 +55,23 @@ oc_snap_guard() {
   _os_abs="$(cd "$(dirname "$_os_tool")" 2>/dev/null && pwd)/$(basename "$_os_tool")"
   _os_rel="${_os_abs#"$_os_sd"/}"
   _os_mir="$_os_root/oc-snap-${_os_sn}-$$"
+  # (#118) THE PUBLISHED PATH IS NEVER PARTIAL. The mirror used to be built with
+  # `mkdir -p` straight onto its LIVE path, so it was readable -- and
+  # executable -- while tar was still filling it. Measured 2026-11-20 (HQ
+  # receipt, chain CHAIN-3f75b276): a mirror was observed holding 3 of its 14
+  # directories, still filling, while its name-pid was already gone; and
+  # tools/ship/oc-ship-chain exec'd from a mirror that lacked state/oc-ledger,
+  # dying rc=127 at line 1153 mid-run -- first lost journal line `pre-flight
+  # ok`. Every guard below tests ONE path (the tool itself), so a mirror that
+  # has the entry point but not its SIBLINGS passes every check and then breaks
+  # the caller. Build in a private stage dir, mark it complete as the LAST
+  # write, and rename(2) it into place: within one filesystem that is atomic, so
+  # a reader now sees either no mirror or a whole one, never a half-filled tree.
+  _os_stage="$_os_root/.oc-snap-stage-${_os_sn}-$$.${RANDOM:-0}"
 
-  mkdir -p "$_os_mir" 2>/dev/null || {
-    printf 'oc-snap: cannot create %s — running direct (EXPOSED)\n' "$_os_mir" >&2
+  rm -rf "$_os_stage" 2>/dev/null
+  mkdir -p "$_os_stage" 2>/dev/null || {
+    printf 'oc-snap: cannot create %s — running direct (EXPOSED)\n' "$_os_stage" >&2
     return 0
   }
 
@@ -91,12 +105,12 @@ oc_snap_guard() {
   # can exclude; -p preserves the mode/mtime that `cp -a` gave us.
   _os_excl=(--exclude='*.bak' --exclude='*.bak-*' --exclude='*.pre-*'
             --exclude='*.pyc' --exclude='*__pycache__*' --exclude='.reap.*')
-  tar -C "$_os_sd" "${_os_excl[@]}" -cf - . 2>/dev/null | tar -C "$_os_mir" -xpf - 2>/dev/null
+  tar -C "$_os_sd" "${_os_excl[@]}" -cf - . 2>/dev/null | tar -C "$_os_stage" -xpf - 2>/dev/null
   # Both ends are checked: a pipeline reports only the LAST command's status, so
   # a failed read side would otherwise look like a clean copy of nothing.
   _os_pst=("${PIPESTATUS[@]}")
   if [ "${_os_pst[0]:-0}" -ne 0 ] || [ "${_os_pst[1]:-0}" -ne 0 ]; then
-    rm -rf "$_os_mir"
+    rm -rf "$_os_stage"
     printf 'oc-snap: copy failed (tar rc=%s/%s) — running direct (EXPOSED)\n' \
       "${_os_pst[0]:-?}" "${_os_pst[1]:-?}" >&2
     return 0
@@ -114,15 +128,47 @@ oc_snap_guard() {
   # and -a's mode/ownership preservation, which the copy actually needs, is
   # untouched. The consumer is vendored and sha-pinned in registry/kit.json, so
   # the producer is the only place this can be fixed.
-  touch "$_os_mir" 2>/dev/null
-
-  [ -f "$_os_mir/$_os_rel" ] || {
-    rm -rf "$_os_mir"
+  # Validation runs on the STAGE, before anything is published: the entry point
+  # must exist and be executable in the tree we are about to swap in.
+  [ -f "$_os_stage/$_os_rel" ] || {
+    rm -rf "$_os_stage"
     printf 'oc-snap: mirror lacks %s (looked for %s) -- running direct (EXPOSED)\n' \
-      "$_os_rel" "$_os_mir/$_os_rel" >&2
+      "$_os_rel" "$_os_stage/$_os_rel" >&2
     return 0
   }
-  chmod +x "$_os_mir/$_os_rel" 2>/dev/null
+  chmod +x "$_os_stage/$_os_rel" 2>/dev/null
+
+  # COMPLETION MARKER, written as the LAST content write. Its absence is the one
+  # thing a reader can test that separates "a finished copy" from "a copy still
+  # being filled" -- the state that broke HQ's chain. The touch comes after it
+  # because creating a file inside a directory bumps that directory's mtime, and
+  # #51 needs the mirror ROOT's mtime to be NOW (see above).
+  : > "$_os_stage/.oc-snap-complete" 2>/dev/null || {
+    rm -rf "$_os_stage"
+    printf 'oc-snap: cannot write completion marker in %s -- running direct (EXPOSED)\n' \
+      "$_os_stage" >&2
+    return 0
+  }
+  touch "$_os_stage" 2>/dev/null
+
+  # PUBLISH ATOMICALLY. The target is our OWN pid-suffixed path, so nothing else
+  # can be using it and clearing it cannot pull a tree out from under a live run.
+  # rename(2) is atomic within one filesystem: the path appears whole or not at
+  # all, which is what makes a partially-filled mirror unobservable.
+  rm -rf "$_os_mir" 2>/dev/null
+  mv -T "$_os_stage" "$_os_mir" 2>/dev/null || {
+    rm -rf "$_os_stage"
+    printf 'oc-snap: cannot publish %s -- running direct (EXPOSED)\n' "$_os_mir" >&2
+    return 0
+  }
+  # Re-checked on the PUBLISHED path, so a mirror from an older oc-snap that
+  # predates this marker is refused rather than exec'd into.
+  [ -f "$_os_mir/.oc-snap-complete" ] || {
+    rm -rf "$_os_mir"
+    printf 'oc-snap: published mirror lacks its completion marker (%s) -- running direct (EXPOSED)\n' \
+      "$_os_mir/.oc-snap-complete" >&2
+    return 0
+  }
 
   # Universal verification hook: OC_SNAP_VERBOSE=1 proves, for ANY tool, that
   # this run came off an immutable copy — without adding selftest code to each.
@@ -179,6 +225,24 @@ oc_snap_reap() {
     _osr_pid="${_osr_d##*-}"
     # Only pid-suffixed dirs are mirrors; anything else (e.g. an apply backup)
     # is not this function's to remove.
+    case "$_osr_pid" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if kill -0 "$_osr_pid" 2>/dev/null; then continue; fi
+    if grep -qF "$_osr_d" "$_osr_ps" 2>/dev/null; then continue; fi
+    if [ "$_osr_dry" = "1" ]; then _osr_n=$((_osr_n + 1)); continue; fi
+    if rm -rf "$_osr_d" 2>/dev/null; then _osr_n=$((_osr_n + 1)); fi
+  done
+  # (#118) STAGE DIRS are a second population with a DIFFERENT name shape, so the
+  # oc-snap-* glob above cannot see them: they are dot-prefixed and their last
+  # field is "<pid>.<rand>", which fails the numeric-pid test and `continue`s.
+  # A run KILLed between mkdir and rename leaks one, and nothing else would ever
+  # collect it. Same two conditions as a mirror: name-pid gone AND no live
+  # process naming the path in its argv.
+  for _osr_d in "$_osr_root"/.oc-snap-stage-*; do
+    [ -d "$_osr_d" ] || continue
+    _osr_tail="${_osr_d##*/.oc-snap-stage-}"
+    _osr_pid="${_osr_tail%%.*}"
     case "$_osr_pid" in
       ''|*[!0-9]*) continue ;;
     esac
