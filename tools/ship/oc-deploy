@@ -248,6 +248,11 @@ ACTIVE_CMD="${OC_SWAP_ACTIVE_CMD:-systemctl --user is-active opencrabs-ops.servi
 PID_CMD="${OC_SWAP_PID_CMD:-systemctl --user show -p MainPID --value opencrabs-ops.service}"
 SKIP_PROC="${OC_SWAP_SKIP_PROC:-0}"
 A2A_URL="${OC_A2A_URL-http://127.0.0.1:18791/a2a/v1}"
+# #124: the receipt leg's addressee. The PHASE B receipt announces a landed swap
+# to the OC DEV HQ topic, so its target is the session BOUND to that topic —
+# resolved at send time (a uuid is not durable across session replacement).
+RECEIPT_TOPIC="${OC_DEPLOY_RECEIPT_TOPIC:-30220}"
+A2A_CURL="${OC_A2A_CURL:-curl}"   # test seam: stub the transport
 LAUNCH="${OC_SWAP_LAUNCH:-systemd-run --user}"
 
 die() { echo "oc-deploy: $2" >&2; exit "$1"; }
@@ -790,12 +795,85 @@ ledger_stamp() { # $1=by  $2=what  $3=kind
 }
 
 # ------------------------------------------------------------ A2A receipts --
-a2a_notify() { # $1=text ; exit 0 accepted
-  [ -n "$A2A_URL" ] || return 1
-  curl -fsS --max-time 15 -X POST "$A2A_URL" -H 'Content-Type: application/json' \
-    -d "$(jq -cn --arg t "$1" '{jsonrpc:"2.0", id:1, method:"message/send",
-         params:{message:{role:"ROLE_USER", parts:[{kind:"text", text:$t}]}}}')" \
-    >/dev/null 2>&1
+# #124 (2026-11-20): this leg has NEVER delivered a single receipt.
+#
+# TWO defects, each fatal on its own:
+#   1. it sent `message/send` with `role:"ROLE_USER"`, a variant the gateway
+#      rejects — `{"error":{"code":-32602,"message":"Invalid params: unknown
+#      variant \`ROLE_USER\`, expected \`user\` or \`agent\`"}}`;
+#   2. `>/dev/null 2>&1` threw the body away, and `curl -f` only fails on
+#      HTTP >= 400 — so a JSON-RPC error carried on HTTP **200** read as
+#      success. Census over the swap journals: 473 receipt rows, 242 of them
+#      `a2a_accepted:true`, and not one was ever delivered.
+#
+# CORRECTING THE ROLE ALONE WOULD NOT HAVE FIXED IT. `message/send` CREATES A
+# TASK (src/a2a/handler/send.rs) — measured 2026-11-20, the corrected-role probe
+# spawned a real throwaway session (`A2A: probe-roast-test`) and still notified
+# nobody. So a valid role would have re-armed the SAME false positive one layer
+# down: `a2a_accepted:true` would have meant "a task was created", not "the
+# owner was told".
+#
+# A receipt is a NOTIFICATION, so it uses `session/notify` — the method (and the
+# `{outcome}` contract) the fan-out leg gets right via lib/oc-notify.sh — and it
+# PARSES `result.outcome`. The transport status can never settle this: a JSON-RPC
+# error rides on HTTP 200.
+
+receipt_target_session() { # -> echoes a session uuid, rc 1 if none resolvable
+  # An explicit override wins (tests, and any caller that knows its target).
+  if [ -n "${OC_DEPLOY_RECEIPT_SESSION:-}" ]; then
+    printf '%s\n' "$OC_DEPLOY_RECEIPT_SESSION"; return 0
+  fi
+  local db="${OC_RECEIPT_DB:-$HOME/.opencrabs/profiles/$NOTIFY_PROFILE/opencrabs.db}"
+  [ -f "$db" ] || return 1
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  local id
+  # A session_bindings row is authoritative; the title's `topic:<id>` tag is an
+  # echo. Try the binding, then the tag. Archived sessions are NOT dead (owner
+  # directive 2026-08-28) so they are not excluded — the route redirects.
+  id="$(sqlite3 -readonly "$db" \
+        "SELECT session_id FROM session_bindings WHERE thread_id=${RECEIPT_TOPIC} LIMIT 1;" \
+        2>/dev/null | head -1)"
+  if [ -z "$id" ]; then
+    id="$(sqlite3 -readonly "$db" \
+          "SELECT id FROM sessions WHERE title LIKE '%topic:${RECEIPT_TOPIC}%' ORDER BY updated_at DESC LIMIT 1;" \
+          2>/dev/null | head -1)"
+  fi
+  [ -n "$id" ] || return 1
+  printf '%s\n' "$id"
+}
+
+a2a_notify() { # $1=text ; exit 0 ONLY on a parsed delivered/queued outcome
+  # On failure sets A2A_WHY (one line) so the journal row can say WHY without
+  # anyone having to reproduce the send.
+  A2A_OUTCOME="none"; A2A_WHY=""
+  [ -n "$A2A_URL" ] || { A2A_WHY="no A2A_URL"; return 1; }
+  local uuid
+  if ! uuid="$(receipt_target_session)"; then
+    A2A_WHY="no addressee for topic $RECEIPT_TOPIC"; return 1
+  fi
+  local body rc payload
+  payload="$(jq -cn --arg sid "$uuid" --arg t "$1" \
+    '{jsonrpc:"2.0", id:1, method:"session/notify",
+      params:{session_id:$sid, message:$t, title:"oc-deploy PHASE B RECEIPT",
+              sender:"oc-deploy swap"}}')" || { A2A_WHY="payload build failed"; return 1; }
+  # Body CAPTURED, never discarded — that discard is defect 2.
+  body="$("$A2A_CURL" -sS --max-time 15 -X POST "$A2A_URL" \
+          -H 'Content-Type: application/json' -d "$payload" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    A2A_WHY="transport rc=$rc: $(printf '%s' "$body" | head -c 200)"; return 1
+  fi
+  # A JSON-RPC error on HTTP 200 is a REJECTION, not a delivery.
+  if printf '%s' "$body" | jq -e '.error' >/dev/null 2>&1; then
+    A2A_WHY="jsonrpc error: $(printf '%s' "$body" | jq -c '.error' 2>/dev/null | head -c 200)"
+    return 1
+  fi
+  A2A_OUTCOME="$(printf '%s' "$body" | jq -r '.result.outcome // ""' 2>/dev/null)"
+  case "$A2A_OUTCOME" in
+    delivered|injected|redirected|queued) return 0 ;;
+    no_route) A2A_WHY="no_route (target $uuid not live)"; return 1 ;;
+    "")       A2A_WHY="no result.outcome in response: $(printf '%s' "$body" | head -c 200)"; return 1 ;;
+    *)        A2A_WHY="outcome=$A2A_OUTCOME"; return 1 ;;
+  esac
 }
 
 a2a_notify_retry() { # $1=text — retry up to OC_A2A_TRIES (default 6), sleeping
@@ -804,10 +882,13 @@ a2a_notify_retry() { # $1=text — retry up to OC_A2A_TRIES (default 6), sleepin
   # races the daemon restart the swap itself just triggered — the gateway is
   # down for several seconds, the single-shot POST died, and the owner never
   # heard about a successful swap. Retrying makes the receipt survive the gap.
+  # (#124) A no_route is NOT retried: a dead uuid is permanent, and 6 x 10s of
+  # sleeping on it delays the swap's tail for nothing.
   [ -n "$A2A_URL" ] || return 1
   local n=0 max=${OC_A2A_TRIES:-6} s=${OC_A2A_RETRY_SLEEP:-10}
   while :; do
     a2a_notify "$1" && return 0
+    case "${A2A_WHY:-}" in no_route*) return 1 ;; esac
     n=$((n+1)); [ "$n" -ge "$max" ] && return 1
     if [ "$s" -gt 0 ]; then sleep "$s"; fi
   done
@@ -2814,6 +2895,96 @@ OCPY
     fail=$((fail+1)); echo "SELFTEST FAIL: one-reader guard broken (direct carrier calls=$n_direct want 0, ship-path reader calls=$n_reader want 1)"
   fi
 
+  # ---------------------------------------------------------------- #124 --
+  # 23. THE RECEIPT LEG'S FALSE POSITIVE (#124). The pre-fix leg posted
+  #     `message/send` with `role:"ROLE_USER"`. The gateway answers HTTP 200
+  #     with a JSON-RPC ERROR body (-32602 unknown variant ROLE_USER), so
+  #     curl's rc was 0, the journal recorded `a2a_accepted:true`, and nothing
+  #     was ever delivered. 242 of 473 receipt rows in the live journal carry
+  #     that false `true`. A `message/send` ALSO mints a real task server-side,
+  #     so fixing only the role would have re-armed the same false positive one
+  #     layer down: the leg must speak `session/notify` and gate on the parsed
+  #     outcome. These arms are a SET — the error body must FAIL and a real
+  #     delivery must still PASS, because an arm that only proves "errors fail"
+  #     also passes on a leg that delivers nothing at all.
+  local A2A_URL_SAVE="$A2A_URL" A2A_CURL_SAVE="$A2A_CURL" SESS_SAVE="${OC_DEPLOY_RECEIPT_SESSION:-}"
+  local stub="$T/stub-a2a" stublog="$T/stub-a2a.calls"
+  cat > "$stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LOG"
+printf '%s\n' "$STUB_BODY"
+exit "${STUB_RC:-0}"
+STUB
+  chmod +x "$stub"
+  export STUB_LOG="$stublog"
+  A2A_CURL="$stub"; A2A_URL="http://stub.invalid/a2a/v1"
+  OC_DEPLOY_RECEIPT_SESSION="11111111-2222-3333-4444-555555555555"
+
+  # 23a. POSITIVE CONTROL — a delivered outcome still passes, and the request
+  #      is a session/notify carrying the resolved uuid. Without this arm every
+  #      "error fails" assertion below would pass on a leg that never sends.
+  : > "$stublog"
+  export STUB_RC=0 STUB_BODY='{"jsonrpc":"2.0","id":1,"result":{"outcome":"delivered"}}'
+  if a2a_notify "selftest #124 control"; then rc=0; else rc=$?; fi
+  check_rc "a2a124-delivered-rc" "$rc" 0
+  if [ "${A2A_OUTCOME:-}" = "delivered" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: a2a124 delivered outcome not parsed (got '${A2A_OUTCOME:-}')"; fi
+  check_has "a2a124-method" "$(cat "$stublog")" "session/notify"
+  check_has "a2a124-uuid" "$(cat "$stublog")" "11111111-2222-3333-4444-555555555555"
+  case "$(cat "$stublog")" in
+    *"message/send"*) fail=$((fail+1)); echo "SELFTEST FAIL: a2a124 leg still posts message/send (it MINTS a task)" ;;
+    *) pass=$((pass+1)) ;;
+  esac
+
+  # 23b. THE INCIDENT — HTTP 200 carrying a JSON-RPC error. curl rc is 0, so
+  #      only body parsing can catch it. This is the exact shape the gateway
+  #      answered while the journal recorded `true`.
+  : > "$stublog"
+  export STUB_RC=0
+  export STUB_BODY='{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params: unknown variant `ROLE_USER`, expected `user` or `agent`"}}'
+  if a2a_notify "selftest #124 incident"; then rc=0; else rc=$?; fi
+  check_rc "a2a124-jsonrpc-error-rc" "$rc" 1
+  check_has "a2a124-jsonrpc-error-why" "${A2A_WHY:-}" "jsonrpc error"
+  check_has "a2a124-jsonrpc-error-code" "${A2A_WHY:-}" "-32602"
+
+  # 23c. A 200 with no result.outcome is not a delivery either (silent success).
+  export STUB_BODY='{"jsonrpc":"2.0","id":1,"result":{}}'
+  if a2a_notify "selftest #124 no outcome"; then rc=0; else rc=$?; fi
+  check_rc "a2a124-no-outcome-rc" "$rc" 1
+  check_has "a2a124-no-outcome-why" "${A2A_WHY:-}" "no result.outcome"
+
+  # 23d. No addressee -> refuse BEFORE any transport call. OC_RECEIPT_DB points
+  #      at a path that cannot exist so the real daemon DB is never read.
+  : > "$stublog"
+  unset OC_DEPLOY_RECEIPT_SESSION
+  OC_RECEIPT_DB="$T/no-such.db" RECEIPT_TOPIC=99999
+  if a2a_notify "selftest #124 no addressee"; then rc=0; else rc=$?; fi
+  check_rc "a2a124-no-addressee-rc" "$rc" 1
+  check_has "a2a124-no-addressee-why" "${A2A_WHY:-}" "no addressee"
+  if [ ! -s "$stublog" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: a2a124 called the transport with no addressee resolved"; fi
+
+  # 23e. no_route is PERMANENT — the retry must not burn its budget on it.
+  : > "$stublog"
+  OC_DEPLOY_RECEIPT_SESSION="11111111-2222-3333-4444-555555555555"
+  export STUB_BODY='{"jsonrpc":"2.0","id":1,"result":{"outcome":"no_route"}}'
+  OC_A2A_TRIES=3 OC_A2A_RETRY_SLEEP=0
+  if a2a_notify_retry "selftest #124 no_route"; then rc=0; else rc=$?; fi
+  check_rc "a2a124-no-route-rc" "$rc" 1
+  if [ "$(wc -l < "$stublog")" -eq 1 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: a2a124 retried a permanent no_route ($(wc -l < "$stublog") calls, want 1)"; fi
+
+  # 23f. A transport failure IS retried (the post-swap gateway gap this loop
+  #      exists for).
+  : > "$stublog"
+  export STUB_RC=7 STUB_BODY="curl: (7) Failed to connect"
+  OC_A2A_TRIES=2 OC_A2A_RETRY_SLEEP=0
+  if a2a_notify_retry "selftest #124 transport"; then rc=0; else rc=$?; fi
+  check_rc "a2a124-transport-rc" "$rc" 1
+  if [ "$(wc -l < "$stublog")" -eq 2 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: a2a124 transport failure not retried ($(wc -l < "$stublog") calls, want 2)"; fi
+  check_has "a2a124-transport-why" "${A2A_WHY:-}" "transport rc=7"
+
+  A2A_URL="$A2A_URL_SAVE"; A2A_CURL="$A2A_CURL_SAVE"
+  if [ -n "$SESS_SAVE" ]; then OC_DEPLOY_RECEIPT_SESSION="$SESS_SAVE"; else unset OC_DEPLOY_RECEIPT_SESSION; fi
+  unset OC_RECEIPT_DB STUB_LOG STUB_BODY STUB_RC
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]
@@ -3679,7 +3850,7 @@ swap_execute() {
     fi
     sidecar_sync "$EXPECTED"
       A2A_RC=1; a2a_notify_retry "[oc-deploy PHASE B RECEIPT] DEPLOYED sha=$SHA run=$RUN_ID — post-verify match, markers written, backup $BAK. Journal: $JF" && A2A_RC=0
-    jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" '{topics:[30220], a2a_accepted:($a==0), note:"stamp follows fanout (issue #24 wiring)"}')"
+    jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" --argjson tp "$RECEIPT_TOPIC" --arg o "${A2A_OUTCOME:-none}" --arg w "${A2A_WHY:-}" '{topics:[$tp], a2a_accepted:($a==0), a2a_outcome:$o, a2a_why:$w, note:"stamp follows fanout (issue #24 wiring)"}')"
     # --- GREEN fan-out (issue #24 wiring): notify contributor sessions of the
     #     live swap. Fires AFTER receipt seal + marker writes (design §5) and
     #     BEFORE the swap-result ledger stamp, so fanout-end is journaled first
@@ -3743,7 +3914,7 @@ swap_execute() {
     ledger_stamp "$BY_LBL2" "swap-result ROLLED_BACK sha=$SHA run=$RUN_ID: post-verify mismatch after bounce (seq8 exit=1); backup $BAK restored + re-verified match=$([ "$PV_MATCH" = 1 ] && echo true || echo false); markers+baseline restored; journal=$JF" "swap-result"
   fi
   A2A_RC=1; a2a_notify_retry "[oc-deploy PHASE B] ROLLBACK sha=$SHA run=$RUN_ID — post-verify failed after bounce, backup restored, re-verify match=$([ "$PV_MATCH" = 1 ] && echo true || echo false). DRILL=$DRILL. Journal: $JF" && A2A_RC=0
-  jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" '{result:"rolled-back", a2a_accepted:($a==0)}')"
+  jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" --arg o "${A2A_OUTCOME:-none}" --arg w "${A2A_WHY:-}" '{result:"rolled-back", a2a_accepted:($a==0), a2a_outcome:$o, a2a_why:$w}')"
   shadow_log swap "$SHA" "$FEATURES" "rolled-back"
   if [ "$DRILL" = "1" ]; then
     if [ "$PV_MATCH" = 1 ]; then

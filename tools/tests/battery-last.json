@@ -1,6 +1,6 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-20T18:32:42Z",
+  "ts": "2026-11-20T20:16:22Z",
   "pass": 428,
   "fail": 0,
   "verdict": "PASS",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-rb86b96a1773d443e8e1b599e55a96d52.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r275598360673466c99907491b8984f58.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 1411268,
-  "timing": {"max_concurrency": 1, "section_count": 69, "sum_ms": 1411033, "slowest": [{"n": 26, "ms": 361966, "start_ms": 1795198485234, "end_ms": 1795198847200, "title": "oc-ledger"}, {"n": 25, "ms": 202957, "start_ms": 1795198282277, "end_ms": 1795198485234, "title": "oc-deploy"}, {"n": 28, "ms": 163497, "start_ms": 1795198860814, "end_ms": 1795199024311, "title": "oc-prchecks"}, {"n": 44, "ms": 124997, "start_ms": 1795199240148, "end_ms": 1795199365145, "title": "oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 29, "ms": 104343, "start_ms": 1795199024311, "end_ms": 1795199128654, "title": "oc-upstream-delta"}, {"n": 47, "ms": 44635, "start_ms": 1795199380353, "end_ms": 1795199424988, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 54, "ms": 32639, "start_ms": 1795199468559, "end_ms": 1795199501198, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 31, "ms": 30800, "start_ms": 1795199141148, "end_ms": 1795199171948, "title": "oc-drift-check"}, {"n": 14, "ms": 30364, "start_ms": 1795198196764, "end_ms": 1795198227128, "title": "oc-post-receipts"}, {"n": 39, "ms": 23378, "start_ms": 1795199203895, "end_ms": 1795199227273, "title": "oc-commit"}]}
+  "wall_ms": 1200571,
+  "timing": {"max_concurrency": 1, "section_count": 69, "sum_ms": 1200378, "slowest": [{"n": 54, "ms": 390843, "start_ms": 1795205203682, "end_ms": 1795205594525, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 26, "ms": 110323, "start_ms": 1795204726599, "end_ms": 1795204836922, "title": "oc-ledger"}, {"n": 25, "ms": 108882, "start_ms": 1795204617717, "end_ms": 1795204726599, "title": "oc-deploy"}, {"n": 44, "ms": 100783, "start_ms": 1795205002938, "end_ms": 1795205103721, "title": "oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 28, "ms": 69244, "start_ms": 1795204841425, "end_ms": 1795204910669, "title": "oc-prchecks"}, {"n": 68, "ms": 63915, "start_ms": 1795205710992, "end_ms": 1795205774907, "title": "entry-preamble fixpoint + relative invocation (#708)"}, {"n": 55, "ms": 60101, "start_ms": 1795205594525, "end_ms": 1795205654626, "title": "oc-lint-laws (law syntax & reference linter)"}, {"n": 47, "ms": 42946, "start_ms": 1795205118431, "end_ms": 1795205161377, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 31, "ms": 20399, "start_ms": 1795204927252, "end_ms": 1795204947651, "title": "oc-drift-check"}, {"n": 64, "ms": 20192, "start_ms": 1795205672560, "end_ms": 1795205692752, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}]}
 }
