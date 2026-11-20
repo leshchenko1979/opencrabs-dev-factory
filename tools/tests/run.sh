@@ -2456,6 +2456,26 @@ if tool oc-smoke; then
   "$TOOLS_DIR/smoke/oc-smoke" --help >/dev/null 2>&1 && ok "oc-smoke --help rc=0" || bad "oc-smoke --help rc!=0"
 fi
 
+# ---- 66b. oc-closure-sweep (class (d) catch-up close, T-10)
+# The catch-up companion to oc-smoke --close: an issue whose smoke PASS landed
+# before that flag existed (or whose gh close call failed) carries BOTH receipts
+# and stays OPEN forever, because a `done` row closes the CLAIM and the dispatch
+# predicate then reads it as landed. #279 is that shape. This tool joins the
+# issue's newest verdict-bearing smoke row x a done ledger row x the live
+# tracker state, and DRY RUNS by default.
+#
+# It is in this list because a tool that is not enumerated here is not tested:
+# run_selftest is opt-in per tool, so a new tool ships silently UNCOVERED. Its
+# 17 arms (four parsed row shapes, the #279 regression, the done-without-PASS
+# exclusion, the shared close path, the park mirrors) were green on the
+# standalone run and would still have been absent from every battery receipt.
+section "oc-closure-sweep (class (d) catch-up close)"
+run_selftest oc-closure-sweep
+if tool oc-closure-sweep; then
+  "$TOOLS_DIR/state/oc-closure-sweep" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
+  "$TOOLS_DIR/state/oc-closure-sweep" --help >/dev/null 2>&1 && ok "oc-closure-sweep --help rc=0" || bad "oc-closure-sweep --help rc!=0"
+fi
+
 # ---- 64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)
 section "oc-issue-dispatch (mechanized issue triage dispatch)"
 run_selftest oc-issue-dispatch

@@ -311,7 +311,9 @@ except Exception:
   fi
 
   # ---- leg 5: acceptance 3 — a done row with no smoke PASS is not eligible ---
-  if ! printf '%s' "$J" | grep -q '"305"'; then
+  # #660: `<<<` not `printf | grep -q` — under pipefail an early-exiting grep
+  # SIGPIPEs the writer, so the pipeline reports failure on a SUCCESSFUL match.
+  if ! grep -q '"305"' <<< "$J"; then
     t_ok "a done row with NO smoke PASS is not a candidate (acceptance 3)"
   else
     t_bad "issue 305 (done, no smoke) became a candidate"
@@ -320,7 +322,7 @@ except Exception:
   # ---- leg 6: disqualifiers — off-taxonomy, retraction, FAIL, no-done-row ---
   bad=""
   for n in 302 303 304 306; do
-    printf '%s' "$J" | grep -q "\"$n\"" && bad="$bad $n"
+    grep -q "\"$n\"" <<< "$J" && bad="$bad $n"
   done
   if [ -z "$bad" ]; then
     t_ok "off-taxonomy / RETRACTED / FAIL / no-done-row issues are all excluded"
