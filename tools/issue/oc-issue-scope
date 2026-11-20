@@ -313,13 +313,13 @@ git -C "$_gt/src" worktree add -q "$_gt/src-wt" -b wt70 >/dev/null 2>&1
 [ -f "$_gt/src-wt/.git" ] && [ ! -d "$_gt/src-wt/.git" ] || { echo "  FAIL gather: worktree fixture is not a gitdir FILE"; _gf=$((_gf+1)); }
 # (a) a WORKTREE src repo contributes its `src` rows
 _gi="$(gather_index "$_gt/skill" "$_gt/src-wt")"
-printf '%s\n' "$_gi" | grep -qxF "$(printf 'src\tmain.rs')" || { echo "  FAIL gather: worktree src rows missing"; _gf=$((_gf+1)); }
-printf '%s\n' "$_gi" | grep -qxF "$(printf 'skill\tSKILL.md')" || { echo "  FAIL gather: skill rows missing"; _gf=$((_gf+1)); }
+grep -qxF "$(printf 'src\tmain.rs')" <<< "$_gi" || { echo "  FAIL gather: worktree src rows missing"; _gf=$((_gf+1)); }
+grep -qxF "$(printf 'skill\tSKILL.md')" <<< "$_gi" || { echo "  FAIL gather: skill rows missing"; _gf=$((_gf+1)); }
 # (b) CONTROL: a non-git src repo stays a SILENT skip (no src rows, no error)
 mkdir -p "$_gt/notgit"
 _gi="$(gather_index "$_gt/skill" "$_gt/notgit" 2>&1)"
-printf '%s\n' "$_gi" | grep -q '^src	' && { echo "  FAIL gather: non-git src contributed rows"; _gf=$((_gf+1)); }
-printf '%s\n' "$_gi" | grep -qxF "$(printf 'skill\tSKILL.md')" || { echo "  FAIL gather: non-git control lost the skill half"; _gf=$((_gf+1)); }
+grep -q '^src	' <<< "$_gi" && { echo "  FAIL gather: non-git src contributed rows"; _gf=$((_gf+1)); }
+grep -qxF "$(printf 'skill\tSKILL.md')" <<< "$_gi" || { echo "  FAIL gather: non-git control lost the skill half"; _gf=$((_gf+1)); }
 rm -rf "$_gt"
 [ "$_gf" -eq 0 ] && echo "gather selftest: PASS"
 [ "$_pyrc" -eq 0 ] && [ "$_gf" -eq 0 ]
