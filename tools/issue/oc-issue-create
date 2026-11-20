@@ -74,6 +74,14 @@ GH_BIN="${OC_ISSUE_CREATE_GH:-gh}"
 UPSTREAM_SLUG="${OC_ISSUE_CREATE_UPSTREAM:-opencrabs/opencrabs}"
 UPSTREAM_REMOTE="${OC_ISSUE_CREATE_UPSTREAM_REMOTE:-adolfousier}"
 
+# --- "is this path a git checkout?" (factory #70) -----------------------------
+# `[ -d "$p/.git" ]` answers FALSE for a LINKED WORKTREE, where `.git` is a small
+# ASCII FILE holding `gitdir: ...`. Both call sites below RUN git in the path, so
+# a worktree read as "no repo": the blame engine refused to start (exit 5) and
+# the upstream-path root silently fell through to a NETWORK lookup that answers
+# differently from the local checkout the caller passed.
+is_git_checkout() { git -C "${1:-}" rev-parse --git-dir >/dev/null 2>&1; }
+
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDERR
   local rc="${1:-2}" fd=2
   [ "$rc" = 0 ] && fd=1
@@ -598,6 +606,42 @@ OCPY
   has "a FAILED candidate lookup says so, never 'no candidates'" "$T/o8" 'lookup FAILED'
   mv "$T/issues.gone" "$T/issues.json"
 
+  # --- factory #70: `.git` is a FILE in a LINKED WORKTREE ----------------------
+  # Both call sites RUN git in the path, so `[ -d "$p/.git" ]` reading a worktree
+  # as "no repo" did real damage: the blame engine refused to start (exit 5) and
+  # an upstream-PATH root silently fell through to a NETWORK lookup that answers
+  # differently from the checkout the caller passed.
+  W="$T/repo70"; mkdir -p "$W"
+  ( cd "$W" && git init -q . && git config user.email t@t && git config user.name t \
+    && mkdir -p docs && printf 'x\n' > docs/x.md && printf 'a\n' > f.txt \
+    && git add -A && git commit -qm base ) >/dev/null 2>&1
+  git -C "$W" update-ref refs/remotes/adolfousier/main HEAD
+  git -C "$W" worktree add -q "$T/wt70" -b wt70 >/dev/null 2>&1
+  # vacuity guard: the fixture must BE the shape under test
+  if [ -f "$T/wt70/.git" ] && [ ! -d "$T/wt70/.git" ]; then
+    echo "  ok   - fixture: the linked worktree's .git is a FILE"
+  else
+    echo "  FAIL - fixture: the linked worktree's .git is not a FILE"; fails=$((fails+1))
+  fi
+  # (a) the blame engine must ACCEPT a worktree repo path (used to be exit 5)
+  bash "$SELF" --propose-parent --title "fix(tools): wt" --repo-path "$T/wt70" 4242 >"$T/o31" 2>&1
+  chk "the blame engine accepts a LINKED WORKTREE" 0 $?
+  has "…and runs, instead of refusing the checkout" "$T/o31" 'by blame \(existing issue #4242\)'
+  # (b) CONTROL: a plain directory still aborts, same rc and same message
+  mkdir -p "$T/notgit70"
+  bash "$SELF" --propose-parent --title "fix(tools): wt" --repo-path "$T/notgit70" 4242 >"$T/o32" 2>&1
+  chk "…and a NON-git repo path still aborts" 5 $?
+  has "…naming the missing checkout"              "$T/o32" 'no git checkout at'
+  # (c) the upstream-PATH root must resolve from the worktree's LOCAL checkout
+  bash "$SELF" --title "fix(tools): wt-root" --body x --root upstream:docs/x.md --repo-path "$T/wt70" --dry-run >"$T/o33" 2>&1
+  chk "an upstream PATH root resolves from a WORKTREE" 0 $?
+  has "…and the root is recorded"                      "$T/o33" 'root: docs/x.md'
+  # (d) CONTROL: with no checkout the guard still routes to gh, which cannot
+  #     resolve it — the else arm must not have gone with the predicate
+  bash "$SELF" --title "fix(tools): wt-root" --body x --root upstream:docs/x.md --repo-path "$T/notgit70" --dry-run >"$T/o34" 2>&1
+  chk "…and a NON-git repo path still routes to gh and refuses" 3 $?
+  has "…naming the resolve requirement"                        "$T/o34" 'does not RESOLVE'
+
   unset OC_ISSUE_CREATE_GH OC_STUB_ISSUES
   echo "oc-issue-create selftest: FAIL=$fails"
   return $(( fails > 0 ? 1 : 0 ))
@@ -619,7 +663,7 @@ if [ "$PROPOSE" = 1 ]; then
     case "$a" in
       ''|--*|-*) continue ;;
       [0-9]*)
-        if [ ! -d "$REPO_PATH/.git" ]; then
+        if ! is_git_checkout "$REPO_PATH"; then
           echo "oc-issue-create: no git checkout at $REPO_PATH -- the blame engine" >&2
           echo "needs one. Pass --repo-path <dir>." >&2
           exit 5
@@ -658,7 +702,7 @@ root_resolves() { # $1 = value (with or without upstream:). rc 0 = resolves
   case "$kind" in
     sha)  "$GH_BIN" api "repos/$UPSTREAM_SLUG/commits/$v" --jq .sha >/dev/null 2>&1 ;;
     pr)   "$GH_BIN" pr view "$v" -R "$UPSTREAM_SLUG" --json number >/dev/null 2>&1 ;;
-    path) if [ -d "$REPO_PATH/.git" ]; then
+    path) if is_git_checkout "$REPO_PATH"; then
             git -C "$REPO_PATH" cat-file -e "$UPSTREAM_REMOTE/main:$v" 2>/dev/null
           else
             "$GH_BIN" api "repos/$UPSTREAM_SLUG/contents/$v?ref=main" --jq .path >/dev/null 2>&1

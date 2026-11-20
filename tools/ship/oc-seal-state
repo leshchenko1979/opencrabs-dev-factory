@@ -66,7 +66,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's
 }
 
 selftest() {
-  local passed=0 total=9 rc d
+  local passed=0 total=12 rc d
   d="$(mktemp -d)"
   printf '{"sha":"aaaa","run_id":1,"name":"keep-me"}' > "$d/b.json"
   printf '{"orders":[]}' > "$d/o.json"
@@ -82,6 +82,21 @@ selftest() {
   "$0" --baseline "$d/b.json" --orders "$d/o.json" --mark-order cccccccccccccccccccccccccccccccccccccccc --with-run 9 --status BOGUS --dry-run >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
   "$0" --baseline "$d/b.json" --orders "$d/o.json" --purge-order dddddddddddddddddddddddddddddddddddddddd --dry-run >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
   "$0" >/dev/null 2>&1; rc=$?; [ "$rc" = 1 ] && passed=$((passed+1))
+  # factory #70: `[ -d "$GIT/.git" ]` refused a LINKED WORKTREE, where `.git` is a
+  # FILE. Vacuity guard first (the fixture must BE that shape), then the fix, then
+  # the control that keeps the real abort: a plain directory still fails rc 2.
+  g="$d/repo"; mkdir -p "$g"
+  git -C "$g" init -q 2>/dev/null
+  git -C "$g" config user.email t@t; git -C "$g" config user.name t
+  echo a > "$g/a"; git -C "$g" add a; git -C "$g" commit -q -m base
+  _s1="$(git -C "$g" rev-parse HEAD)"
+  echo b > "$g/b"; git -C "$g" add b; git -C "$g" commit -q -m second
+  _s2="$(git -C "$g" rev-parse HEAD)"
+  git -C "$g" worktree add -q "$d/wt" -b seal70 "$_s1" >/dev/null 2>&1
+  [ -f "$d/wt/.git" ] && [ ! -d "$d/wt/.git" ] && passed=$((passed+1))
+  "$0" --baseline "$d/b.json" --orders "$d/o.json" --git "$d/wt" --contrib-from "$_s1" --contrib-to "$_s2" --dry-run >/dev/null 2>&1; rc=$?; [ "$rc" = 0 ] && passed=$((passed+1))
+  mkdir -p "$d/notgit"
+  "$0" --baseline "$d/b.json" --orders "$d/o.json" --git "$d/notgit" --contrib-from "$_s1" --contrib-to "$_s2" --dry-run >/dev/null 2>&1; rc=$?; [ "$rc" = 2 ] && passed=$((passed+1))
   rm -rf "$d"
   echo "selftest OK: $passed/$total cases (no network)"
   [ "$passed" = "$total" ]
@@ -124,7 +139,10 @@ done
 NEW_CONTRIB=""
 if [ -n "$CONTRIB_TO" ]; then
   [ -n "$CONTRIB_FROM" ] || fail 1 "--contrib-to needs --contrib-from (left edge = previous baseline sha)"
-  [ -d "$GIT/.git" ] || fail 2 "clone not found: $GIT"
+  # factory #70: `.git` is a FILE in a LINKED WORKTREE, so `[ -d ]` refused a
+  # valid checkout as "clone not found". Ask git — the same predicate oc-attrib
+  # then uses, so the gate and the scan can no longer disagree.
+  git -C "$GIT" rev-parse --git-dir >/dev/null 2>&1 || fail 2 "clone not found: $GIT"
   ATTRIB="$OC_TOOLS_DIR/state/oc-attrib"
   OUT="$("$ATTRIB" --repo "$GIT" --trailers-only --range "$CONTRIB_FROM..$CONTRIB_TO" 2>/dev/null)" \
     || fail 2 "contributor scan failed ($CONTRIB_FROM..$CONTRIB_TO in $GIT); fetch the clone first"

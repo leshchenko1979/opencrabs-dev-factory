@@ -135,6 +135,18 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$RPATH" ] && SRC_REPO_PATH="$RPATH"
 
+# factory #70: `.git` is a FILE in a LINKED WORKTREE, so `[ -d ]` dropped the
+# ENTIRE src half of the index. The classifier then resolved every `src/**`
+# claim against an index that never listed those paths and answered UNPINNED —
+# a wrong FACT produced by a right classifier reading an empty input. Ask git
+# for the src half the same way oc-issue-create does (single predicate family).
+gather_index() { # $1=skill repo, $2=src repo -> "skill\t<path>" / "src\t<path>" lines
+  git -C "$1" ls-files 2>/dev/null | sed 's/^/skill\t/'
+  git -C "$2" rev-parse --git-dir >/dev/null 2>&1 \
+    && git -C "$2" ls-files 2>/dev/null | sed 's/^/src\t/'
+  return 0   # a non-git src repo stays a SILENT skip, exactly as before
+}
+
 # --- selftest (tests the SHIPPED classifier by marker) ----------------------
 if [ "$MODE" = "selftest" ]; then
 python3 - "$0" <<'PYEOF'
@@ -284,16 +296,40 @@ ck('  an incidental name beside a path does NOT reach the claims list',
 print(f"\n{'='*30}\n  PASS: {ok}   FAIL: {bad}")
 sys.exit(1 if bad else 0)
 PYEOF
+_pyrc=$?
+# ---- factory #70: the GATHER is bash, so the python cases above cannot reach it
+# and this is its only coverage. A linked worktree used to drop every `src/` row
+# (`.git` is a FILE there): the classifier was right and its INPUT was empty.
+_gt="$(mktemp -d)"; _gf=0
+mkdir -p "$_gt/src" "$_gt/skill"
+for _r in src skill; do
+  git -C "$_gt/$_r" init -q 2>/dev/null
+  git -C "$_gt/$_r" config user.email t@t; git -C "$_gt/$_r" config user.name t
+done
+: > "$_gt/src/main.rs"; git -C "$_gt/src" add main.rs; git -C "$_gt/src" commit -q -m base
+: > "$_gt/skill/SKILL.md"; git -C "$_gt/skill" add SKILL.md; git -C "$_gt/skill" commit -q -m base
+git -C "$_gt/src" worktree add -q "$_gt/src-wt" -b wt70 >/dev/null 2>&1
+# vacuity guard: the fixture must BE the shape under test
+[ -f "$_gt/src-wt/.git" ] && [ ! -d "$_gt/src-wt/.git" ] || { echo "  FAIL gather: worktree fixture is not a gitdir FILE"; _gf=$((_gf+1)); }
+# (a) a WORKTREE src repo contributes its `src` rows
+_gi="$(gather_index "$_gt/skill" "$_gt/src-wt")"
+printf '%s\n' "$_gi" | grep -qxF "$(printf 'src\tmain.rs')" || { echo "  FAIL gather: worktree src rows missing"; _gf=$((_gf+1)); }
+printf '%s\n' "$_gi" | grep -qxF "$(printf 'skill\tSKILL.md')" || { echo "  FAIL gather: skill rows missing"; _gf=$((_gf+1)); }
+# (b) CONTROL: a non-git src repo stays a SILENT skip (no src rows, no error)
+mkdir -p "$_gt/notgit"
+_gi="$(gather_index "$_gt/skill" "$_gt/notgit" 2>&1)"
+printf '%s\n' "$_gi" | grep -q '^src	' && { echo "  FAIL gather: non-git src contributed rows"; _gf=$((_gf+1)); }
+printf '%s\n' "$_gi" | grep -qxF "$(printf 'skill\tSKILL.md')" || { echo "  FAIL gather: non-git control lost the skill half"; _gf=$((_gf+1)); }
+rm -rf "$_gt"
+[ "$_gf" -eq 0 ] && echo "gather selftest: PASS"
+[ "$_pyrc" -eq 0 ] && [ "$_gf" -eq 0 ]
 exit $?
 fi
 
 # --- gather -----------------------------------------------------------------
 command -v gh >/dev/null 2>&1 || { echo "oc-issue-scope: gh not found" >&2; exit 3; }
 TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"; oc_log_finish $?' EXIT
-{
-  git -C "$SKILL_REPO_PATH" ls-files 2>/dev/null | sed 's/^/skill\t/'
-  [ -d "$SRC_REPO_PATH/.git" ] && git -C "$SRC_REPO_PATH" ls-files 2>/dev/null | sed 's/^/src\t/'
-} > "$TMPD/index"
+gather_index "$SKILL_REPO_PATH" "$SRC_REPO_PATH" > "$TMPD/index"
 [ -s "$TMPD/index" ] || { echo "oc-issue-scope: no tracked paths (skill=$SKILL_REPO_PATH src=$SRC_REPO_PATH)" >&2; exit 3; }
 
 if [ "$MODE" = "open" ]; then

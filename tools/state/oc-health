@@ -134,6 +134,27 @@ OCPY
 fi
 
 # ---- selftest --------------------------------------------------------------
+# --- "is this path a git checkout?" (factory #70) -----------------------------
+# `[ -d "$p/.git" ]` answers FALSE for a LINKED WORKTREE: there `.git` is a small
+# ASCII FILE holding `gitdir: …`, not a directory, so a perfectly valid checkout
+# read as absent — and check 2 then counted a MEASUREMENT FAILURE (rc 3) for it.
+# git's own predicate is the only correct test for a repo we are about to RUN git
+# in, and it is cheap beside the `git status` walk that follows it.
+is_git_checkout() { git -C "${1:-}" rev-parse --git-dir >/dev/null 2>&1; }
+
+# --- "is this path SHAPED like a checkout?" (check 2 only, factory #70) -------
+# Check 2 ENUMERATES directories on disk to find LEFTOVER worktrees, and a
+# leftover is exactly a dir whose `.git` pointer no longer resolves (its admin
+# dir was pruned). `is_git_checkout` would therefore be the WRONG predicate here
+# — it would answer false for the very class the check exists to report. The
+# shape test is the right one: a `.git` DIRECTORY, or a `.git` FILE that is
+# really a `gitdir:` pointer. That is also what `[ -e ]` got wrong (it accepted
+# any stray file named `.git`).
+is_checkout_shaped() {
+  [ -d "${1:-}/.git" ] && return 0
+  [ -f "${1:-}/.git" ] && grep -q '^gitdir:' "$1/.git" 2>/dev/null
+}
+
 selftest_impl() {
   set -u
   T="$(mktemp -d)"
@@ -171,7 +192,7 @@ selftest_impl() {
 
   run() {
     OC_HEALTH_STATE="$T/state" OC_HEALTH_TMP_GLOB="$T/tmp/oc-*" OC_HEALTH_TMP2_GLOB="$T/tmp2/tmp.*" OC_HEALTH_TMP3_GLOB="$T/tmp3/tmp.*" OC_HEALTH_DB="$T/db.sqlite" \
-    OC_HEALTH_SKILL_DIR="$T/skill" OC_HEALTH_FORK="$T/fork" OC_HEALTH_WT_PATTERNS="$T/wt/*" \
+    OC_HEALTH_SKILL_DIR="$T/skill" OC_HEALTH_FORK="${FORK_OVERRIDE:-$T/fork}" OC_HEALTH_WT_PATTERNS="$T/wt/*" \
     OC_HEALTH_LOG="$T/tools.log" OC_HEALTH_DAEMON_LOG_DIR="$T/logs" OC_HEALTH_DETACHED_DIR="$T/detached" \
     OC_HEALTH_DISK_PCT="${DISK_PCT_OVERRIDE:-10}" \
     OC_HEALTH_ROTATION_FILE="$T/state/health-rotation.json" OC_HEALTH_SKIP_VERSION=1 \
@@ -367,6 +388,42 @@ print(m.group(1) if m else "none")
   case "$OUT" in *"worktree-tracked-deleted"*) bad "git_vcs-wt-deletion-staged-flagged: $OUT" ;; *) ok ;; esac
   git -C "$T/fork" worktree remove --force "$T/wt/lanedel" >/dev/null 2>&1
   chk "git_vcs-wt-deletion-fixture-removed" "true" "$([ -d "$T/wt/lanedel" ] && echo false || echo true)"
+
+  # 9c. factory #70: `[ -d "$x/.git" ]` is NOT "is this a git checkout". In a
+  #     LINKED WORKTREE `.git` is a 62-byte ASCII FILE holding `gitdir: …`, so the
+  #     old predicate answered FALSE and check 2 counted a MEASUREMENT FAILURE
+  #     (rc 3) for a perfectly valid fork. POSITIVE CONTROL: the same sweep with
+  #     FORK pointed at a linked worktree must be rc 0 and must still run checks
+  #     2/18/6. NEGATIVE CONTROL: a plain directory must keep failing loudly.
+  git -C "$T/fork" worktree add -q "$T/wt/linked" -b linked70 >/dev/null 2>&1
+  chk "git70-linked-fixture-is-a-gitdir-FILE" "file" \
+    "$([ -f "$T/wt/linked/.git" ] && [ ! -d "$T/wt/linked/.git" ] && echo file || echo other)"
+  RC=0; OUT="$(FORK_OVERRIDE="$T/wt/linked" run --class git_vcs 2>&1)" || RC=$?
+  chk "git70-worktree-fork-not-a-measurement-failure" 0 "$RC"
+  # check 2 must have RUN (it prints the registered/on-disk line) — a guard that
+  # silently skipped would also be rc 0, so the line is the discriminator.
+  case "$OUT" in *"worktrees: "*"registered"*) ok ;; *) bad "git70-worktree-fork-check-ran: $OUT" ;; esac
+  # check 18 walks EVERY registered tree of EVERY repo it can open; with the fork
+  # as a worktree that is fork+linked+skill = 3. The old `-d` guard dropped the
+  # fork's two, so this count is the leg that pins the check-18 guard.
+  case "$OUT" in *"3 registered tree(s), 0 unstaged deletions"*) ok ;; *) bad "git70-worktree-fork-scan-count: $OUT" ;; esac
+  # NEGATIVE CONTROL: a directory that is NOT a checkout still fails loudly.
+  mkdir -p "$T/notgit70"
+  RC=0; OUT="$(FORK_OVERRIDE="$T/notgit70" run --class git_vcs 2>&1)" || RC=$?
+  chk "git70-non-git-fork-still-a-measurement-failure" 3 "$RC"
+  # 9d. factory #70, the `-e` half: check 2 enumerates dirs that are SHAPED like a
+  #     checkout, because a LEFTOVER worktree's pointer no longer resolves and
+  #     `git rev-parse` would answer false for the class the check exists for.
+  #     `[ -e ]` accepted ANY file, so a stray non-pointer `.git` counted as an
+  #     on-disk worktree and manufactured an orphan. POSITIVE: a real pointer file
+  #     (a live linked worktree) still counts. NEGATIVE: a junk `.git` file does not.
+  mkdir -p "$T/wt/stray70"; printf 'not a gitdir\n' > "$T/wt/stray70/.git"
+  RC=0; OUT="$(run --class git_vcs 2>&1)" || RC=$?
+  chk "git70-stray-git-file-not-an-orphan" 0 "$RC"
+  case "$OUT" in *"orphan-worktrees"*) bad "git70-stray-git-file-counted-as-ondisk: $OUT" ;; *) ok ;; esac
+  case "$OUT" in *"1 on disk"*) ok ;; *) bad "git70-linked-counted-on-disk: $OUT" ;; esac
+  rm -rf "$T/wt/stray70"
+  git -C "$T/fork" worktree remove --force "$T/wt/linked" >/dev/null 2>&1
 
   # 10. Class: schedulers — DM leak detection
   "$TOOLS_DIR/lib/oc_sqlite" "$T/db.sqlite" "UPDATE cron_jobs SET deliver_to='telegram:133526395' WHERE name='oc-roster-detached-sweep';"
@@ -961,14 +1018,14 @@ fi
 # =============================================================================
 if is_class_active "git_vcs"; then
   # 2. Orphaned / unregistered worktrees
-  if [ -d "$FORK/.git" ]; then
+  if is_git_checkout "$FORK"; then
     reg="$( { git -C "$FORK" worktree list 2>/dev/null | tail -n +2 | awk '{print $1}'; \
-              [ -d "$SKILL_CHECK/.git" ] && git -C "$SKILL_CHECK" worktree list 2>/dev/null | tail -n +2 | awk '{print $1}'; } | sort -u )"
+              is_git_checkout "$SKILL_CHECK" && git -C "$SKILL_CHECK" worktree list 2>/dev/null | tail -n +2 | awk '{print $1}'; } | sort -u )"
     n_reg="$(printf '%s\n' "$reg" | grep -c . || true)"
     ondisk_list=()
     for p in $WT_PATTERNS; do
       [ -d "$p" ] || continue
-      [ -e "$p/.git" ] || continue
+      is_checkout_shaped "$p" || continue
       ondisk_list+=("$p")
     done
     ondisk="$(printf '%s\n' "${ondisk_list[@]}" | sort -u)"
@@ -1006,7 +1063,7 @@ if is_class_active "git_vcs"; then
   [ "$SKILL_CHECK" = "$FORK" ] || _wrepos="$FORK $SKILL_CHECK"
   wt_scanned=0; wt_del_trees=0; wt_del_files=0; wt_del_sample=""
   for _wrepo in $_wrepos; do
-    [ -d "$_wrepo/.git" ] || continue
+    is_git_checkout "$_wrepo" || continue
     while IFS= read -r _wt; do
       [ -n "$_wt" ] || continue
       [ -d "$_wt" ] || continue
@@ -1029,7 +1086,7 @@ EOF_WT
   fi
 
   # 6. Shared checkout cleanliness & divergence
-  if [ -d "$SKILL_CHECK/.git" ]; then
+  if is_git_checkout "$SKILL_CHECK"; then
     dirty="$(git -C "$SKILL_CHECK" status --porcelain 2>/dev/null | wc -l)"
     if [ "$dirty" -gt 0 ]; then
       files="$(git -C "$SKILL_CHECK" status --porcelain 2>/dev/null | head -5 | awk '{print $2}' | tr '\n' ' ')"

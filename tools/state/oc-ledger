@@ -239,6 +239,16 @@ parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
 }
 STATE_DIR() { dirname "$LEDGER"; }
 
+# --- "is this path a git checkout?" (factory #70) -----------------------------
+# `[ -d "$sd/.git" ]` answers FALSE for a LINKED WORKTREE: there `.git` is a small
+# ASCII FILE holding `gitdir: …`, not a directory. Every site below either RUNS
+# git in the path or skips work when it cannot, so a worktree read as "no repo"
+# and the whole state/skill tail silently no-oped (audit printed SKIPPED, commits
+# deferred, pushes dropped, the stray-guard went INERT — the last one being the
+# v0.4.157 defect itself, reachable again from any worktree SKILL_DIR).
+# The sites keep their OWN failure modes: this is a predicate, not a behaviour
+# helper, so a guard still skips and a precondition still aborts.
+_is_git_repo() { git -C "${1:-}" rev-parse --git-dir >/dev/null 2>&1; }
 ledger_ok() { [ -f "$LEDGER" ] && jq -e . "$LEDGER" >/dev/null 2>&1; }
 max_n() { jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER"; }
 # _is_uuid (#441, DRY extraction): the ONE uuid-shape predicate. ack/enroll/
@@ -479,7 +489,7 @@ EOF
 # WARN-only and rc 0 always — same posture and same reason as state_tracked_audit.
 state_out_of_scope_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
   local sd; sd="$(STATE_DIR)"
-  if [ ! -d "$sd/.git" ]; then
+  if ! _is_git_repo "$sd"; then
     echo "state-out-of-scope: NOTE — inverse check SKIPPED: $sd is not a git repo. This is NOT a clean result and NOT a finding." >&2
     return 0
   fi
@@ -597,7 +607,7 @@ _oc_flush_git_tail() { # runs AFTER $LEDGER.lock is released; never fatal
 
 _git_state_commit_now() { # $1=message — the commit/sweep/push tail itself; never fatal
   local sd; sd="$(STATE_DIR)"
-  [ -d "$sd/.git" ] || return 0
+  _is_git_repo "$sd" || return 0
   if git -C "$sd" add "$(basename "$LEDGER")" 2>/dev/null \
      && git -C "$sd" commit -q -m "$1" 2>/dev/null; then
     # n=1744 hygiene: echo the auto-commit sha — a caller claiming "state commit
@@ -641,7 +651,7 @@ push_mirror() { # $1=repo dir, $2=label — off-box durability tail step (v0.4.5
   # then-name `opencrabs-skill`; it was RENAMED to `opencrabs-dev-factory`
   # 2026-10-03, so the citation is updated to the live slug.)
   local dir="$1" name="$2"
-  [ -d "$dir/.git" ] || return 0
+  _is_git_repo "$dir" || return 0
   git -C "$dir" remote get-url origin >/dev/null 2>&1 || return 0
   local out rc
   # Timeout-bounded because the backlog hook runs INSIDE the ledger lock: a
@@ -682,7 +692,7 @@ push_backlog_if_due() { # $1=repo dir, $2=label — inside lock; never fatal
   # up to date — costs one rev-list and returns before push_mirror is reached.
   # Posture stays push_mirror's: durability, never a gate.
   local dir="$1" name="$2"
-  [ -d "$dir/.git" ] || return 0
+  _is_git_repo "$dir" || return 0
   git -C "$dir" remote get-url origin >/dev/null 2>&1 || return 0
   # No upstream configured = nothing to measure against (silent no-op).
   git -C "$dir" rev-parse --verify -q '@{u}' >/dev/null 2>&1 || return 0
@@ -1572,7 +1582,7 @@ cmd_sync() {
   # created at all - a bump tag still never points at a tree missing payload.
   # Exempt: the version docs (SKILL.md, CHANGELOG.md) and the battery receipt,
   # which IS this bump's evidence (the gate above just read it).
-  if [ -d "$SKILL_DIR/.git" ] && [ "$allow_sweep" -ne 1 ]; then
+  if _is_git_repo "$SKILL_DIR" && [ "$allow_sweep" -ne 1 ]; then
     local stray
     stray="$(git -C "$SKILL_DIR" status --porcelain | sed 's/^...//' \
       | grep -vE '^(SKILL\.md|CHANGELOG\.md|tools/tests/battery-last\.json|tools/tests/battery-last-fail\.log)$' || true)"
@@ -1595,7 +1605,7 @@ cmd_sync() {
   # FULL working tree, never a hardcoded doc list — a bump tag must never
   # point at a tree missing its payload files. Swept non-doc payload is named
   # LOUDLY on stderr so the sweep is visible in tools.log, never silent.
-  if [ -d "$SKILL_DIR/.git" ]; then
+  if _is_git_repo "$SKILL_DIR"; then
     ( cd "$SKILL_DIR" || exit 1
       # v0.4.157: the old filter matched `^(.. )?` against a `p" "$0` render, but
       # porcelain emits a ONE-char status for a worktree modification (" M SKILL.md"),
@@ -2111,7 +2121,7 @@ cmd_commit_pending() {
   local sd; sd="$(STATE_DIR)"; local did=0 failed=0 _cp_errs=''
   STATE_SWEEP_ERR=''
   # state repo: ledger first
-  if [ -d "$sd/.git" ]; then
+  if _is_git_repo "$sd"; then
     local head_n disk_n
     disk_n="$(jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER" 2>/dev/null || echo 0)"
     head_n="$(git -C "$sd" show HEAD:workers-ledger.json 2>/dev/null | jq '([.events[]? | .n // 0] | max // 0)' 2>/dev/null || echo "$disk_n")"
@@ -2139,7 +2149,7 @@ cmd_commit_pending() {
     fi
   fi
   # skill repo: whitelisted runtime artifacts only (never doc edits)
-  if [ "$bundle" -eq 1 ] && [ -d "$SKILL_DIR/.git" ]; then
+  if [ "$bundle" -eq 1 ] && _is_git_repo "$SKILL_DIR"; then
     local hits=""
     for p in $RUNTIME_ARTIFACTS; do
       [ -n "$(git -C "$SKILL_DIR" status --porcelain -- "$p" 2>/dev/null)" ] && hits="$hits $p"
@@ -2996,7 +3006,11 @@ FIXTURE
   # is unreachable by every commit path, so it can be DELETED and the sanctioned
   # verb still reports success (measured live on runs/in-flight/<uuid>.json).
   chk "state-out-of-scope-single-source" "1" "$(grep -c '^state_out_of_scope_audit()' "$ME")"
-  awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" > "$T/scope_fn.sh"
+  # the extracted function calls _is_git_repo, so the harness must carry it too --
+  # a snippet sourced WITHOUT its helper makes every arm below report SKIPPED and
+  # the assertions then measure a fixture that never ran (measured #70: 4 arms).
+  awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$T/scope_fn.sh"
+  awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" >> "$T/scope_fn.sh"
   # STATE_DIR is a FUNCTION in the tool, so the harness supplies its own.
   _scope() { SD="$1" STATE_TRACKED_PATHS="$STATE_TRACKED_PATHS" STATE_TRACKED_GLOB="$STATE_TRACKED_GLOB" \
     bash -c 'STATE_DIR() { printf "%s\n" "$SD"; }; . '"$T"'/scope_fn.sh; state_out_of_scope_audit' 2>&1; }
@@ -3196,7 +3210,8 @@ FIXTURE
   # disclosure leg that reads the source would pass on a message never printed.
   chk "push-fetches-before-push" "1" \
     "$(awk '/^push_mirror\(\)/,/^}$/' "$ME" | grep -c 'fetch -q origin')"
-  awk '/^push_mirror\(\)/,/^}$/' "$ME" > "$T/pm_fn.sh"
+  awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$T/pm_fn.sh"   # push_mirror calls it
+  awk '/^push_mirror\(\)/,/^}$/' "$ME" >> "$T/pm_fn.sh"
   _p655dir="$T/push655"
   rm -rf "$P"; mkdir -p "$P"
   git init -q --bare "$_p655dir/origin.git"
@@ -4486,6 +4501,105 @@ SHIMEOF
   chk "a1b-label-ambient-stays-silent" "true" \
     "$(grep -q 'NOT the ambient session' <<< "$_a1o" && echo false || echo true)"
   rm -rf "$A1T"
+
+  # ---- factory #70: a LINKED WORKTREE is a git checkout ----------------------
+  # `.git` is a FILE there, so `[ -d "$x/.git" ]` answered FALSE and every
+  # state/skill tail silently no-oped. One leg per FUNCTION FAMILY, each paired
+  # with the non-git control that must KEEP skipping — without the control an arm
+  # passes vacuously on a tool whose predicate never runs.
+  #
+  # This block builds its OWN root. The shared $T is rm -rf'd by an earlier
+  # block, so a fixture pointed into it tests a nonexistent path and every arm
+  # reddens for the wrong reason (measured on the first run: 15 arms, all
+  # "cannot change to .../state").
+  W70="$(mktemp -d)"; mkdir -p "$W70/state" "$W70/skill/tools/tests"
+  : > "$W70/skill/tools/tests/.keep"
+  cat > "$W70/state/workers-ledger.json" <<EOF
+{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}
+EOF
+  printf 'name: fixture\nversion: 0.4.2\n---\n# fixture\n' > "$W70/skill/SKILL.md"
+  printf '# fixture changelog\n' > "$W70/skill/CHANGELOG.md"
+  printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$W70/skill/tools/tests/battery-last.json"
+  for _r in "$W70/state" "$W70/skill"; do
+    git -C "$_r" init -q 2>/dev/null
+    git -C "$_r" config user.email t@t; git -C "$_r" config user.name t
+    git -C "$_r" add -A; git -C "$_r" commit -q -m base
+  done
+  export OC_LEDGER="$W70/state/workers-ledger.json" OC_SKILL_DIR="$W70/skill" OC_DEPLOY_STATE_DIR="$W70/state"
+  # The scope harness sources ONE extracted function, and that function calls
+  # _is_git_repo — so the snippet must carry the helper. Without it every call
+  # returns 127, the SKIP branch fires on EVERY path, and the four #540 arms
+  # measure a fixture that never ran.
+  eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
+  eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
+  awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$W70/scope_fn.sh"
+  awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" >> "$W70/scope_fn.sh"
+  chk "git70-scope-harness-carries-the-helper" "1" "$(grep -c '^_is_git_repo()' "$W70/scope_fn.sh")"
+  _scope70() { SD="$1" STATE_TRACKED_PATHS="$STATE_TRACKED_PATHS" STATE_TRACKED_GLOB="$STATE_TRACKED_GLOB" \
+    bash -c 'STATE_DIR() { printf "%s\n" "$SD"; }; . '"$W70"'/scope_fn.sh; state_out_of_scope_audit' 2>&1; }
+
+  git -C "$W70/state" worktree add -q "$W70/state-wt" -b wt70state >/dev/null 2>&1
+  chk "git70-state-wt-fixture-is-a-gitdir-FILE" "file" \
+    "$([ -f "$W70/state-wt/.git" ] && [ ! -d "$W70/state-wt/.git" ] && echo file || echo other)"
+  # (a) state_out_of_scope_audit — the SKIP note must NOT appear for a worktree.
+  _sout="$(_scope70 "$W70/state-wt")"
+  grep -q 'SKIPPED' <<< "$_sout" && bad "git70-audit-worktree-skipped" || ok
+  # control: a plain directory STILL skips, and still says it is not a clean result.
+  mkdir -p "$W70/notgit"
+  _sout="$(_scope70 "$W70/notgit")"
+  grep -q 'SKIPPED' <<< "$_sout" && ok || bad "git70-audit-nongit-still-skips"
+  # (b) _git_state_commit_now — a stamp in a worktree state dir must COMMIT.
+  _wt0="$(git -C "$W70/state-wt" rev-parse HEAD)"
+  _wtout="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" bash "$ME" stamp note "git70 worktree commit" 2>&1)"
+  case "$_wtout" in *"git: state commit ok"*) ok ;; *) bad "git70-state-commit-in-worktree: $_wtout" ;; esac
+  [ "$(git -C "$W70/state-wt" rev-parse HEAD)" != "$_wt0" ] && ok || bad "git70-state-commit-head-moved"
+  # (c) commit-pending in a worktree state dir — the sweep must COMMIT, and its
+  #     mirror tail must PUSH (covers push_mirror, whose guard is the same test).
+  git init -q --bare "$W70/state-origin.git"
+  git -C "$W70/state-wt" remote add origin "$W70/state-origin.git" 2>/dev/null
+  git -C "$W70/state-wt" push -q -u origin HEAD >/dev/null 2>&1
+  jq '.events += [{"n": 9901, "t": "x", "by": "tool", "kind": "note", "what": "git70-wt"}]' \
+    "$W70/state-wt/workers-ledger.json" > "$W70/d70.json" && mv "$W70/d70.json" "$W70/state-wt/workers-ledger.json"
+  _wt1="$(git -C "$W70/state-wt" rev-parse HEAD)"
+  _cpo="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" bash "$ME" commit-pending 2>&1)"; _cprc=$?
+  chk "git70-commit-pending-worktree-rc" 0 "$_cprc"
+  [ "$(git -C "$W70/state-wt" rev-parse HEAD)" != "$_wt1" ] && ok || bad "git70-commit-pending-worktree-committed"
+  case "$_cpo" in *"mirror: state pushed"*) ok ;; *) bad "git70-push-mirror-worktree: $_cpo" ;; esac
+  # the bare repo's HEAD still names the default branch (master), which the push
+  # never created — assert the PUSHED branch carries the local tip instead.
+  [ "$(git -C "$W70/state-origin.git" rev-parse --verify -q refs/heads/wt70state 2>/dev/null)" \
+    = "$(git -C "$W70/state-wt" rev-parse HEAD)" ] && ok || bad "git70-push-mirror-received"
+  # (d) push_backlog_if_due — forced with OC_LEDGER_PUSH_MIN=1, because its default
+  #     10-commit threshold would return before the guard could matter.
+  _blout="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" OC_LEDGER_PUSH_MIN=1 bash "$ME" stamp note "git70 backlog" 2>&1)"
+  case "$_blout" in *"mirror-due: state"*) ok ;; *) bad "git70-push-backlog-worktree: $_blout" ;; esac
+  # (e) the sync family — with SKILL_DIR a WORKTREE the stray-guard must FIRE and a
+  #     clean bump must COMMIT into the worktree. This is the v0.4.157 defect
+  #     reachable again from any worktree: the guard read "no repo" and went INERT.
+  git -C "$W70/skill" worktree add -q "$W70/skill-wt" -b wt70skill >/dev/null 2>&1
+  chk "git70-skill-wt-fixture-is-a-gitdir-FILE" "file" \
+    "$([ -f "$W70/skill-wt/.git" ] && [ ! -d "$W70/skill-wt/.git" ] && echo file || echo other)"
+  _cur="$(jq -r '.current_skill_version // "0.4.0"' "$OC_LEDGER")"
+  _nxt="$(printf '%s' "$_cur" | awk -F. '{printf "%s.%s.%s", $1, $2, $3+1}')"
+  printf '\n## v%s\nworktree receipt\n' "$_nxt" >> "$W70/skill-wt/CHANGELOG.md"
+  printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$W70/skill-wt/tools/tests/battery-last.json"
+  echo "wt-stray" > "$W70/skill-wt/tools/wt-stray-probe.sh"
+  _wts_out="$(OC_SKILL_DIR="$W70/skill-wt" bash "$ME" sync --version "$_nxt" --why git70-stray 2>&1)"; _wts_rc=$?
+  chk "git70-sync-worktree-stray-refused" 7 "$_wts_rc"
+  case "$_wts_out" in *"wt-stray-probe.sh"*) ok ;; *) bad "git70-sync-worktree-stray-names-path: $_wts_out" ;; esac
+  rm -f "$W70/skill-wt/tools/wt-stray-probe.sh"
+  _wth0="$(git -C "$W70/skill-wt" rev-parse HEAD)"
+  OC_SKILL_DIR="$W70/skill-wt" bash "$ME" sync --version "$_nxt" --why git70-bump >"$W70/wtbump.out" 2>&1
+  chk "git70-sync-worktree-bump-rc" 0 $?
+  [ "$(git -C "$W70/skill-wt" rev-parse HEAD)" != "$_wth0" ] && ok || bad "git70-sync-worktree-bump-committed"
+  git -C "$W70/skill-wt" log -1 --format=%s | grep -q "skill v$_nxt" && ok || bad "git70-sync-worktree-bump-subject"
+  # (f) the SKILL half of commit-pending --bundle — same predicate, second home.
+  printf '{"verdict":"PASS","fail":0,"ts":"%s","probe":"bundle70"}\n' "$(now_iso)" > "$W70/skill-wt/tools/tests/battery-last.json"
+  _bo="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" OC_SKILL_DIR="$W70/skill-wt" bash "$ME" commit-pending --bundle 2>&1)"
+  case "$_bo" in *"runtime artifacts committed"*) ok ;; *) bad "git70-bundle-worktree-skill: $_bo" ;; esac
+  # a failing sync must be diagnosable, so its log is shown when it reddens
+  [ -s "$W70/wtbump.out" ] || bad "git70-sync-worktree-bump-log-empty"
+  rm -rf "$W70"
 
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
