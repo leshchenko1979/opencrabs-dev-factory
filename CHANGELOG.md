@@ -1,5 +1,41 @@
 # Changelog — opencrabs-dev
 
+## v0.4.322 — four leg-hygiene clauses land in `editor-smoke.md §Smoke-verdict rules`
+
+**What forced it.** c29's accepted set carried four subjects whose only landing slot was
+`editor-smoke.md §Smoke-verdict rules`, and none had landed. That section is what a lane reads
+*before* it produces a verdict, so its gaps are paid for at the next smoke rather than at review
+time: every one of the four is a way a leg measures nothing and returns a clean reading anyway.
+
+**Landed — four subjects, text carried from `dispositions.md` §2, not re-derived:**
+
+- **S23** (lane `2ed8adeb`) — an issue carrying N distinct observables needs N legs, and a PASS on
+  one leg discharges only its own observable; a verdict that stamps the probeable one and leaves the
+  other on presence evidence is `PARTIAL`, and a parked leg with a closed issue is a contradiction
+  L2 already forbids. Plus the arity half: an **idempotent-prefix** fix is never discharged by
+  presence evidence or a substring match, because `strings <binary>` and `content LIKE '%marker%'`
+  both pass on a doubled, tripled or mis-positioned marker. Measured on #904, where the guard tested
+  position 0 of a string that begins with the sender prefix — DMs passed, group chats doubled.
+- **S24** (lane `2ed8adeb`) — a presence probe must name its instrument's **visibility class** and
+  carry a positive control. `nm`/`objdump` on a stripped binary return zero symbols, so a zero read
+  as "feature missing" when the instrument was blind.
+- **S25** (lane `6cd8175f`) — new clause **(f)**: a surface emitted from more than one branch owes
+  the BRANCH, not just the feature, because a sibling branch returns a same-named artifact with the
+  defect absent and the probe could not have failed. Carries its own non-duplication note against
+  (d) (artifact AGE, not branch identity) and against condition (3) (session TYPE — #821's probe was
+  a cron session probing a cron feature: right type, wrong branch).
+- **S26** (lane `530c29ec`) — an internal store is not the delivered artifact: prove the store
+  carries the delivered bytes before reading a verdict out of it. Trap (a) a column only a test
+  writes, so the query is vacuous in production and empty reads as "feature absent"; trap (b) the
+  stored text is the INPUT where a normalisation pass sits between store and delivery, so the
+  receipt for a rendering change is the platform's own copy, never the app's row.
+
+**Scope, stated so the record is not read as more than it is.** Four subjects, one section. The
+balance of c29's accepted set is still owed and is not claimed here.
+
+**Lint:** `oc-lint-laws` rc 0 — "clean — every oc-* invocation in the law corpus resolves against its
+tool (3 documented-absent citation(s) skipped)".
+
 ## v0.4.321 — Duty 4's intake contract was the defect: six clusters of c29's intake land
 
 **What forced it.** `a5eed495` committed **74 seconds after** the v0.4.320 sync, so it landed outside
