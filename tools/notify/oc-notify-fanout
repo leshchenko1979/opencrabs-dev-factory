@@ -545,6 +545,32 @@ JSON
     *"ACK after drift-check"*) chk 1 "reload-line-carries-no-second-ack (brief still prescribes a second ack)" ;;
     *) chk 0 reload-line-carries-no-second-ack ;;
   esac
+  # RESOLVABILITY (tool poll 2026-11-20, 3 lanes). The two assertions above pass on
+  # a brief that prescribes the BARE `oc-drift-check`, which no lane can run: it is
+  # not on PATH (`which` -> rc 1) and the fleet lives under tools/<group>/. That is
+  # the D-5 blind spot in a new coat — a well-formed invocation is not a runnable
+  # one — so assert the prescribed command RESOLVES, not that it reads correctly.
+  _reload_cmd=""
+  for _w in $A_B; do
+    case "$_w" in */oc-drift-check) _reload_cmd="$_w"; break ;; esac
+  done
+  if [ -n "$_reload_cmd" ] && [ -x "$_reload_cmd" ]; then
+    chk 0 reload-line-names-an-executable
+  else
+    chk 1 "reload-line-names-an-executable (prescribes '${_reload_cmd:-<no command word>}', which does not resolve)"
+  fi
+  # CONTROL: the extraction must RED on the PRE-FIX shape. Without this the leg
+  # would pass on any brief at all, since a path-shaped token is what it looks for.
+  _pre="RELOAD: run oc-drift-check ${L1} --ack, re-read changed files."
+  _pre_cmd=""
+  for _w in $_pre; do
+    case "$_w" in */oc-drift-check) _pre_cmd="$_w"; break ;; esac
+  done
+  if [ -n "$_pre_cmd" ]; then
+    chk 1 "reload-executable-control (the pre-fix bare form read as a resolvable path)"
+  else
+    chk 0 reload-executable-control
+  fi
 
   # LAW 10 (defect #5, 2026-09-12): partial delivery surfaced + per-send bound.
   # 10a. --verify diffs the per-attempt manifest against .sent receipts:
@@ -1158,7 +1184,16 @@ while IFS=$'\t' read -r uuid role topic wstate; do
   # rows in the audit). This emitter taught the retired instruction to every
   # lane from v0.4.123 until the defect was reported by lane a5b34466. The
   # RELOAD line alone is canonical; never append a second ack verb.
-  brief="${brief} RELOAD: run oc-drift-check ${uuid} --ack, re-read changed files."
+  # RESOLVABILITY (tool poll 2026-11-20: 3 lanes burned a turn on this). The line
+  # used to prescribe the BARE name `oc-drift-check`, which is not on PATH
+  # (`which oc-drift-check` -> rc 1; the fleet lives under tools/<group>/, never
+  # installed). Every lane that obeyed the footer got "command not found", and the
+  # selftest was blind to it because it asserted the line MENTIONS the right form:
+  # a well-formed invocation is not a runnable one, the same blind spot D-5 records
+  # above. Emit the ABSOLUTE path, which resolves from any cwd — a lane's cwd is its
+  # own worktree, not the skill root, so a root-relative path would only move the
+  # defect one directory over.
+  brief="${brief} RELOAD: run ${SKILL_DIR}/tools/state/oc-drift-check ${uuid} --ack, re-read changed files."
   case "$brief" in *'{{'*'}}'*)
     receipts+="ABORT ${uuid} ${role} placeholder-token-survived-substitution(law1)"$'\n'
     failed=$((failed+1)); continue ;;
