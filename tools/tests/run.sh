@@ -617,7 +617,7 @@ emit_summary() {
   [ "$_changed" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
   note ""
   note "=============================="
-  note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE)"
+  note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE${BATTERY_PIDS_CAP_NOTE:+, pids: $BATTERY_PIDS_CAP_NOTE})"
   battery_timing_lines
   note "=============================="
   [ "$FAIL" -eq 0 ] || note "tests FAILED (nonzero exit below)"
@@ -4421,34 +4421,20 @@ else
   fi
 fi
 
+# #111: ONE receipt writer. Everything below used to be a hand-copied duplicate of
+# emit_summary() -- the same 17-field printf, already divergent in two ways: this
+# copy disclosed the pids cap on its summary line and the function did not, and
+# it ended on a bare test instead of returning the verdict, so the two paths could
+# disagree about the exit code. Any field added to one silently desynced the
+# other. emit_summary() is now the only writer; what remains here is the part it
+# does NOT do -- seal the last section's interval, and reap this run's mirror
+# churn BEFORE the summary so the count lands inside the block a reader actually
+# looks at (#53; the EXIT trap repeats the call for the early-exit path, where it
+# finds nothing and prints nothing).
 battery_seal_sections
-
-verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
-finalize_fail_log
-battery_capture_fail_rows
-_tch=false
-_tch=false
-_tch=false
-_fp_tail="$(_battery_tree_fp)"
-[ "$_fp_tail" = "$BATTERY_FP_START" ] || _tch=true
 BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
-printf '{\n  "path": "%s",\n  "ts": "%s",\n  "pass": %d,\n  "fail": %d,\n  "verdict": "%s",\n  "mode": "%s",\n  "pids_max": "%s",\n  "pids_cap": "%s",\n  "fail_log": "%s",\n  "fail_rows": %s,\n  "fail_rows_truncated": %s,\n  "tree_changed": %s,\n  "cgroup": "%s",\n  "cgroup_isolated": %s,\n  "nice": "%s",\n  "ioprio": "%s",\n  "wall_ms": %s,\n  "timing": %s\n}\n' \
-  "$TOOLS_DIR/tests/battery-last.json" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PASS" "$FAIL" "$verdict" "$BATTERY_MODE" \
-  "${BATTERY_PIDS_MAX:-}" "${BATTERY_PIDS_CAP_NOTE:-}" "$FAIL_LOG_FIELD" \
-  "$FAIL_ROWS_JSON" "$FAIL_ROWS_TRUNC" "$_tch" "$BATTERY_SELF_CGROUP" "$BATTERY_SELF_CGROUP_ISO" "${BATTERY_NICE:-}" "${BATTERY_IOPRIO:-}" "$BATTERY_WALL_MS" "$BATTERY_SECTIONS_JSON" \
-  > "$TOOLS_DIR/tests/battery-last.json"
-[ "$_tch" = false ] || note "  WARNING: the tools tree CHANGED during this run — a red here may describe the edit, not the tool; re-run on a quiet tree"
-
-# Reap this run's own mirror churn BEFORE the summary so the count lands inside
-# the summary block a reader actually looks at (#53). The EXIT trap repeats the
-# call for the early-exit path; by then it finds nothing and prints nothing.
 _battery_reap_mirrors
-
-# ---- summary ----------------------------------------------------------------
-note ""
-note "=============================="
-note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE${BATTERY_PIDS_CAP_NOTE:+, pids: $BATTERY_PIDS_CAP_NOTE})"
-battery_timing_lines
-note "=============================="
-[ "$FAIL" -eq 0 ] || note "tests FAILED (nonzero exit below)"
-[ "$FAIL" -eq 0 ]
+emit_summary
+_rc=$?
+[ "${BATTERY_SECTIONS_TMP:-0}" = "1" ] && rm -f "${BATTERY_SECTIONS_TSV:-}"
+exit "$_rc"
