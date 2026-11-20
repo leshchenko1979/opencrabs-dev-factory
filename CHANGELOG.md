@@ -61,6 +61,25 @@ state-repo HIGHs are routed, not landed here — one version batch per owner, ne
 mega-commit. The MEMORY shrink that brain-scrub-1/2 owe is a protected-file shrink and needs owner
 approval; a pointer to the new skill homes was appended instead.
 
+**Bundled tool fixes (seven, all Toolsmith's — named here because `tools/**` sits outside
+`LAW_FILES`, so no bump is owed and this entry is the only place their ship date exists).**
+`84f82975` replaces 11 `printf | grep -q` sites with herestrings: `grep -q` exits on first match,
+the upstream `printf` takes SIGPIPE, and under `pipefail` that reds a guard that actually passed —
+a silent false failure in the battery itself (T-43). `49c35766` makes `oc-smoke --close` refuse a
+probe-less PASS, closing the hole where a bookkeeping-only verdict could close an issue
+([factory#96](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/96)). `e9f72ba1` gives
+`oc-ledger` a `mode` verb, because 34 rows mention `MODE:` and exactly one is a declaration — the
+rest are commentary about it
+([factory#97](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/97)). `8b72f0d2` stops
+one detached `oc-prchecks` invocation writing two indistinguishable journal rows
+([factory#98](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/98)). `416c9cb1` pins
+`oc-questions`' log key so a renamed copy cannot journal an unattributable tool
+([factory#99](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/99)). `6d3dedb5`
+implements the title-twin half of `oc-upstream-delta`'s absorbed verdict
+([factory#100](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/100)). `9a70dcb4` gives
+`oc-wt add` an `--adopt` arm, so a lane that already has its tree can re-enter it
+([factory#101](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/101)).
+
 ## v0.4.319 — the c29 meta-review's three HIGH findings, all of them in HQ's own law
 
 **What forced it.** Cycle `20261119-c29`'s Reviewer I — the lens whose object is the review machinery itself — returned 3 HIGH / 6 MED, and every HIGH landed on a file this lane writes. Each was verified against bytes before it was acted on, and two of the three were defects this lane had put there itself.
