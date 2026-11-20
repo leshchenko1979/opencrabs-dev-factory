@@ -11,13 +11,18 @@
 #
 # Usage:
 #   oc-upstream-delta [--repo P] [--fork-origin R] [--upstream R] [--json] [--no-log]
+#                      [--with-twin|--no-twin]
 #   oc-upstream-delta --selftest      offline fixtures (local remotes only)
 #
 # Output: TSV lines on stdout —
 #   BASE <sha7> / AHEAD <n> / BEHIND <n>
 #   C <sha7> <subject>          (BEHIND list first, then AHEAD list)
-#   ABSORBED-CANDIDATE <fork-sha7> <upstream-sha7>   (patch-id match)
-# Human summary on stderr: "clean" or "delta ahead=N behind=M absorbed=K".
+#   ABSORBED-CANDIDATE <fork-sha7> <upstream-sha7> <patch-id|title-twin>
+#       (absorbed per upstream-merge-runbook.md: same patch, OR the same title)
+#       --with-twin is DEFAULT ON; --no-twin restores the patch-id-only verdict.
+# Human summary on stderr: "clean" or "delta ahead=N behind=M absorbed=P+T",
+#   where P is the patch-id count and T the title-twin count (both named, because
+#   a single K cannot say whether the weak signal is what fired).
 #
 # Exit: 0 clean (0/0) / 1 delta present / 2 usage / 3 fetch-or-git failure
 # =============================================================================
@@ -37,10 +42,12 @@ REPO="${HOME}/opencrabs"
 FORK_REMOTE="origin"
 UP_REMOTE="adolfousier"
 JSON_OUT=0
+WITH_TWIN=1   # runbook verdict is "patch-id OR title-twin" -> ON by default
 
 usage() {
   cat >&2 <<EOS
 Usage: $PROG [--repo P] [--fork-origin R] [--upstream R] [--json] [--no-log]
+          [--with-twin|--no-twin]
 Exit: 0 clean / 1 delta (verdict) / 2 usage / 3 fetch-or-git failure
 EOS
   exit 2
@@ -132,6 +139,48 @@ do_selftest() {
   else t_bad "non-absorbed false positive (rc=$RC)"; fi
   rm -rf "$F"
 
+  # 6b. TITLE-TWIN ONLY: the SAME subject over a DIFFERENT diff. patch-id cannot
+  # match (the bytes differ), so the runbook's second test is the only evidence
+  # -- this is the leg that fails if the twin half is ever dropped.
+  F="$(mkfix)"
+  echo upstream-variant > "$F/w/f.txt"; git -C "$F/w" commit -qam "feat: shared feature X"
+  git -C "$F/w" push -q adolfousier main
+  git -C "$F/w" reset -q --hard HEAD~1
+  echo fork-variant > "$F/w/f.txt"; git -C "$F/w" commit -qam "feat: shared feature X"
+  git -C "$F/w" push -q origin main
+  OUT="$(OC_TOOLS_NOLOG=1 "$SELF" --repo "$F/w" 2>"$D/err6b")"; RC=$?
+  if [ "$RC" -eq 1 ] \
+     && grep -qE "^ABSORBED-CANDIDATE	[a-f0-9]{7}	[a-f0-9]{7}	title-twin$" <<< "$OUT" \
+     && ! grep -qE "^ABSORBED-CANDIDATE	[a-f0-9]{7}	[a-f0-9]{7}	patch-id$" <<< "$OUT" ; then
+    t_ok "title-twin-only pair -> ABSORBED-CANDIDATE ... title-twin"
+  else t_bad "title-twin-only (rc=$RC out=$OUT)"; fi
+  if grep -q "absorbed=0+1" "$D/err6b"; then
+    t_ok "summary names both components (absorbed=0+1)"
+  else t_bad "summary components (err=$(cat "$D/err6b"))"; fi
+
+  # 6c. --no-twin restores the patch-id-only verdict on the SAME fixture: with the
+  # weak signal off this commit is a SURVIVOR, so no candidate row may appear.
+  OUT="$(OC_TOOLS_NOLOG=1 "$SELF" --repo "$F/w" --no-twin 2>/dev/null)"; RC=$?
+  if [ "$RC" -eq 1 ] && ! grep -q "^ABSORBED-CANDIDATE" <<< "$OUT" ; then
+    t_ok "--no-twin -> no twin candidate"
+  else t_bad "--no-twin leaked a candidate (rc=$RC out=$OUT)"; fi
+
+  rm -rf "$F"
+
+  # 6d. NEGATIVE CONTROL for the eligibility filter: identical TRIVIAL subject
+  # (`wip`) over different diffs must NOT pair -- a subject that short collides by
+  # accident, and pairing it would DROP real work. Its OWN fixture: $F above has
+  # already diverged from its fork remote.
+  F="$(mkfix)"
+  echo wip-up > "$F/w/f.txt"; git -C "$F/w" commit -qam "wip"; git -C "$F/w" push -q adolfousier main
+  git -C "$F/w" reset -q --hard HEAD~1
+  echo wip-fork > "$F/w/f.txt"; git -C "$F/w" commit -qam "wip"; git -C "$F/w" push -q origin main
+  OUT="$(OC_TOOLS_NOLOG=1 "$SELF" --repo "$F/w" 2>/dev/null)"; RC=$?
+  if [ "$RC" -eq 1 ] && ! grep -q "^ABSORBED-CANDIDATE" <<< "$OUT" ; then
+    t_ok "trivial subject (wip) -> no twin candidate"
+  else t_bad "trivial subject paired (rc=$RC out=$OUT)"; fi
+  rm -rf "$F"
+
   # 7. missing remote -> 3
   F="$(mkfix)"
   git -C "$F/w" remote remove adolfousier
@@ -179,8 +228,10 @@ while [ $# -gt 0 ]; do
     --fork-origin) shift; FORK_REMOTE="${1:-}"; [ -n "$FORK_REMOTE" ] || usage ;;
     --upstream)    shift; UP_REMOTE="${1:-}"; [ -n "$UP_REMOTE" ] || usage ;;
     --json)        JSON_OUT=1 ;;
+    --with-twin)   WITH_TWIN=1 ;;
+    --no-twin)     WITH_TWIN=0 ;;
     --no-log)      : ;;
-    -h|--help)     echo "usage: oc-upstream-delta [--repo <path>] [--fork-origin R] [--upstream R] [--json]"; echo "Exit: 0 clean / 1 delta (verdict) / 2 usage / 3 fetch-or-git failure"; exit 0 ;;  # C-#3: help=0
+    -h|--help)     echo "usage: oc-upstream-delta [--repo <path>] [--fork-origin R] [--upstream R] [--json] [--with-twin|--no-twin]"; echo "Exit: 0 clean / 1 delta (verdict) / 2 usage / 3 fetch-or-git failure"; exit 0 ;;  # C-#3: help=0
     *)             usage ;;
   esac
   shift
@@ -221,55 +272,116 @@ if [ "$JSON_OUT" -eq 0 ]; then
   emit_commits "$UP_REF..$FORK_REF" ahead    # our fork-only delta
 fi
 
-# ---------- ABSORBED-CANDIDATE via patch-id (skip when nothing to compare) -----
-ABSORBED=0
+# ---------- ABSORBED-CANDIDATE (patch-id OR title-twin; skip when nothing to compare) -----
+# LAW (upstream-merge-runbook.md §Port, the verdict table): a fork-only commit is
+# `absorbed` when its patch-id matches an upstream commit OR its TITLE is a twin
+# of one. Patch-id alone misses the case the runbook exists for: upstream
+# re-applies our patch through a rebase, so context lines move, the patch-id
+# changes, and the commit reads as a SURVIVOR that is already upstream — the
+# expensive direction, because a survivor gets ported and conflicts against work
+# that already landed.
+#
+# The twin test is deliberately STRICT (exact subject after normalisation) and
+# is a WEAKER signal than patch-id, so:
+#   - patch-id is tried FIRST and wins; a commit is counted ONCE, never twice;
+#   - normalisation is limited to whitespace collapse, trailing whitespace, and
+#     a squash-merge `(#N)` suffix. Case is NOT folded and no fuzzy distance is
+#     used: under-matching leaves a survivor (cheap, the human verdict catches
+#     it), over-matching DROPs a commit whose work is not upstream at all.
+#   - trivial subjects are not eligible to be twins (`wip`, `fixup!`, `squash!`,
+#     merge commits, anything under 8 characters): those collide by accident.
+norm_title() {
+  printf '%s' "$1" | sed -e 's/[[:space:]]\{1,\}/ /g' \
+                          -e 's/^[[:space:]]*//' \
+                          -e 's/[[:space:]]*$//' \
+                          -e 's/[[:space:]]*(#[0-9]\{1,\})$//'
+}
+twin_eligible() {
+  case "$1" in ''|wip|WIP|fixup!*|squash!*|Merge\ *|merge\ *) return 1 ;; esac
+  [ "${#1}" -ge 8 ] || return 1
+  return 0
+}
+ABSORBED_P=0
+ABSORBED_T=0
 ABSORBED_PAIRS=""
 if [ "$AHEAD" -gt 0 ] && [ "$BEHIND" -gt 0 ]; then
-  UP_IDS="$(mktemp)"
+  UP_IDS="$(mktemp)"; UP_TITLES="$(mktemp)"; AHEAD_LIST="$(mktemp)"
   "$GIT_BIN" -C "$REPO" rev-list "$FORK_REF..$UP_REF" | while read -r c; do
     pid="$("$GIT_BIN" -C "$REPO" show "$c" 2>/dev/null | "$GIT_BIN" patch-id --stable 2>/dev/null | awk '{print $1}')"
     [ -n "$pid" ] && printf '%s\t%s\n' "$pid" "$c"
   done > "$UP_IDS"
-  if [ -s "$UP_IDS" ]; then
-    for c in $("$GIT_BIN" -C "$REPO" rev-list "$UP_REF..$FORK_REF"); do
-      pid="$("$GIT_BIN" -C "$REPO" show "$c" 2>/dev/null | "$GIT_BIN" patch-id --stable 2>/dev/null | awk '{print $1}')"
-      [ -n "$pid" ] || continue
-      twin="$(awk -F'\t' -v p="$pid" '$1==p {print $2; exit}' "$UP_IDS")"
+  if [ "$WITH_TWIN" = "1" ]; then
+    "$GIT_BIN" -C "$REPO" log --format='%H%x09%s' "$FORK_REF..$UP_REF" 2>/dev/null \
+      | while IFS="$(printf '\t')" read -r _us _ut; do
+          [ -n "${_us:-}" ] || continue
+          _n="$(norm_title "${_ut:-}")"
+          twin_eligible "$_n" || continue
+          printf '%s\t%s\n' "$_n" "$_us"
+        done > "$UP_TITLES"
+  fi
+  "$GIT_BIN" -C "$REPO" log --format='%H%x09%s' "$UP_REF..$FORK_REF" 2>/dev/null > "$AHEAD_LIST"
+  if [ -s "$AHEAD_LIST" ]; then
+    while IFS="$(printf '\t')" read -r c subj; do
+      [ -n "$c" ] || continue
+      twin=""; evidence=""
+      if [ -s "$UP_IDS" ]; then
+        pid="$("$GIT_BIN" -C "$REPO" show "$c" 2>/dev/null | "$GIT_BIN" patch-id --stable 2>/dev/null | awk '{print $1}')"
+        if [ -n "$pid" ]; then
+          twin="$(awk -F'\t' -v p="$pid" '$1==p {print $2; exit}' "$UP_IDS")"
+          [ -n "$twin" ] && evidence="patch-id"
+        fi
+      fi
+      if [ -z "$twin" ] && [ "$WITH_TWIN" = "1" ] && [ -s "$UP_TITLES" ]; then
+        _n="$(norm_title "${subj:-}")"
+        if twin_eligible "$_n"; then
+          twin="$(awk -F'\t' -v t="$_n" '$1==t {print $2; exit}' "$UP_TITLES")"
+          [ -n "$twin" ] && evidence="title-twin"
+        fi
+      fi
       if [ -n "$twin" ]; then
         if [ "$JSON_OUT" -eq 0 ]; then
-          printf 'ABSORBED-CANDIDATE\t%s\t%s\n' "${c:0:7}" "${twin:0:7}"
+          printf 'ABSORBED-CANDIDATE\t%s\t%s\t%s\n' "${c:0:7}" "${twin:0:7}" "$evidence"
         fi
-        ABSORBED_PAIRS="${ABSORBED_PAIRS}${c:0:7}:${twin:0:7} "
-        ABSORBED=$((ABSORBED+1))
+        ABSORBED_PAIRS="${ABSORBED_PAIRS}${c:0:7}:${twin:0:7}:${evidence} "
+        case "$evidence" in
+          patch-id)   ABSORBED_P=$((ABSORBED_P+1)) ;;
+          title-twin) ABSORBED_T=$((ABSORBED_T+1)) ;;
+        esac
       fi
-    done
+    done < "$AHEAD_LIST"
   fi
-  rm -f "$UP_IDS"
+  rm -f "$UP_IDS" "$UP_TITLES" "$AHEAD_LIST"
 fi
+ABSORBED=$((ABSORBED_P+ABSORBED_T))
 
 if [ "$JSON_OUT" -eq 1 ]; then
   python3 -c '
 import json, sys
-base, ahead, behind, absorbed, pairs = sys.argv[1:6]
+base, ahead, behind, absorbed, ap, at, pairs = sys.argv[1:8]
 p_list = [p.split(":") for p in pairs.split() if p]
 print(json.dumps({
     "base": base,
     "ahead": int(ahead),
     "behind": int(behind),
     "absorbed": int(absorbed),
-    "absorbed_candidates": [{"fork_sha": f, "upstream_sha": u} for f, u in p_list]
+    "absorbed_patchid": int(ap),
+    "absorbed_twin": int(at),
+    "absorbed_candidates": [{"fork_sha": f, "upstream_sha": u, "evidence": e}
+                            for f, u, e in p_list]
 }))
-' "${BASE:0:7}" "$AHEAD" "$BEHIND" "$ABSORBED" "$ABSORBED_PAIRS"
+' "${BASE:0:7}" "$AHEAD" "$BEHIND" "$ABSORBED" "$ABSORBED_P" "$ABSORBED_T" "$ABSORBED_PAIRS"
 fi
 
 oc_log_extra "base" "${BASE:0:7}"
 oc_log_extra "ahead" "$AHEAD"
 oc_log_extra "behind" "$BEHIND"
 oc_log_extra "absorbed" "$ABSORBED"
+oc_log_extra "absorbed_patchid" "$ABSORBED_P"
+oc_log_extra "absorbed_twin" "$ABSORBED_T"
 
 if [ "$AHEAD" -eq 0 ] && [ "$BEHIND" -eq 0 ]; then
   echo "$PROG: clean (fork $FORK_REF at upstream merge point)" >&2
   exit 0
 fi
-echo "$PROG: delta ahead=$AHEAD behind=$BEHIND absorbed=$ABSORBED — PROPOSE/WAIT is HQ's call (owner-word gates)" >&2
+echo "$PROG: delta ahead=$AHEAD behind=$BEHIND absorbed=$ABSORBED_P+$ABSORBED_T — PROPOSE/WAIT is HQ's call (owner-word gates)" >&2
 exit 1
