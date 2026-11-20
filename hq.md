@@ -185,9 +185,17 @@ What STAYS at this factory, because it is process law about US and not about the
   own instant. A read taken inside the window is a T0 receipt, never the intake. A provisional zero
   is never written as the cycle's verdict — an empty read before the poll answers "nobody has
   replied yet", not "nobody had anything to say".
-- **The census counts PROPOSALS, not files** (2026-11-19). Every count over a `proposals/`
-  directory is a count of `^## P[0-9]+` headings, never of `*.md` files: one lane file routinely
-  carries several proposals, and a file count under-reports the intake by construction.
+- **The census counts PROPOSALS, not files — and a regex is a FLOOR, never the census**
+  (2026-11-19; refined 2026-11-20). Every count over a `proposals/` directory counts proposal
+  HEADINGS, never `*.md` files: one lane file routinely carries several proposals, and a file count
+  under-reports the intake by construction. But no heading predicate is the census either. Lanes
+  write at least four shapes — `## P1 —`, `## P-1 CHANGE`, `## 1. CHANGE —`, `## Proposal 1` — and
+  a numeric predicate ALSO matches section headings that are not proposals
+  (`## 3. The re-runnable measurement`). Measured on c29's 32 files: `^## P[0-9]+` → **42**,
+  `^## (P-?[0-9]+|[0-9]+[.)])` → **62**, `*.md` files → **32**, resolved subject census → **47**.
+  So: run the widest predicate as a FLOOR, RESOLVE the census by reading, and record BOTH figures
+  with the delta. A floor presented alone reads as the census; a broad predicate presented alone
+  over-counts by headings that are not proposals.
 - **Landing discipline: see §Duty 6 — ONE version batch, no design gate, no plan card, no owner
   approval; a fix whose owner is elsewhere is ROUTED and recorded as routed.**
 - **Checkable Completion Formula**: `DONE = the poll was ISSUED and its row's instant recorded + the authoritative intake read POSTDATES that instant + every PROPOSAL in the census (counted as proposals, never as files) is read + each finding re-verified first-hand (an unreproduced finding is NOT a finding) + every accepted finding landed in a version batch SHIPPED AFTER the intake OR recorded as routed with its owner named + registry notes updated.`
