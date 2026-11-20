@@ -474,11 +474,9 @@ run_selftest() {
   # rows-based assertion: a python expression over `rows` exits 0/1
   chk() {
     local l="$1" expr="$2"
-    python3 -c "
-import json,sys
-rows=[json.loads(x) for x in open('$D/out.json') if x.strip()]
-$expr
-" 2>/dev/null && t_ok "$l" || t_bad "$l"
+    python3 -c 'import json,sys
+rows=[json.loads(x) for x in open(sys.argv[1]) if x.strip()]
+exec(sys.argv[2])' "$D/out.json" "$expr" 2>/dev/null && t_ok "$l" || t_bad "$l"
   }
 
   # ---- fixture: every leg has a pass arm and a red arm ---------------------
@@ -569,10 +567,9 @@ sys.exit(0 if m=={"a":"2026-09-25T22:33:06Z","b":"2026-10-05T10:19:00Z","c":"202
 
   # ---- ACCEPTANCE 2: --boundary overrides AND the override is visible -----
   "$SELF" --fixture "$D/f.json" --json --leg a --boundary leg=a:2026-10-09T00:00:00Z > "$D/ovr.json" 2>/dev/null
-  python3 -c "
-import json,sys
-r=[json.loads(l) for l in open('$D/ovr.json') if l.strip()][0]
-sys.exit(0 if r['leg']=='a' and r['boundary']=='2026-10-09T00:00:00Z' and r['boundary_source']=='override' and r['population']==8 else 1)" 2>/dev/null
+  python3 -c 'import json,sys
+r=[json.loads(l) for l in open(sys.argv[1]) if l.strip()][0]
+sys.exit(0 if r["leg"]=="a" and r["boundary"]=="2026-10-09T00:00:00Z" and r["boundary_source"]=="override" and r["population"]==8 else 1)' "$D/ovr.json" 2>/dev/null
   ck "override is applied and named in the row (population follows it)" [ "$?" -eq 0 ]
   # Capture THEN grep: the tool exits 1 on findings and `set -o pipefail` makes
   # the pipeline inherit that rc, so `tool | grep -q` reports a MATCH as a miss.
@@ -609,10 +606,9 @@ sys.exit(0 if g["flagged"]==[5] and g["with_same_tracker_root"]==2 else 1)'
 g=[r for r in rows if r["leg"]=="c"][0]
 sys.exit(0 if 6 not in g["flagged"] else 1)'
   "$SELF" --fixture "$D/noroot.json" --json --leg c > "$D/nr.json" 2>/dev/null
-  python3 -c "
-import json,sys
-r=[json.loads(l) for l in open('$D/nr.json') if l.strip()][0]
-sys.exit(0 if r['leg']=='c' and r['flagged']==[] and r['vacuous'] and r['vacuous']['count']==2 else 1)" 2>/dev/null
+  python3 -c 'import json,sys
+r=[json.loads(l) for l in open(sys.argv[1]) if l.strip()][0]
+sys.exit(0 if r["leg"]=="c" and r["flagged"]==[] and r["vacuous"] and r["vacuous"]["count"]==2 else 1)' "$D/nr.json" 2>/dev/null
   ck "leg c: no same-tracker root -> VACUOUS, never a clean 0" [ "$?" -eq 0 ]
   "$SELF" --fixture "$D/noroot.json" --leg c > "$D/vac" 2>/dev/null
   grep -q 'VACUOUS' "$D/vac"
