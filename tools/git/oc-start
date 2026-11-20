@@ -12,7 +12,7 @@
 #
 # Usage:
 #   oc-start <issue> --branch <branch> [--task <task>] [--base REF]
-#            [--repo P] [--no-log]
+#            [--repo P] [--adopt] [--no-log]
 #   oc-start --selftest          offline fixture repo (no network)
 #
 # Defaults: --task = branch slug part (<type>/<slug> -> <slug>, truncated to
@@ -25,6 +25,10 @@
 #       3 claim refused (oc-ledger non-zero — row printed on stderr)
 #       4 branch create failed (already exists or bad base ref)
 #       5 worktree add failed (oc-wt non-zero — BEHIND_BASE gate etc.)
+# T-4 --adopt: the branch AND its tree already exist (the lane ran oc-wt first,
+# or a previous run died between steps). Step 0 stops refusing, step 2 stops
+# creating, step 3 attaches via `oc-wt add --adopt` — and a worktree failure no
+# longer rolls back a branch this run did not create. Adoption never destroys.
 # On every failure the tool prints the EXACT resume command (self-explaining
 # exits: the lane never memorizes recovery — it runs what the tool printed).
 # =============================================================================
@@ -63,6 +67,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error answers 2 on STDE
   [ -n "${1:-}" ] && echo "oc-start: $1" >&2
   cat >&$fd <<EOS
 usage: $0 <issue-N> --branch <type>/<slug> [--task <task>] [--base REF] [--repo P]
+            [--adopt]
        $0 --selftest
 Exit: 0 STARTED / 2 usage / 3 claim-refused / 4 branch-fail / 5 worktree-fail
 STARTED names the tree resolved by lib/oc-wt-resolve.sh — the same predicate
@@ -146,6 +151,35 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
     t_ok "#429 control: untracked task reports the create path"
   else t_bad "#429 control (rc=$RC; want worktree=$HOME/opencrabs-wt/fresh-two)"; fi
 
+  # 10. T-4 end-to-end: branch AND tree already exist (the lane ran oc-wt first,
+  #     159 same-actor pairs did exactly that within 60s). --adopt must claim,
+  #     attach, and report the resolved tree WITHOUT touching its bytes.
+  git -C "$D/repo" branch feat/adopt-me HEAD
+  env OC_TOOLS_NOLOG=1 "$_SELF_DIR/git/oc-wt" add adopt-me feat/adopt-me --repo "$D/repo" >/dev/null 2>&1
+  echo marker > "$HOME/opencrabs-wt/adopt-me/MARKER"
+  : > "$D/calls.log"
+  OUT="$(R 130 --branch feat/adopt-me --adopt 2>&1)"; RC=$?
+  if [ "$RC" -eq 0 ] && grep -q "STARTED worktree=$HOME/opencrabs-wt/adopt-me" <<< "$OUT" \
+     && [ -f "$HOME/opencrabs-wt/adopt-me/MARKER" ] && grep -q "130" "$D/calls.log" 2>/dev/null; then
+    t_ok "T-4 --adopt end-to-end: claims, attaches, reports the tree, leaves it alone"
+  else t_bad "T-4 --adopt e2e (rc=$RC out=$OUT marker=$( [ -f "$HOME/opencrabs-wt/adopt-me/MARKER" ] && echo kept || echo GONE))"; fi
+
+  # 11. T-4 control: the SAME state WITHOUT --adopt still stops at 4 — and the
+  #     resume line it prints is the --adopt form, so the printed remedy works.
+  OUT="$(R 131 --branch feat/adopt-me 2>&1)"; RC=$?
+  if [ "$RC" -eq 4 ] && grep -q -- "--adopt" <<< "$OUT" && ! grep -q "oc-wt add" <<< "$OUT"; then
+    t_ok "T-4 control: existing branch without --adopt -> 4 naming the --adopt resume"
+  else t_bad "T-4 control (rc=$RC out=$OUT)"; fi
+
+  # 12. T-4 adoption never destroys: a failing oc-wt under --adopt must NOT roll
+  #     back a branch this run did not create (the pre-T-4 path deleted it).
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$D/wt-fail"; chmod +x "$D/wt-fail"
+  OUT="$(OC_START_WT_BIN="$D/wt-fail" R 132 --branch feat/adopt-me --adopt 2>&1)"; RC=$?
+  if [ "$RC" -eq 5 ] && git -C "$D/repo" rev-parse --verify --quiet "refs/heads/feat/adopt-me" >/dev/null \
+     && ! grep -q "Rolling back" <<< "$OUT"; then
+    t_ok "T-4 adopt failure leaves the branch ALONE (no rollback of a foreign branch)"
+  else t_bad "T-4 adopt no-rollback (rc=$RC out=$OUT)"; fi
+
   echo "selftest: $pass passed, $fail failed"
   [ "$fail" -eq 0 ]; _rc=$?
   rm -rf "$D"
@@ -154,13 +188,14 @@ if [ "${1:-}" = "--selftest" ] || [ "${1:-}" = "selftest" ]; then
   exit "$_rc"
 fi
 
-ISSUE=""; BRANCH=""; TASK=""
+ISSUE=""; BRANCH=""; TASK=""; ADOPT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --branch) BRANCH="${2:-}"; [ -n "$BRANCH" ] || usage "empty --branch"; shift 2 ;;
     --task) TASK="${2:-}"; [ -n "$TASK" ] || usage "empty --task"; shift 2 ;;
     --base) BASE="${2:-}"; [ -n "$BASE" ] || usage "empty --base"; shift 2 ;;
     --repo) REPO="${2:-}"; [ -n "$REPO" ] || usage "empty --repo"; shift 2 ;;
+    --adopt) ADOPT=1; shift ;;
     --no-log) shift ;;
     -h|--help) usage "" 0 ;;
     -*) usage "unknown flag '$1'" ;;
@@ -178,14 +213,21 @@ printf '%s' "$TASK" | grep -Eq '^[a-z0-9][a-z0-9-]{0,40}$' \
 
 # ---- step 0: git pre-flight (verify repo & base ref, ensure branch does not exist) ---
 [ -d "$REPO" ] || usage "repo directory not found: $REPO"
-"$GIT_BIN" -C "$REPO" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null && {
-  echo "$PROG: branch '$BRANCH' already exists — refusing to clobber." >&2
-  echo "  resume: oc-wt add $TASK $BRANCH --repo $REPO   (branch is yours, just attach the tree)" >&2
-  exit 4; }
-"$GIT_BIN" -C "$REPO" rev-parse --verify --quiet "$BASE" >/dev/null || {
-  echo "$PROG: base ref '$BASE' not found in $REPO." >&2
-  echo "  resume: git -C $REPO fetch origin && oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO" >&2
-  exit 4; }
+if "$GIT_BIN" -C "$REPO" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
+  if [ "$ADOPT" -eq 1 ]; then
+    echo "$PROG: branch '$BRANCH' already exists — adopting it and its tree (--adopt, nothing created)." >&2
+  else
+    echo "$PROG: branch '$BRANCH' already exists — refusing to clobber." >&2
+    echo "  resume: oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO --adopt   (branch is yours, just attach the tree)" >&2
+    exit 4
+  fi
+fi
+if [ "$ADOPT" -eq 0 ]; then
+  "$GIT_BIN" -C "$REPO" rev-parse --verify --quiet "$BASE" >/dev/null || {
+    echo "$PROG: base ref '$BASE' not found in $REPO." >&2
+    echo "  resume: git -C $REPO fetch origin && oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO" >&2
+    exit 4; }
+fi
 
 # ---- step 1: claim ----------------------------------------------------------
 CLAIM_ARGS=(claim --issue "$ISSUE" --what "CLAIM #$ISSUE — editor start branch=$BRANCH")
@@ -200,17 +242,25 @@ if ! "$LEDGER_BIN" "${CLAIM_ARGS[@]}" 2>&1; then
 fi
 
 # ---- step 2: create branch (lane named it, tool executes — oc-wt posture) ---
-"$GIT_BIN" -C "$REPO" branch "$BRANCH" "$BASE" 2>&1 || {
-  echo "$PROG: branch create failed: $BRANCH from $BASE." >&2
-  echo "  resume: oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO" >&2
-  exit 4; }
+if [ "$ADOPT" -eq 0 ]; then
+  "$GIT_BIN" -C "$REPO" branch "$BRANCH" "$BASE" 2>&1 || {
+    echo "$PROG: branch create failed: $BRANCH from $BASE." >&2
+    echo "  resume: oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO" >&2
+    exit 4; }
+fi
 
 # ---- step 3: worktree -------------------------------------------------------
-if ! "$WT_BIN" add "$TASK" "$BRANCH" --repo "$REPO" 2>&1; then
+WT_ADOPT=()
+[ "$ADOPT" -eq 1 ] && WT_ADOPT=(--adopt)
+if ! "$WT_BIN" add "$TASK" "$BRANCH" --repo "$REPO" "${WT_ADOPT[@]}" 2>&1; then
   echo "$PROG: WORKTREE FAILED (see oc-wt line above — behind-base gate etc.)." >&2
-  echo "  Rolling back branch $BRANCH..." >&2
-  "$GIT_BIN" -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1 || true
-  echo "  resume: oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO" >&2
+  if [ "$ADOPT" -eq 0 ]; then
+    echo "  Rolling back branch $BRANCH..." >&2
+    "$GIT_BIN" -C "$REPO" branch -D "$BRANCH" >/dev/null 2>&1 || true
+  else
+    echo "  Branch $BRANCH left ALONE — --adopt never deletes what it did not create." >&2
+  fi
+  echo "  resume: oc-start $ISSUE --branch $BRANCH --task $TASK --repo $REPO$([ "$ADOPT" -eq 1 ] && printf ' --adopt')" >&2
   exit 5
 fi
 

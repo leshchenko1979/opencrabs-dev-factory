@@ -20,11 +20,21 @@
 #
 # Usage:
 #   oc-wt add <task> <branch> [--base origin/main] [--create [--from REF]] [--force] [--repo P] [--no-log]
+#   oc-wt add <task> <branch> --adopt   (attach to the tree that is ALREADY there)
 #   gate base: --create --from REF (no explicit --base) compares against REF — the
 #              branch's actual lineage (n=1747); explicit --base always wins.
 #   oc-wt remove <task> [--force] [--repo P] [--no-log]
 #   oc-wt list [--repo P] [--no-log]     (lens C10, v0.4.65: task/branch/dirty TSV)
 #   oc-wt --selftest          offline fixture repo (no network)
+#
+# --adopt (T-4, 2026-11-20): an existing tree for this task is not an error, it
+#   is the state the caller wants. Plain `add` answered rc 3 "path exists" and
+#   the lane then ran a SECOND tool to get where it already was (measured: 159
+#   same-actor `oc-wt add` -> `oc-start` pairs within 60s). --adopt verifies the
+#   tree is a worktree of THIS repo, on the branch asked for, and hands back
+#   STARTED without fetching, pruning, re-gating or touching a byte. A tree on a
+#   DIFFERENT branch, or a plain directory that is not a worktree at all, is
+#   still refused: adopting is attaching to known state, never an assumption.
 #
 # Exit: 0 ok / 2 usage (slug, verb, args) / 3 add:path-exists · remove:dirty
 #       5 repo/branch not found
@@ -58,11 +68,13 @@ REPO="${HOME}/opencrabs"
 BASE="origin/main"; BASE_EXPLICIT=0
 FORCE=0
 CREATE=0
+ADOPT=0
 FROM=""; FROM_EXPLICIT=0
 
 help() {
   cat <<EOS
 Usage: $PROG add <task> <branch> [--base origin/main] [--create [--from REF]] [--force] [--repo P] [--no-log]
+       $PROG add <task> <branch> --adopt [--repo P] [--no-log]   # attach to an existing tree
        $PROG remove <task> [--force] [--repo P] [--no-log]
        $PROG list [--repo P] [--no-log]   # TSV: task path branch dirty-n
        $PROG --selftest
@@ -157,6 +169,45 @@ do_selftest() {
   rm -f "$D/tools.log"
   env OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$D/tools.log" "$SELF" remove t4 --force --repo "$D/repo" --no-log >/dev/null 2>&1
   [ ! -s "$D/tools.log" ] && t_ok "--no-log suppresses journal" || t_bad "--no-log leaked"
+
+  # 12b. T-4 --adopt: an existing tree is attachable, not an error. Create it
+  #      the normal way first, drop a marker in it, then adopt — the marker
+  #      proves adoption was a READ (no re-create, no checkout, no prune).
+  env OC_TOOLS_NOLOG=1 "$SELF" add t1 feat-x --repo "$D/repo" >/dev/null 2>&1 || true
+  echo marker > "$HOME/opencrabs-wt/t1/MARKER"
+  OUT="$(env OC_TOOLS_NOLOG=1 "$SELF" add t1 feat-x --adopt --repo "$D/repo" 2>&1)"; RC=$?
+  if [ "$RC" -eq 0 ] && grep -q "STARTED worktree=$HOME/opencrabs-wt/t1 branch=feat-x (adopted, nothing created)" <<< "$OUT" \
+     && [ -f "$HOME/opencrabs-wt/t1/MARKER" ]; then
+    t_ok "T-4 --adopt attaches to an existing tree, leaves its bytes alone"
+  else t_bad "T-4 --adopt (rc=$RC out=$OUT marker=$( [ -f "$HOME/opencrabs-wt/t1/MARKER" ] && echo kept || echo GONE))"; fi
+
+  # 12c. T-4 the non-adopt stop NAMES the remedy: the old line offered only
+  #      "remove it first", the one remedy that destroys the caller's own work.
+  OUT="$(env OC_TOOLS_NOLOG=1 "$SELF" add t1 feat-x --repo "$D/repo" 2>&1)"; RC=$?
+  if [ "$RC" -eq 3 ] && grep -q -- "--adopt" <<< "$OUT" && ! grep -q "remove it first" <<< "$OUT" ; then
+    t_ok "T-4 path-exists names --adopt as the remedy"
+  else t_bad "T-4 remedy text (rc=$RC out=$OUT)"; fi
+
+  # 12d. T-4 adopt REFUSES a tree on a different branch — attaching to someone
+  #      else's checkout is the failure a blind "it exists, fine" would ship.
+  OUT="$(env OC_TOOLS_NOLOG=1 "$SELF" add t1 feat-behind --adopt --repo "$D/repo" 2>&1)"; RC=$?
+  if [ "$RC" -eq 3 ] && grep -q "is on branch 'feat-x'" <<< "$OUT" ; then
+    t_ok "T-4 adopt refuses a tree on a different branch, naming it"
+  else t_bad "T-4 wrong-branch adopt (rc=$RC out=$OUT)"; fi
+
+  # 12e. T-4 adopt REFUSES a plain directory that is not a worktree of this repo.
+  mkdir -p "$HOME/opencrabs-wt/t-adopt-plain"
+  OUT="$(env OC_TOOLS_NOLOG=1 "$SELF" add t-adopt-plain feat-x --adopt --repo "$D/repo" 2>&1)"; RC=$?
+  if [ "$RC" -eq 3 ] && grep -q "NOT a worktree of" <<< "$OUT" ; then
+    t_ok "T-4 adopt refuses a plain directory (not a worktree)"
+  else t_bad "T-4 plain-dir adopt (rc=$RC out=$OUT)"; fi
+  rmdir "$HOME/opencrabs-wt/t-adopt-plain" 2>/dev/null || true
+
+  # 12f. T-4 adopt with NO tree names the create form (the other direction).
+  OUT="$(env OC_TOOLS_NOLOG=1 "$SELF" add t-adopt-none feat-x --adopt --repo "$D/repo" 2>&1)"; RC=$?
+  if [ "$RC" -eq 5 ] && grep -q "nothing to attach to" <<< "$OUT" ; then
+    t_ok "T-4 adopt with no tree -> 5 naming the create form"
+  else t_bad "T-4 no-tree adopt (rc=$RC out=$OUT)"; fi
 
   # 13. E8: --create escape hatch — branch created from --from, then normal add
   env OC_TOOLS_NOLOG=1 "$SELF" add t8 up/feat-new --create --from main --repo "$D/repo" >/dev/null 2>&1; RC=$?
@@ -351,6 +402,7 @@ while [ $# -gt 0 ]; do
     --create) CREATE=1 ;;   # E8 (v0.4.78): explicit escape hatch — create the branch first (never default)
     --from)  shift; FROM="${1:-}"; [ -n "$FROM" ] || usage; FROM_EXPLICIT=1 ;;   # E8: branch point for --create (default --base)
     --force) FORCE=1 ;;
+    --adopt) ADOPT=1 ;;   # T-4: attach to an existing tree instead of failing rc 3
     --repo)  shift; REPO="${1:-}"; [ -n "$REPO" ] || usage ;;
     --no-log) : ;;
     -*) usage "unknown flag: $1" ;;
@@ -386,9 +438,53 @@ if [ "$VERB" = "list" ]; then
   exit 0
 fi
 
+# T-4: which branch does a path carry, as a REGISTERED worktree of $REPO?
+# Empty = the path is not a worktree of this repo at all (a plain directory, or
+# a tree of some other checkout). "(detached)" is a real answer and must not be
+# confused with "not a worktree", so the two are distinguished here rather than
+# by testing the output for emptiness at the call site.
+worktree_branch_of() {
+  "$GIT_BIN" -C "$REPO" worktree list --porcelain 2>/dev/null | awk -v want="$1" '
+    /^worktree / { wt=substr($0,10) }
+    /^branch /   { if (wt==want) { b=substr($0,8); sub(/^refs\/heads\//,"",b); print b; found=1; exit } }
+    /^detached$/ { if (wt==want) { print "(detached)"; found=1; exit } }
+    END { if (!found) exit 1 }'
+}
+
 if [ "$VERB" = "add" ]; then
   [ -n "$BRANCH" ] || usage
   oc_log_extra "branch" "$BRANCH"; oc_log_extra "base" "$BASE"
+  # T-4 ADOPT: attach to the tree that is already there. Deliberately FIRST —
+  # no prune, no fetch, no branch/base validation, no behind-base gate. The gate
+  # guards CREATION, and nothing is being created; running it here would refuse
+  # to hand back a tree the caller already has. What IS verified is the thing a
+  # blind "it exists, fine" would miss: that the path really is a worktree of
+  # THIS repo and really carries the branch asked for.
+  if [ "$ADOPT" -eq 1 ]; then
+    [ -e "$WT" ] || {
+      echo "$PROG: --adopt: no worktree at $WT — nothing to attach to." >&2
+      echo "  create it: oc-wt add $TASK $BRANCH --repo $REPO   (drop --adopt)" >&2
+      exit 5; }
+    ADOPT_BR="$(worktree_branch_of "$WT")" || ADOPT_BR=""
+    if [ -z "$ADOPT_BR" ]; then
+      echo "$PROG: --adopt: $WT exists but is NOT a worktree of $REPO — refusing to adopt a plain directory." >&2
+      echo "  remove it: rm -rf $WT   (then: oc-wt add $TASK $BRANCH --repo $REPO)" >&2
+      exit 3
+    fi
+    if [ "$ADOPT_BR" = "(detached)" ]; then
+      echo "$PROG: --adopt: $WT is a DETACHED worktree — it carries no branch, so it cannot be '$BRANCH'." >&2
+      echo "  remove it: oc-wt remove $TASK --repo $REPO   (then: oc-wt add $TASK $BRANCH --repo $REPO)" >&2
+      exit 3
+    fi
+    if [ "$ADOPT_BR" != "$BRANCH" ]; then
+      echo "$PROG: --adopt: $WT is on branch '$ADOPT_BR', not '$BRANCH' — refusing (the tree is someone else's work)." >&2
+      echo "  adopt it as it is: oc-wt add $TASK $ADOPT_BR --adopt --repo $REPO" >&2
+      exit 3
+    fi
+    oc_log_extra "adopted" "$WT"
+    echo "STARTED worktree=$WT branch=$BRANCH (adopted, nothing created)"
+    exit 0
+  fi
   # 1. prune stale entries from crashed sessions — every time
   "$GIT_BIN" -C "$REPO" worktree prune 2>/dev/null || true
   # 2. fresh base (ref-only fetch) + branch validation
@@ -429,7 +525,15 @@ if [ "$VERB" = "add" ]; then
     fi
   fi
   # 3. add
-  [ -e "$WT" ] && { echo "$PROG: path exists: $WT (remove it first)" >&2; exit 3; }
+  if [ -e "$WT" ]; then
+    # T-4: the old line was "path exists: <path> (remove it first)" — true, and
+    # useless: the tree is usually the caller's OWN work, and "remove it first"
+    # is the one remedy that destroys it. Name both remedies, adoption first.
+    echo "$PROG: path exists: $WT — the tree is already there, nothing was created." >&2
+    echo "  attach to it:  oc-wt add $TASK $BRANCH --adopt --repo $REPO" >&2
+    echo "  or remove it:  oc-wt remove $TASK --repo $REPO" >&2
+    exit 3
+  fi
   "$GIT_BIN" -C "$REPO" worktree add "$WT" "$BRANCH" 2>&1 || { echo "$PROG: worktree add failed" >&2; exit 3; }
   BASE_SHA="$("$GIT_BIN" -C "$REPO" rev-parse "$BASE" 2>/dev/null)"
   echo "ADDED $WT branch=$BRANCH base=${BASE_SHA:0:7}"
