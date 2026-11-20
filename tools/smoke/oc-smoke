@@ -551,6 +551,39 @@ MBEOF
     t_bad "auto-check fallback (rc=$rc row=$row246c)"
   fi
 
+  # #70: a LINKED WORKTREE is a git checkout whose `.git` is a FILE, not a
+  # directory. A probe shaped `[ -d "$X/.git" ]` answers FALSE on it and
+  # silently degrades a real checkout to `unverified`; `rev-parse --git-dir`
+  # is the predicate that actually asks "is this a git checkout". This arm is
+  # the POSITIVE CONTROL for the fallback above — without it, that arm passes
+  # on a tool that never verifies anything at all.
+  git -C "$d/fork" worktree add -q -b wt673 "$d/wt" main
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 OC_FORK_REPO="$d/wt" \
+    "$0" 2463 --probe "echo probe-ok" 2>&1)" || rc=$?
+  row246d="$(grep 'issue=#2463' "$d/state/smoke-verdicts.log" | tail -n 1)"
+  if [ "$rc" -eq 0 ] && grep -q 'lineage=verified ' <<< "$row246d" ; then
+    t_ok "a LINKED WORKTREE is recognised as a checkout -> lineage verifies (#70)"
+  else
+    t_bad "linked-worktree lineage (rc=$rc row=$row246d)"
+  fi
+
+  # #70 NEGATIVE CONTROL: an EXISTING directory that is not a git checkout
+  # must still fall back to `unverified`. Paired with the arm above, this is
+  # what proves the predicate DISCRIMINATES instead of merely answering true.
+  mkdir -p "$d/notgit"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 OC_FORK_REPO="$d/notgit" \
+    "$0" 2464 --probe "echo probe-ok" 2>&1)" || rc=$?
+  row246e="$(grep 'issue=#2464' "$d/state/smoke-verdicts.log" | tail -n 1)"
+  if [ "$rc" -eq 0 ] && grep -q 'lineage=unverified ' <<< "$row246e" ; then
+    t_ok "an existing non-git dir still falls back to unverified (#70 control)"
+  else
+    t_bad "non-git control (rc=$rc row=$row246e)"
+  fi
+
   rc=0
   out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
@@ -1073,7 +1106,9 @@ fi
 #     stops under-claiming when it can do the check itself.
 if [ "$LINEAGE_DECLARED" -eq 0 ]; then
   LINEAGE="unverified"
-  if [ -d "$FORK_REPO/.git" ] || [ -f "$FORK_REPO/.git" ]; then
+  # #70: the inner block already runs `git -C "$FORK_REPO" rev-parse`; a stray
+  # `.git` FILE used to enter here and make the fetch a silent no-op.
+  if git -C "$FORK_REPO" rev-parse --git-dir >/dev/null 2>&1; then
     if [ "${OC_SMOKE_NO_FETCH:-0}" != "1" ]; then
       timeout 20 git -C "$FORK_REPO" fetch --quiet origin main >/dev/null 2>&1 || true
     fi
