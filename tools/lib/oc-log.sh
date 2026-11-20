@@ -7,9 +7,19 @@
 #     oc_log_init "<toolname>" "$@"      # right after set -u / arg parse
 #     trap 'oc_log_finish $?' EXIT       # merge with any existing EXIT trap
 #
-# ONE JSONL line per invocation is appended at exit to $OC_TOOLS_LOG
+# ONE JSONL line per PROCESS is appended at exit to $OC_TOOLS_LOG
 # (default: /root/.opencrabs/profiles/ops/opencrabs-dev/tools.log):
-#     {"ts":"…Z","tool":"oc-x","actor":"<uuid>","args":"…","exit":0,"secs":1.2,"extra":{}}
+#     {"ts":"…Z","tool":"oc-x","actor":"<uuid>","args":"…","exit":0,"secs":1.2,"extra":{},"pid":123}
+#
+# "per process", not "per invocation": a tool that RE-EXECS itself writes one
+# row per process, and `oc-prchecks` does exactly that (its detach escalation
+# re-execs $0 from the immutable mirror, so the parent and the escaped child
+# each run this lib's EXIT trap). The rows are distinguished by `pid` — the
+# parent's hand-off sets OC_LOG_ENABLED=0 so only the CHILD journals, and the
+# child tags extra.detached="1". Before `pid` existed the two rows were
+# byte-identical apart from their exit codes, which made a detach look like a
+# duplicate write (fork #98). Read a row's `pid` against its `extra` before
+# calling two rows a double log.
 #
 # actor — $OC_ACTOR (a session/role uuid) when set, else "unknown". Every
 # oc-* invocation must carry OC_ACTOR=<session-uuid> (owner rule 2026-08-30)
