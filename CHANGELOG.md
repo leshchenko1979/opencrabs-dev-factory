@@ -84,7 +84,27 @@ on disk, it just stops reading as another actor's dirty work.
 **Lint:** `oc-lint-laws` clean at 2026-11-20T16:30:21Z (3 documented-absent citations skipped);
 battery `tools/tests/run.sh` PASS 428 / FAIL 0, rc 0, receipt `tools/tests/battery-last.json`
 (tree_changed=false, wall 688.6 s); `oc-ledger check-version` read
-`MISMATCH current_skill_version=0.4.320 (SKILL.md=0.4.324)` before this sync.
+`MISMATCH current_skill_version=0.4.320 (SKILL.md=0.4.324)` before this sync, and `ok: all
+fields agree at 0.4.324` after it.
+
+**Bundled non-sync commits** (`a5eed495..HEAD`, 21 beyond this entry; other lanes' work,
+untrailered law commits by design, named here because the version record is the only place a
+bundled fix's ship date exists): `433a1397` the v0.4.323 entry itself · `9531f082` the RELOAD
+footer prescribed a command no lane can run · `737980ef` the `tool_executions` bullet stops
+lying about indexes and denominators · `a62843a5` remove the `oc-questions` battery legs
+(owner order 2026-11-20) · `3a1ec037` the flood guard must not punish a tool for answering
+correctly · `0bafc34c` the watcher audit stops paying for all history · `2c2b9510` the
+pre-dispatch features gate refused ADDITIONS · `9228b795` + `2d66803e` `oc-t5-sweep`, the five
+Duty T5 legs as one re-runnable sweep (T-11), with paths and exprs via argv · `d7fda250` a
+per-section clock on the sequential path · `1adea39c` `emit_summary` is the only receipt
+writer · `24b13097` drop the harvest selftests (standalone fork) · `326681f1` `oc_job_sha` /
+`oc_patch_id` honour "else empty" under pipefail · `11d0ffdc` pin `oc-patch.sh`'s "else empty"
+contract (#114) · `5328ba87` a killed battery's `.reap` sidecar stops blocking the sync
+stray-guard · `90af2e74` name a timeout as a timeout, and stop copying 11 MB per tool call
+(#115) · `f96184ba` a refused commit is never a clean tree (#116) · `1afd9cf9` `oc-snap`
+publishes a mirror atomically (#117) · `2cb405b8` the #51 mutant reproduces the defect instead
+of deleting a line · `a148b015` escape the backticks `mk_shim` executes out of its own
+comments · `9f6cb8a9` define the `chk()` the #525 journal legs had been calling into the void.
 
 
 ## v0.4.323 — the bash tool poll lands its lane-side half, and the 0.4.321/0.4.322 sync gap is healed
