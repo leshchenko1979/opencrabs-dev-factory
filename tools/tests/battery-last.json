@@ -1,7 +1,7 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-20T03:45:18Z",
-  "pass": 419,
+  "ts": "2026-11-20T15:21:05Z",
+  "pass": 426,
   "fail": 0,
   "verdict": "PASS",
   "mode": "sequential",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r9c106502e8344b05aa813d84294f500d.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-rd4f44057dfc44a9c8edf3e4c4cbeb799.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 1195921,
-  "timing": []
+  "wall_ms": 1218630,
+  "timing": {"max_concurrency": 1, "section_count": 69, "sum_ms": 1218392, "slowest": [{"n": 26, "ms": 577221, "start_ms": 1795186998737, "end_ms": 1795187575958, "title": "oc-ledger"}, {"n": 25, "ms": 112086, "start_ms": 1795186886651, "end_ms": 1795186998737, "title": "oc-deploy"}, {"n": 44, "ms": 103145, "start_ms": 1795187766089, "end_ms": 1795187869234, "title": "oc-ship-chain (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 28, "ms": 71261, "start_ms": 1795187581473, "end_ms": 1795187652734, "title": "oc-prchecks"}, {"n": 47, "ms": 44153, "start_ms": 1795187883684, "end_ms": 1795187927837, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 54, "ms": 30997, "start_ms": 1795187974230, "end_ms": 1795188005227, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 29, "ms": 26814, "start_ms": 1795187652734, "end_ms": 1795187679548, "title": "oc-upstream-delta"}, {"n": 31, "ms": 22382, "start_ms": 1795187689316, "end_ms": 1795187711698, "title": "oc-drift-check"}, {"n": 64, "ms": 20148, "start_ms": 1795188023273, "end_ms": 1795188043421, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 48, "ms": 19617, "start_ms": 1795187927837, "end_ms": 1795187947454, "title": "oc-health (hourly health & cleanliness sweep)"}]}
 }

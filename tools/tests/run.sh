@@ -2943,10 +2943,17 @@ section "lib/oc-snap.sh mirror age is its OWN birth, not the source tree's (#51)
 #
 # Discriminating input: a tools tree with a DELIBERATELY OLD mtime. A mirror
 # that inherits it reads ~22 days old; one that carries its own birth reads
-# seconds old. The mutant is the SAME source with the `touch "$_os_mir"` line
-# removed -- identical fixture, identical run, and the ONLY difference is
-# whether the root is re-stamped. A leg that passed on both would be asserting
-# the fixture, not the fix (CODE.md item 3).
+# seconds old. The mutant is the SAME source with the re-stamp made to INHERIT
+# the source age (`touch -r "$_os_sd" "$_os_stage"`) -- identical fixture,
+# identical run, and the ONLY difference is whether the mirror root carries its
+# own birth or the tree's. That is #51's ACTUAL defect, so the mutant
+# reproduces the bug instead of merely deleting a line.
+# WHY NOT "delete the touch": since #117 the mirror root is `mkdir`ed fresh and
+# published by rename(2) (stage dir -> mv -T), so it is born NOW even with no
+# re-stamp at all -- the delete-arm measured inherit=no and the control went RED
+# on a HEALTHY tool (2026-11-20). An inherited-age mutant is immune to that:
+# measured inherit-arm inherit=YES, 4599765s off birth.
+# A leg that passed on both would be asserting the fixture, not the fix (CODE.md item 3).
 S51="$(mktemp -d)"
 mkdir -p "$S51/tools/lib" "$S51/tools/demo" "$S51/mir"
 cp "$TOOLS_DIR/lib/oc-snap.sh" "$S51/tools/lib/oc-snap.sh"
@@ -2978,26 +2985,41 @@ if [ -n "$MIR51" ]; then
     && ok "oc-snap mirror ages from its OWN birth (mtime within 120s of now, not 22 days past)" \
     || bad "oc-snap mirror mtime is $(( (NOW51 - MIRM51) / 86400 )) day(s) off its birth -- #51 regressed"
 fi
-# THE MUTANT: the identical fixture with the re-stamp removed.
+# THE MUTANT: the identical fixture with the re-stamp INHERITING the source age.
 S51M="$(mktemp -d)"
 cp -a "$S51/tools" "$S51M/tools"
 mkdir -p "$S51M/mir"
-python3 - "$S51M/tools/lib/oc-snap.sh" <<'S51MUTEOF'
+_s51_mut_ok=1
+python3 - "$S51M/tools/lib/oc-snap.sh" <<'S51MUTEOF' || _s51_mut_ok=0
 import sys
 p = sys.argv[1]
 src = open(p).read()
-out = [ln for ln in src.splitlines(True) if ln.strip() != 'touch "$_os_mir" 2>/dev/null']
-assert len(out) < len(src.splitlines(True)), "mutation did not remove the re-stamp line"
-open(p, 'w').writelines(out)
+# Re-arm against the CURRENT publish path. The line was `touch "$_os_mir"` when
+# this control was written; #117 renamed it `touch "$_os_stage"` (the mirror is
+# now renamed into place, not filled in situ). Matching a stale name silently
+# disabled this control for a whole battery cycle -- so the mutation ASSERTS its
+# own target is present instead of quietly deleting nothing.
+STAMP = 'touch "$_os_stage" 2>/dev/null'
+INHERIT = 'touch -r "$_os_sd" "$_os_stage" 2>/dev/null'
+assert STAMP in src, (
+    "mutant target %r not found in oc-snap.sh -- the publish path moved again; "
+    "re-arm this control before trusting the #51 leg" % STAMP
+)
+open(p, 'w').write(src.replace(STAMP, INHERIT))
 S51MUTEOF
 touch -d "2026-09-28 09:13:41" "$S51M/tools"
 OC_TOOLS_DIR="$S51M/tools" OC_SNAP_ROOT="$S51M/mir" \
   bash "$S51M/tools/demo/oc-demo51" >/dev/null 2>&1
 MIRMUT="$(ls -d "$S51M"/mir/oc-snap-* 2>/dev/null | head -1)"
 MUTM="$(stat -c %Y "$MIRMUT" 2>/dev/null || echo 0)"
-[ -n "$MIRMUT" ] && [ "$MUTM" = "$(stat -c %Y "$S51M/tools")" ] \
-  && ok "mutant control: without the re-stamp the mirror DOES inherit the source mtime -- the leg above is load-bearing" \
-  || bad "mutant control did not reproduce the defect (mirror mtime $MUTM) -- the #51 leg proves nothing"
+# The verdict REQUIRES that the mutation actually applied. Without this, a
+# regression that removes the target line makes python die, leaves the file
+# unmutated, and the already-broken tool then satisfies the comparison -- a
+# FALSE ok that calls itself load-bearing (measured 2026-11-20 on a regressed
+# oc-snap.sh: two legs RED, control still `ok`).
+[ "$_s51_mut_ok" = 1 ] && [ -n "$MIRMUT" ] && [ "$MUTM" = "$(stat -c %Y "$S51M/tools")" ] \
+  && ok "mutant control: a re-stamp that INHERITS the source age does reproduce #51 (mirror carries the tree's mtime) -- the leg above is load-bearing" \
+  || bad "mutant control did not reproduce the defect (mutation_applied=$_s51_mut_ok mirror mtime $MUTM, source $(stat -c %Y "$S51M/tools")) -- the #51 leg proves nothing"
 rm -rf "$S51" "$S51M"
 
 section "oc-snap reap: a false zero is not a verdict, and the battery must call it (#53)"

@@ -55,7 +55,7 @@ oc_snap_guard() {
   _os_abs="$(cd "$(dirname "$_os_tool")" 2>/dev/null && pwd)/$(basename "$_os_tool")"
   _os_rel="${_os_abs#"$_os_sd"/}"
   _os_mir="$_os_root/oc-snap-${_os_sn}-$$"
-  # (#118) THE PUBLISHED PATH IS NEVER PARTIAL. The mirror used to be built with
+  # (#117) THE PUBLISHED PATH IS NEVER PARTIAL. The mirror used to be built with
   # `mkdir -p` straight onto its LIVE path, so it was readable -- and
   # executable -- while tar was still filling it. Measured 2026-11-20 (HQ
   # receipt, chain CHAIN-3f75b276): a mirror was observed holding 3 of its 14
@@ -233,7 +233,7 @@ oc_snap_reap() {
     if [ "$_osr_dry" = "1" ]; then _osr_n=$((_osr_n + 1)); continue; fi
     if rm -rf "$_osr_d" 2>/dev/null; then _osr_n=$((_osr_n + 1)); fi
   done
-  # (#118) STAGE DIRS are a second population with a DIFFERENT name shape, so the
+  # (#117) STAGE DIRS are a second population with a DIFFERENT name shape, so the
   # oc-snap-* glob above cannot see them: they are dot-prefixed and their last
   # field is "<pid>.<rand>", which fails the numeric-pid test and `continue`s.
   # A run KILLed between mkdir and rename leaks one, and nothing else would ever
