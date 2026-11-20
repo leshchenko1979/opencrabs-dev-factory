@@ -989,11 +989,32 @@ for ln in open(path):
 #   rc 1 is `DRIFTED or LOCAL_MISSING`, a finding about the TREE, and a word
 #   list that reddens on it would force a real verdict out of the exemption.
 FAILW=re.compile(r'fail|error|refus|denied|unable|abort|crash|not\s+found',re.I)
+
+# A NEGATED word is a DISCLAIMER, not an assertion. `(VERDICT, not an error)` names
+# a verdict and must not red the gate -- measured 2026-11-20: the oc-t5-sweep row
+# was the sole HIT of 19 registered entries, and the word it fired on sat inside
+# its own disclaimer. A word list cannot tell `an error` from `not an error`, so
+# the frame is stripped before the scan; an ASSERTED failure behind the frame
+# still fires (controlled below).
+NEG=re.compile(r'\b(?:not\s+an?|no)\s+(?:error|failure|fault)\b',re.I)
 bad=[]
 # The detector must be able to fire, and the historical mistake is its control:
 # a list of words that no longer matches `a close FAILED` is a blind instrument.
 if not FAILW.search('a close FAILED'):
     bad.append("detector INERT: does not flag the historical entry 'a close FAILED'")
+
+# ... and the strip must be BIDIRECTIONAL: a disclaimer must not fire, and an
+# asserted failure sitting behind one must still fire. Both run ONLY once the
+# detector is known to fire at all: a blind FAILW fails the strip's positive leg
+# too, so an ungated pair reports "the strip over-reached" when the real fault is
+# the word list -- a misattributed alarm is worse than a missing one, because the
+# next reader debugs the wrong line (measured: neutering FAILW produced exactly
+# that complaint alongside INERT).
+else:
+    if FAILW.search(NEG.sub('','a finding (verdict, not an error)')):
+        bad.append("negation-blind: reads a DISCLAIMER as an assertion")
+    if not FAILW.search(NEG.sub('','not an error, a close FAILED')):
+        bad.append("negation strip over-reached: swallowed an asserted 'FAILED'")
 for ent in const.split():
     tool=ent.split(':')[0]
     if tool not in rows: bad.append("%s: no RC-CONTRACT row"%tool); continue
@@ -1003,7 +1024,7 @@ for ent in const.split():
         bad.append("%s: contract does not declare rc 1 as an outcome"%tool)
     elif usage=='1':
         bad.append("%s: contract declares rc 1 as a USAGE code"%tool)
-    elif FAILW.search(m.group(1)):
+    elif FAILW.search(NEG.sub('',m.group(1))):
         bad.append("%s: contract's rc 1 is a FAILURE (%r), not a benign verdict"%(tool,m.group(1).strip()[:40]))
 print('; '.join(bad))
 PY
