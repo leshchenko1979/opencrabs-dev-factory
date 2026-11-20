@@ -1,5 +1,45 @@
 # Changelog — opencrabs-dev
 
+## v0.4.323 — the bash tool poll lands its lane-side half, and the 0.4.321/0.4.322 sync gap is healed
+
+**What forced it.** The owner ordered a poll of every lane that had driven the `bash` tool:
+what works, what needs correcting. 33 lanes answered into `reviews/20261120-toolpoll/`, and the
+aggregate split the findings by OWNER — harness (filed as fork issues #913/#914/#915), lane-side
+prose (this entry), and instrument. This entry lands the lane-side half: three shapes that cost
+five lanes between 1m40s and 5m35s each, all of them reproducible from the skill alone.
+
+**Landed — `environment.md`, two bullets, each measured by the lane that hit it:**
+
+- **`tool_executions` is a 1.1 GB table indexed on `message_id` and nothing else.** `WHERE
+  tool_name=…` / `session_id=…` / `created_at>…` are full scans: unguarded 1m40s, guarded
+  `rc=124` with empty stdout (sqlite3 buffers its whole result, so a kill yields nothing).
+  The rowid-bounded window answers the same aggregates in under a second. Carries three
+  measured traps: `PRAGMA busy_timeout=N` **echoes N to stdout** (so `n=$(sqlite3 … "PRAGMA
+  busy_timeout=30000; SELECT COUNT(*) …")` yields `30000\n98933` and the numeric test fails
+  silently — use `-cmd ".timeout 30000" … | tail -1`); a wrong column name returns exit 1 as
+  ordinary output; and the ROOT store is two months stale (562 MB, rows ending 2026-09-05)
+  against the live `profiles/<profile>/opencrabs.db`, so a query that parses and returns
+  plausible counts can still be reading the wrong file.
+- **A second `--include` on `grep -r` VOIDS the filter** — the patterns are OR-additive, so
+  `--include=*.md --include=*` scans every file in the tree (5m35s per run, twice, lane
+  `a38499fc`). `--exclude` is subtractive and composes; `--include` does not.
+
+**The exit-128 correction landed in `BASH.md` the same turn and is NOT a harness defect.** The
+poll's own headline claim — that `git rev-parse --short HEAD origin/main` was a bash argv
+swallow — was refuted by 7 lanes and by direct reproduction: `--short` implies `--verify`, which
+takes exactly one revision, so git refuses the second itself. The row now names git's contract
+and the three correct forms, and no issue was filed for it.
+
+**This entry also closes a propagation gap of its own making: 0.4.321 and 0.4.322 both bumped
+without `oc-ledger sync`, so the registry read 0.4.320 while SKILL.md read 0.4.322** — the
+failure Duty 3's own bump procedure warns about, found by `oc-ledger check-version` on this
+cycle's read. The sync that ships this entry publishes 0.4.323 and heals both.
+
+**Bundled non-sync commits** (`a5eed495..HEAD`): `af42bc6d` Duty-4 c29 intake, `b02a3999` +
+`6e6cd661` v0.4.321 changelog scope corrections, `4d134469` v0.4.322 leg-hygiene S23–S26,
+`3400e9e8` oc-log.sh per-PROCESS line, `6189d5f4` `oc-closure-sweep`, `917ae161` its battery
+enrollment + the two #660 SIGPIPE sites it exposed.
+
 ## v0.4.322 — four leg-hygiene clauses land in `editor-smoke.md §Smoke-verdict rules`
 
 **What forced it.** c29's accepted set carried four subjects whose only landing slot was

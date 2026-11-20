@@ -199,3 +199,28 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   defect and hold a ship — the stall class this bullet exists to prevent. **Open obligation:**
   whoever owns the daemon's launch path should make `TasksMax` real, so the raise stops being
   per-session folklore.
+
+- **`tool_executions` is a 1.1 GB table with an index on `message_id` and NOTHING ELSE — so
+  `WHERE session_id = …`, `WHERE tool_name = …` and `WHERE created_at > …` are full scans
+  (measured 2026-11-20, tool poll, 5 lanes independently).** `EXPLAIN QUERY PLAN` on
+  `SELECT count(*) FROM tool_executions WHERE tool_name='bash'` returns `SCAN tool_executions`;
+  unguarded that ran 1 m 40 s and a `timeout 45` guard turned it into `rc=124` with **empty
+  stdout** (sqlite3 buffers its whole result, so a kill yields nothing). Use a **rowid-bounded
+  window** — `WHERE rowid > ((SELECT max(rowid) FROM tool_executions) - 20000)` — which answers
+  the same aggregates in under a second, and always pass `-readonly` (or
+  `file:<db>?mode=ro`) so a stray write cannot take the daemon's lock. Two more traps measured
+  in the same poll: `PRAGMA busy_timeout=N` **ECHOES `N` to stdout**, so
+  `n=$(sqlite3 "$DB" "PRAGMA busy_timeout=30000; SELECT COUNT(*) …")` yields `30000\n98933` and
+  the numeric test silently fails — use `sqlite3 -cmd ".timeout 30000" … | tail -1` instead; and
+  a wrong column name (`no such column: success`) returns exit 1 as ordinary output, so read the
+  shell's own `$?` rather than assuming a printed line means the query worked.
+  **The ROOT store is two months stale** (`~/.opencrabs/opencrabs.db`, 562 MB, rows ending
+  2026-09-05); the live one is `~/.opencrabs/profiles/<profile>/opencrabs.db`. A query that
+  parses, resolves and returns plausible counts from the wrong file is the failure this bullet
+  exists to prevent.
+- **A second `--include` on `grep -r` VOIDS the filter — the patterns are OR-additive.** Measured
+  2026-11-20 (tool poll, lane `a38499fc`): `grep -rn "X" . --include=*.md --include=*` scans
+  **every** file in the tree, because `--include=*` matches everything and ORs with the first, at
+  5 m 35 s per run. One `--include` plus a bounded path is the only correct shape; `--exclude` is
+  subtractive and composes safely, `--include` does not. Verify with `--include` alone before
+  adding a second.
