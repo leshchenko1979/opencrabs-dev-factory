@@ -4113,6 +4113,42 @@ EOF
   bash "$ME" events --n >/dev/null 2>&1; chk "events-n-novalue-rc2" 2 $?
   bash "$ME" events -h >/dev/null 2>&1; chk "events-help-rc0" 0 $?
   OC_LEDGER="$T/bad.json" bash "$ME" events >/dev/null 2>&1; chk "events-bad-ledger-rc3" 3 $?
+  # 71-bis. mode (#97): the MODE ruling is the newest DECLARATION — not the
+  # newest row that mentions MODE:, and not the oldest declaration. The fixture
+  # is the live-ledger shape that made the verb necessary: an OLDER declaration,
+  # a NEWER declaration, and a NEWER STILL prose row that only talks about the
+  # gate. A loose predicate answers 400, oldest-wins answers 200, and only the
+  # declaration predicate answers 300 — so this arm cannot pass vacuously.
+  cat > "$T/mode.json" <<'MODEJSON'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":100,"t":"2026-01-01T00:00:00Z","kind":"note","by":"x","what":"held on the MODE: gate pending owner"},
+ {"n":200,"t":"2026-02-01T00:00:00Z","kind":"note","by":"x","what":"MODE: UPSTREAM-ON-REQUEST — older declaration"},
+ {"n":300,"t":"2026-03-01T00:00:00Z","kind":"note","by":"x","what":"MODE: FORK-STANDING — newer declaration"},
+ {"n":400,"t":"2026-04-01T00:00:00Z","kind":"note","by":"x","what":"PHASE 7 MODE: GATE. MODE: resolved live at 12:00"}]}
+MODEJSON
+  OC_LEDGER="$T/mode.json" bash "$ME" mode > "$T/mode.out" 2>/dev/null; chk "mode-rc0" 0 $?
+  chkeq "mode-newest-declaration" "300" "$(cut -f1 "$T/mode.out")"
+  chkeq "mode-value" "FORK-STANDING" "$(cut -f3 "$T/mode.out")"
+  chkeq "mode-not-newest-mention" "true" "$([ "$(cut -f1 "$T/mode.out")" != "400" ] && echo true || echo false)"
+  chkeq "mode-not-oldest-declaration" "true" "$([ "$(cut -f1 "$T/mode.out")" != "200" ] && echo true || echo false)"
+  OC_LEDGER="$T/mode.json" bash "$ME" mode --json > "$T/mode-json.out" 2>/dev/null; chk "mode-json-rc0" 0 $?
+  chkeq "mode-json-n" "300" "$(jq -r '.n' "$T/mode-json.out")"
+  chkeq "mode-json-value" "FORK-STANDING" "$(jq -r '.value' "$T/mode-json.out")"
+  chkeq "mode-json-ts" "2026-03-01T00:00:00Z" "$(jq -r '.ts' "$T/mode-json.out")"
+  # prose-only: mentions MODE: but never declares => rc 1, fail closed, says why
+  cat > "$T/mode-prose.json" <<'MODEPROSE'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":10,"t":"2026-01-01T00:00:00Z","kind":"note","by":"x","what":"held on the MODE: gate"},
+ {"n":11,"t":"2026-01-02T00:00:00Z","kind":"note","by":"x","what":"PHASE 7 MODE: GATE. MODE: resolved live by HQ"}]}
+MODEPROSE
+  OC_LEDGER="$T/mode-prose.json" bash "$ME" mode >/dev/null 2>"$T/mode-prose.err"; chk "mode-no-declaration-rc1" 1 $?
+  chkeq "mode-no-declaration-says-prose" "true" "$(grep -q 'prose is not a ruling' "$T/mode-prose.err" && echo true || echo false)"
+  chkeq "mode-no-declaration-names-count" "true" "$(grep -q '2 row(s) mention MODE:' "$T/mode-prose.err" && echo true || echo false)"
+  bash "$ME" mode --bogus >/dev/null 2>&1; chk "mode-unknown-flag-rc2" 2 $?
+  bash "$ME" mode -h >/dev/null 2>&1; chk "mode-help-rc0" 0 $?
+  OC_LEDGER="$T/bad.json" bash "$ME" mode >/dev/null 2>&1; chk "mode-bad-ledger-rc3" 3 $?
+  chkeq "verbs-flag-contains-mode" "true" "$(bash "$ME" --verbs 2>/dev/null | grep -qw mode && echo true || echo false)"
+
   # 71. grammar / suggestion hints and --verbs discovery
   bash "$ME" --verbs > "$T/verbs.out" 2>/dev/null; chk "verbs-flag-rc0" 0 $?
   chk "verbs-flag-contains-stamp" "true" "$(grep -qw stamp "$T/verbs.out" && echo true || echo false)"
@@ -5389,9 +5425,83 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   exit 0
 }
 
+# ---- mode (#97) ---------------------------------------------------------------
+# The MODE ruling is a DECLARATION row, not any row that mentions MODE:. The
+# grammar (SKILL.md §CONSENT REGISTER) is `MODE: <VALUE> — <provenance>`. The
+# live ledger carries 34 rows containing "MODE:" of which exactly ONE is a
+# declaration; the other 33 are prose ("held on the MODE gate"). So reading the
+# ledger by eye answers the WRONG row, and `events` cannot answer at all without
+# --n because it is a TAIL whose default window is ~21 rows. This verb is that
+# predicate, stated once. Newest DECLARATION wins; prose never does.
+cmd_mode() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help)
+        printf '%s\n' \
+          'usage: oc-ledger mode [--json]' \
+          '' \
+          'Print the NEWEST row whose what IS a MODE declaration — not the oldest' \
+          'match, and not a row that merely talks about the MODE gate.' \
+          '' \
+          'Declaration grammar (SKILL.md §CONSENT REGISTER):' \
+          '    MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>' \
+          '' \
+          'Legacy values read forward: DEGRADED => FORK-STANDING;' \
+          'HIGH-TRUST => UPSTREAM-ON-REQUEST with no named groups.' \
+          '' \
+          'rc 0 declaration printed · 1 no declaration (fail closed: FORK-STANDING)' \
+          '   2 usage · 3 ledger unreadable'
+        return 0 ;;
+      *) die 2 "mode: unknown arg: $1 (see oc-ledger mode --help)" ;;
+    esac
+  done
+  ledger_ok || die 3 "mode: ledger unreadable: $LEDGER"
+
+  # Projection and render each re-state the defs: jq defs do not cross calls.
+  local proj
+  proj=$(jq -c '
+    def dw: ((.what // .text // .note // .detail // "") | tostring)
+            | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+    def is_decl: dw | test("^MODE:[ ]+[A-Z][A-Z0-9_-]*([ ]+(—|--|-)[ ]+.*)?$");
+    def is_prose: (dw | test("MODE:")) and (is_decl | not);
+    { decl: ([.events[]? | select(is_decl)] | sort_by(.n // 0) | last),
+      prose: ([.events[]? | select(is_prose)] | length) }
+  ' "$LEDGER" 2>/dev/null) || die 3 "mode: projection failed on $LEDGER"
+
+  local decl
+  decl=$(printf '%s' "$proj" | jq -c '.decl')
+  if [ "$decl" = "null" ] || [ -z "$decl" ]; then
+    local prose
+    prose=$(printf '%s' "$proj" | jq -r '.prose')
+    echo "oc-ledger: mode: NO DECLARATION in $LEDGER" >&2
+    echo "oc-ledger: mode: $prose row(s) mention MODE: but none IS a declaration — prose is not a ruling" >&2
+    echo "oc-ledger: mode: fail closed — no declaration means FORK-STANDING" >&2
+    exit 1
+  fi
+
+  if [ "$json" -eq 1 ]; then
+    printf '%s' "$decl" | jq -c '
+      def dw: ((.what // .text // .note // .detail // "") | tostring)
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+      { n: (.n // null),
+        ts: (.t // .ts // .at // null),
+        value: (dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value) }'
+  else
+    printf '%s' "$decl" | jq -r '
+      def dw: ((.what // .text // .note // .detail // "") | tostring)
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+      [ (.n // "?"),
+        (.t // .ts // .at // "?"),
+        (dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value) ] | @tsv'
+  fi
+  exit 0
+}
+
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
-case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | [selftest|--selftest]"; exit 0 ;; esac
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
 if [ "$SELFTEST" -eq 1 ]; then
   # (#722) `selftest --help` must be a READ. parse_global consumes the bare
   # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
@@ -5421,9 +5531,10 @@ case "$sub" in
   roster) cmd_roster "${rest[@]+"${rest[@]}"}" ;;
   events|tail) cmd_events "${rest[@]+"${rest[@]}"}" ;;
   duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
+  mode) cmd_mode "${rest[@]+"${rest[@]}"}" ;;
   selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
-    echo "stamp sync check-version law-digest cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates"
+    echo "stamp sync check-version law-digest cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
     exit 0
     ;;
   *)
@@ -5436,7 +5547,7 @@ case "$sub" in
       kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
       push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
       version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
-      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail> | --verbs | --selftest" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
     esac
     ;;
 esac
