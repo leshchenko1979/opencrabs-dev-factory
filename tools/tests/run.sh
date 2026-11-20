@@ -4407,6 +4407,65 @@ else
   fi
 fi
 
+# ---- 90. lib/oc-patch.sh: "else empty" must mean rc 0, never abort (#114) ---
+# Defect (measured 2026-11-20): oc_job_sha/oc_patch_id document "else empty" and
+# both are PIPELINES. Under a caller's `set -e` + `set -o pipefail` a no-match
+# grep (or head's SIGPIPE, rc 141) returns non-zero, so the ASSIGNMENT fails and
+# set -e aborts the caller BEFORE the line that handles the empty case can run.
+# oc-ship-chain died rc=1 with no stderr at all on a content-identical rebase,
+# journalling "LEG1 gate resume rejected" and nothing else, purely because gh
+# listed a sha-less job FIRST -- a leg whose whole purpose is to avoid burning a
+# second full gate, failing on job ORDER rather than on content.
+#
+# Driven through the REAL lib under the REAL caller flags. A re-implementation
+# here would stay green while the lib kept the bug. The ORDER leg is the one
+# that pins the reported shape: a single sha-less name does not reproduce it,
+# because the old code only died when a sha-less job sorted first.
+_OP_LIB="$TOOLS_DIR/lib/oc-patch.sh"
+# Mirrors the exact caller shape `js="$(oc_job_sha "$jn")"` -- assignment, not a
+# printf argument, because only the assignment form trips errexit.
+_op_job() { # $1 = job name
+  bash -c 'set -e; set -o pipefail; . "$1" || exit 9; js="$(oc_job_sha "$2")"; printf "%s" "$js"' \
+    _ "$_OP_LIB" "$1" 2>/dev/null
+}
+_op_job="$( _op_job 'gate / PR-lane nextest timing (non-blocking)'; printf '|rc=%s' "$?" )"
+case "$_op_job" in
+  '|rc=0') ok "oc_job_sha: a sha-less name is EMPTY with rc 0 under set -e+pipefail (#114)" ;;
+  *) bad "oc_job_sha aborted on a sha-less name (${_op_job##*|}) -- set -e killed the caller before 'else empty' (#114)" ;;
+esac
+_op_job="$(_op_job 'gate / PR-lane gates (7378fe47aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)')"
+[ "$_op_job" = "7378fe47aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] \
+  && ok "oc_job_sha still extracts the sha from a sha-carrying name (control)" \
+  || bad "oc_job_sha lost the extraction: got '${_op_job:0:24}'"
+# THE ORDER LEG: sha-less FIRST, sha second. This is the shape that failed.
+_op_seq="$(bash -c 'set -e; set -o pipefail; . "$1" || exit 9
+for jn in "gate / PR-lane nextest timing (non-blocking)" \
+          "gate / PR-lane gates (7378fe47aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"; do
+  js="$(oc_job_sha "$jn")"
+  [ -n "$js" ] || continue
+  printf "%s" "$js"
+done' _ "$_OP_LIB" 2>/dev/null)"
+[ "$_op_seq" = "7378fe47aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] \
+  && ok "a sha-less job sorting FIRST no longer kills the loop (job ORDER is not content, #114)" \
+  || bad "#114: the loop still dies when a sha-less job sorts first (got '${_op_seq:0:24}')"
+# oc_patch_id carries the same contract, and this leg DISCRIMINATES: with the bug
+# the assignment aborts (rc 1); fixed, it yields empty and rc 0. oc_same_patch's
+# own refusal cannot discriminate -- both paths end rc 1 -- so the direct leg is
+# the one that proves the abort is gone, and the next leg pins the user contract.
+_op_pid="$(bash -c 'set -e; set -o pipefail; . "$1" || exit 9
+p="$(oc_patch_id "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
+printf "%s|rc=%s" "$p" "$?"' _ "$_OP_LIB" "$TOOLS_DIR/.." 2>/dev/null)"
+case "$_op_pid" in
+  '|rc=0') ok "oc_patch_id: an unresolvable sha is EMPTY with rc 0 under set -e+pipefail (#114)" ;;
+  *) bad "oc_patch_id aborted on an unresolvable sha (${_op_pid##*|}) -- same contract break as oc_job_sha (#114)" ;;
+esac
+bash -c 'set -e; set -o pipefail; . "$1" || exit 9
+if oc_same_patch "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef "$(git -C "$2" rev-parse HEAD)"; then exit 7; fi' \
+  _ "$_OP_LIB" "$TOOLS_DIR/.." 2>/dev/null
+[ "$?" -eq 0 ] \
+  && ok "oc_same_patch still refuses: unknown is never 'same' (control)" \
+  || bad "oc_same_patch accepted an unresolvable sha as same, or could not reach its refusal"
+
 # #111: ONE receipt writer. Everything below used to be a hand-copied duplicate of
 # emit_summary() -- the same 17-field printf, already divergent in two ways: this
 # copy disclosed the pids cap on its summary line and the function did not, and
