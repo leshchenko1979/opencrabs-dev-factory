@@ -2408,16 +2408,47 @@ printf '%s' "$HOUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/
   || bad "oc-health --json not parseable: $(printf '%s' "$HOUT" | head -2)"
 # 62c. --help exits 0 (rc-contract row)
 bash "$HZ" --help >/dev/null 2>&1 && ok "oc-health --help rc=0" || bad "oc-health --help rc!=0"
-# 62d. watcher-window override: 0 = all history must still be a valid measurement
-#      (rc 0|1, parseable JSON) — the knob must never turn into a measurement failure.
-WOUT="$(OC_HEALTH_WATCHER_WINDOW_H=0 bash "$HZ" --class runtime_procs --json 2>&1)"; WRC=$?
+# 62d. watcher-window override: 0 = all history, 24 = the rolling window, and the
+#      knob must never turn into a measurement failure (rc 0|1, parseable JSON).
+#
+#      THIS LEG RAN AGAINST THE LIVE DETACHED CORPUS and cost a full scan of
+#      ~19,651 files on EVERY battery run — measured 76s wall at 6% CPU, i.e.
+#      I/O-bound, and the population grows ~2,800 files/day with NOTHING reaping
+#      it, so that cost rises forever. Worse, its two assertions (`rc 0|1`,
+#      "json parses") passed whether or not the override did ANYTHING: a leg
+#      that cannot go red.
+#      It now runs on a two-task fixture and DISCRIMINATES: one nohup violation
+#      is inside the window and one is three days old, so 24h must report
+#      exactly ONE and all-history exactly TWO. That is what pins the knob —
+#      swapping the two window values reddens this leg.
+_whd="$(mktemp -d)"; mkdir -p "$_whd/detached"
+printf '{"id":"wh-old","session_id":"s","task":"nohup /tmp/x.sh >/tmp/o.log 2>&1 &","spawned_at":"%s"}\n' \
+  "$(date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)" > "$_whd/detached/wh-old.json"
+printf '{"id":"wh-new","session_id":"s","task":"nohup /tmp/y.sh >/tmp/o.log 2>&1 &","spawned_at":"%s"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_whd/detached/wh-new.json"
+_whcount() { # stdin: oc-health --json ; prints the NOHUP_SPAWN violation count
+  python3 -c 'import json,re,sys
+try: d=json.load(sys.stdin)
+except Exception: print("BADJSON"); raise SystemExit
+m=" ".join(f.get("message","") for f in d.get("findings",[]))
+mm=re.search(r"NOHUP_SPAWNx(\d+)", m)
+print(mm.group(1) if mm else 0)'
+}
+WOUT="$(OC_HEALTH_DETACHED_DIR="$_whd/detached" OC_HEALTH_WATCHER_WINDOW_H=24 bash "$HZ" --class runtime_procs --json 2>&1)"; WRC=$?
+WALL="$(OC_HEALTH_DETACHED_DIR="$_whd/detached" OC_HEALTH_WATCHER_WINDOW_H=0 bash "$HZ" --class runtime_procs --json 2>&1)"; WRC0=$?
 case "$WRC" in
-  0|1) ok "oc-health watcher-window override rc=$WRC (0 clean / 1 findings)" ;;
-  *)   bad "oc-health watcher-window override rc=$WRC (want 0|1)" ;;
+  0|1) ok "oc-health watcher-window 24h rc=$WRC (0 clean / 1 findings)" ;;
+  *)   bad "oc-health watcher-window 24h rc=$WRC (want 0|1)" ;;
 esac
-printf '%s' "$WOUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
-  && ok "oc-health --class runtime_procs --json parses" \
-  || bad "oc-health runtime_procs json not parseable: $(printf '%s' "$WOUT" | head -2)"
+_w24="$(printf '%s' "$WOUT" | _whcount)"
+_wall="$(printf '%s' "$WALL" | _whcount)"
+[ "$_w24" = "1" ] \
+  && ok "watcher window 24h audits ONLY in-window tasks (1 of 2 violations)" \
+  || bad "watcher window 24h wrong: counted $_w24 NOHUP_SPAWN (want 1 — the 3-day-old task must be excluded)"
+[ "$_wall" = "2" ] \
+  && ok "watcher window 0 = all history audits BOTH (2 of 2 violations)" \
+  || bad "watcher window 0 wrong: counted $_wall NOHUP_SPAWN (want 2 — 0 must mean all history)"
+rm -rf "$_whd"
 
 # ---- 63. oc-watcher-audit (detached watcher compliance audit, Cycle 5 Review C-2)
 section "oc-watcher-audit (detached watcher compliance audit)"
