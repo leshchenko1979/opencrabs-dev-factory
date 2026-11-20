@@ -2280,12 +2280,34 @@ section "rc contract --help=0 fleet-wide (C-#3)"
 # reddens here instead of quietly reducing the leg count.
 HELP_N=0
 HOUT_N=0
+# (#115) Tools whose --help was KILLED by the bound, so the content legs below
+# had no stream to read. Counted separately from HOUT_N: a timeout is not
+# coverage, and it is not a second defect either -- the rc leg above already
+# reddens for it. Stated skip, disclosed in the anti-vacuity line.
+HSKIP_N=0
 for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   [ -x "$t" ] || continue
   case "$t" in */lib/*|*/tests/*|*/archive/*|*.bak|*.bak-*|*.pre-*) continue ;; esac
   tn="$(basename "$t")"
   HELP_N=$((HELP_N+1))
-  OC_TOOLS_NOLOG=1 timeout 20 "$t" --help >/dev/null 2>&1     && ok "$tn --help rc=0" || bad "$tn --help rc!=0 (tools/docs/RC-CONTRACT.md violated)"
+  # (#115) The bound is 60s, not 20s, and the rc is NAMED. A bare `timeout 20`
+  # reddened on whichever innocent tool landed on a loaded moment: battery-115
+  # (2026-11-20T13:32:24Z) had oc-t5-sweep FAIL here and PASS in its own section
+  # (66c) of the SAME run, and the victim MOVED between runs (oc-ship-chain
+  # rc=124 under load 11.66). Two measured causes: the tree had grown to 16 MB
+  # on disk while the bound stayed at the 36-file figure it was set for, and
+  # every oc-* invocation copies that tree through oc_snap_guard before exec
+  # (cold copy measured 10.01 s on an IDLE box). The copy is now exclude-aware
+  # (#115, oc-snap.sh) and this bound keeps ~3x headroom over the worst measured
+  # 20.0 s. The rc is PRINTED because 124 (the bound fired) and 1 (the tool
+  # failed) are different defects, and this leg could not tell them apart -- the
+  # #914 class, inside the instrument that audits #914.
+  _hrc=0
+  OC_TOOLS_NOLOG=1 timeout 60 "$t" --help >/dev/null 2>&1 || _hrc=$?
+  if [ "$_hrc" -eq 0 ]; then ok "$tn --help rc=0"
+  elif [ "$_hrc" -eq 124 ]; then bad "$tn --help rc=124 -- KILLED by the 60s bound: a TIMEOUT, not an RC-contract violation (tools/docs/RC-CONTRACT.md, factory #115)"
+  else bad "$tn --help rc=$_hrc (tools/docs/RC-CONTRACT.md violated)"
+  fi
   # (#748a) rc=0 alone is NOT the contract. `--help` is an explicitly requested
   # READ, so the text belongs on STDOUT: `tool --help | grep <flag>` must find it.
   # Twelve tools printed it to STDERR instead, so stdout was empty and a pipe
@@ -2296,8 +2318,13 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   # this very loop (the four ship/ tools and oc-skew-scan), which is why the
   # assertion is fleet-wide rather than a list of names. Assert stdout is
   # NON-EMPTY, never a byte count: the text is free to grow (#316 debt).
-  HOUT="$(OC_TOOLS_NOLOG=1 timeout 20 "$t" --help 2>/dev/null || true)"
-  if [ -n "$HOUT" ]; then HOUT_N=$((HOUT_N+1))
+  # (#115) rc is captured, so a bound kill is named as a skip instead of being
+  # mis-read as "this tool writes its usage to stderr". Same defect class as the
+  # rc leg above, one stream over.
+  _hrc=0
+  HOUT="$(OC_TOOLS_NOLOG=1 timeout 60 "$t" --help 2>/dev/null)" || _hrc=$?
+  if [ "$_hrc" -eq 124 ]; then HSKIP_N=$((HSKIP_N+1))
+  elif [ -n "$HOUT" ]; then HOUT_N=$((HOUT_N+1))
   else bad "$tn --help wrote NOTHING to stdout -- usage belongs on STDOUT, not STDERR (#748a, tools/docs/RC-CONTRACT.md)"; fi
   # (#618) The rc check above discards STDERR, so a --help whose body executes
   # phantom commands still reads rc=0. That is how oc-smoke shipped `absent` and
@@ -2308,11 +2335,18 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   # one: oc-pr-atomicity's own usage line documents "4 PR not found" as an exit
   # code, and the loose arm flagged that legitimate text -- a false positive of
   # the guard I had just written. Anchor on the shell's own wording.
-  HERR="$(OC_TOOLS_NOLOG=1 timeout 20 "$t" --help 2>&1 >/dev/null || true)"
+  # (#115) A bound kill writes no diagnostics, so an unread stderr must never
+  # read as a clean one: disclose the skip rather than passing silently.
+  _hrc=0
+  HERR="$(OC_TOOLS_NOLOG=1 timeout 60 "$t" --help 2>&1 >/dev/null)" || _hrc=$?
+  if [ "$_hrc" -eq 124 ]; then
+    note "  NOTE - $tn --help rc=124 -- bound fired, stderr unread (factory #115)"
+  else
   case "$HERR" in
     *"command not found"*|*"syntax error"*|*"unbound variable"*|*"No such file or directory"*|*"Bad substitution"*)
       bad "$tn --help wrote a SHELL DIAGNOSTIC to stderr: $(printf '%s' "$HERR" | head -1 | cut -c1-70)" ;;
   esac
+  fi
 done
 [ "$HELP_N" -ge 30 ] && ok "fleet --help floor: $HELP_N tool(s) enumerated" \
   || bad "fleet --help floor: only $HELP_N tool(s) enumerated -- the glob stopped matching (want >= 30)"
@@ -2320,8 +2354,8 @@ done
 # stopped running -- or a glob that enumerated nothing -- would read as a clean
 # pass. Assert the COUNT too: every enumerated tool must have answered with text
 # on stdout. This is the same anti-vacuity shape as the floor above.
-[ "$HOUT_N" -eq "$HELP_N" ] && ok "fleet --help stdout: $HOUT_N/$HELP_N tool(s) put their usage text on STDOUT (#748a)" \
-  || bad "fleet --help stdout: only $HOUT_N of $HELP_N tool(s) put usage text on STDOUT (#748a) -- the leg did not cover the fleet"
+[ $((HOUT_N + HSKIP_N)) -eq "$HELP_N" ] && ok "fleet --help stdout: $HOUT_N/$HELP_N tool(s) put their usage text on STDOUT (#748a)$([ "$HSKIP_N" -gt 0 ] && printf ' (%s skipped on a bound kill, #115)' "$HSKIP_N")" \
+  || bad "fleet --help stdout: only $HOUT_N of $HELP_N tool(s) accounted for ($HSKIP_N skipped on a bound kill) -- the leg did not cover the fleet (#748a)"
 # #691: the edit tool writes a `.bak` pre-image beside every file it edits, and
 # those sidecars are EXECUTABLE copies of the tool, so the glob above enumerated
 # them as fleet tools and ran their --help (7 phantom PASS legs, 2026-09-28).
