@@ -303,8 +303,33 @@ STATE_TRACKED_PATHS="tools.log baseline.json orders.json journal deployed.sha de
 # the mechanism carried none of them and the gap simply had not been exercised yet.
 STATE_TRACKED_GLOB='*-state.md'
 
+# ---- commit-with-retry (#116) -------------------------------------------
+# A commit that FAILS must never read as a clean tree. `did` counts only
+# SUCCESS, so the final `[ "$did" -eq 1 ] || echo "sweep: clean — nothing
+# pending"` printed the CLEAN verdict after git REFUSED a commit — measured
+# 2026-11-20 (HQ probe): `.git/index.lock` held by a live concurrent commit, the
+# ledger row staged and demonstrably pending, HEAD unmoved, and the verb
+# reported "nothing pending" at rc 0. The three outcomes must be separable —
+# COMMITTED / NOTHING-PENDING / FAILED — because a self-consistent green that
+# proves nothing is the exact shape a reader (or a cron) cannot detect.
+#
+# One BOUNDED retry first: git's own advice for a lock, which a live concurrent
+# commit releases in seconds. Bounded, so a genuine failure reports instead of
+# spinning. The failure text is carried out in _CW_ERR so each call site can
+# name the path it was committing.
+_CW_ERR=''
+_commit_with_retry() { # $1=dir $2=subject -> rc 0 committed; rc 4 failed (_CW_ERR set)
+  local d="$1" subj="$2" e=''
+  if e="$(git -C "$d" commit -q -m "$subj" 2>&1)"; then return 0; fi
+  sleep 2
+  if e="$(git -C "$d" commit -q -m "$subj" 2>&1)"; then return 0; fi
+  _CW_ERR="$(printf '%s' "$e" | tr '\n' ' ' | cut -c1-300)"
+  return 4
+}
+
 state_sweep_tracked() { # $1=state dir, $2=label -> commits the TRACKED namespace; rc 0 iff something committed
   local sd="$1" label="${2:-state}" did=0 hits had_f=0 note=''
+STATE_SWEEP_ERR=
   case $- in *f*) had_f=1 ;; esac
   # `git add` DIES on a pathspec that matches nothing (rc 128, and it stages
   # NOTHING at all), so the whitelist is never handed to git wholesale — the
@@ -326,17 +351,29 @@ state_sweep_tracked() { # $1=state dir, $2=label -> commits the TRACKED namespac
         note=' [disclose foreign rows: smoke-verdicts.log rows self-attribute via actor=]' ;;
       *) note='' ;;
     esac
-    if git -C "$sd" add -- $hits 2>/dev/null \
-       && git -C "$sd" commit -q -m "state sweep:$hits ($label)$note" 2>/dev/null; then
-      echo "sweep: state runtime files committed:$hits"
-      did=1
+    if git -C "$sd" add -- $hits 2>/dev/null; then
+      if _commit_with_retry "$sd" "state sweep:$hits ($label)$note"; then
+        echo "sweep: state runtime files committed:$hits"
+        did=1
+      else
+        STATE_SWEEP_ERR="state sweep:$hits — $_CW_ERR"
+      fi
+    else
+      STATE_SWEEP_ERR="git add refused:$hits"
     fi
     [ "$had_f" -eq 1 ] || set +f
   fi
   if [ -n "$(git -C "$sd" status --porcelain -- "$STATE_TRACKED_GLOB" 2>/dev/null)" ]; then
-    git -C "$sd" add -- "$STATE_TRACKED_GLOB" 2>/dev/null \
-      && git -C "$sd" commit -q -m "state sweep: $STATE_TRACKED_GLOB ($label)" 2>/dev/null \
-      && { echo "sweep: lane state records committed"; did=1; }
+    if git -C "$sd" add -- "$STATE_TRACKED_GLOB" 2>/dev/null; then
+      if _commit_with_retry "$sd" "state sweep: $STATE_TRACKED_GLOB ($label)"; then
+        echo "sweep: lane state records committed"
+        did=1
+      else
+        STATE_SWEEP_ERR="state sweep:$STATE_TRACKED_GLOB — $_CW_ERR"
+      fi
+    else
+      STATE_SWEEP_ERR="git add refused:$STATE_TRACKED_GLOB"
+    fi
   fi
   [ "$did" -eq 1 ]
 }
@@ -2071,23 +2108,34 @@ RUNTIME_ARTIFACTS="tools/tests/battery-last.json"
 cmd_commit_pending() {
   case "${1:-}" in -h|--help) echo "usage: oc-ledger commit-pending [--bundle]   (--bundle also sweeps the TRACKED state paths and commits the skill runtime artifacts; both mirrors are pushed either way)"; exit 0 ;; esac
   local bundle=0; [ "${1:-}" = "--bundle" ] && bundle=1
-  local sd; sd="$(STATE_DIR)"; local did=0
+  local sd; sd="$(STATE_DIR)"; local did=0 failed=0 _cp_errs=''
+  STATE_SWEEP_ERR=''
   # state repo: ledger first
   if [ -d "$sd/.git" ]; then
     local head_n disk_n
     disk_n="$(jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER" 2>/dev/null || echo 0)"
     head_n="$(git -C "$sd" show HEAD:workers-ledger.json 2>/dev/null | jq '([.events[]? | .n // 0] | max // 0)' 2>/dev/null || echo "$disk_n")"
     if [ "$(git -C "$sd" status --porcelain workers-ledger.json 2>/dev/null)" != "" ]; then
-      git -C "$sd" add workers-ledger.json \
-        && git -C "$sd" commit -q -m "ledger commit-pending: events n=$((head_n+1))..$disk_n uncommitted (HQ sweep)" \
-        && { echo "sweep: state ledger committed (n=$((head_n+1))..$disk_n)"; did=1; }
+      if git -C "$sd" add workers-ledger.json 2>/dev/null; then
+        if _commit_with_retry "$sd" "ledger commit-pending: events n=$((head_n+1))..$disk_n uncommitted (HQ sweep)"; then
+          echo "sweep: state ledger committed (n=$((head_n+1))..$disk_n)"
+          did=1
+        else
+          failed=1; _cp_errs="$_cp_errs; workers-ledger.json: $_CW_ERR"
+        fi
+      else
+        failed=1; _cp_errs="$_cp_errs; git add refused workers-ledger.json"
+      fi
     fi
     if [ "$bundle" -eq 1 ]; then
       # #508 (DRY): the TRACKED namespace lives in ONE home above, consumed by
       # both this verb and the auto-commit tail. The rationale for each member
       # (v0.4.49 seal-state receipts, v0.4.51 journal/, v0.4.237 harvest-state,
       # #508 health-rotation.json) rides STATE_TRACKED_PATHS.
-      state_sweep_tracked "$sd" "commit-pending --bundle" && did=1
+      if state_sweep_tracked "$sd" "commit-pending --bundle"; then
+        did=1
+      fi
+      [ -z "${STATE_SWEEP_ERR:-}" ] || { failed=1; _cp_errs="$_cp_errs; $STATE_SWEEP_ERR"; }
     fi
   fi
   # skill repo: whitelisted runtime artifacts only (never doc edits)
@@ -2098,15 +2146,30 @@ cmd_commit_pending() {
     done
     if [ -n "$hits" ]; then
       # shellcheck disable=SC2086
-      git -C "$SKILL_DIR" add -- $hits 2>/dev/null \
-        && git -C "$SKILL_DIR" commit -q -m "runtime-artifacts sweep (B3):$hits (oc-ledger commit-pending --bundle)" \
-        && { echo "sweep: skill runtime artifacts committed:$hits"; did=1; }
+      if git -C "$SKILL_DIR" add -- $hits 2>/dev/null; then
+        if _commit_with_retry "$SKILL_DIR" "runtime-artifacts sweep (B3):$hits (oc-ledger commit-pending --bundle)"; then
+          echo "sweep: skill runtime artifacts committed:$hits"
+          did=1
+        else
+          failed=1; _cp_errs="$_cp_errs; skill:$hits: $_CW_ERR"
+        fi
+      else
+        failed=1; _cp_errs="$_cp_errs; git add refused skill:$hits"
+      fi
     fi
   fi
   # mirror tail step (v0.4.50): push whatever moved (and catch up any earlier
   # commit-lag) — runs regardless of $did, up-to-date pushes are rc 0 no-ops
   push_mirror "$sd" state
   push_mirror "$SKILL_DIR" skill
+  # The verdict is THREE-WAY. "clean" may only be said when nothing was
+  # ATTEMPTED; a refused commit is a FAILURE and exits rc 4 (the contract's
+  # `write` code — rc 1 is a VERDICT for this tool and would journal a write
+  # failure as a benign outcome).
+  if [ "$failed" -eq 1 ]; then
+    echo "sweep: FAILED — a commit was attempted and git refused it: ${_cp_errs#; }" >&2
+    return 4
+  fi
   [ "$did" -eq 1 ] || echo "sweep: clean — nothing pending"
 }
 
@@ -2782,6 +2845,28 @@ ACKEOF
   jq '.events += [{"n": 900, "t": "x", "by": "tool", "kind": "note", "what": "stray"}]' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
   bash "$ME" commit-pending | grep -q "state ledger committed" && ok || bad "commit-pending-sweep"
   git -C "$T/state" status --porcelain workers-ledger.json | grep -q . && bad "commit-pending-left-dirty" || ok
+  # (#116) A REFUSED COMMIT IS NOT A CLEAN TREE. `did` counts only SUCCESS, so
+  # a git refusal (a held .git/index.lock) used to fall through to
+  # "sweep: clean -- nothing pending" at rc 0 with the row demonstrably staged
+  # and HEAD unmoved -- measured 2026-11-20 (HQ probe). Three outcomes must be
+  # separable: COMMITTED / NOTHING-PENDING / FAILED. The POSITIVE control is the
+  # `commit-pending-sweep` arm above (a dirty ledger DOES commit), so a probe
+  # that simply could not write would redden that instead of passing this one.
+  # NOTE this runs through the DISPATCHER (`bash "$ME" commit-pending`), so the
+  # rc-4 arm doubles as the propagation arm for oc_ship_audit_chain swallowing it.
+  jq '.events += [{"n": 902, "t": "x", "by": "tool", "kind": "note", "what": "refused-probe"}]' "$OC_LEDGER" > "$T/d3.json" && mv "$T/d3.json" "$OC_LEDGER"
+  _rf_h0="$(git -C "$T/state" rev-parse HEAD)"
+  : > "$T/state/.git/index.lock"
+  _rf_out="$(bash "$ME" commit-pending 2>&1)"; _rf_rc=$?
+  rm -f "$T/state/.git/index.lock"
+  chk "commit-pending-refused-rc4" 4 "$_rf_rc"
+  case "$_rf_out" in *"sweep: FAILED"*) ok ;; *) bad "commit-pending-refused-says-FAILED: $_rf_out" ;; esac
+  case "$_rf_out" in *"clean — nothing pending"*) bad "commit-pending-refused-must-not-say-clean: $_rf_out" ;; *) ok ;; esac
+  chk "commit-pending-refused-head-unmoved" "$_rf_h0" "$(git -C "$T/state" rev-parse HEAD)"
+  git -C "$T/state" status --porcelain workers-ledger.json | grep -q . && ok || bad "commit-pending-refused-row-still-pending"
+  # the failed commit must not be silently retried into a false clean: a SECOND
+  # run with the lock gone DOES commit, proving the row was genuinely pending
+  bash "$ME" commit-pending >/dev/null 2>&1; chk "commit-pending-after-lock-released-rc0" 0 $?
   # (#722) `commit-pending --help` USED TO RUN THE SWEEP: the dispatcher passed
   # the flag straight into cmd_commit_pending, which had NO help arm, so `--help`
   # fell through as an ignored positional (bundle stayed 0) and the sweep ran
@@ -3009,7 +3094,11 @@ FIXTURE
   git -C "$_sweepd" add -A 2>/dev/null; git -C "$_sweepd" commit -q -m base 2>/dev/null
   printf '{"registries":[]}\n' > "$_sweepd/harvest-registry.json"
   printf 'dirty\n' > "$_sweepd/not-carried.txt"
-  awk '/^state_sweep_tracked\(\)/,/^}$/' "$ME" > "$T/sweep_fn.sh"
+  # the sweep now commits through _commit_with_retry, so the fixture must
+  # source BOTH functions or it fails with "command not found" and the
+  # selectivity assertion below would be measuring a broken fixture.
+  awk '/^_CW_ERR=/,/^}$/' "$ME" > "$T/sweep_fn.sh"
+  awk '/^state_sweep_tracked\(\)/,/^}$/' "$ME" >> "$T/sweep_fn.sh"
   eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
   eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
   ( export STATE_TRACKED_PATHS STATE_TRACKED_GLOB
@@ -5521,7 +5610,10 @@ case "$sub" in
   enroll) cmd_enroll "${rest[@]+"${rest[@]}"}" ;;
   promote) cmd_promote "${rest[@]+"${rest[@]}"}" ;;
   retire)  cmd_retire  "${rest[@]+"${rest[@]}"}" ;;
-  commit-pending) cmd_commit_pending "${rest[@]+"${rest[@]}"}"; oc_ship_audit_chain ;;
+  # rc MUST survive the audit chain: oc_ship_audit_chain always returns 0, so a
+  # bare `cmd; oc_ship_audit_chain` swallowed the verb's status and a failed
+  # commit-pending exited 0 (measured 2026-11-20). The chain still runs.
+  commit-pending) cmd_commit_pending "${rest[@]+"${rest[@]}"}"; _cpd_rc=$?; oc_ship_audit_chain; [ "$_cpd_rc" -eq 0 ] || exit "$_cpd_rc" ;;
   claim) cmd_claim "${rest[@]+"${rest[@]}"}" ;;
   confirm) cmd_confirm "${rest[@]+"${rest[@]}"}" ;;
   claim-ref) cmd_claim_ref "${rest[@]+"${rest[@]}"}" ;;
