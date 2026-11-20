@@ -213,10 +213,15 @@ A smoke leg that only the OWNER can satisfy (a visual pass, a tap, an eye-confir
 
 ### L2 — Shift exit condition: receipts or an explicit park
 
-A shift (night or day) is COMPLETE only when every workstream sits in exactly one of two terminal states:
+A shift (night or day) is COMPLETE only when every workstream sits in exactly one of three terminal states:
 
 - **RECEIPTED** — the work is behaviourally verified: a `smoke-verdicts.log` row from a live probe of the feature's own path (plus ledger row and swap identity). A PR or issue filing is bookkeeping and never substitutes for it; or
-- **PARKED** — an explicit `PARKED-OWNER-EYE` row (or an equivalently named park, with its reason) exists, naming the next-cycle action and the owner — with the behavioural leg still **OPEN** on the issue, not discharged by the park.
+- **PARKED** — an explicit `PARKED-OWNER-EYE` row (or an equivalently named park, with its reason) exists, naming the next-cycle action and the owner — with the behavioural leg still **OPEN** on the issue, not discharged by the park; or
+- **WATCH-ARMED** — a behavioural leg whose trigger **cannot be driven on demand**: where the fix's runtime path fires only on an event no lane surface can synthesise (a real compaction, an inbound message on a channel the lane cannot post to) and the owner has no action that would force it either, the lane stamps every leg it CAN prove, records the behavioural leg as `absent, declared` naming the exact trigger and the emitter line that will fire, and arms a watcher. **`absent, declared` is a holding state, never a verdict**, and the issue stays OPEN until the watcher's receipt lands — the receipt, not the declaration, discharges the leg.
+
+  **The watcher must OUTLIVE the daemon it watches.** Arm it as a scheduled job (a cron entry, which the daemon re-arms at boot), never as an in-turn shell loop. A loop runs inside the process it is watching, so a bounce kills it, and **its empty log is indistinguishable from a clean zero**. Measured 2026-11-15/16: a `tail -F … | grep` watcher died with the daemon at 01:47, log **0 bytes** and untouched; the cron replacement (`opencrabs-dev-856-phantom-watch`) delivered the behavioural PASS on its **first** tick. **A watcher's zero is worth only its uptime — state the uptime, not just the zero.**
+
+  **A watcher's delivery is a CLAIM, not a verdict.** Re-derive every leg of it before it becomes a smoke verdict, exactly as a peer's report would be. The #856 watcher's first report asserted *"a three-line drift between the binary's logged `:1304` and `HEAD`'s `:1307`"*. **That drift does not exist**: `1307` is where the *string literal* begins inside a multi-line `tracing::warn!`, and `tracing` records the macro CALL SITE — `1304` — which is exactly what the running binary logged. A durable record carried a false defect until it was corrected on the issue.
 
 A workstream in state "waiting for X" is NOT terminal and blocks any completion claim. Candidates not closed inside the window **roll to the next cycle** — never chased across it. Report format: `receipted=N · parked=M · waiting=0`; any non-zero `waiting` means the shift is not done.
 

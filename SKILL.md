@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.324
+version: 0.4.325
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -236,7 +236,15 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
   receipt), phases, tool names. No ad-hoc synonyms; a NEW concept is proposed via the poll
   format and named on owner word. Reviewer A (REDUNDANCY + ONTOLOGY) enforces this lens-side.
 - **Context Manifest Curation (Compaction Section 10, owner order 2026-09-17):** on compaction the compactor MUST retain `opencrabs-dev`, `opencrabs-dev/fleet-directives.md`, and the active role file in `active_skills`; only non-active role files go in `discard_skills`. Essential tools (`session_notify`, `session_search`, `bash`, `read_file`, `telegram_send`) MUST stay pre-activated. Canonical: `fleet-directives.md §Post-compaction skill reload & context manifest curation`. **The retention above is INTENT, not a guarantee: the compactor's own prompt carries no retention list and no pipeline layer enforces one (measured 2026-10-06) — [opencrabs/opencrabs#1960](https://github.com/opencrabs/opencrabs/issues/1960).**
-- ONLY HQ edits skill files: `SKILL.md` · `editor.md` · `editor-ship.md` · `editor-smoke.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·
+- ONLY HQ edits skill files. **The set is DERIVED, never enumerated:** every `*.md` in the skill
+  directory, plus `war-stories.md` at the profile root. A hand-maintained list goes stale silently —
+  the previous closed form omitted `editor-ship.md`, `editor-smoke.md`, `reference-glossary.md` and
+  `reference-tools.md` after the 2026-11-15 split (c29: 15 named, 18 on disk) and named
+  `war-stories.md` as though it lived in the skill dir (v0.4.319 c29 I-2 fixed the identical stale
+  list at `fleet-directives.md:171`; this site was missed). **The enumeration below is a convenience
+  INDEX, never the authority** — a file on disk is HQ-only whether or not it appears here.
+
+  Index: `SKILL.md` · `editor.md` · `editor-ship.md` · `editor-smoke.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·
   `review-lenses.md` · `fleet-directives.md` · `upstream-merge-runbook.md` ·
   `s2-swap-journal-spec.md` · `README.md` · `CHANGELOG.md` · `session-notify.md` · `environment.md` · `tools/docs/*.md` — including all worker lanes AND
   the TRIAGE and TOOLSMITH lanes (2026-08-26; Compiler retired 2026-08-28). **The two editor phase appendices

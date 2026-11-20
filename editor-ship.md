@@ -9,7 +9,9 @@
 ## Phase 5 — Ship (`oc-ship-chain`)
 
 **`oc-ship-chain` IS the single, exclusive ship path from commit to swapped binary (v0.4.126; manual push-to-main, manual issue-log, and manual oc-deploy sediment retired v0.4.132).**
-The Editor runs `oc-ship-chain` in one detached invocation under one chain-id — **armed in its OWN transient systemd unit, never via the harness's `background:true` auto-detach**:
+The Editor runs `oc-ship-chain` in one detached invocation under one chain-id — **armed in its OWN transient systemd unit, never via the harness's `background:true` auto-detach**.
+
+**READ THE ARMED CHAIN ON THE USER BUS, OR YOU WILL REPORT A LIVE CHAIN AS DEAD** (c29 2026-11-19). `oc-ship-chain` is armed in its own **transient user** unit, so its liveness is read with `systemctl --user is-active <unit>`. A bare `systemctl is-active <unit>` queries the **system** bus, which does not see user units at all: it answers `inactive` with rc=4 for a chain that is running and polling. A lane that reads the wrong bus concludes its chain died and re-arms, which dispatches a second gate onto the same ref and **concurrency-cancels the live one**. When `is-active` says inactive, confirm with `ps` before acting; the chain's own process is the authority, not a unit query. Measured 2026-11-19: `systemctl --user is-active at-spi-dbus-bus.service` → `active`; `systemctl is-active at-spi-dbus-bus.service` → `inactive`, rc=4; the near-miss on `oc-ship-809-164927` showed the chain plus its `oc-deploy ship --wait 2700` child alive, and the ship completed normally.
 
 ```bash
 # 1. Push your branch first

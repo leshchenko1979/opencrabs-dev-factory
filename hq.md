@@ -161,12 +161,39 @@ What STAYS at this factory, because it is process law about US and not about the
 - **Zero Session Notify Law for Worker Proposals (owner order 2026-09-11):** workers do NOT
   submit Duty 4 proposals via `session_notify` to HQ — inbound notify floods pollute HQ's
   context window, accelerate compactions and duplicate the freeze-ACK anti-pattern. Workers
-  write proposals to `$REVIEW_DIR/proposals/<session-uuid>.md` or record them on the ledger via
-  `oc-ledger stamp proposal "ADD|CHANGE <rule> in <file+section> BECAUSE <evidence>"`.
+  write proposals to `$OC_DEV_STATE/reviews/<cycle-id>/proposals/<session-uuid>.md` (i.e.
+  `~/.opencrabs/profiles/ops/opencrabs-dev/reviews/<cycle-id>/proposals/<uuid>.md`) or record them on
+  the ledger via `oc-ledger stamp proposal "ADD|CHANGE <rule> in <file+section> BECAUSE <evidence>" --by "<role> <uuid>"`.
   Workers NEVER edit skill files themselves.
+  **`$OC_DEV_STATE` defaults to `$HOME/.opencrabs/profiles/ops/opencrabs-dev`** (`tools/state/oc-ledger:185`).
+  `$OC_REVIEW_DIR` is a DIFFERENT variable owned by `oc-review-persist`, resolving to the FROZEN
+  skill-repo root — never cite it for a proposal, and note the old `$REVIEW_DIR` spelling this bullet
+  used had **no definition anywhere in the corpus** (c29: `grep -rnE '(^|[^A-Za-z_])REVIEW_DIR='` → 0;
+  its path template also lacked the `<cycle-id>` segment, so the literal path did not exist while
+  20 cycle directories did).
+  **The skill repo carries a second, historical `reviews/` tree** (`skills/opencrabs-dev/reviews/`,
+  where `oc-review-persist` writes its reports): proposals exist in BOTH for cycles up to c25 and
+  only in the state tree since, so **an intake read must cover BOTH trees and say which it read** —
+  `DONE = every worker proposal for the cycle is read` cannot be satisfied by one directory while
+  the corpus is split (c25: 83 state vs 9 skill-repo proposals).
 - **The channels are DECLARED, not inferred.** The cycle declares the proposal directory and the
   ledger kind it reads; the instrument REFUSES on an undeclared or absent channel rather than
   reading nothing and reporting clean.
+  **(Tool half, c29 2026-11-19.)** `oc-review-persist` carries NO channel/proposal concept —
+  `grep -cniE 'proposal|channel|declared' tools/state/oc-review-persist` returns **0** over 311
+  lines, and `check-cycle` emits a lens census only. The "instrument REFUSES" wording describes
+  `review.py`, which the ⚠ banner above already declares non-operative here. Until a carrier closes
+  it, **the declared-channel refusal is a MANUAL duty of the HQ lane**, discharged by the
+  cycle-manifest's hand-run intake read. Stated because a carve must not delete a live rule that has
+  no mechanical carrier — the same precedent as §Duty 5 KEY-SET CLOSURE.
+- **The authoritative intake read is armed with a RE-ARM, never a single fire** (c29 2026-11-19). A
+  cycle's close read is scheduled at or after the window close AND carries a backstop: either a
+  recurring expression whose `trigger_cmd` is a no-op once the cycle's read row exists, or a second
+  one-shot at least one day later that reports an unwritten read as a defect. A close row must not
+  record the read as "OWED" and stop there — it records the **job id, its expression, and what
+  re-arms it**. A one-shot with a literal day-of-month AND month is not a carrier: it cannot recur,
+  so a single missed fire parks the cycle silently (measured c29: `oc-c29-duty4-read` = `10 21 20 11 *`,
+  `run_once=1`, `last_run_at NULL` — one fire per year, and exactly one c29 cron job on the box).
 - **The FILE channel is primary; the ledger channel is best-effort** (2026-11-19). A poll wakes
   every bound lane at one instant, and `oc-ledger` serialises every write under one global `flock`
   — so `stamp proposal` returns **rc 4 (lock timeout)** and writes NOTHING, silently. A proposal

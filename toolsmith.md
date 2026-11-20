@@ -27,6 +27,8 @@ EDITOR territory — this lane touches neither.
 
 **Standing duties (owner 2026-09-08 "Go then duty 4+6", v0.4.108):**
 
+- **Never read `$?` after a pipeline** (c29 2026-11-19). `cmd | tail` reports **`tail`'s** status, so a failing tool piped into a pager reads as success. Capture the tool's own rc — run it without a pipe and read `$?` immediately, or read `${PIPESTATUS[0]}` in bash — and when a receipt exists (a ledger row, a JSON status field, a tool's own summary line), **read the RECEIPT rather than any process exit code**. Measured: `bash -c 'false | tail -1; echo $?'` → `0`; `bash -c 'false >/dev/null; echo $?'` → `1`; and `python3 tools/publish.py --apply --wait 2>&1 | tail -5; echo "rc=$?"` printed `rc=0` while the `timeout 560` wrapper had killed the publish. `grep -n 'PIPESTATUS'` over the seven law files returned nothing.
+
 - **Cron liveness audit ownership:** law-carrying crons
   (such as oc-harvest-dispatch-4h) plus any
   future law-carrying cron are TOOLSMITH's to keep alive — the lane audits

@@ -38,6 +38,8 @@ CODE TESTS = the CI gate (`pr-checks.yml`, Phase 5 via `oc-ship-chain`; `harvest
 
 **The accounting domain is a USER unit — query the user manager.** The daemon runs as `opencrabs-ops.service` under `user@0.service` (`/user.slice/user-0.slice/user@0.service/app.slice/opencrabs-ops.service`). A plain `systemctl show opencrabs-ops.service` (SYSTEM manager) answers `ActiveState=inactive SubState=dead ControlGroup=` and `MemoryMax=infinity` — a FALSE NEGATIVE that reads exactly like "no cgroup, no limits, no problem". Use `XDG_RUNTIME_DIR=/run/user/0 systemctl --user show opencrabs-ops.service`, or read the cgroup files directly.
 
+**A ratchet is measured with `memory.events`, never with `memory.peak`** (c29 2026-11-19). `memory.peak` records how high demand REACHED; it cannot distinguish demand that was MET from demand that was REFUSED. `memory.events high` counts the times the kernel was forced to reclaim, which is the symptom a "memory grows until it is killed" report actually describes. Read all four together — `memory.current`, `memory.peak`, `memory.high`/`max`, `memory.events` — and treat `high > 0` as the finding. Corollary: a `memory.peak` at the wall with `high 0` is a ceiling that was touched and met, not a leak. Measured: pre-reduction `memory.peak` 2.751 GiB with `memory.events high` **5,813** (63.9/min over 91 min) vs post-reduction 2.036 GiB with **0** (58 min); `memory.max` and `oom_kill` 0 in both arms.
+
 **The structural closure is FILED, not assumed:** fork [#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached job in its own transient scope at the harness's own spawn point. Until it lands, a lane spawning heavy work spends the daemon's memory budget; #504 (8 h of jobs starved, silent) is the measured cost. Per-path patching will not converge — #720 (battery runner, the ONLY isolation today), #727 (`oc-prchecks`), #504 (cron child), #403 (`OOMPolicy`) each covered one path.
 
 ## Telegram surface — editor duties (delta of SKILL.md §Telegram surface law)
@@ -93,7 +95,10 @@ files read on demand — nothing is cached in-session — so "reload" = re-read:
    `tools/state/oc-drift-check <your-uuid> [--ack]` (canonical, omit-arg — it reads your OWN
    `last_acked` from the roster; the legacy `<claimed-ver>` form still works. mechanical:
    version-shape validated; `--ack` stamps the adoption record directly).
-2. Drift → re-read SKILL.md + editor.md in full from disk, then stamp
+2. Drift → re-read the **FIVE-file reload set** in full from disk — `SKILL.md`, `editor.md`,
+   `fleet-directives.md`, and (since the 2026-11-15 split) **`editor-ship.md` + `editor-smoke.md`**,
+   which hold the Phase-5 and Phase-6 bodies; a reload that reads the router without the appendices
+   has satisfied the list and lost the procedure — then stamp
    `oc-ledger ack <your-roster-uuid> <new-version>` (shape `0.N.N`, `v` prefix
    tolerated — the regex validates that shape only) — **ONLY when step 1 ran WITHOUT `--ack`**. With
    `--ack`, step 1 already wrote the adoption row (`oc-drift-check`'s `--ack` arm
@@ -167,7 +172,7 @@ Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch
 ## Phase 1 — Claim & Worktree Setup (`oc-start`)
 
 0. **Claim-time fresh re-read & Goal Mandate (v0.4.14 / v0.4.149, owner order 2026-09-12)**:
-   - **Fresh Re-read**: FIRST action after claiming/waking — re-read `SKILL.md` + `editor.md` + `fleet-directives.md` from disk (never from recalled memory) — SKILL.md and editor.md in FULL, fleet-directives at thematic-index minimum with every `[LANE]`-tagged section in FULL.
+   - **Fresh Re-read**: FIRST action after claiming/waking — re-read the **FIVE-file reload set** from disk (never from recalled memory): `SKILL.md` and `editor.md` in FULL, `editor-ship.md` + `editor-smoke.md` in FULL (they hold the Phase-5/Phase-6 bodies, so reading the router alone satisfies the list and loses the procedure), and `fleet-directives.md` at thematic-index minimum with every `[LANE]`-tagged section in FULL.
    - **Obligation re-verification** (2026-11-19, Duty-4 aff7ff41 P1): a compaction or continuation
      summary's `OBLIGATION STATUS` is a **claim about the past, never the work order** — the same
      standing `fleet-directives.md` gives a continuation doc's session id. Before the first project
@@ -327,6 +332,8 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
 `oc-deploy` RED reports + HQ triage); the Editor applies the same ones in its fix round
 (§Phase 6-Fix). No lane uses them as a licence to fix outside its scope.
 
+- **An EMPTY read is not a NEGATIVE read** (c29 2026-11-19). A verdict is a *value*; `""`, `null` and a failed call are the *absence* of a value, and absence must fail toward RETRY or UNKNOWN — never toward RED, never toward GREEN. Any code or lane that compares a freshly-read conclusion against `success` and treats everything else as failure has converted a network blip into a verdict. The correct shape is the one `oc-ship-chain:1494` already uses — distinguish "read and it was not success" from "could not read", and say which. Neither marker present ⇒ UNKNOWN ⇒ stop, never health. Measured: `oc-deploy:4225-4236` is UNGUARDED (empty conclusion ⇒ `ship-wait-red` + `die 6`) while `oc-ship-chain:1490-1500` is guarded — a chain stopped `rc=4 CARRIER-RED` naming run `44332662723`, which had concluded `success` at 15:20:20Z and was logged at 15:20:22Z.
+- **Daemon log timestamps are suffixed `+00:00`, never `Z`** (c29 2026-11-19). Any log sweep whose regex keys on a `Z` suffix silently returns ZERO rows and reads as a clean result. Every zero-count log sweep must be validated against a **known-positive control line from the same file** before its zero is believed. Measured: a `Z`-keyed duplicate-send sweep returned **0 rows, 0 pairs** for a day carrying **9,322** `Telegram send ok` rows; the positive control was msg pair `96574`/`96575` at `03:56:45` (the measured 81 ms double-post, #826).
 - Fix unresolved-name/import errors FIRST (E0425/E0433...) — later errors are
   usually poisoned fallout. When scopes look shifted, count brace DEPTH, not
   brace counts.

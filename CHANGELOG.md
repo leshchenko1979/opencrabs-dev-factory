@@ -1,5 +1,51 @@
 # Changelog — opencrabs-dev
 
+## v0.4.325 — eleven c29-owed rules land: derived law sets, a third terminal state, and five instrument traps
+
+**What forced it.** The c29 owed-rule extract completed **11/11, zero not-found**, and not one of
+the eleven had landed: a `grep -rEl` over the corpus returned NONE for every pattern. The cycle's
+findings were durable in the reviews tree and absent from the law a lane actually reads. This bump
+lands all eleven.
+
+**The two that bind most lanes:**
+- `SKILL.md §Hard rules` — the HQ-only single-writer list is now **DERIVED, never enumerated**:
+  every `*.md` in the skill directory, plus `war-stories.md` at the profile root, with the old
+  enumeration demoted to a convenience INDEX. The closed form had gone stale exactly as the
+  2026-11-15 split predicted — 15 named, 18 on disk.
+- `editor.md` — the reload set is **FIVE files** at BOTH sites that name it (`§Mid-cycle skill
+  drift` step 2 and `§Phase 1` step 0). Reading the router without `editor-ship.md` /
+  `editor-smoke.md` satisfies the list and loses the procedure.
+
+**A third terminal state, not a park.** `editor-smoke.md §L2` gains **WATCH-ARMED** for a
+behavioural leg whose trigger cannot be driven on demand — with the two guards the #856 incident
+earned: the watcher must OUTLIVE the daemon (a cron entry, not an in-turn loop, whose empty log is
+indistinguishable from a clean zero), and a watcher's delivery is a CLAIM to re-derive, never a
+verdict.
+
+**Five instrument traps, each with a measured cost:**
+- `editor.md §Red-run triage heuristics` — **an EMPTY read is not a NEGATIVE read**. `oc-deploy:4225-4236`
+  is unguarded and killed a chain `rc=4 CARRIER-RED` on a run that had concluded `success`.
+- `editor.md §Red-run triage heuristics` — daemon log timestamps end `+00:00`, never `Z`. A
+  `Z`-keyed sweep returned **0 rows** for a day carrying **9,322** `Telegram send ok` rows.
+- `editor-ship.md §Phase 5` — read an armed chain on the **USER bus** (`systemctl --user is-active`).
+  The system bus answers `inactive` rc=4 for a live chain, and re-arming concurrency-cancels it.
+- `toolsmith.md §TM1` — **never read `$?` after a pipeline**: `cmd | tail` reports `tail`'s status.
+- `editor.md §Execution isolation` — a ratchet is measured with `memory.events high`, never
+  `memory.peak`, which cannot separate demand that was MET from demand that was REFUSED.
+
+**hq.md §Duty 4, three repairs.** `$REVIEW_DIR` — defined nowhere in the corpus, and its path
+template lacked the `<cycle-id>` segment — is replaced by
+`$OC_DEV_STATE/reviews/<cycle-id>/proposals/`. The split corpus is now stated: proposals live in
+BOTH trees for cycles ≤ c25 and state-only since, so an intake read must cover both and say which.
+"The instrument REFUSES" is declared a MANUAL duty until a carrier exists (`oc-review-persist` has
+no channel concept — 0 hits over 311 lines). And the authoritative intake read must be **RE-ARMED,
+never a single fire**: the c29 close read was `10 21 20 11 *`, `run_once=1`, `last_run_at NULL`.
+
+**Lint:** `oc-lint-laws` clean, rc 0. Line counts — SKILL.md 296, editor.md 427, editor-smoke.md
+238, editor-ship.md 122, hq.md 369, toolsmith.md 167: all under the 500-line body cap.
+
+**Sources:** c29 extract 11/11, each rule carrying its declared landing slot and its own evidence.
+
 ## v0.4.324 — the bash-tool poll's harness half ships, and the 0.4.321–0.4.323 sync gap is healed for real
 
 **What forced it.** The 2026-11-20 bash-tool poll put 33 lanes on one question — what works in
