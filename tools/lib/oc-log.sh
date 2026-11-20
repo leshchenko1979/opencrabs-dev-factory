@@ -177,8 +177,9 @@ oc_log_finish() {
     --arg args "${OC_LOG_ARGS:0:500}" \
     --argjson exit "$rc" \
     --arg secs "$secs" \
+    --argjson pid "$$" \
     --argjson extra "${OC_LOG_EXTRA:-{\}}" \
-    '{ts:$ts, tool:$tool, actor:$actor, args:$args, exit:$exit, secs:($secs|tonumber), extra:$extra}' 2>/dev/null)" || return 0
+    '{ts:$ts, tool:$tool, actor:$actor, args:$args, exit:$exit, secs:($secs|tonumber), pid:$pid, extra:$extra}' 2>/dev/null)" || return 0
   [ -n "$line" ] || return 0
   logf="${OC_TOOLS_LOG:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}/tools.log}"
   mkdir -p "$(dirname "$logf")" 2>/dev/null

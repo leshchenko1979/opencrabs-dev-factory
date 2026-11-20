@@ -213,6 +213,7 @@ def oc_log_finish(exit_code=0):
             "args": _LOG_ARGS[:500],
             "exit": int(exit_code) if isinstance(exit_code, int) else 1,
             "secs": round(end - (_LOG_START if _LOG_START > 0 else end), 1),
+            "pid": os.getpid(),
             "extra": _LOG_EXTRA,
         }
         line = json.dumps(row, separators=(",", ":"))

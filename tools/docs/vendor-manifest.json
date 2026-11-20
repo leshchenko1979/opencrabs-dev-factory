@@ -263,6 +263,10 @@
           "match": "^        # `--subject` is CREATION-ONLY \\(:1516\\) and an uncorrectable field turns$",
           "match_upstream": "^        # `--subject` is CREATION-ONLY \\(:1505\\) and an uncorrectable field turns$",
           "why": "#627's SECOND citation of the same refusal line, in the selftest block's own comment. Pinned to the WHOLE line rather than a `.*CREATION-ONLY.*` wildcard: a wildcard would make an edit to the surrounding rationale invisible, which is the prefix-delta blindness LEG 2b exists to catch."
+        },
+        {
+          "match": "^\\ \\ \\ \\ \\ \\ \\ \\ \"pid\":\\ os\\.getpid\\(\\),$",
+          "why": "T-1 (c29 task 8, 2026-11-20): the unified-log row must name the process that WROTE it, so an invocation that hands off to a detached child is readable apart from a genuine repeat run. This copy carries the field ahead of the template because the fleet schema (tools/docs/RC-CONTRACT.md) names `pid` for every row and one tool writing a row without it would be the exact ambiguity T-1 removes. UPSTREAM ASK: add `\"pid\": os.getpid(),` to the log entry in TEMPLATE/tools/questions, beside the `extra` line."
         }
       ]
     },

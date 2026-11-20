@@ -86,7 +86,13 @@ set -e            # F-lens (HQ GO batch 2026-09-09): a bare-typo command like th
                   # tool, not be swallowed — silent no-op on unbound var/typos
                   # is the #124 time-bomb class.
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
-if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-prchecks" "$@"; else oc_log_finish() { :; }; fi
+if [ -f "$_OC_LIB" ]; then
+  source "$_OC_LIB"; oc_log_init "oc-prchecks" "$@"
+  # T-1: a DETACHED CHILD owns the journal line for its invocation (the parent
+  # suppresses its own at the hand-off), so mark the row. Without this the one
+  # surviving row is indistinguishable from a run that never detached.
+  [ "${OC_PRCHECKS_DETACHED:-0}" = "1" ] && oc_log_extra "detached" "1"
+else oc_log_finish() { :; }; fi
 # #727: the re-exec target and the argv to replay, captured BEFORE the parse loop
 # shifts "$@" away. SELF is read AFTER oc_snap_guard (line above), so it names the
 # IMMUTABLE MIRROR copy when the guard is active — re-execing the mutable original
@@ -1417,6 +1423,35 @@ FDV
   [ "$DET_RC" -eq 7 ] && t_ok "21i detach: wrapper exits with the CHILD's rc (7, not 0)" || t_bad "21i detach: rc=$DET_RC (want the child's 7)"
   grep -q "FAKE-DETACH-VERDICT RED" "$D/detach-i-out.txt" 2>/dev/null && t_ok "21i detach: verdict RELAYED to the caller's stdout" || t_bad "21i detach: verdict missing from the caller's capture (out=$(head -c 200 "$D/detach-i-out.txt" 2>/dev/null))"
 
+  # 21j. T-1 JOURNAL TAG: the detached CHILD owns the journal line for the
+  #      invocation, so that line must SAY so — extra.detached="1", beside the
+  #      pid that wrote it. Without the tag the single surviving row is
+  #      indistinguishable from a run that never detached at all, which is the
+  #      ambiguity T-1 exists to remove. `--help` exits immediately after the
+  #      tag site, so this leg needs no network, no gh shim and no child.
+  rm -f "$D/t1-child.log"
+  DET_RC=0
+  DET_OUT="$(OC_PRCHECKS_DETACHED=1 OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$D/t1-child.log" \
+    OC_DEPLOY_STATE_DIR="$D/state" "$SELF" --help 2>&1)" || DET_RC=$?
+  [ -s "$D/t1-child.log" ] && t_ok "21j T-1: detached child writes a journal row" || t_bad "21j T-1: no row from the detached child (rc=$DET_RC)"
+  jq -e 'select(.extra.detached=="1")' "$D/t1-child.log" >/dev/null 2>&1 && t_ok "21j T-1: row carries extra.detached=1" || t_bad "21j T-1: extra.detached missing ($(cat "$D/t1-child.log" 2>/dev/null))"
+  jq -e 'select(.pid|type=="number")' "$D/t1-child.log" >/dev/null 2>&1 && t_ok "21j T-1: row carries a numeric pid" || t_bad "21j T-1: pid missing from the row"
+
+  # 21k. T-1 PARENT SILENCE: a run that HANDS OFF writes no row of its own.
+  #      The stub detach launches no child, so any row in this log could only
+  #      have come from the parent — one invocation, one row, owned by whoever
+  #      did the work. The first assertion is the leg's own positive control:
+  #      "no row" is satisfied just as well by a run that never detached, so the
+  #      detach must be shown to have FIRED before the silence means anything.
+  rm -f "$D/t1-parent.log" "$D/t1-parent-fake.log"
+  DET_RC=0
+  DET_OUT="$(OC_DEPLOY_STATE_DIR="$D/state" OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$D/t1-parent.log" \
+    OC_PRCHECKS_IN_UNIT_CGROUP=1 OC_PRCHECKS_DETACH_CMD="$D/fake-detach" \
+    OC_PRCHECKS_LOG="$D/t1-parent-stdio.log" FAKE_DETACH_LOG="$D/t1-parent-fake.log" \
+    "$SELF" abc123 --wait 300 2>&1)" || DET_RC=$?
+  [ -s "$D/t1-parent-fake.log" ] && t_ok "21k T-1: detach FIRED (control for the silence below)" || t_bad "21k T-1: detach never fired — the silence assertion would be vacuous (out=$(head -c 200 "$D/t1-parent-stdio.log" 2>/dev/null))"
+  [ ! -s "$D/t1-parent.log" ] && t_ok "21k T-1: parent writes NO row at the hand-off" || t_bad "21k T-1: parent DOUBLE-WROTE a row ($(cat "$D/t1-parent.log" 2>/dev/null))"
+
   echo "selftest: $pass/$((pass+fail)) passed"
   [ "$fail" -eq 0 ]
 }
@@ -1589,6 +1624,13 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
   # an instant child. A broken caller pipe is tolerated (`|| :`): the gate already
   # finished, and its rc is what the caller needs.
   if [ -s "$dlog" ]; then cat "$dlog" 2>/dev/null || :; fi
+  # T-1 (c29 task 8): the child above IS a full invocation and journals its
+  # OWN row. The parent's row would be a SECOND record of the same work — same
+  # args, same exit, same ts SECOND — indistinguishable from a genuine repeat run
+  # (measured 2026-11-20: ONE invocation wrote 2 rows to /tmp/t3.log). A hand-off
+  # transfers ownership of the journal line, so the parent writes none; the
+  # child's row carries extra.detached=1 so the hand-off stays visible.
+  OC_LOG_ENABLED=0
   exit "$_drc"
 }
 
