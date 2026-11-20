@@ -104,7 +104,33 @@ tool_path() {
   return 1
 }
 tool()  { [ -x "$(tool_path "$1" 2>/dev/null)" ] || { bad "missing tool: $1"; return 1; } }
-section() { note ""; note "== $1 =="; }
+# #110: the sequential path had NO clock. battery_collect_timing is called only
+# from the parallel branch, so a default (jobs=1) receipt carried `timing: []`
+# and `mode: sequential` with a 37-minute wall nobody could attribute: "one
+# greedy section" and "a throttle that never releases" predicted the same
+# number. Stamp every section here so BOTH modes emit intervals. Chunk children
+# are excluded on purpose -- the parallel parent times its own child processes,
+# and a child clock would double-count the same interval.
+section() {
+  local _now_ms
+  note ""; note "== $1 =="
+  [ "${BATTERY_IN_CHUNK:-0}" = "1" ] && return 0
+  _now_ms="$(( $(date +%s%N) / 1000000 ))"
+  if [ -n "${BATTERY_SEC_START_MS:-}" ]; then
+    if [ -z "${BATTERY_SECTIONS_TSV:-}" ]; then
+      BATTERY_SECTIONS_TSV="$(mktemp -t oc-battery-sections.XXXXXX)" || BATTERY_SECTIONS_TSV=""
+      BATTERY_SECTIONS_TMP=1
+    fi
+    BATTERY_SEC_IDX=$(( ${BATTERY_SEC_IDX:-0} + 1 ))
+    [ -n "$BATTERY_SECTIONS_TSV" ] && printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$BATTERY_SEC_IDX" "$BATTERY_SEC_START_MS" "$_now_ms" \
+      "$(( _now_ms - BATTERY_SEC_START_MS ))" "${BATTERY_SEC_TITLE:-}" \
+      >> "$BATTERY_SECTIONS_TSV"
+  fi
+  BATTERY_SEC_START_MS="$_now_ms"
+  BATTERY_SEC_TITLE="$1"
+  return 0
+}
 # record — a continuation line's detail: printed AND appended to the fail
 # transcript. `tee -a` is byte-transparent on stdout, so a GREEN run stays
 # byte-identical (continuations appear only under a FAIL row).
@@ -459,6 +485,29 @@ battery_collect_timing() { # $1 = section count, $2 = per-chunk dir ($PT)
   return 0
 }
 
+# #110: close the final section's interval and build the receipt's `timing`
+# object for the SEQUENTIAL path (parallel mode gets both from
+# battery_collect_timing). Without this the last section is never closed, so
+# the slowest section of every default run -- the one that ends the run -- was
+# the one interval the receipt could not report.
+battery_seal_sections() {
+  local _now_ms
+  [ "${BATTERY_IN_CHUNK:-0}" = "1" ] && return 0
+  [ -n "${BATTERY_SEC_START_MS:-}" ] || return 0
+  _now_ms="$(( $(date +%s%N) / 1000000 ))"
+  if [ -n "${BATTERY_SECTIONS_TSV:-}" ]; then
+    BATTERY_SEC_IDX=$(( ${BATTERY_SEC_IDX:-0} + 1 ))
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$BATTERY_SEC_IDX" "$BATTERY_SEC_START_MS" "$_now_ms" \
+      "$(( _now_ms - BATTERY_SEC_START_MS ))" "${BATTERY_SEC_TITLE:-}" \
+      >> "$BATTERY_SECTIONS_TSV"
+  fi
+  BATTERY_SEC_START_MS=""
+  BATTERY_SECTIONS_JSON="$(battery_timing_json "${BATTERY_SECTIONS_TSV:-/dev/null}" "$0")"
+  [ -n "$BATTERY_SECTIONS_JSON" ] || BATTERY_SECTIONS_JSON='[]'
+  return 0
+}
+
 # Emits the receipt's `timing` object. max_concurrency is the peak overlap of
 # the section intervals -- the direct answer to "did the pool ever actually
 # hold $JOBS sections?", which a duration-sum cannot answer.
@@ -495,7 +544,22 @@ for _, delta in events:
     depth += delta
     if depth > peak:
         peak = depth
-slow = [{"n": k, "ms": d, "start_ms": s, "end_ms": e, "title": titles.get(k, "")}
+# #110: the sequential path has no `# ---- N.` ordinal to key titles off, so
+# section() writes the title into a 5th TSV column; prefer it when present and
+# fall back to the script's own headings for the parallel path.
+_seqtitle = {}
+try:
+    for _line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+        _q = _line.rstrip("\n").split("\t")
+        if len(_q) > 4:
+            try:
+                _seqtitle[int(_q[0])] = _q[4]
+            except ValueError:
+                pass
+except OSError:
+    pass
+slow = [{"n": k, "ms": d, "start_ms": s, "end_ms": e,
+         "title": _seqtitle.get(k) or titles.get(k, "")}
         for k, s, e, d in sorted(rows, key=lambda r: -r[3])[:10]]
 print(json.dumps({"max_concurrency": peak, "section_count": len(rows),
                   "sum_ms": sum(r[3] for r in rows), "slowest": slow}))
@@ -4356,6 +4420,8 @@ else
     bad "#76 NEGATIVE CONTROL: real read nice '$(_pf_field "$_o76r" nice)' (want 19), neutered read '$(_pf_field "$_o76n" nice)' (want != 19) — LEG 2 is inert"
   fi
 fi
+
+battery_seal_sections
 
 verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
 finalize_fail_log
