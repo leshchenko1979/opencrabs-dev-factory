@@ -1,0 +1,658 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-t5-sweep — the five Duty T5 legs, one row per leg WITH the boundary applied
+# =============================================================================
+# WHY THIS EXISTS (T-11, 2026-11-20; triage.md §Continuous Relationship Linking)
+# -----------------------------------------------------------------------------
+# Duty T5 asks five questions of every open `fix(`/`bug(`-titled issue, and until
+# now every sweep re-derived all five BY HAND from gh, git and the ledger. That
+# is the defect this tool removes: a hand count cannot be re-run, so a flag from
+# last week is neither reproducible nor auditable, and the population boundaries
+# — which are the whole reason the detector is usable rather than permanently
+# red — lived only in a human's memory of which date to type.
+#
+# THE FIVE LEGS (canon: triage.md §Continuous Relationship Linking Mandate)
+#   a  ORIGIN DECLARED   native parent exists, OR ANY comment's body matches one
+#                        of `no parent derivable` / `root:` / `upstream-rooted` /
+#                        `parent:` (or the issue BODY declares it — a lane that
+#                        declares its root in the body is equally compliant).
+#                        ALL comments, never the first: a declaration posted
+#                        retroactively cannot be the first comment on an issue
+#                        that already carries a commit or design note.
+#   b  ASSIGNEE          the REST `assignees` set is non-empty. A real field on
+#                        the issue object (unlike `.parent`, whose REST
+#                        projection returns a confident null for EVERY issue).
+#   c  NATIVE LINK       where the origin resolves to a SAME-TRACKER issue, a
+#                        native parent must exist. A comment-only `root:` makes
+#                        the issue DECLARED (leg a) and still leaves the LINK
+#                        absent (leg c) — the two legs are not redundant.
+#   i  VALIDATION NOTE   `duplicate` / `reproduc` / `still reproduces` in the
+#                        FIRST comment body, OR ANY claim row for the issue, OR
+#                        the issue body. The record is PER-ISSUE, never
+#                        per-claim-row: re-claiming is routine, and a lane that
+#                        validated once does not un-validate by re-claiming.
+#   ii DESIGN COMMENT    a comment `createdAt` before the earliest fork-main
+#                        commit whose `Issue-Ref` trailer names the issue, OR a
+#                        claim row declaring the repair mechanical.
+#
+# BOUNDARIES ARE DECLARED, PRINTED AND OVERRIDABLE — never inherited silently
+#   legs a, c   created >= 2026-09-25T22:33:06Z  (oc-issue-create began refusing
+#                                                 a silent fix-title)
+#   leg  b      created >= 2026-10-05T10:19:00Z  (the owner order that added it)
+#   legs i, ii  claimed >= 2026-09-26T22:00:00Z  (the pre-design law landed)
+# An issue filed or claimed before its gate was never asked, so flagging it
+# measures history rather than compliance — that distinction is what makes the
+# detector actionable (whole-open-set: 92.8% flagged, permanently red;
+# post-gate: 16.1%). EVERY ROW NAMES THE BOUNDARY IT APPLIED, and a `--boundary`
+# override is visible in the row as `boundary=... (override)`.
+#
+# THE VACUOUS CASE IS NAMED, because a leg that cannot go red must not read clean
+#   leg c   reports VACUOUS when NO in-scope issue declares a same-tracker root:
+#           the referent does not exist, so "0 flagged" is the ABSENCE OF THE
+#           THING MEASURED, not a pass.
+#   leg ii  a missing anchor is the ABSENCE OF THE THING MEASURED, never a
+#           failure (triage.md, measured 2026-09-28): an issue with no fork-main
+#           commit naming it is VACUOUS, NOT flagged. The opposite reading flags
+#           20 issues on a condition none of them can satisfy.
+#
+# This tool REPORTS. It closes nothing and writes nothing to any tracker — a
+# public close is `oc-closure-sweep`'s / `oc-smoke --close`'s job, on a
+# behavioural receipt. A flag here is a question to the filing lane, never a
+# verdict, and it is registered by the CRON'S DELIVERY LANE: the T5 executor is
+# UNBOUND, so `oc-questions ask` refuses it rc=2 by construction.
+#
+# Usage: oc-t5-sweep [--repo <owner/repo>] [--boundary leg=<a|b|c|i|ii>:<ISO>]
+#                    [--ledger <path>] [--repo-dir <git checkout>]
+#                    [--fixture <snapshot.json>] [--leg <name>] [--json]
+#                    [--selftest]
+#   --repo      tracker to sweep (default leshchenko1979/opencrabs, the fork —
+#               the single binary tracker; factory issues are NOT in scope)
+#   --boundary  override a leg's default boundary; repeatable, e.g.
+#               --boundary leg=a:2026-09-30T00:00:00Z. The override is PRINTED
+#               in that leg's row, so a re-run never has to be trusted.
+#   --ledger    workers-ledger.json (default $STATE_DIR/workers-ledger.json)
+#   --repo-dir  git checkout whose origin/main carries the Issue-Ref trailers
+#               (default /root/opencrabs)
+#   --fixture   evaluate a PRE-FETCHED snapshot instead of calling gh/git. This
+#               is the reproducibility path: the hand count was captured this
+#               way, so the tool can be re-run offline against the same bytes.
+#   --leg       restrict the run to one leg (a|b|c|i|ii), repeatable
+#   --json      one JSON object per leg on stdout
+#
+# Exit codes:
+#   0 sweep ran; no leg flagged a finding
+#   1 sweep ran; at least one leg flagged (findings, not an error)
+#   2 usage error
+#   3 an input is missing or unreadable (--ledger / --fixture / gh unavailable)
+# =============================================================================
+# --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+_OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
+if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
+
+set -u
+set -o pipefail
+
+PROG="oc-t5-sweep"
+STATE_DIR="${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}"
+
+# The selftest must not journal rows into the fleet log. Set BEFORE oc_log_init:
+# init is what enables the writer, so exporting after it is a no-op.
+for _a in "$@"; do [ "$_a" = "--selftest" ] && export OC_TOOLS_NOLOG=1; done
+
+. "$OC_TOOLS_DIR/lib/oc-log.sh" 2>/dev/null || true
+oc_log_init "$PROG" "$@"
+
+GH_BIN="${OC_GH_BIN:-gh}"
+REPO="leshchenko1979/opencrabs"
+LEDGER="$STATE_DIR/workers-ledger.json"
+REPO_DIR="${OC_SRC_DIR:-/root/opencrabs}"
+FIXTURE=""
+JSON=0
+MODE=sweep
+ORIGIN_GATE="2026-09-25T22:33:06Z"   # legs a AND c
+BOUND_A="$ORIGIN_GATE"
+BOUND_B="2026-10-05T10:19:00Z"
+BOUND_C="2026-09-26T22:00:00Z"        # legs i and ii (design gate)
+BOUND_C_LEG="$ORIGIN_GATE"            # leg c, overridable on its own
+OVR_A=""; OVR_B=""; OVR_C=""; OVR_I=""; OVR_II=""
+LEGS="a b c i ii"
+LEG_GIVEN=0
+
+die() { local rc="$1"; shift; printf '%s: %s\n' "$PROG" "$*" >&2; exit "$rc"; }
+
+usage() {
+  sed -n '/^# Usage: oc-t5-sweep/,/^#   3 an input is missing/p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)      [ $# -ge 2 ] || die 2 "--repo needs <owner/repo>"; REPO="$2"; shift 2 ;;
+    --ledger)    [ $# -ge 2 ] || die 2 "--ledger needs a path"; LEDGER="$2"; shift 2 ;;
+    --repo-dir)  [ $# -ge 2 ] || die 2 "--repo-dir needs a path"; REPO_DIR="$2"; shift 2 ;;
+    --fixture)   [ $# -ge 2 ] || die 2 "--fixture needs a path"; FIXTURE="$2"; shift 2 ;;
+    --leg)       [ $# -ge 2 ] || die 2 "--leg needs a name"
+                 [ "$LEG_GIVEN" -eq 1 ] || { LEGS=""; LEG_GIVEN=1; }
+                 LEGS="$LEGS $2"; shift 2 ;;
+    --boundary)
+      [ $# -ge 2 ] || die 2 "--boundary needs leg=<name>:<ISO>"
+      case "$2" in
+        leg=*) ;;
+        *) die 2 "--boundary must be leg=<name>:<ISO>, got '$2'" ;;
+      esac
+      _bl="${2#leg=}"; _lg="${_bl%%:*}"; _iso="${_bl#*:}"
+      case "$_lg" in
+        a)  OVR_A="$_iso" ;;
+        b)  OVR_B="$_iso" ;;
+        c)  OVR_C="$_iso" ;;
+        i)  OVR_I="$_iso" ;;
+        ii) OVR_II="$_iso" ;;
+        *) die 2 "--boundary leg name must be one of a|b|c|i|ii, got '$_lg'" ;;
+      esac
+      case "$_iso" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+        *) die 2 "--boundary instant must be RFC3339 UTC (YYYY-MM-DDThh:mm:ssZ), got '$_iso'" ;;
+      esac
+      shift 2 ;;
+    --json)      JSON=1; shift ;;
+    --selftest)  MODE=selftest; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *) die 2 "unknown argument '$1' (see --help)" ;;
+  esac
+done
+
+case "$REPO" in
+  */*) ;;
+  *) die 2 "--repo must be owner/repo, got '$REPO'" ;;
+esac
+
+# Normalise the leg list: dedupe, validate, keep canonical order.
+_norm=""
+for _l in a b c i ii; do
+  for _want in $LEGS; do
+    [ "$_want" = "$_l" ] && { _norm="$_norm $_l"; break; }
+  done
+done
+LEGS="${_norm# }"
+[ -n "$LEGS" ] || die 2 "--leg names must be one of a|b|c|i|ii"
+
+# Overrides replace the default for that leg. Empty means "use the default".
+[ -n "$OVR_A" ]  && BOUND_A="$OVR_A"
+[ -n "$OVR_B" ]  && BOUND_B="$OVR_B"
+[ -n "$OVR_C" ]  && BOUND_C_LEG="$OVR_C"
+# legs i and ii share the design-gate boundary; an override on either leg
+# applies to THAT leg only, so the row can never claim a boundary it did not use.
+BOUND_I="${OVR_I:-$BOUND_C}"
+BOUND_II="${OVR_II:-$BOUND_C}"
+
+export PROG REPO LEDGER REPO_DIR FIXTURE JSON LEGS GH_BIN
+export BOUND_A BOUND_B BOUND_C BOUND_C_LEG BOUND_I BOUND_II OVR_A OVR_B OVR_C OVR_I OVR_II
+
+# =============================================================================
+# The sweep itself. ONE code path serves live and --fixture runs: live mode
+# builds the same snapshot dict the fixture supplies, so the selftest exercises
+# the evaluator that actually ships rather than a parallel copy of it.
+# =============================================================================
+sweep() {
+python3 - <<'PY'
+import json, os, re, subprocess, sys, collections
+
+E = os.environ
+REPO, FIXTURE = E["REPO"], E["FIXTURE"]
+LEDGER, REPO_DIR = E["LEDGER"], E["REPO_DIR"]
+GH = E["GH_BIN"]
+LEGS = E["LEGS"].split()
+AS_JSON = E["JSON"] == "1"
+B = {"a": E["BOUND_A"], "b": E["BOUND_B"], "c": E["BOUND_C_LEG"],
+     "i": E["BOUND_I"], "ii": E["BOUND_II"]}
+OVR = {"a": E["OVR_A"], "b": E["OVR_B"], "c": E["OVR_C"],
+       "i": E["OVR_I"], "ii": E["OVR_II"]}
+SRC = {k: ("override" if OVR[k] else "default") for k in B}
+
+FIXTITLE = re.compile(r'^(fix|bug)\(', re.I)
+DECL = re.compile(r'no parent derivable|root:|upstream-rooted|parent:', re.I)
+SAMEROOT = re.compile(r'root:\s*(?:#|https://github\.com/leshchenko1979/opencrabs/issues/)(\d+)', re.I)
+VALID = re.compile(r'duplicate|reproduc|still reproduces', re.I)
+MECH = re.compile(r'mechanical', re.I)
+
+
+def die(rc, msg):
+    sys.stderr.write("oc-t5-sweep: %s\n" % msg)
+    sys.exit(rc)
+
+
+def gh_json(args):
+    # A MISSING gh is rc 3 (an input is unavailable), never a Python traceback:
+    # a traceback reads as "the tool crashed", which sends the next reader
+    # hunting a defect in the sweep instead of installing gh.
+    try:
+        r = subprocess.run([GH] + args, capture_output=True, text=True)
+    except FileNotFoundError:
+        die(3, "gh not found (%s) — install gh or set OC_GH_BIN" % GH)
+    except OSError as exc:
+        die(3, "gh could not be run (%s): %s" % (GH, exc))
+    if r.returncode != 0:
+        die(3, "gh %s: %s" % (" ".join(args[:2]), (r.stderr or "").strip()[:200]))
+    return json.loads(r.stdout or "[]")
+
+
+def load_live():
+    """Build the snapshot: issues (with parent/comments), claims, anchors."""
+    raw = gh_json(["issue", "list", "--repo", REPO, "--state", "open",
+                   "--limit", "500", "--json", "number,title,createdAt,assignees"])
+    issues = []
+    for it in raw:
+        if not FIXTITLE.search(it.get("title") or ""):
+            continue
+        issues.append({"number": it["number"], "title": it["title"],
+                       "createdAt": it["createdAt"],
+                       "assignees": [a.get("login") for a in (it.get("assignees") or [])]})
+    # Detail is needed only where a leg reads parent/comments/body. Leg b reads
+    # the list's own `assignees`, so an issue can be in its population with no
+    # detail call at all.
+    by_n = {i["number"]: i for i in issues}
+    need = sorted({i["number"] for i in issues if i["createdAt"] >= min(B["a"], B["c"])})
+    sys.stderr.write("oc-t5-sweep: reading %d issue(s) for parent/comments/body\n" % len(need))
+    for n in need:
+        d = gh_json(["issue", "view", str(n), "--repo", REPO,
+                     "--json", "number,parent,assignees,body,comments"])
+        by_n[n]["parent"] = (d.get("parent") or {}).get("number")
+        by_n[n]["body"] = d.get("body") or ""
+        by_n[n]["comments"] = [{"body": (c.get("body") or ""),
+                                "createdAt": c.get("createdAt")}
+                               for c in (d.get("comments") or [])]
+    for i in issues:
+        i.setdefault("parent", None); i.setdefault("body", ""); i.setdefault("comments", [])
+    return {"issues": issues, "claims": load_claims(), "anchors": load_anchors()}
+
+
+def load_claims():
+    try:
+        ev = json.load(open(LEDGER))["events"]
+    except Exception as exc:
+        die(3, "ledger unreadable (%s): %s" % (LEDGER, exc))
+    return [{"n": e.get("n"), "t": e.get("t"), "what": e.get("what") or "",
+             "issues": e.get("issues") or []}
+            for e in ev if e.get("kind") == "claim"]
+
+
+def load_anchors():
+    """issue number -> earliest fork-main commit date whose Issue-Ref names it."""
+    try:
+        r = subprocess.run(["git", "-C", REPO_DIR, "log", "origin/main",
+                            "--format=%cI|%(trailers:key=Issue-Ref,valueonly)"],
+                           capture_output=True, text=True)
+    except Exception as exc:
+        sys.stderr.write("oc-t5-sweep: anchors UNAVAILABLE (git: %s) — leg ii reports vacuous\n" % exc)
+        return {}
+    if r.returncode != 0:
+        sys.stderr.write("oc-t5-sweep: anchors UNAVAILABLE (%s) — leg ii reports vacuous\n"
+                         % (r.stderr or "").strip()[:160])
+        return {}
+    anchors = {}
+    for line in r.stdout.splitlines():
+        if "|" not in line:
+            continue
+        when, ref = line.split("|", 1)
+        for m in re.finditer(r'#(\d+)', ref):
+            n = int(m.group(1))
+            if n not in anchors or when < anchors[n]:
+                anchors[n] = when
+    return anchors
+
+
+def leg_a(issues, snap):
+    pop = [i for i in issues if i["createdAt"] >= B["a"]]
+    flagged = []
+    for i in pop:
+        if i.get("parent"):
+            continue
+        if any(DECL.search(c["body"]) for c in i["comments"]):
+            continue
+        if DECL.search(i["body"]):
+            continue
+        flagged.append(i["number"])
+    return {"leg": "a", "predicate": "origin declared",
+            "boundary_field": "created", "boundary": B["a"],
+            "boundary_source": SRC["a"], "population": len(pop),
+            "flagged": flagged, "vacuous": None}
+
+
+def leg_b(issues, snap):
+    pop = [i for i in issues if i["createdAt"] >= B["b"]]
+    flagged = [i["number"] for i in pop if not i.get("assignees")]
+    return {"leg": "b", "predicate": "assignee present",
+            "boundary_field": "created", "boundary": B["b"],
+            "boundary_source": SRC["b"], "population": len(pop),
+            "flagged": flagged, "vacuous": None}
+
+
+def leg_c(issues, snap):
+    pop = [i for i in issues if i["createdAt"] >= B["c"]]
+    flagged, with_root = [], 0
+    for i in pop:
+        roots = set()
+        for c in i["comments"]:
+            for m in SAMEROOT.finditer(c["body"]):
+                roots.add(int(m.group(1)))
+        if roots:
+            with_root += 1
+            if not i.get("parent"):
+                flagged.append(i["number"])
+    vac = None
+    if with_root == 0:
+        # NOT a pass: the referent does not exist, so nothing was measured.
+        vac = {"count": len(pop),
+               "reason": "no in-scope issue declares a same-tracker root"}
+    return {"leg": "c", "predicate": "native link where origin resolves same-tracker",
+            "boundary_field": "created", "boundary": B["c"],
+            "boundary_source": SRC["c"], "population": len(pop),
+            "flagged": flagged, "vacuous": vac, "with_same_tracker_root": with_root}
+
+
+def _claimed(snap, issues, bound):
+    popn = {i["number"]: i for i in issues}
+    claims = collections.defaultdict(list)
+    for c in snap["claims"]:
+        for n in c["issues"]:
+            try:
+                claims[int(n)].append(c)
+            except (TypeError, ValueError):
+                pass
+    scope = sorted(n for n, cs in claims.items()
+                   if n in popn and any((c["t"] or "") >= bound for c in cs))
+    return scope, claims, popn
+
+
+def leg_i(issues, snap):
+    scope, claims, popn = _claimed(snap, issues, B["i"])
+    flagged = []
+    for n in scope:
+        i = popn[n]
+        first = i["comments"][0]["body"] if i["comments"] else ""
+        ok = (VALID.search(first)
+              or any(VALID.search(c["what"]) for c in claims[n])
+              or VALID.search(i["body"]))
+        if not ok:
+            flagged.append(n)
+    return {"leg": "i", "predicate": "validation note on the record",
+            "boundary_field": "claimed", "boundary": B["i"],
+            "boundary_source": SRC["i"], "population": len(scope),
+            "flagged": flagged, "vacuous": None}
+
+
+def leg_ii(issues, snap):
+    scope, claims, popn = _claimed(snap, issues, B["ii"])
+    anchors = snap["anchors"]
+    flagged, vacuous = [], 0
+    for n in scope:
+        i = popn[n]
+        anchor = anchors.get(n) or anchors.get(str(n))
+        mech = any(MECH.search(c["what"]) for c in claims[n])
+        if anchor is None:
+            # ABSENCE OF THE THING MEASURED, never a failure (triage.md).
+            vacuous += 1
+            continue
+        ok = mech or any((c["createdAt"] or "") and c["createdAt"] < anchor
+                         for c in i["comments"])
+        if not ok:
+            flagged.append(n)
+    vac = None
+    if vacuous:
+        vac = {"count": vacuous,
+               "reason": "no fork-main commit carries an Issue-Ref for these issues"}
+    return {"leg": "ii", "predicate": "design comment precedes first anchored commit",
+            "boundary_field": "claimed", "boundary": B["ii"],
+            "boundary_source": SRC["ii"], "population": len(scope),
+            "flagged": flagged, "vacuous": vac}
+
+
+if FIXTURE:
+    try:
+        snap = json.load(open(FIXTURE))
+    except Exception as exc:
+        die(3, "fixture unreadable (%s): %s" % (FIXTURE, exc))
+    for k in ("issues", "claims", "anchors"):
+        snap.setdefault(k, [] if k != "anchors" else {})
+    snap["anchors"] = {int(k): v for k, v in (snap["anchors"] or {}).items()}
+else:
+    snap = load_live()
+
+issues = snap["issues"]
+rows = []
+for lg in LEGS:
+    rows.append({"a": leg_a, "b": leg_b, "c": leg_c, "i": leg_i, "ii": leg_ii}[lg](issues, snap))
+
+total = 0
+for r in rows:
+    total += len(r["flagged"])
+    if AS_JSON:
+        print(json.dumps(r, sort_keys=True))
+        continue
+    src = " (override)" if r["boundary_source"] == "override" else ""
+    line = ("leg %-2s %-46s boundary=%s>=%s%s  population=%d  flagged=%d"
+            % (r["leg"], r["predicate"], r["boundary_field"], r["boundary"], src,
+               r["population"], len(r["flagged"])))
+    if r["flagged"]:
+        line += "\n       flags: " + " ".join("#%d" % n for n in r["flagged"])
+    if r.get("vacuous"):
+        line += "\n       VACUOUS (%s) — %d issue(s) not measured; NOT a pass" % (
+            r["vacuous"]["reason"], r["vacuous"]["count"])
+    print(line)
+
+if not AS_JSON:
+    print("\ntotal flagged across legs: %d" % total)
+    print("boundaries: a created>=%s  b created>=%s  c created>=%s  i claimed>=%s  ii claimed>=%s"
+          % (B["a"], B["b"], B["c"], B["i"], B["ii"]))
+
+sys.exit(1 if total else 0)
+PY
+}
+
+# =============================================================================
+# SELFTEST — fixtures only; never touches gh, git or the live ledger.
+# A leg that cannot go red is decoration, so each arm below FAILS if the
+# predicate it targets is neutered.
+# =============================================================================
+run_selftest() {
+  export OC_TOOLS_NOLOG=1
+  _ST_D="$(mktemp -d)" || die 3 "mktemp failed"
+  trap 'rm -rf "$_ST_D"' EXIT
+  D="$_ST_D"
+  local SELF="$OC_TOOLS_DIR/state/oc-t5-sweep"
+  local pass=0 fail=0
+  # ONE label per arm, printed by BOTH outcomes. A t_bad that words the failure
+  # differently from its t_ok makes the arm unsearchable in a mutation run —
+  # measured here: two neutered predicates read as "SURVIVED" because the
+  # harness matched the OK string and the FAIL string said something else.
+  t_ok()  { pass=$((pass + 1)); printf 'selftest: %s  OK\n' "$*"; }
+  t_bad() { fail=$((fail + 1)); printf 'selftest: %s  FAIL\n' "$*" >&2; }
+  ck() { local l="$1"; shift; if "$@"; then t_ok "$l"; else t_bad "$l"; fi; }
+  # rows-based assertion: a python expression over `rows` exits 0/1
+  chk() {
+    local l="$1" expr="$2"
+    python3 -c "
+import json,sys
+rows=[json.loads(x) for x in open('$D/out.json') if x.strip()]
+$expr
+" 2>/dev/null && t_ok "$l" || t_bad "$l"
+  }
+
+  # ---- fixture: every leg has a pass arm and a red arm ---------------------
+  # #7 is created BEFORE leg a/c's boundary and claimed BEFORE the design gate:
+  # it must be OUT of both populations, which is the boundary arm.
+  # #3 carries an ANCHOR on purpose. Without one it goes vacuous before the
+  # mechanical arm is ever read, so removing `mech or` survived every leg.
+  cat > "$D/f.json" <<'FIX'
+{"issues":[
+ {"number":1,"createdAt":"2026-10-10T00:00:00Z","parent":9,"assignees":["x"],"body":"","comments":[]},
+ {"number":2,"createdAt":"2026-10-10T00:00:00Z","parent":null,"assignees":[],"body":"",
+  "comments":[{"body":"unrelated note","createdAt":"2026-10-11T00:00:00Z"},
+              {"body":"root: upstream:abc123","createdAt":"2026-10-12T00:00:00Z"}]},
+ {"number":3,"createdAt":"2026-10-10T00:00:00Z","parent":null,"assignees":[],
+  "body":"root: upstream:deadbeef","comments":[]},
+ {"number":4,"createdAt":"2026-10-10T00:00:00Z","parent":null,"assignees":["x"],"body":"","comments":[]},
+ {"number":5,"createdAt":"2026-10-10T00:00:00Z","parent":null,"assignees":["x"],"body":"",
+  "comments":[{"body":"root: #9","createdAt":"2026-09-28T00:00:00Z"}]},
+ {"number":6,"createdAt":"2026-10-10T00:00:00Z","parent":9,"assignees":["x"],"body":"",
+  "comments":[{"body":"root: #9","createdAt":"2026-10-11T00:00:00Z"}]},
+ {"number":7,"createdAt":"2026-09-01T00:00:00Z","parent":null,"assignees":[],"body":"","comments":[]},
+ {"number":8,"createdAt":"2026-10-06T00:00:00Z","parent":null,"assignees":[],"body":"","comments":[]},
+ {"number":9,"createdAt":"2026-10-10T00:00:00Z","parent":9,"assignees":["x"],
+  "body":"reproduction: still reproduces on the live binary","comments":[]},
+ {"number":10,"createdAt":"2026-10-10T00:00:00Z","parent":9,"assignees":["x"],"body":"",
+  "comments":[{"body":"duplicate of #3 — swept open and closed issues","createdAt":"2026-10-02T00:00:00Z"}]}
+],
+"claims":[
+ {"n":1,"t":"2026-10-01T00:00:00Z","what":"CLAIM #1 — duplicate of #0, reproduction attached","issues":[1]},
+ {"n":2,"t":"2026-10-01T00:00:00Z","what":"CLAIM #2 — implementing it","issues":[2]},
+ {"n":3,"t":"2026-10-01T00:00:00Z","what":"CLAIM #3 — mechanical rename","issues":[3]},
+ {"n":4,"t":"2026-10-01T00:00:00Z","what":"CLAIM #4 — no validation recorded","issues":[4]},
+ {"n":5,"t":"2026-10-01T00:00:00Z","what":"CLAIM #5 — reproduction confirmed, design comment posted","issues":[5]},
+ {"n":6,"t":"2026-09-01T00:00:00Z","what":"CLAIM #7 — claimed before the design gate","issues":[7]},
+ {"n":7,"t":"2026-10-01T00:00:00Z","what":"CLAIM #8 — no anchor commit","issues":[8]},
+ {"n":8,"t":"2026-10-01T00:00:00Z","what":"CLAIM #9 — validated in the issue body","issues":[9]},
+ {"n":9,"t":"2026-10-01T00:00:00Z","what":"CLAIM #10 — validated in the first comment","issues":[10]}
+],
+"anchors":{"3":"2026-09-29T00:29:06+00:00","4":"2026-09-29T00:29:06+00:00",
+           "5":"2026-09-29T00:29:06+00:00"}}
+FIX
+
+  # A population with NO same-tracker root at all: leg c must report VACUOUS,
+  # never a clean 0. This is the arm that stops "0 flagged" from reading green.
+  cat > "$D/noroot.json" <<'FIX'
+{"issues":[
+ {"number":1,"createdAt":"2026-10-10T00:00:00Z","parent":9,"assignees":["x"],"body":"","comments":[]},
+ {"number":2,"createdAt":"2026-10-10T00:00:00Z","parent":8,"assignees":["x"],"body":"","comments":[]}
+],"claims":[],"anchors":{}}
+FIX
+
+  # A population where everything is compliant: rc must be 0, not 1.
+  cat > "$D/clean.json" <<'FIX'
+{"issues":[
+ {"number":1,"createdAt":"2026-10-10T00:00:00Z","parent":9,"assignees":["x"],"body":"","comments":[]}
+],"claims":[],"anchors":{}}
+FIX
+
+  local rc=0
+  "$SELF" --fixture "$D/f.json" --json > "$D/out.json" 2>"$D/err"; rc=$?
+
+  # ---- rc contract --------------------------------------------------------
+  ck "findings present -> rc 1" [ "$rc" -eq 1 ]
+  "$SELF" --fixture "$D/clean.json" >/dev/null 2>&1
+  ck "no findings -> rc 0" [ "$?" -eq 0 ]
+  "$SELF" --boundary leg=z:2026-01-01T00:00:00Z >/dev/null 2>&1
+  ck "bad leg name -> rc 2" [ "$?" -eq 2 ]
+  "$SELF" --boundary leg=a:not-a-date >/dev/null 2>&1
+  ck "non-RFC3339 boundary -> rc 2" [ "$?" -eq 2 ]
+  "$SELF" --fixture "$D/nope.json" >/dev/null 2>&1
+  ck "unreadable fixture -> rc 3" [ "$?" -eq 3 ]
+  # A missing gh must be rc 3 with a named remedy, never a Python traceback: a
+  # traceback reads as "the sweep crashed" and sends the next reader hunting a
+  # defect in the tool instead of installing gh (measured on this file).
+  OC_GH_BIN=/nonexistent/gh "$SELF" --repo o/r > "$D/nogh.out" 2>"$D/nogh.err"
+  ck "missing gh -> rc 3" [ "$?" -eq 3 ]
+  grep -qi 'Traceback' "$D/nogh.err"
+  ck "missing gh reports a remedy, not a traceback" [ "$?" -ne 0 ]
+
+  # ---- ACCEPTANCE 1: every row names the boundary it applied --------------
+  chk "every leg row carries a boundary and its source" '
+g=[r for r in rows if r["leg"] in ("a","b","c","i","ii")]
+sys.exit(0 if len(g)==5 and all(r["boundary"] and r["boundary_source"]=="default" for r in g) else 1)'
+  chk "legs a/c use the origin gate, leg b its own, i/ii the design gate" '
+m={r["leg"]:r["boundary"] for r in rows}
+sys.exit(0 if m=={"a":"2026-09-25T22:33:06Z","b":"2026-10-05T10:19:00Z","c":"2026-09-25T22:33:06Z",
+                  "i":"2026-09-26T22:00:00Z","ii":"2026-09-26T22:00:00Z"} else 1)'
+
+  # ---- ACCEPTANCE 2: --boundary overrides AND the override is visible -----
+  "$SELF" --fixture "$D/f.json" --json --leg a --boundary leg=a:2026-10-09T00:00:00Z > "$D/ovr.json" 2>/dev/null
+  python3 -c "
+import json,sys
+r=[json.loads(l) for l in open('$D/ovr.json') if l.strip()][0]
+sys.exit(0 if r['leg']=='a' and r['boundary']=='2026-10-09T00:00:00Z' and r['boundary_source']=='override' and r['population']==8 else 1)" 2>/dev/null
+  ck "override is applied and named in the row (population follows it)" [ "$?" -eq 0 ]
+  # Capture THEN grep: the tool exits 1 on findings and `set -o pipefail` makes
+  # the pipeline inherit that rc, so `tool | grep -q` reports a MATCH as a miss.
+  "$SELF" --fixture "$D/f.json" --leg a --boundary leg=a:2026-10-09T00:00:00Z > "$D/txt" 2>/dev/null
+  grep -q '2026-10-09T00:00:00Z (override)' "$D/txt"
+  ck "override printed as '(override)' in the text row" [ "$?" -eq 0 ]
+  grep -q 'c created>=2026-09-25T22:33:06Z' "$D/txt"
+  ck "an a-only override does not leak into leg c's boundary line" [ "$?" -eq 0 ]
+
+  # ---- leg a: the declaration channels, and the one that flags -----------
+  chk "leg a: parent, any-comment and body all count as DECLARED" '
+g=[r for r in rows if r["leg"]=="a"][0]
+sys.exit(0 if not ({1,2,3} & set(g["flagged"])) else 1)'
+  chk "leg a: a declaration in the SECOND comment still counts (all-comments read)" '
+g=[r for r in rows if r["leg"]=="a"][0]
+sys.exit(0 if 2 not in g["flagged"] else 1)'
+  chk "leg a: neither parent nor marker -> flagged" '
+g=[r for r in rows if r["leg"]=="a"][0]
+sys.exit(0 if g["flagged"]==[4,8] else 1)'
+  chk "leg a: a pre-gate issue (#7) is OUT of the population" '
+g=[r for r in rows if r["leg"]=="a"][0]
+sys.exit(0 if g["population"]==9 and 7 not in g["flagged"] else 1)'
+
+  # ---- leg b --------------------------------------------------------------
+  chk "leg b: empty assignees flagged, populated ones not" '
+g=[r for r in rows if r["leg"]=="b"][0]
+sys.exit(0 if g["flagged"]==[2,3,8] else 1)'
+
+  # ---- leg c: the link leg, plus the VACUOUS case ------------------------
+  chk "leg c: same-tracker root without a native parent is flagged" '
+g=[r for r in rows if r["leg"]=="c"][0]
+sys.exit(0 if g["flagged"]==[5] and g["with_same_tracker_root"]==2 else 1)'
+  chk "leg c: a parented issue with a root: comment is NOT flagged" '
+g=[r for r in rows if r["leg"]=="c"][0]
+sys.exit(0 if 6 not in g["flagged"] else 1)'
+  "$SELF" --fixture "$D/noroot.json" --json --leg c > "$D/nr.json" 2>/dev/null
+  python3 -c "
+import json,sys
+r=[json.loads(l) for l in open('$D/nr.json') if l.strip()][0]
+sys.exit(0 if r['leg']=='c' and r['flagged']==[] and r['vacuous'] and r['vacuous']['count']==2 else 1)" 2>/dev/null
+  ck "leg c: no same-tracker root -> VACUOUS, never a clean 0" [ "$?" -eq 0 ]
+  "$SELF" --fixture "$D/noroot.json" --leg c > "$D/vac" 2>/dev/null
+  grep -q 'VACUOUS' "$D/vac"
+  ck "leg c: VACUOUS is printed in the text row" [ "$?" -eq 0 ]
+
+  # ---- leg i: the per-ISSUE record, three channels ----------------------
+  chk "leg i: a claim-row validation note counts (#1)" '
+g=[r for r in rows if r["leg"]=="i"][0]
+sys.exit(0 if 1 not in g["flagged"] else 1)'
+  chk "leg i: no note in first comment, any claim row or body -> flagged" '
+g=[r for r in rows if r["leg"]=="i"][0]
+sys.exit(0 if g["flagged"]==[2,3,4,8] else 1)'
+  chk "leg i: a pre-gate claim (#7) is OUT of the population" '
+g=[r for r in rows if r["leg"]=="i"][0]
+sys.exit(0 if g["population"]==8 and 7 not in g["flagged"] else 1)'
+  chk "leg i: a validation note in the ISSUE BODY (#9) or FIRST COMMENT (#10) counts" '
+g=[r for r in rows if r["leg"]=="i"][0]
+sys.exit(0 if 9 not in g["flagged"] and 10 not in g["flagged"] else 1)'
+
+  # ---- leg ii: anchor ordering, the mechanical arm, vacuity --------------
+  chk "leg ii: a comment before the anchor counts; none after -> flagged" '
+g=[r for r in rows if r["leg"]=="ii"][0]
+sys.exit(0 if g["flagged"]==[4] and 5 not in g["flagged"] else 1)'
+  chk "leg ii: a claim declaring the repair mechanical is DECLARED" '
+g=[r for r in rows if r["leg"]=="ii"][0]
+sys.exit(0 if 3 not in g["flagged"] else 1)'
+  chk "leg ii: a missing anchor is VACUOUS, not a flag (#8)" '
+g=[r for r in rows if r["leg"]=="ii"][0]
+sys.exit(0 if 8 not in g["flagged"] and g["vacuous"] and g["vacuous"]["count"]==5 else 1)'
+
+  # ---- the tool reports; it never writes -------------------------------
+  grep -qE '^[[:space:]]*--apply\)' "$SELF"
+  ck "no --apply arm: the sweep reports and never writes to a tracker" [ "$?" -ne 0 ]
+
+  printf '\nselftest: %d passed, %d failed\n' "$pass" "$fail" >&2
+  [ "$fail" -eq 0 ] || exit 1
+  exit 0
+}
+
+if [ "$MODE" = selftest ]; then run_selftest; fi
+
+sweep
+exit $?

@@ -2494,6 +2494,35 @@ if tool oc-closure-sweep; then
   "$TOOLS_DIR/state/oc-closure-sweep" --help >/dev/null 2>&1 && ok "oc-closure-sweep --help rc=0" || bad "oc-closure-sweep --help rc!=0"
 fi
 
+# ---- 66c. oc-t5-sweep (the five Duty T5 legs, boundaries declared)
+# The sweep every T5 patrol used to perform BY HAND. A hand count cannot be
+# re-run, so a flag could not be audited and the population boundaries — the
+# whole reason the detector is usable rather than permanently red (92.8% flagged
+# at whole-open-set scope vs 16.1% post-gate) — lived only in a human's memory.
+#
+# In this list for the reason #66b names: run_selftest is opt-in per tool, so a
+# new tool ships silently UNCOVERED. Its 29 arms are mutation-verified (14/14
+# neutered predicates turn a named arm red), and the two that survive a naive
+# fixture are the reason each leg carries BOTH a pass arm and a red arm.
+section "oc-t5-sweep (five Duty T5 legs, declared boundaries)"
+run_selftest oc-t5-sweep
+if tool oc-t5-sweep; then
+  "$TOOLS_DIR/state/oc-t5-sweep" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
+  "$TOOLS_DIR/state/oc-t5-sweep" --help >/dev/null 2>&1 && ok "oc-t5-sweep --help rc=0" || bad "oc-t5-sweep --help rc!=0"
+  # A boundary that is not RFC3339 must be REFUSED, not silently compared as a
+  # string: a malformed bound makes every population empty and every leg read
+  # clean, which is the "green because blind" shape the whole tool guards against.
+  "$TOOLS_DIR/state/oc-t5-sweep" --boundary leg=a:2026-13-99 >/dev/null 2>&1; [ $? -eq 2 ] && ok "malformed boundary -> 2" || bad "malformed boundary -> expected 2"
+  "$TOOLS_DIR/state/oc-t5-sweep" --boundary leg=q:2026-10-01T00:00:00Z >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown leg name -> 2" || bad "unknown leg name -> expected 2"
+  # Offline determinism: the same fixture must give the same flags twice. A
+  # sweep whose answer moves between runs cannot be an acceptance oracle.
+  _t5f="$(mktemp)"; printf '%s\n' '{"issues":[],"claims":[],"anchors":{}}' > "$_t5f"
+  _t5a="$("$TOOLS_DIR/state/oc-t5-sweep" --fixture "$_t5f" --json 2>/dev/null | md5sum)"
+  _t5b="$("$TOOLS_DIR/state/oc-t5-sweep" --fixture "$_t5f" --json 2>/dev/null | md5sum)"
+  [ "$_t5a" = "$_t5b" ] && ok "two runs over one fixture agree byte-for-byte" || bad "fixture run is not deterministic"
+  rm -f "$_t5f"
+fi
+
 # ---- 64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)
 section "oc-issue-dispatch (mechanized issue triage dispatch)"
 run_selftest oc-issue-dispatch

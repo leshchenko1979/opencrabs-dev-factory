@@ -155,7 +155,7 @@ OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601?
 #   oc-job-verify / oc-order-validate / oc-pr-atomicity / oc-deploy /
 #   oc-artifact-verify   1 = legacy USAGE code         — exempting it hides a
 #                                                        real usage bug
-OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-ship-audit:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
+OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-ship-audit:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-t5-sweep:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
 OC_LOG_VERDICT_RCS="${OC_LOG_VERDICT_RCS:-$OC_LOG_VERDICT_RCS_DEFAULT}"
 
 # oc_log_flood_guard — C-F1 (lens C 2026-08-31, owner "Go all"): a runaway
