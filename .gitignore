@@ -22,6 +22,16 @@ __pycache__/
 # sync stray-guard (die 7) while a red was under investigation.
 tools/tests/battery-last-fail.log
 
+# The battery's reap-probe sidecar (`tools/tests/.reap.<pid>`, run.sh:85-87).
+# The NORMAL path deletes it on the very next line; a KILLED run skips that, so
+# every killed battery leaves a zero-byte untracked file behind -- and untracked
+# paths are exactly what the sync stray-guard (die 7) refuses. MEASURED
+# 2026-11-20: two zero-byte sidecars from the 11:32 and 12:06 runs (both killed)
+# sat in the tree and would have blocked the 0.4.324 bump; the `rm -f` at
+# run.sh:87 never ran for either. Ignoring the class is non-destructive -- the
+# residue stays on disk, it just stops reading as another actor's dirty work.
+tools/tests/.reap.*
+
 # Runtime review artefacts (Duty-4 proposals, Duty-6 reports, evidence).
 # These belong to the STATE repo (opencrabs-dev/reviews/), which is where the
 # intake lane reads and where oc-ledger's TRACKED sweep covers them. Lanes that
