@@ -1,5 +1,50 @@
 # Changelog — opencrabs-dev
 
+## v0.4.321 — Duty 4's intake contract was the defect: c29's 39 accepted proposals land
+
+**What forced it.** `a5eed495` committed **74 seconds after** the v0.4.320 sync, so it landed outside
+the version record it belonged to — the record named a range that no longer ended where it claimed.
+Bundled here rather than leaving a version whose tail commit is unaccounted for.
+
+The substantive half: cycle c29 returned 39 **accepted** proposals across 32 lanes and **zero had
+landed**. The reason was not neglect, it was the law. `hq.md §Duty 4`'s completion formula required
+accepted findings to be "landed in the Duty-6 version batch", and the poll is normally taken
+**because** a review just closed — so the poll postdates the batch by construction and the formula
+was unsatisfiable exactly when it was needed. Six clusters landed, every one re-verified against the
+live bytes before editing.
+
+**The intake contract (`hq.md`, 5 blocks).** The formula now reads: poll **ISSUED** · intake
+**POSTDATES** the poll · census counts **PROPOSALS, not files** (32 files / 39 proposals — a file
+count under-reports a lane that raised several) · landed in a batch **SHIPPED AFTER** the intake.
+Plus: a STANDING cadence needs a STANDING trigger, or it silently stops when its one-shot parent
+retires; the FILE channel is primary and the ledger best-effort, because the poll's own fan-out is
+saturated at exactly the moment the intake runs; and taking a poll is an **ACT**, not a read.
+
+**`hq.md` cadence predicate.** It named `review.py`, which does not resolve on this box. It now names
+`oc-ledger cadence` — the operative tool — so the predicate is runnable by whoever reads it.
+
+**`editor.md` red-run triage.** `cancelled` is **not** a RED verdict (a superseded run and a killed
+run both read `cancelled`, and neither is evidence about the code); a run's sha comes from the
+**job name**, not from the commit you assume it tested; Phase 1 re-verifies the obligation status
+rather than trusting the summary that carried it; and rc-4 has a declared fallback.
+
+**`environment.md`.** Never `find /` on this box — a 4 GB database makes an unindexed full-tree scan
+a multi-minute stall that reads as a hang.
+
+**`fleet-directives.md`.** After a history rewrite, prove reachability with **`merge-base`**, never
+`cat-file -e` (an object can exist and still be unreachable). And the drift ack is **bookkeeping,
+never a gate** — an ack that blocks is a gate wearing an ack's name.
+
+**`SKILL.md` harvest carve-out.** An editor MAY execute a `[HARVEST DISPATCH]` envelope; selection
+and filing stay HARVEST-only. The tool's own pool already accepts `editor,harvest`, so the law was
+stricter than the mechanism it described.
+
+**Routed, not edited** (`tools/**` is the Toolsmith carve-out): `oc-ledger:686`'s lock-timeout
+diagnostic names a cause that does not hold; `oc-harvest-dispatch`'s contract line re-emits the
+retired `DEGRADED` vocabulary; `oc-notify-fanout`'s ack wording.
+
+**Lint:** `oc-lint-laws` rc 0 across all six files before commit.
+
 ## v0.4.320 — the eight HQ-owned HIGH findings of c29, each verified on the bytes before it was edited
 
 **What forced it.** Cycle `20261119-c29` returned **102 findings (25 HIGH / 55 MED / 22 LOW)** across
