@@ -1,5 +1,32 @@
 # Changelog — opencrabs-dev
 
+## v0.4.326 — class (e): a `tools/**` fix closes on the battery, and a trailer is not a receipt
+
+**What forced it.** factory#127 measured the gap rather than asserting it: `oc-closure-sweep`
+returned `eligible: 0` across **225 candidates** because a `tools/**` fix writes no
+`smoke-verdicts.log` row — the harness battery IS its receipt — so **11 fixed issues sat OPEN**
+and were closed by hand in a single day. The owner's order ("closed the moment we have confirmed
+a working behavioural smoke") had no mechanical path on that surface.
+
+**The class.** `(e) battery-verified-landed`, three legs, all required: `battery-last.json` reads
+`verdict: PASS` / `fail: 0` / `tree_changed: false`; the fix commit is an ancestor of the receipt's
+commit (`git merge-base --is-ancestor`, never the reporter's word); and the fix commit's OWN
+SUBJECT names the issue.
+
+**The trap it closes.** A trailer is a CLAIM, never a receipt. #112's `Issue-Ref:` sat on a commit
+about the verdict-rc alarm while its actual fix was `2d66803e` (t5-sweep argv) — a trailer-keyed
+sweep closes issues on collateral references. The subject leg is the discriminator.
+
+**The hazard it names.** #81 and #95 both ride inside `c69ae127 docs(skill): v0.4.320 — the eight
+HQ-owned HIGHs…`, 95 lines of `tools/state/oc-ledger` inside a version bump, with no subject naming
+either issue — invisible to every search keyed on a number. Legs (i) and (ii) hold for both; leg
+(iii) fails, so they close BY HAND on the evidence written out. A `tools/**` behaviour change now
+owes its own commit, its own subject and its own `Issue-Ref`.
+
+**Commits:** `fd0c30c9` (this entry — class (e) law + SKILL bump).
+
+**Lint:** `tools/audit/oc-lint-laws` rc 0 — "clean — every oc-* invocation in the law corpus resolves against its tool (3 documented-absent citation(s) skipped)".
+
 ## v0.4.325 — eleven c29-owed rules land: derived law sets, a third terminal state, and five instrument traps
 
 **What forced it.** The c29 owed-rule extract completed **11/11, zero not-found**, and not one of

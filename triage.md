@@ -270,10 +270,29 @@ ONLY when it meets one of:
     `done` row** (`§D3`): the defect was never that a filing gated closure, it
     was that a passing smoke never pulled the trigger — and until #68 the trigger
     was still a lane's memory.
+(e) **battery-verified-landed (HQ ruling 2026-11-20, v0.4.326 — closes the gap measured
+    in factory#127)** — a `tools/**` fix produces NO behavioural smoke: the harness battery
+    IS its receipt. Close ONLY when all three hold:
+    (i) `tools/tests/battery-last.json` reads `verdict: PASS`, `fail: 0`,
+        `tree_changed: false`;
+    (ii) the fix commit is an ancestor of that receipt's commit — read it with
+         `git merge-base --is-ancestor`, never from the report's word;
+    (iii) the fix commit's OWN SUBJECT names the issue.
+    **A trailer is a CLAIM, never a receipt.** `Issue-Ref:` alone must close nothing:
+    #112's trailer sat on a commit about the verdict-rc alarm while its actual fix was
+    `2d66803e` (t5-sweep argv), so a trailer-keyed sweep closes issues on collateral
+    references. The subject leg is the discriminator — and it is why a fix riding inside a
+    version bump or a docs commit CANNOT qualify: #81 and #95 both live inside
+    `c69ae127 docs(skill): v0.4.320 — the eight HQ-owned HIGHs…`, 95 lines of
+    `tools/state/oc-ledger` with no subject naming either issue, invisible to every search
+    keyed on a number. **That shape is a HAZARD, not a shortcut:** a `tools/**` behaviour
+    change gets its own commit, its own subject and its own `Issue-Ref`. Where the subject
+    leg cannot be met retroactively, the issue closes BY HAND on the evidence written out
+    in the comment (battery receipt + fix sha + the arms it carries).
 Everything else stays open: closure is gated on a behavioural receipt
 (done-work issues close on the smoke verdict; an upstream PR never gates it). Every autonomous close:
 one ledger stamp per issue (`oc-ledger stamp note "T5 auto-close #N <test>"
-`), and the close comment names the test class (a)/(b)/(c)/(d). Reversible by
+`), and the close comment names the test class (a)/(b)/(c)/(d)/(e). Reversible by
 owner word (reopen + note).
 
 **Closure predicate for fork-only base-fault fixes (HQ ruling 2026-09-18,
