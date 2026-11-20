@@ -153,6 +153,11 @@ What STAYS at this factory, because it is process law about US and not about the
 
 - **Cadence: STANDING** — after every FIVE shipped version bumps (shared trigger with Duty 6),
   on owner request, or when incidents cluster without a rule.
+- **A cadence that is COMPUTED must also be CARRIED.** `oc-ledger cadence` computes the counter,
+  but a computed counter wakes nobody: a duty whose only trigger is a reading is owner-initiated
+  by definition. The carrier is a scheduled job that runs the verb and dispatches when it reads
+  `FIRE`; where that job is absent, the duty is DUE and unowned — say so in the report rather than
+  presenting the reading as the trigger.
 - **Zero Session Notify Law for Worker Proposals (owner order 2026-09-11):** workers do NOT
   submit Duty 4 proposals via `session_notify` to HQ — inbound notify floods pollute HQ's
   context window, accelerate compactions and duplicate the freeze-ACK anti-pattern. Workers
@@ -162,9 +167,34 @@ What STAYS at this factory, because it is process law about US and not about the
 - **The channels are DECLARED, not inferred.** The cycle declares the proposal directory and the
   ledger kind it reads; the instrument REFUSES on an undeclared or absent channel rather than
   reading nothing and reporting clean.
+- **The FILE channel is primary; the ledger channel is best-effort** (2026-11-19). A poll wakes
+  every bound lane at one instant, and `oc-ledger` serialises every write under one global `flock`
+  — so `stamp proposal` returns **rc 4 (lock timeout)** and writes NOTHING, silently. A proposal
+  that exists only as a `stamp` invocation does not exist. The poll text must say so, and a lane
+  using the ledger channel MUST also write its file.
+- **A mandated ack can fail rc 4, and that is a QUEUE condition, not a law violation.** An ack that
+  never landed is not an ack that was never attempted: before judging compliance from an absent
+  row, read `tools.log` for that actor's `"exit":4` row. Retry at the lane's next turn with
+  `OC_LEDGER_LOCK_WAIT` raised — never with a longer budget in the same turn.
+- **The poll is an ACT, not an inference.** Before the channels are read, the cycle ISSUES the poll
+  and records its instant (`notify-fanout` row carrying `DUTY 4 POLL — cycle <id>`). An intake
+  directory no poll ever announced is not a Duty-4 execution, and a zero intake that no poll
+  preceded cannot be told apart from nobody having been asked.
+- **An intake read is an event with an INSTANT, and an instant before the poll is not an intake.**
+  The authoritative read is taken at or after the poll's own row, recorded as its own row with its
+  own instant. A read taken inside the window is a T0 receipt, never the intake. A provisional zero
+  is never written as the cycle's verdict — an empty read before the poll answers "nobody has
+  replied yet", not "nobody had anything to say".
+- **The census counts PROPOSALS, not files** (2026-11-19). Every count over a `proposals/`
+  directory is a count of `^## P[0-9]+` headings, never of `*.md` files: one lane file routinely
+  carries several proposals, and a file count under-reports the intake by construction.
 - **Landing discipline: see §Duty 6 — ONE version batch, no design gate, no plan card, no owner
   approval; a fix whose owner is elsewhere is ROUTED and recorded as routed.**
-- **Checkable Completion Formula**: `DONE = every worker proposal for the cycle is read + each finding re-verified first-hand (an unreproduced finding is NOT a finding) + accepted findings landed in the Duty-6 version batch OR recorded as routed with their owner named + registry notes updated.`
+- **Checkable Completion Formula**: `DONE = the poll was ISSUED and its row's instant recorded + the authoritative intake read POSTDATES that instant + every PROPOSAL in the census (counted as proposals, never as files) is read + each finding re-verified first-hand (an unreproduced finding is NOT a finding) + every accepted finding landed in a version batch SHIPPED AFTER the intake OR recorded as routed with its owner named + registry notes updated.`
+  The formula this replaces said "landed in the Duty-6 version batch", which is UNSATISFIABLE
+  whenever the poll postdates the batch — and a poll is normally taken BECAUSE a review just
+  closed, so the condition was true on every normal cycle and the leg could never be discharged
+  (2026-11-19: c29 carried 39 accepted proposals, zero landed, while the formula read green).
 ## Duty 5 — Procedure rulings (decision 6)
 
 On protocol disputes — role boundaries, exception clauses, gate semantics —
@@ -270,9 +300,11 @@ success — a green receipt on a boundary that never moved (found by Duty 4 cycl
 ends with the boundary stamp BEFORE reporting the cadence state; never narrate a cadence reading
 without confirming the boundary row exists.
 
-**The predicate's mechanics are the instrument's** — `review.py cadence`, and
-`docs/instruments/review-rotation.md` for the two anchored matching rules. What stays here is the
-STAMP, the ledger it lands on and the close ordering above.
+**The predicate's mechanics are the instrument's** — `tools/state/oc-ledger cadence` (the OPERATIVE
+carrier; `review.py cadence` is NOT resolvable from this tree — see the ⚠ banner in §Duty 4), and
+`docs/instruments/review-rotation.md` for the two anchored matching rules. Its output shape is
+`<count>/<threshold> FIRE|quiet (boundary n=<n>)`. What stays here is the STAMP, the ledger it lands
+on and the close ordering above.
 ## Rule-text provenance — CHANGELOG at ship time
 
 Rule text carries NO biography — provenance (date, origin quote, war story)

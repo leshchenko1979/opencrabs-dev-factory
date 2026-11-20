@@ -168,6 +168,14 @@ Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch
 
 0. **Claim-time fresh re-read & Goal Mandate (v0.4.14 / v0.4.149, owner order 2026-09-12)**:
    - **Fresh Re-read**: FIRST action after claiming/waking — re-read `SKILL.md` + `editor.md` + `fleet-directives.md` from disk (never from recalled memory) — SKILL.md and editor.md in FULL, fleet-directives at thematic-index minimum with every `[LANE]`-tagged section in FULL.
+   - **Obligation re-verification** (2026-11-19, Duty-4 aff7ff41 P1): a compaction or continuation
+     summary's `OBLIGATION STATUS` is a **claim about the past, never the work order** — the same
+     standing `fleet-directives.md` gives a continuation doc's session id. Before the first project
+     action on a resumed obligation, read the obligation's **own record**: for an issue,
+     `gh issue view <N> -R <tracker> --json state,closedAt`; for a commit,
+     `git -C ~/opencrabs merge-base --is-ancestor <sha> origin/main`. A summary that says OPEN
+     beside a tracker that says CLOSED means the SUMMARY is stale and the tracker wins — report the
+     closure and stop, do not re-derive the work.
    - **Checkable Completion Formula**: DONE = all three files re-read THIS turn.
    - **Goal mandate**: design → owner confirms → `/goal follow the skill until the smoke test phase` → continuous execution through Phase 6 — MUST NOT halt after Phase 4 or after an intermediate ship leg. Full law (design-gate precondition, design-gated write scope): `§Autonomous Editor Goal & Continuous Phase Execution Law` (this file).
 
@@ -181,6 +189,12 @@ Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch
    ```
    `oc-start` executes the uniqueness check + ledger claim (`oc-ledger claim`), the clean branch off fresh `origin/main`, and the worktree mount at `~/opencrabs-wt/<task>`.
    *(Manual fallback `oc-wt add <task> <branch>` is reserved only for raw non-issue worktrees).*
+   - **A ledger write returning rc=4 is not retried with a longer budget and not retried in a loop**
+     (2026-11-19, Duty-4 4b4463d5 P3). Identify the holder first — `fuser -v <lock>`, then
+     `ps -o stat` : a holder in `D` (uninterruptible) state is blocked on I/O and **no wait budget
+     will outlast it**; wait, do not raise `OC_LEDGER_LOCK_WAIT`. The claim is not lost work: record
+     it on the tracker assignment and carry on, and re-run the ledger stamp at the next phase
+     boundary. A lane that blocks its turn on a contended lock loses the turn to a peer's I/O.
    - **ZERO-ACK ON DISPATCH (owner order 2026-09-13)**: When receiving a task dispatch (`[ISSUE DISPATCH: #N]`), **NEVER reply with a `session_notify` ack**. Running `oc-start` or stamping `oc-ledger claim` is the sole required action.
 
 - **Checkable Completion Formula**: DONE = Issue verified/filed, atomically claimed on ledger, and clean worktree mounted at `~/opencrabs-wt/<task>` on branch `<type>/<slug>` tracking fresh `origin/main`.
@@ -341,6 +355,22 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
   deadlock or I/O — is UNMEASURED from logs alone (the earlier "12/12 cap-hits
   executed zero tests" reading was withdrawn 2026-11-18 for exactly this
   reason); the stallwatch dump is the first instrument that can answer it.
+- **A `cancelled` run is NOT a RED verdict and carries no information about the code**
+  (2026-11-19, Duty-4 a5b34466 P1). `gh run view <id> --json conclusion` returns
+  `cancelled` both when a lane cancelled deliberately and when the 45-min job cap
+  expired; neither says anything about the tree under test. Read the run's own
+  `conclusion` and require `failure` before triaging it. A `cancelled` run is
+  **re-dispatched on the identical sha**, and the re-run's verdict is the one that
+  counts. Corollary: two runs on a byte-identical tree that disagree are evidence
+  about the RUNNER, not about the code — never open a fix round on the failing arm alone.
+- **Attribute a gate run to its tested sha by the JOB NAME, never by the run's
+  `head_sha`** (2026-11-19, Duty-4 a5b34466 P2). Carrier gate runs all execute on the
+  carrier branch, so `head_sha` is identical across every lane's runs and cannot
+  discriminate them; the tested sha is embedded in the job name
+  (`gate / PR-lane gates (<full-sha>)`). Read it with
+  `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs --jq '.jobs[].name'`. A run
+  attributed from `head_sha` reads as "mine" when it belongs to a peer lane, and the
+  misattribution is indistinguishable from a verified one once written into a report.
 
 ## Phase 6-Fix — Fix Loop (Red Carrier Build or Failed Smoke)
 

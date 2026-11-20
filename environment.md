@@ -9,6 +9,12 @@ build/carrier surface, and the daemon facts.
 
 ## Environment facts (all roles)
 
+- **Never run `find /` on this box** (2026-11-19, Duty-4 4b4463d5 P1). A recursive scan of the root
+  filesystem — from more than one lane at a time especially — drives the shared disk into an I/O
+  stampede and wedges every ledger write (`oc-ledger` then returns rc 4 for everyone). Locate a file
+  by its known path, `command -v <tool>`, or a scoped `find` under a single repo root. A
+  filesystem-wide scan is never the instrument for a lookup whose path you can read from the skill.
+  Same rule for `du -a /`, `grep -r /` and any unrooted recursive read.
 - **Actor attribution is automatic via ambient `OPENCRABS_SESSION_ID` (v0.4.176):**
   `lib/oc-log.sh`, `oc-commit`, `oc-ledger`, and tool scripts derive `actor:` directly
   from `$OPENCRABS_SESSION_ID` (commit `978fe5fe`). Manual `export OC_ACTOR` is retired.
