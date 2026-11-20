@@ -226,7 +226,17 @@ usage() { # [reason] — C-#1: prints WHY before the usage block. A repeat of th
   printf '%s %s %s\n' "$_now" "$_h" "$_cnt" > "$_cf" 2>/dev/null || :
   [ "$_cnt" -gt 1 ] && sleep $(( _cnt * 2 < 10 ? _cnt * 2 : 10 ))
   cat >&2 <<EOS
-Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--no-log]
+Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
+  <branch-or-sha>  the TREE to gate. A full 40-hex sha is preferred and is what the
+                   carrier inputs require: a short sha is REFUSED (carrier inputs are
+                   FULL-sha-bound). The workflow yml always comes from --carrier, so
+                   pass the tree you mean (a main or PR-branch sha), NOT the carrier
+                   name — passing the carrier gates the carrier's own, much older tree
+                   and can go RED for a reason that has nothing to do with your change
+                   (#121: refused with rc 2, see --gate-carrier-tree).
+  --gate-carrier-tree  acknowledge that gating the CARRIER'S OWN TREE is intended
+                   (the escape from the #121 refusal; not the default, because the
+                   silent wrong-tree gate is the expensive direction)
   resume <run-id>  re-attach to a run this lane WITNESSED (rc-5 stdout / journal extra.run_id);
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
                    skips shape gate / yml check / dispatch / lock / adoption, goes straight to watch+verdict
@@ -533,6 +543,14 @@ YEOF
       adopt_mismatch) printf '{"status":"completed","conclusion":"success","headBranch":"main","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       *)              printf '{"status":"completed","conclusion":"success","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
     esac ;;
+  *"api repos/"*"/compare/"*)
+    # #121: the carrier-tree refusal quotes how far behind main the carrier is.
+    # Only the carrier_tree scenario has a meaningful number; everything else gets
+    # 0, so a leg can assert the figure came from THIS call and not from a default.
+    case "\$S" in
+      carrier_tree) printf '5827\n' ;;
+      *)            printf '0\n' ;;
+    esac ;;
   *) printf '{}\n' ;;
 esac
 EOS
@@ -568,6 +586,80 @@ do_selftest() {
   run_t unknown_ref some-branch;     [ "$T_RC" -eq 2 ] && t_ok "unknown ref -> 2" || t_bad "unknown ref (rc=$T_RC)"
   run_t usage_diag some-branch --wait zzz
   [ "$T_RC" -eq 2 ] && case "$T_OUT" in *"--wait needs an integer"*) t_ok "usage prints why (C-#1)";; *) t_bad "usage diagnostic missing (out=$T_OUT)";; esac
+
+  # -- #121: the carrier-tree guard. Three legs, and they are a SET: the two
+  # refusals prove the guard FIRES on both shapes (the carrier's name and the
+  # carrier's tip sha), and the escape proves it is not absolute — without the
+  # third, a tool that refused EVERY ref would pass the first two and be useless.
+  # The 5827 is the fixture's compare/behind_by, so its presence in the message
+  # proves the count was COMPUTED and carried into the refusal rather than left
+  # out; HQ's ask was that the message be actionable, not merely a refusal.
+  #
+  # `firstline` exists because T_OUT here is a multi-line remedy block: inlining it
+  # raw pushed each leg's own name to the END of a wall of tool output, so a red
+  # leg read as a fragment of the tool's message (measured while mutation-testing
+  # this very block — the FAIL was there, but the leg name was not findable).
+  firstline() { printf '%s' "$1" | head -1; }
+  run_t carrier_tree ci/quick-build-linux
+  if [ "$T_RC" -ne 2 ]; then
+    t_bad "#121 carrier name NOT refused (rc=$T_RC out=$(firstline "$T_OUT"))"
+  else
+    case "$T_OUT" in
+      *"positional ref == --carrier"*)
+        case "$T_OUT" in
+          *"5827 commits behind main"*) t_ok "#121 carrier name refused with the commit count";;
+          *) t_bad "#121 refusal omits the behind_by count (out=$(firstline "$T_OUT"))";; esac ;;
+      *) t_bad "#121 refusal names the wrong reason (out=$(firstline "$T_OUT"))";;
+    esac
+  fi
+
+  # The tip-sha shape: a lane that edited the carrier yml naturally runs
+  # `git rev-parse ci/quick-build-linux` and passes that sha. Same wrong tree,
+  # so it must be caught too — and caught by a DIFFERENT branch of the guard
+  # (the shim answers ffff... for every git/ref read).
+  run_t carrier_tree ffffffffffffffffffffffffffffffffffffffff
+  if [ "$T_RC" -ne 2 ]; then
+    t_bad "#121 carrier tip sha NOT refused (rc=$T_RC out=$(firstline "$T_OUT"))"
+  else
+    case "$T_OUT" in
+      *"positional ref is the --carrier TIP sha"*) t_ok "#121 carrier TIP sha refused";;
+      *) t_bad "#121 tip sha refused for the wrong reason (out=$(firstline "$T_OUT"))";; esac
+  fi
+
+  # The escape. Asserted as the ABSENCE of the refusal rather than a specific rc:
+  # the point of the leg is that the guard stands aside, and pinning rc here would
+  # couple it to whatever the dispatch path happens to return in this fixture.
+  run_t carrier_tree ci/quick-build-linux --gate-carrier-tree
+  case "$T_OUT" in
+    *"positional ref == --carrier"*) t_bad "#121 --gate-carrier-tree did NOT stand the guard aside (rc=$T_RC)";;
+    *) [ "$T_RC" -ne 2 ] && t_ok "#121 --gate-carrier-tree is honoured (rc=$T_RC)" || t_bad "#121 escape still exits 2 (out=$(firstline "$T_OUT"))";; esac
+
+  # --help must NAME the escape. This leg exists because the criterion failed in
+  # review: the tool grew a second usage block (`--help` at the top of the file)
+  # that the guard's own usage() never touched, so the refusal documented the
+  # escape while the command a caller actually types to learn the flags did not.
+  # #121's acceptance names this, and an acceptance criterion nothing tests is
+  # the one that rots — measured: it had already rotted by the time the issue
+  # was written.
+  #
+  # TWO assertions, because a bare substring test is satisfied by PROSE: the
+  # `<branch-or-sha>` paragraph cross-references "--gate-carrier-tree" even when
+  # the option is undocumented (measured: a mutant with the option line and the
+  # synopsis flag removed still matched a `*--gate-carrier-tree*` glob and passed
+  # 110/110). So the synopsis must list it as a flag AND the option must carry
+  # its explanation — naming a flag in passing is not documenting it.
+  T_OUT="$("$SELF" --help 2>&1)" && T_RC=0 || T_RC=$?
+  if [ "$T_RC" -ne 0 ]; then
+    t_bad "#121 --help did not exit 0 (rc=$T_RC)"
+  else
+    case "$T_OUT" in
+      *"[--gate-carrier-tree]"*)
+        case "$T_OUT" in
+          *"--gate-carrier-tree  acknowledge"*) t_ok "#121 --help lists --gate-carrier-tree as a flag AND documents it";;
+          *) t_bad "#121 --help lists the flag but never documents it (prose mention only)";; esac ;;
+      *) t_bad "#121 --help omits --gate-carrier-tree from the synopsis (the escape is undiscoverable)";;
+    esac
+  fi
   printf '#!/usr/bin/env bash\necho "FAULT-SCOPE SHIM IN-SCOPE"\nexit 0\n' > "$D/fault-in"; chmod +x "$D/fault-in"
   mk_shim "$D/gh" run_failed
   # set -e survival: this call EXPECTS rc 3 (RED triggers fault-scope auto-run)
@@ -1457,7 +1549,17 @@ FDV
 }
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   cat <<'EOH'
-Usage: oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--no-log]
+Usage: oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
+  <branch-or-sha>  the TREE to gate. A full 40-hex sha is preferred and is what the
+                   carrier inputs require: a short sha is REFUSED (carrier inputs are
+                   FULL-sha-bound). The workflow yml always comes from --carrier, so
+                   pass the tree you mean (a main or PR-branch sha), NOT the carrier
+                   name — passing the carrier gates the carrier's own, much older tree
+                   and can go RED for a reason that has nothing to do with your change
+                   (#121: refused with rc 2, see --gate-carrier-tree).
+  --gate-carrier-tree  acknowledge that gating the CARRIER'S OWN TREE is intended
+                   (the escape from the #121 refusal; not the default, because the
+                   silent wrong-tree gate is the expensive direction)
   resume <run-id>  re-attach to a witnessed run (no dispatch, no adoption) — #74 H2
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
   --fast           fast gate (fmt + clippy only, skip tests on carrier)
@@ -1484,6 +1586,11 @@ TEST_THREADS=""
 # A BRANCH ref keeps today's supersede semantics: a moved head genuinely
 # invalidates the old verdict. Set in the shape gate below.
 REF_IS_SHA=0
+# Carrier-tree guard escape (#121): set by --gate-carrier-tree, read by the
+# refusal block below. Kept as an explicit ACKNOWLEDGEMENT rather than an opt-in,
+# because the default must be the safe direction: the footgun is silent, and a
+# caller who genuinely means to gate the carrier tree knows they mean it.
+GATE_CARRIER_TREE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --wait)    shift; WAIT_SECS="${1:-}"; case "$WAIT_SECS" in ''|*[!0-9]*) usage "--wait needs an integer (got '$WAIT_SECS')" ;; esac ;;
@@ -1492,6 +1599,7 @@ while [ $# -gt 0 ]; do
     wait)      [ "$WAIT_SUBCOMMAND" -eq 0 ] || usage "repeat 'wait'"; [ "$RESUME_MODE" -eq 0 ] || usage "cannot mix wait and resume"; WAIT_SUBCOMMAND=1 ;;
     --repo)    shift; REPO="${1:-}"; [ -n "$REPO" ] || usage "--repo needs a value" ;;
     --carrier) shift; CARRIER="${1:-}"; [ -n "$CARRIER" ] || usage "--carrier needs a value" ;;
+    --gate-carrier-tree) GATE_CARRIER_TREE=1 ;;   # #121: acknowledge gating the CARRIER'S OWN TREE
     --fault-scope) shift; FAULT_PR="${1:-}"; [ -n "$FAULT_PR" ] || usage "--fault-scope needs a PR number" ;;   # E5 (v0.4.78)
     --fast)    FAST_MODE=1 ;;
     --test-threads) shift; TEST_THREADS="${1:-}"; case "$TEST_THREADS" in ''|*[!0-9]*) usage "--test-threads needs a non-negative integer (got '$TEST_THREADS')" ;; esac ;;
@@ -1514,6 +1622,75 @@ if [ "$WAIT_SUBCOMMAND" -eq 1 ]; then
 fi
 if [ "$RESUME_MODE" -eq 1 ]; then   # #74 H2: positional is a NUMERIC run id, not a sha/branch
   case "$REF" in ''|*[!0-9]*) usage "resume needs a numeric run id (got '$REF')" ;; esac
+fi
+
+# ---------- #121: CARRIER-TREE guard ---------------------------------------
+# `oc-prchecks ci/quick-build-linux --wait 2400` is the obvious-looking way to
+# gate a carrier yml change, and it is wrong in a way that produces a MISLEADING
+# RED. The positional ref becomes the dispatch's `-f ref=` — the gated SOURCE
+# TREE — while the yml ALWAYS comes from --carrier. So that invocation gates the
+# carrier branch's own tree against the carrier's yml: a tree thousands of
+# commits behind main, which can predate the very Cargo features the yml's
+# defaults require. Measured 2026-11-20: ci/quick-build-linux is 2128 commits
+# behind origin/main (`compare/main...ci/quick-build-linux` -> behind_by, read at
+# 18:06Z; the report that prompted this guard said 5827, taken from a stale local
+# carrier checkout — the API is the authority for a distance) and carries no
+# `code-graph` feature (0 occurrences in its Cargo.toml; the feature is at
+# `Cargo.toml:276` on main), so the gate went
+# RED with "the package 'opencrabs' does not contain this feature: code-graph" —
+# a FEATURE error that reads exactly like the caller's workflow edit broke the
+# feature set, and cost a diagnosis pass on an innocent change.
+#
+# Refuse (rc 2, usage) rather than warn: the refusal must reach whoever typed the
+# command, and a warning printed at dispatch time is what a backgrounded watch
+# buries. `--gate-carrier-tree` acknowledges that gating the carrier's own tree IS
+# what was meant — the escape exists, it just is not the default, because the
+# silent-wrong-answer direction is the one that burns a gate and can get a bug
+# filed against an innocent change.
+#
+# Both shapes are caught: the carrier's NAME, and the carrier's current TIP SHA (a
+# lane that just edited the carrier yml naturally resolves `git rev-parse
+# ci/quick-build-linux` and passes that sha — same wrong tree, same red). The tip
+# lookup is one API call and only for a 40-hex ref; if it cannot be read the guard
+# SAYS SO and proceeds, because a guard's own blindness must never block a
+# legitimate gate.
+#
+# Placed BEFORE the cgroup detach (#727) on purpose: a refusal emitted by a
+# detached child lands in a log file nobody opens, which would reproduce the
+# silent-failure class this guard exists to remove.
+if [ "$GATE_CARRIER_TREE" -eq 0 ] && [ "$RESUME_MODE" -eq 0 ] && [ "$WAIT_SUBCOMMAND" -eq 0 ]; then
+  CT_REASON=""
+  if [ "$REF" = "$CARRIER" ]; then
+    CT_REASON="positional ref == --carrier"
+  else
+    case "$REF" in
+      *[!0-9a-fA-F]*) : ;;   # not pure hex -> a branch name, already compared above
+      *)
+        if [ "${#REF}" -eq 40 ]; then
+          CT_TIP="$("$GH_BIN" api "repos/$REPO/git/ref/heads/$CARRIER" --jq '.object.sha' 2>/dev/null || true)"
+          if [ -n "$CT_TIP" ]; then
+            if [ "$CT_TIP" = "$(printf '%s' "$REF" | tr 'A-F' 'a-f')" ]; then
+              CT_REASON="positional ref is the --carrier TIP sha"
+            fi
+          else
+            echo "$PROG: carrier-tree guard: carrier tip unreadable — cannot rule out that '$REF' is the carrier tree; proceeding" >&2
+          fi
+        fi ;;
+    esac
+  fi
+  if [ -n "$CT_REASON" ]; then
+    CT_BEHIND="$("$GH_BIN" api "repos/$REPO/compare/main...$CARRIER" --jq '.behind_by' 2>/dev/null || true)"
+    case "$CT_BEHIND" in ''|*[!0-9]*) CT_BEHIND="" ;; esac
+    {
+      echo "$PROG: $CT_REASON ($CARRIER)."
+      echo "$PROG:   The gated TREE would be the CARRIER BRANCH${CT_BEHIND:+ ($CT_BEHIND commits behind main)}, NOT your change."
+      echo "$PROG:   The yml always comes from --carrier, so gate the tree you mean with a FULL 40-hex sha:"
+      echo "$PROG:     $PROG <full-40-hex-sha-of-main-or-pr-branch> --wait N"
+      echo "$PROG:   To gate the carrier's own tree on purpose, re-run with --gate-carrier-tree."
+    } >&2
+    oc_log_extra "carrier_tree_guard" "refused:$CARRIER"
+    exit 2
+  fi
 fi
 
 # ---------- cgroup-safe detach for long waits (#727) --------------------------
