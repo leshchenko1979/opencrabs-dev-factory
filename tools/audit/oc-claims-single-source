@@ -342,12 +342,14 @@ def _shell_word_python(line, after_quote):
 def extract_blobs(src):
     """(start_line, code) for each python blob a shell tool embeds.
 
-    Two fences, because the corpus writes both shapes: a SINGLE-LINE word
-    (`python3 -c 'x' "$arg"`) closes on its own line, and the multi-line form
-    (`python3 -c '` newline code newline `'`) closes on a later one. The line
-    scan is used ONLY for the second, which is what the old rule assumed for
-    both — and assuming it for a single-line blob swallowed every following
-    shell line up to the next one starting with `'`.
+    Three fences, because the corpus writes three shapes: a SINGLE-LINE word
+    (`python3 -c 'x' "$arg"`) closes on its own line; the multi-line form
+    (`python3 -c '` newline code newline `'`) closes on a later one; and a
+    multi-line blob whose last code line ends with the quote GLUED to it
+    (`...else 1)' "$arg"`) closes mid-line. The old rule assumed the closing
+    quote always began a line, so shape 3 was never closed: the scan ran past it
+    and swallowed the trailing shell. The scan therefore looks for the delimiter
+    itself, on any line, which covers shapes 2 and 3 by one rule.
 
     A COMMENT line never opens a blob. `# The python engine runs as 'python3
     -c'` matched the regex and produced a 2035-line "blob" of shell comments
@@ -371,8 +373,20 @@ def extract_blobs(src):
                 continue
             body = [text] if text else []
             j = i + 1
-            while j < len(lines) and not lines[j].startswith("'"):
-                body.append(lines[j])
+            # The closing delimiter is the next `'` on ANY line -- shell law for a
+            # single-quoted segment -- not merely a line that STARTS with one. A
+            # blob whose last code line ends `...else 1)' "$arg"` closes mid-line;
+            # stopping only on a leading quote walked past the real close and
+            # swallowed the trailing shell (SyntaxError, unit silently unscanned).
+            # Code glued BEFORE that quote is body; the rest is the word's args.
+            while j < len(lines):
+                s = lines[j]
+                if "'" in s:
+                    pre = s[:s.index("'")]
+                    if pre:
+                        body.append(pre)
+                    break
+                body.append(s)
                 j += 1
             out.append((i + 1, "\n".join(body)))
             i = j + 1
