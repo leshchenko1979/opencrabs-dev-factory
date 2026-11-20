@@ -190,6 +190,15 @@ cmd_drift() {
     OC_LEDGER="$LEDGER" "$_OC_DIR/state/oc-ledger" law-digest >/dev/null 2>&1; ldg_rc=$?
     if [ "$ldg_rc" -eq 1 ]; then
       law_note="NOTE: the law files moved AFTER the newest skill-bump stamp (oc-ledger law-digest: DRIFT) — your ack names $cur, but that version no longer describes the law on disk; re-read the changed law now and expect the next bump to publish it"
+    elif [ "$ldg_rc" -ne 0 ]; then
+      # A non-0/1 rc means the advisory was NOT EVALUATED (rc 3 ledger unreadable,
+      # rc 8 flood-guard, rc 2 usage). Silence here read as "clean" and made the
+      # run look tidier than it was — the exact shape of a guard disarmed by the
+      # act of using it (#66 follow-up, toolsmith 2026-11-20: the flood guard
+      # counted law-digest's rc-1 DRIFT verdict as a failure, armed after four
+      # lanes read it, and returned rc 8, which this branch then swallowed).
+      # An unevaluated advisory is stated, never assumed green.
+      law_note="NOTE: law-digest unavailable (rc $ldg_rc) — drift advisory NOT evaluated"
     fi
   fi
   # --ack stamps on BOTH paths (defect fix 2026-09-11, lanes d18ce16a + a5b34466).
@@ -389,6 +398,38 @@ EOF
   jq '.workers[0].last_acked = {version:"0.4.58", at:"2026-01-01T00:00:00Z"}' "$T/state-ledger.json" > "$T/l.tmp" && mv "$T/l.tmp" "$T/state-ledger.json"
   RC=0; OUT="$(OC_LEDGER="$T/state-ledger.json" bash "$ME" "$AU" 0.4.58 --skill-dir "$T/skill" 2>&1)" || RC=$?
   chk "bump-absent-rc-unchanged" 0 "$RC"
+  # ---- #68-follow-up: an UNEVALUATED advisory is stated, never assumed green --
+  # A non-0/1 `law-digest` rc (3 = ledger unreadable, 8 = flood guard, 2 =
+  # usage) means the advisory was never COMPUTED. Silence read as "clean" and
+  # made the run look tidier than it was — the exact shape of a guard disarmed
+  # by the act of using it (four lanes reading a true DRIFT verdict armed the
+  # flood guard; the 5th run got rc 8, which this tool then swallowed).
+  # The rc 8 here is produced by the REAL guard, not a stub: 4 prior failures
+  # for the same tool+args inside the 120s window arm it, which also pins the
+  # guard's live contract — a genuine failure still counts, because the verdict
+  # exemption covers rc 1 only.
+  FL="$(mktemp)"; _i=1; _ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  while [ "$_i" -le 4 ]; do
+    printf '{"ts":"%sZ","tool":"oc-ledger","actor":"x","args":"law-digest","exit":3,"secs":0.1,"extra":{}}\n' "$_ts" >> "$FL"
+    _i=$((_i+1))
+  done
+  jq '.workers[0].last_acked = {version:"0.4.58", at:"2026-01-01T00:00:00Z"}' "$T/state-ledger.json" > "$T/l.tmp" && mv "$T/l.tmp" "$T/state-ledger.json"
+  # prove the INSTRUMENT fires before asserting what the tool says about it — a
+  # note about rc 8 is vacuous if nothing in the fixture can produce rc 8.
+  _ldr=0; OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$FL" OC_LEDGER="$T/state-ledger.json" "$_OC_DIR/state/oc-ledger" law-digest >/dev/null 2>&1 || _ldr=$?
+  chk "advisory-storm-fixture-really-returns-8" 8 "$_ldr"
+  RC=0; UOUT="$(OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$FL" OC_LEDGER="$T/state-ledger.json" OC_DEPLOY_STATE_DIR="$T" bash "$ME" "$AU" --skill-dir "$T/skill" 2>&1)" || RC=$?
+  chk "advisory-unevaluated-verdict-unchanged" 0 "$RC"
+  case "$UOUT" in *"drift advisory NOT evaluated"*) UE=yes ;; *) UE=no ;; esac
+  chk "advisory-unevaluated-is-stated" "yes" "$UE"
+  # CONTROL: the SAME run against a quiet log must NOT claim the advisory was
+  # skipped. Without this the note could be emitted unconditionally and would
+  # carry no information at all.
+  : > "$FL"
+  RC=0; UOUT="$(OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$FL" OC_LEDGER="$T/state-ledger.json" OC_DEPLOY_STATE_DIR="$T" bash "$ME" "$AU" --skill-dir "$T/skill" 2>&1)" || RC=$?
+  case "$UOUT" in *"drift advisory NOT evaluated"*) UEC=yes ;; *) UEC=no ;; esac
+  chk "advisory-control-no-false-skip-note" "no" "$UEC"
+  rm -f "$FL"
   case "$OUT" in *"NOTE: no skill-bump ledger event for 0.4.58"*) B1=yes ;; *) B1=no ;; esac
   chk "bump-absent-note" "yes" "$B1"
   # ... and with a matching skill-bump event present, the note DISAPPEARS.

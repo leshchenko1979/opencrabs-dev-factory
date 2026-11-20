@@ -858,6 +858,94 @@ _fg_banner="$(OC_TOOLS_LOG="$_fgl2" bash -c '. "$1/lib/oc-log.sh"; OC_LOG_TOOL=o
 [ "$_fg_banner" = "failed 4x" ] && ok "flood guard banner reports the ROW count (4x), not jq lines" \
                                 || bad "flood guard banner miscounts: '$_fg_banner' (expected 'failed 4x'; 36x = the pretty-print bug)"
 rm -rf "$_fgd2"
+# ---- 00a7. flood guard ignores a tool's declared VERDICT rc (#68-follow-up) --
+# The guard counted EVERY non-zero exit as a failure. But RC-CONTRACT.md
+# declares, per tool, that some non-zero codes are VERDICTS — the tool worked
+# and answered. `oc-ledger law-digest` returns 1 for DRIFT (a true, useful
+# answer) and `oc-lint-laws` returns 1 for "findings"; four lanes reading either
+# inside one 120s window armed the guard and the 5th run was refused rc 8.
+# Measured live before the fix: 33 `oc-ledger law-digest` rc-1 rows, 27
+# `check-version`, 8 `cadence` — the fleet punished for reading correctly, and
+# the DRIFT they reported was TRUE.
+#
+# THE THREE LEGS ARE A SET, because any one alone passes on a broken guard:
+#   (1) a listed tool's rc-1 rows do NOT arm it      -> 0
+#   (2) the SAME tool's rc-7 rows DO arm it          -> 8   (scoped to the rc,
+#       not to the tool: an exemption for the whole tool would pass (1) and
+#       fail here only if the guard were keyed on the name alone)
+#   (3) an UNLISTED tool's rc-1 rows DO arm it       -> 8   (proves the list is
+#       what does the work, not a blanket "rc 1 is never a failure" rule — a
+#       blanket rule would hide a genuine usage error, since several legacy
+#       tools answer rc 1 to a bad argument)
+section "flood guard ignores verdict rcs (#68-follow-up)"
+_vfd="$(mktemp -d)"; _vfl="$_vfd/tools.log"
+_vf_seed() { # $1 = tool ; $2 = exit code ; $3 = prior row count
+  local i ts; ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  : > "$_vfl"
+  i=1; while [ "$i" -le "$3" ]; do
+    printf '{"ts":"%sZ","tool":"%s","actor":"x","args":"vf-same","exit":%s,"secs":0.1,"extra":{}}\n' "$ts" "$1" "$2" >> "$_vfl"
+    i=$((i+1))
+  done
+}
+_vf_drive() { # $1 = tool ; prints the REAL guard's rc
+  OC_TOOLS_LOG="$_vfl" bash -c '. "$1/lib/oc-log.sh"; OC_LOG_TOOL="$2"; OC_LOG_ARGS=vf-same; oc_log_flood_guard' _ "$TOOLS_DIR" "$1" >/dev/null 2>&1
+  printf '%s' "$?"
+}
+_vf_seed oc-ledger 1 4; _vfv="$(_vf_drive oc-ledger)"
+[ "$_vfv" = "0" ] && ok "flood guard: 4 verdict (rc 1) rows do not arm it -> rc 0" \
+                  || bad "flood guard PUNISHES a verdict: 4x 'oc-ledger rc 1' -> rc $_vfv (expected 0)"
+_vf_seed oc-ledger 7 4; _vf7="$(_vf_drive oc-ledger)"
+[ "$_vf7" = "8" ] && ok "flood guard: the SAME tool failing rc 7 still arms it -> rc 8" \
+                  || bad "verdict exemption swallowed a real failure: 4x 'oc-ledger rc 7' -> rc $_vf7 (expected 8)"
+_vf_seed oc-job-verify 1 4; _vfu="$(_vf_drive oc-job-verify)"
+[ "$_vfu" = "8" ] && ok "flood guard: an UNLISTED tool's rc 1 still arms it -> rc 8 (no blanket rc-1 rule)" \
+                  || bad "flood guard exempts every rc 1, not the declared ones: 'oc-job-verify rc 1' -> rc $_vfu (expected 8)"
+rm -rf "$_vfd"
+# ... and the list itself must not outlive the contract it is derived from. Each
+# listed tool needs an RC-CONTRACT.md row declaring rc 1 as an OUTCOME; an entry
+# whose contract says rc 1 is a USAGE code would exempt a real usage bug, and a
+# tool that vanished from the register would exempt a tool nobody documents.
+_vfbad="$(python3 - "$TOOLS_DIR/docs/RC-CONTRACT.md" "$(bash -c '. "$1/lib/oc-log.sh"; printf "%s" "$OC_LOG_VERDICT_RCS_DEFAULT"' _ "$TOOLS_DIR")" <<'PY'
+import re,sys
+path,const=sys.argv[1],sys.argv[2]
+rows={}
+for ln in open(path):
+    if not ln.startswith('| oc-'): continue
+    c=[x.strip() for x in ln.strip().strip('|').split('|')]
+    if len(c)<4: continue
+    rows[c[0]]=(c[2],'|'.join(c[3:]))
+# A BENIGN rc 1 names a STATE the tool observed (DRIFT, findings, zero-hits,
+# SILENT). A FAILURE rc 1 names an ACTION the tool could not complete. A bare
+# `1 <word>` test cannot tell the two apart: oc-closure-sweep's row reads
+# `1 a close FAILED`, which passes it, and the FIRST draft of this list exempted
+# exactly that tool (#68-follow-up). So the rc-1 clause is also screened for
+# action-failure vocabulary.
+#   This is a DRIFT ALARM, not a proof: it catches the words the contract
+#   actually uses. `missing` is deliberately NOT listed -- oc-vendor-drift's
+#   rc 1 is `DRIFTED or LOCAL_MISSING`, a finding about the TREE, and a word
+#   list that reddens on it would force a real verdict out of the exemption.
+FAILW=re.compile(r'fail|error|refus|denied|unable|abort|crash|not\s+found',re.I)
+bad=[]
+# The detector must be able to fire, and the historical mistake is its control:
+# a list of words that no longer matches `a close FAILED` is a blind instrument.
+if not FAILW.search('a close FAILED'):
+    bad.append("detector INERT: does not flag the historical entry 'a close FAILED'")
+for ent in const.split():
+    tool=ent.split(':')[0]
+    if tool not in rows: bad.append("%s: no RC-CONTRACT row"%tool); continue
+    usage,verdict=rows[tool]
+    m=re.search(r'(?:^|/)\s*1\s+([^/]*)', verdict)
+    if not m:
+        bad.append("%s: contract does not declare rc 1 as an outcome"%tool)
+    elif usage=='1':
+        bad.append("%s: contract declares rc 1 as a USAGE code"%tool)
+    elif FAILW.search(m.group(1)):
+        bad.append("%s: contract's rc 1 is a FAILURE (%r), not a benign verdict"%(tool,m.group(1).strip()[:40]))
+print('; '.join(bad))
+PY
+)"
+[ -z "$_vfbad" ] && ok "verdict-rc list agrees with RC-CONTRACT.md (every entry declares rc 1 as an outcome)" \
+                 || bad "verdict-rc list DRIFTED from the contract: $_vfbad"
 # structural: no consumer keeps a ts read straight into fromdateiso8601.
 # Comment lines may QUOTE the naive form as documentation (this lib's own
 # OC_LOG_JQ_TS note does), so the detector reads CODE only -- a comment-stripped

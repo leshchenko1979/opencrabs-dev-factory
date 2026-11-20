@@ -126,6 +126,38 @@ oc_log_init() {
 #     jq -R -r "$OC_LOG_JQ_TS"'… | select((ts_epoch) >= $cutoff)'
 OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601? // 0);'
 
+# VERDICT RCS — the clause the guard was missing (#68-follow-up, toolsmith
+# 2026-11-20, reported by lane aaa8d8ae). RC-CONTRACT.md declares, per tool,
+# which non-zero codes are VERDICTS (the tool worked and answered) rather than
+# failures. The guard counted EVERY non-zero exit as a failure, so four lanes
+# legitimately reading a verdict inside one 120s window armed it against the
+# whole fleet and the 5th run was refused rc 8. Measured live before the fix:
+# `oc-ledger law-digest` 33 rows, `check-version` 27, `cadence` 8 — all rc-1
+# verdicts, and the DRIFT they reported was TRUE (an unbumped law). Every lane
+# was punished for reading correctly, and `oc-drift-check` then swallowed the
+# rc 8 and reported a CLEANER run than it had (see its law_note else-branch).
+#
+# THE LIST IS DERIVED, NOT INVENTED. Every entry below is a tool whose
+# RC-CONTRACT.md row declares rc 1 as an OUTCOME (`0 <ok> / 1 <finding>`) AND
+# whose work is READ-ONLY. A battery leg asserts both halves against the
+# contract, so an entry that outlives its contract row reddens instead of
+# silently widening the exemption.
+#
+# DELIBERATELY ABSENT, each because rc 1 there is NOT a benign answer:
+#   oc-closure-sweep     1 = "a close FAILED"          — a failure
+#   oc-branch-sweep      1 = "deletions"               — destructive; 4x IS a storm
+#   oc-fmt               1 = "formatting diffs"        — may write
+#   oc-mutate            1 = "not proven"              — expensive; retry storm
+#   oc-issue-dispatch / oc-harvest-dispatch / oc-harvest-census / oc-census
+#                        1 = refused/vetting-failed   — refusal, not an answer
+#   oc-smoke             1 = "Smoke FAIL"              — writes a ledger row, closes
+#   oc-seal-state        1 = bare noop                 — keep the guard strict
+#   oc-job-verify / oc-order-validate / oc-pr-atomicity / oc-deploy /
+#   oc-artifact-verify   1 = legacy USAGE code         — exempting it hides a
+#                                                        real usage bug
+OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-ship-audit:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
+OC_LOG_VERDICT_RCS="${OC_LOG_VERDICT_RCS:-$OC_LOG_VERDICT_RCS_DEFAULT}"
+
 # oc_log_flood_guard — C-F1 (lens C 2026-08-31, owner "Go all"): a runaway
 # lane re-invoking a failing tool in a loop (evidence: 140-row storm, one
 # night) is refused at init. Counts PRIOR failed invocations with identical
@@ -143,6 +175,12 @@ oc_log_flood_guard() {
   [ -f "$logf" ] || return 0
   local cutoff n
   cutoff="$(($(date +%s) - 120))"
+  # The tool's declared VERDICT rc, if any: a run that exits with it was working,
+  # not failing, so it must not arm the guard (#68-follow-up).
+  local vrc=""
+  case " $OC_LOG_VERDICT_RCS " in
+    *" ${OC_LOG_TOOL:-}:1 "*) vrc="1" ;;
+  esac
   # `-c` is LOAD-BEARING, not cosmetic (#770): the selector emits the matched ROW
   # OBJECT, and jq PRETTY-PRINTS objects by default -- `-r` only affects STRINGS.
   # So one matched row printed NINE lines (`{`, seven field lines, `}`) and the
@@ -151,7 +189,9 @@ oc_log_flood_guard() {
   # fixed. `-c` puts each object on one line so the count is a count of rows.
   n="$(tail -n 300 "$logf" 2>/dev/null | jq -R -c \
     --arg tool "$OC_LOG_TOOL" --arg args "${OC_LOG_ARGS:0:500}" --argjson cutoff "$cutoff" \
+    --argjson vrc "${vrc:-null}" \
     "$OC_LOG_JQ_TS"'fromjson? | select(.tool == $tool and .args == $args and ((.exit // 0) != 0))
+    | select($vrc == null or (.exit // 0) != $vrc)
     | select((ts_epoch) >= $cutoff)' 2>/dev/null | wc -l)"
   if [ "${n:-0}" -ge 4 ]; then
     echo "FLOOD-GUARD (rc 8): $OC_LOG_TOOL with identical args already failed ${n}x in the last 120s — refusing to run again." >&2
