@@ -278,7 +278,7 @@ YEOF
       cancelled_timeout|cancelled_short)
       # issue #5: the run's OWN workflow file, fetched by the cancel-class
       # discriminator. The shell is a thin caller carrying a local reusable
-      # `uses:` callee and the budget lives in the CALLEE - so the tool must
+      # \`uses:\` callee and the budget lives in the CALLEE - so the tool must
       # follow the reference or it reads no timeout at all.
       case "\$*" in
         *ci-lane-impl.yml*)
@@ -356,13 +356,13 @@ YEOF
     esac ;;
   *"api repos/"*"/check-runs/"*"/annotations"*)
     # #93: the ONLY witness for who cancelled a run. LIVE SHAPES measured
-    # 2026-11-19 on two runs sharing the conclusion `cancelled`:
+    # 2026-11-19 on two runs sharing the conclusion \`cancelled\`:
     #   44575574209 (deliberate caller cancel)
     #     -> "The run was canceled by @leshchenko1979."
     #   44552738378 (concurrency supersede)
     #     -> "Canceling since a higher priority waiting request for
     #         prchecks-4bad9585… exists"
-    # Both job logs print only `##[error]The operation was canceled.`, which is
+    # Both job logs print only \`##[error]The operation was canceled.\`, which is
     # why the class was previously NOT-ESTABLISHED. A fetch FAILURE is its own
     # scenario so the fail-safe leg can prove the class is left alone.
     case "\$S" in
@@ -471,7 +471,7 @@ YEOF
           *)        printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
         esac ;;
       cancelled)
-        # #93 POSITIVE CONTROL fixture: a cancelled job carrying an `id` so the
+        # #93 POSITIVE CONTROL fixture: a cancelled job carrying an \`id\` so the
         # annotation probe CAN run, with a 60s window so TIMEOUT cannot produce
         # the class. Only the NOT-ESTABLISHED gate keeps this run SUPERSEDED.
         case "\$*" in
@@ -479,7 +479,7 @@ YEOF
           *)        printf '{"jobs":[{"id":135742000098,"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"cancelled","startedAt":"2026-11-19T17:17:31Z","completedAt":"2026-11-19T17:18:31Z"}]}\n' ;;
         esac ;;
       cancelled_self|cancelled_bot|cancelled_annfail)
-        # #93 fixtures: ONE cancelled job carrying an `id` (the annotation probe
+        # #93 fixtures: ONE cancelled job carrying an \`id\` (the annotation probe
         # keys on it) and a 60s window, so the TIMEOUT leg cannot produce this
         # class. Every other run id answers with a DIFFERENT sha pin, so the
         # supersede probe finds no same-group peer and SUP stays empty — the
