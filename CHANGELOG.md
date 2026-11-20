@@ -1,5 +1,92 @@
 # Changelog — opencrabs-dev
 
+## v0.4.324 — the bash-tool poll's harness half ships, and the 0.4.321–0.4.323 sync gap is healed for real
+
+**What forced it.** The 2026-11-20 bash-tool poll put 33 lanes on one question — what works in
+the `bash` tool, what needs correcting — and the aggregate split the answers by OWNER:
+harness (filed as fork issues), lane-side prose (v0.4.323), instrument. The harness half is
+now CODE on fork `main`: six issues, all six CLOSED by their merge trailers. This bump
+publishes that state to the fleet, together with four fixes the battery picked up while it
+was doing the watching.
+
+**A correction to the previous entry, stated because it is now provable.** v0.4.323 claimed
+"The sync that ships this entry publishes 0.4.323 and heals both". It did not.
+`oc-ledger check-version` at 2026-11-20T13:07Z read `current_skill_version=0.4.320
+(SKILL.md=0.4.323)` across all three fields — the bump commit landed with no sync, which is
+the exact failure that entry warned about. THIS sync is therefore a `--catch-up` from
+0.4.320 and publishes the gap.
+
+**Harness defects, filed and FIXED (fork `leshchenko1979/opencrabs`, merged at `865652d45`,
+now in `main`'s history):**
+
+- **#910 — a piped command reported the LAST element's status.** `oc-deploy ship … | tail -25`
+  returned 0 while the real status was 143, so a failed ship read as dispatched; two more
+  lanes lost a RED gate the same way. Now reports the pipeline-aware status, tolerating
+  SIGPIPE (141) without swallowing a real failure beside it — `[2, 141, 0]` still reports 2,
+  which is the property that keeps global `pipefail` out.
+- **#914 — a successful result never stated its exit status**, so "no output", "grep found
+  nothing" and "never ran" were one string. Every result now carries `exit=<N>`.
+- **#915 — the blocklist tested co-occurrence over the whole command string.** A read-only
+  `grep -c "Host "` against the ssh config chained with a `curl` to an IP-echo service was
+  refused as exfiltration — and it blocked the comment documenting that very defect, which is
+  how the fix was proven. Meanwhile an unrooted `find /` was not blocked at all. Now splits on
+  `;`/`&&` into per-command chains and blocks the unrooted root scan. The tradeoff is recorded
+  on the issue: reading a key into a temp file and posting that file no longer trips in ONE
+  command, and the same exfiltration was always available across two calls, since the tool
+  carries no cross-call state.
+- **#913 — boot recovery declared a detached run "killed, produced no result"** from a row
+  with no pid. One lane's handover said killed while `ps -p` showed the process ALIVE and
+  `deployed.sha` had already advanced — re-running on that report would have double-shipped a
+  live swap. It now reads UNKNOWN and names what to check instead.
+- **#916 — `tool_executions` was indexed on `message_id` only**, so every per-session read was
+  a full scan of 1.1 GB. Both indexes now ship as a MIGRATION, so a rebuilt store is born with
+  them instead of inheriting a hand-made index on one host; the measured cost is one-time and
+  small (10.6 s extrapolated for the 147k-row default profile from 70.7 s at 986k).
+- **#917 — the truncation `.cap` marker had four writers and zero readers**, so a lane reading
+  a cut capture could not tell it had been cut. One type now owns the format from BOTH ends, so
+  writer and reader cannot drift; `task_output` reports `truncated: yes (cap N bytes reached at
+  T)` per stream, and a foreign or empty marker body answers nothing rather than guessing.
+
+Two of the poll's seven harness items needed no issue, because both were already fixed in
+source: `killed_by` ships as `RunCause` (`Signalled`/`Ceiling`/`NotAwaited`, #786), and
+`setsid()` already makes pid == pgid (verified live: the running detached job reported pid and
+pgrp identical, and it was the leader).
+
+**The battery that watched all this had four defects of its own, each fixed with its leg:**
+
+- `63e3d108` — the receipt-writer counters now follow #111's consolidation: ONE writer, `-eq 1`.
+  `-ge 1` was rejected deliberately, because it stays green if a second writer comes back,
+  which is the regression #111 exists to prevent.
+- `4e38e1e6` — the verdict-rc alarm matched the word `error` inside the contract row's own
+  DISCLAIMER ("VERDICT, not an error"). Same co-occurrence shape as #915, on the other side of
+  the fence: an instrument reading words instead of the claim.
+- `8905c018` — the claim scanner closed a blob on a line PREFIX instead of on the delimiter, so
+  a legal argv-closing body swallowed the shell that followed it and the census silently
+  dropped 52→51. A green-because-blind direction, in the tool that exists to catch it.
+- `26717e49` — the fixpoint control now discriminates starvation by CPU burn rather than by
+  wall clock (factory#109): a 3 s bound under four concurrent gates produced a false RED for a
+  fixture that runs in 67–101 ms.
+
+**Two gate attempts were lost to environment-class flakes, both now their own issues.** The
+trio's first gate was killed by STALLWATCH (exit 143, four contended-write tests parked —
+opencrabs#884 occurrence 7), and its second failed `auto_title_e2e_test`, which PASSED on the
+same sha's all-features leg: the test polls a virtual clock while its sqlx write runs
+off-runtime, so the deadline can burn in microseconds (opencrabs#918). Neither touched the six
+files under test. Also filed: factory#107, where the battery lock fd leaks to descendants, so
+one killed run denies the whole fleet a verdict for 900 s.
+
+**Hygiene.** `tools/tests/.reap.<pid>` is written by `run.sh:85-87` and deleted on the next
+line; a KILLED run skips the delete, and the leftover zero-byte path trips the sync
+stray-guard (die 7). Measured today: sidecars from the 11:32 and 12:06 runs were sitting in
+the tree ahead of this very bump. Now ignored as a class — non-destructive, the residue stays
+on disk, it just stops reading as another actor's dirty work.
+
+**Lint:** `oc-lint-laws` clean at 2026-11-20T16:30:21Z (3 documented-absent citations skipped);
+battery `tools/tests/run.sh` PASS 428 / FAIL 0, rc 0, receipt `tools/tests/battery-last.json`
+(tree_changed=false, wall 688.6 s); `oc-ledger check-version` read
+`MISMATCH current_skill_version=0.4.320 (SKILL.md=0.4.324)` before this sync.
+
+
 ## v0.4.323 — the bash tool poll lands its lane-side half, and the 0.4.321/0.4.322 sync gap is healed
 
 **What forced it.** The owner ordered a poll of every lane that had driven the `bash` tool:
