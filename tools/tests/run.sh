@@ -3116,15 +3116,16 @@ fi
   [ -f "$FAIL_LOG" ] && [ "$FAIL_LOG_FIELD" = "tools/tests/battery-last-fail.log" ] ) \
   && ok "finalize on red keeps the log and names it in the receipt" \
   || bad "finalize on red lost the log or the field name"
-# (d) wiring: BOTH receipt writers must declare the field (emit_summary, and the
-#     sequential tail). Counts the declaration, so a writer left behind is
-#     caught rather than a stray comment satisfying it.
+# (d) wiring: the ONE receipt writer must declare the field. #111 collapsed the
+#     hand-copied sequential tail into emit_summary, so the count is 1 BY DESIGN:
+#     a SECOND writer reappearing is exactly the drift this leg exists to catch.
+#     Hence -eq 1, never -ge 1 -- -ge 1 stays green through that regression.
 # Read the ARTIFACT UNDER TEST ($0), never the canonical path: a mutant run
 # under a sibling name would otherwise inspect the fixed file and pass.
 SELF_ABS="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-[ "$(grep -cE '^ *printf .*fail_log' "$SELF_ABS")" -ge 2 ] \
-  && ok "both receipt writers declare the fail_log field" \
-  || bad "a receipt writer is missing the fail_log field ($SELF_ABS)"
+[ "$(grep -cE '^ *printf .*fail_log' "$SELF_ABS")" -eq 1 ] \
+  && ok "exactly one receipt writer declares the fail_log field (emit_summary)" \
+  || bad "receipt-writer count is not 1: the fail_log field is declared by a number of printf lines other than one ($SELF_ABS)"
 rm -rf "$FLT"
 # (e) #614 -- THE DISCRIMINATING LEG. A red receipt must be SELF-CONTAINED: the
 #     failing rows ride in the receipt, so the NEXT run's truncate of $FAIL_LOG
@@ -3162,12 +3163,13 @@ case "$R614_T" in
   *) bad "#614: truncation not declared or no rows captured (got: ${R614_T:0:40})" ;;
 esac
 
-# (g) wiring: BOTH receipt writers must embed fail_rows -- counts the printf
-#     field, so a writer left behind is caught rather than a comment satisfying it.
+# (g) wiring: the ONE receipt writer must embed fail_rows -- counts the printf
+#     field, so a stray comment cannot satisfy it and a SECOND writer reappearing
+#     reddens (same -eq 1 reasoning as (d): -ge 1 would pass the regression).
 R614_N="$(grep -cE '^ *printf .*"fail_rows": %s' "$SELF_ABS")"
-[ "$R614_N" -ge 2 ] \
-  && ok "both receipt writers embed fail_rows" \
-  || bad "a receipt writer is missing fail_rows ($R614_N of 2 printf lines)"
+[ "$R614_N" -eq 1 ] \
+  && ok "exactly one receipt writer embeds fail_rows (emit_summary)" \
+  || bad "receipt-writer count is not 1: fail_rows is embedded by $R614_N printf line(s), expected exactly 1"
 rm -rf "$R614"
 
 # ---- 77. lib/oc-root.sh resolver coherence (F-L1/F-L2) -----------------------
