@@ -200,8 +200,14 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   whoever owns the daemon's launch path should make `TasksMax` real, so the raise stops being
   per-session folklore.
 
-- **`tool_executions` is a 1.1 GB table with an index on `message_id` and NOTHING ELSE — so
-  `WHERE session_id = …`, `WHERE tool_name = …` and `WHERE created_at > …` are full scans
+- **`tool_executions` is a 1.1 GB table, and an index is not something you may assume.**
+  **As of 2026-11-20 it carries `session_id` and `created_at` indexes** — created from the tool
+  poll's own finding (986,267 rows, 70 s to build, both confirmed `COVERING` by
+  `EXPLAIN QUERY PLAN`, a 48 h count dropping to 0.035 s). Two limits: `tool_name` still has
+  NONE, and the index is OPERATIONAL only — a rebuilt or replaced store starts bare, and the
+  durable migration is still owed (fork issue #916). Check the plan before trusting the speed.
+  **Without a matching index, `WHERE session_id = …`, `WHERE tool_name = …` and
+  `WHERE created_at > …` are full scans
   (measured 2026-11-20, tool poll, 5 lanes independently).** `EXPLAIN QUERY PLAN` on
   `SELECT count(*) FROM tool_executions WHERE tool_name='bash'` returns `SCAN tool_executions`;
   unguarded that ran 1 m 40 s and a `timeout 45` guard turned it into `rc=124` with **empty
@@ -214,6 +220,11 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   the numeric test silently fails — use `sqlite3 -cmd ".timeout 30000" … | tail -1` instead; and
   a wrong column name (`no such column: success`) returns exit 1 as ordinary output, so read the
   shell's own `$?` rather than assuming a printed line means the query worked.
+  **And a rate off this table is worth only its denominator** (measured 2026-11-20 over all
+  168,238 rows): `duration_ms` is NULL on **42,207 (25.09 %)**, `exit_code` on **23,301
+  (13.85 %)** — so a latency percentile describes three quarters of the table and an exit-code
+  census describes 86 % of it, never all of it. State the denominator's completeness beside every
+  rate, or the figure is a claim about an unstated subset.
   **The ROOT store is two months stale** (`~/.opencrabs/opencrabs.db`, 562 MB, rows ending
   2026-09-05); the live one is `~/.opencrabs/profiles/<profile>/opencrabs.db`. A query that
   parses, resolves and returns plausible counts from the wrong file is the failure this bullet
