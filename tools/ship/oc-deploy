@@ -1647,18 +1647,10 @@ NSTUB2
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: failed restore not journaled truthfully (rc=1 + restore_failed)"; }
   grep -q 'ROLLBACK-FAILED' "$SD/workers-ledger.json" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: ledger did not stamp ROLLBACK-FAILED"; }
-  # 11c. BACKUP RETENTION (#497, HQ toolshed item 2). The swap path took a
-  #      backup on every target and removed none: 38 files / 3.3 GB, purged by
-  #      hand to 3, regrown to 6 within ~5 h. The prune is asserted here at the
-  #      FUNCTION level as well as through a real drill below, because the two
-  #      properties that matter are not "some file was deleted" but:
-  #        (1) ORDER IS THE FILENAME STAMP, NOT mtime — `cp -p` preserves the
-  #            source's timestamps, so a backup's mtime is the mtime of the
-  #            BINARY it copied and several tie. The fixture below gives the
-  #            NEWEST name the OLDEST mtime, which is exactly the live shape;
-  #            an mtime-ordered rule would delete the live rollback point.
-  #        (2) ONLY the chain's own naming convention is touched — a foreign
-  #            file in that directory is not this tool's to remove.
+  # 11c. BACKUP RETENTION (#497) — asserted at the FUNCTION level here and by a
+  #      real drill below. The RULES live with prune_binary_backups(); what is
+  #      test-specific: the fixture gives the NEWEST name the OLDEST mtime,
+  #      which is the live shape `cp -p` produces.
   #      MUTATION KILL: swap `sort -r` for `ls -1t` (mtime order) and the
   #      "fresh backup survived" assertion fails; drop the grep and the foreign
   #      file is deleted.
