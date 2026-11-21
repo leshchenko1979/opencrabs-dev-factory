@@ -2269,6 +2269,7 @@ EOF
   for r in "$T/state" "$T/skill"; do
     git -C "$r" init -q 2>/dev/null
     git -C "$r" config user.email t@t; git -C "$r" config user.name t
+    git -C "$r" config commit.gpgsign false
     git -C "$r" add -A; git -C "$r" commit -q -m base
   done
   export OC_LEDGER="$T/state/workers-ledger.json" OC_SKILL_DIR="$T/skill" OC_DEPLOY_STATE_DIR="$T/state"
@@ -2496,6 +2497,7 @@ PAYLOAD
   printf '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}\n' > "$C8D/workers-ledger.json"
   for r in "$C8S" "$C8D"; do
     git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+    git -C "$r" config commit.gpgsign false
     git -C "$r" add -A; git -C "$r" commit -q -m base
   done
   c8sync() { # $1 = version
@@ -2632,6 +2634,7 @@ PAYLOAD
     printf '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}\n' > "$x/state/workers-ledger.json"
     for r in "$x/skill" "$x/state"; do
       git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+      git -C "$r" config commit.gpgsign false
       git -C "$r" add -A; git -C "$r" commit -q -m base
     done
     printf '%s' "$x"
@@ -3244,6 +3247,7 @@ FIXTURE
   _sweepd="$T/sweep701"; rm -rf "$_sweepd"; mkdir -p "$_sweepd"
   git -C "$_sweepd" init -q 2>/dev/null
   git -C "$_sweepd" config user.email t@t; git -C "$_sweepd" config user.name t
+  git -C "$_sweepd" config commit.gpgsign false
   printf '{}\n' > "$_sweepd/harvest-registry.json"
   printf 'unlisted\n' > "$_sweepd/not-carried.txt"
   git -C "$_sweepd" add -A 2>/dev/null; git -C "$_sweepd" commit -q -m base 2>/dev/null
@@ -3359,10 +3363,12 @@ FIXTURE
   git -C "$_p655dir/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$_p655dir/origin.git" "$_p655dir/w" 2>/dev/null
   git -C "$_p655dir/w" config user.email sa@sb; git -C "$_p655dir/w" config user.name sa
+  git -C "$_p655dir/w" config commit.gpgsign false
   ( cd "$_p655dir/w" && echo base > f && git add f && git commit -q -m base && git push -q origin main )
   # a second clone diverges: it commits, and the remote also advances
   git clone -q "$_p655dir/origin.git" "$_p655dir/d" 2>/dev/null
   git -C "$_p655dir/d" config user.email sa@sb; git -C "$_p655dir/d" config user.name sa
+  git -C "$_p655dir/d" config commit.gpgsign false
   git -C "$_p655dir/d" checkout -q main
   ( cd "$_p655dir/w" && echo remote > r && git add r && git commit -q -m remote && git push -q origin main )
   ( cd "$_p655dir/d" && echo local > l && git add l && git commit -q -m local )
@@ -4664,6 +4670,7 @@ EOF
   for _r in "$W70/state" "$W70/skill"; do
     git -C "$_r" init -q 2>/dev/null
     git -C "$_r" config user.email t@t; git -C "$_r" config user.name t
+    git -C "$_r" config commit.gpgsign false
     git -C "$_r" add -A; git -C "$_r" commit -q -m base
   done
   export OC_LEDGER="$W70/state/workers-ledger.json" OC_SKILL_DIR="$W70/skill" OC_DEPLOY_STATE_DIR="$W70/state"
