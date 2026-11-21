@@ -108,7 +108,21 @@
 #     [--roles editor,hq] [--exclude "40695,uuid8char"] \
 #     [--mode turn-end|quiet] (default quiet) \
 #     [--forum-chat <chat_id>] [--self <uuid>] [--dry-run] [--no-stamp] [--include-self] \
+#     [--no-reload] [--only <uuid-file>] \
 #     [--verify <wave-id>]
+#
+#   --no-reload suppresses the RELOAD: footer (the oc-drift-check --ack
+#   prescription). Default is ON: the footer is the only drift-check
+#   prescription most lanes ever receive, so silence is opt-in. Use it for a
+#   wave that already states its own ack policy — a brief carrying both an
+#   explicit ack instruction and a RELOAD: line tells the lane two things.
+#
+#   --only <file> replaces the role roster with an explicit uuid list, one per
+#   line (blank lines and #comments skipped). A uuid not in the roster is
+#   reported as "ABSENT <uuid> not-in-roster" and is neither sent nor skipped:
+#   a wave that names its targets must never shrink silently. Mutually
+#   exclusive with --roles/--exclude (rc 2), because merging them would make
+#   the named list a suggestion rather than a contract.
 #
 #   Default brief (when --text/--text-file omitted) is the canonical
 #   skill-change template with what="" — pass --text for the body.
@@ -523,7 +537,10 @@ JSON
   oc_has "$out" "SENT $L1" && chk 0 wave1-sent || chk 1 wave1-sent
   out="$(OC_FANOUT_RUN_DIR="$RD" run_fanout)"
   grep -q "SKIP $L1 .*DUPLICATE" <<< "$out" && chk 0 resume-duplicate-skip || chk 1 resume-duplicate-skip
-  n_sends=$(grep -cF "$L1" "$T/fake-notify-log" || true)
+  # A SEND is a log RECORD, not a line containing the uuid: the brief now names
+  # the lane's own uuid on its session: line and again in the RELOAD footer, so
+  # `grep -cF <uuid>` reads 3 for ONE send (measured 2026-11-21). Count records.
+  n_sends=$(grep -c "^sent: .*$L1" "$T/fake-notify-log" || true)
   [ "$n_sends" = "1" ] && chk 0 exactly-one-send || chk 1 "exactly-one-send (got $n_sends)"
   # 4b. concurrent-refuse: a live lock (our own pid, fresh ts) refuses rc=7.
   WID="$(printf '%s' "T|brief {{UUID}}" | sha256sum | cut -c1-12)"
@@ -587,8 +604,15 @@ JSON
     FAKE_NOTIFY_LOG="$T/fake-notify-log" \
       bash "$0" --title T --no-stamp "$@" 2>&1 || true
   }
-  sent_brief() { # the logged argv is "... --text <brief> <target-uuid>"; drop the uuid
-    local b; b="$(sed -n 's/.*--text //p' "$T/fake-notify-log")"
+  sent_brief() { # FIRST send's brief, embedded newlines PRESERVED
+    # Step 2 (#134) put the RELOAD footer on its own line, so a brief is now
+    # multi-line in the DEFAULT case. The old `sed -n 's/.*--text //p'` keeps
+    # only the line carrying `--text`, which silently truncated every brief at
+    # the uuid line and turned three RELOAD arms red the moment the footer moved
+    # (measured 2026-11-21). Take the whole first send block instead.
+    local b
+    b="$(awk '/^sent: /{if(seen) exit; sub(/^sent: /,""); seen=1} seen' "$T/fake-notify-log")"
+    b="${b#*--text }"
     printf '%s' "${b% $L1}"
   }
   # distinct run dirs: the wave-id hashes title+brief, so A and B would collide
@@ -665,6 +689,52 @@ JSON
   else
     chk 0 reload-executable-control
   fi
+
+  # STEP 2 (#134) — brief SHAPE: the lane's own uuid on its own line, and a
+  # footer that is ON by default and OFF only on request.
+  # Every arm runs ONE target via --only, in its own run dir, so the fake log
+  # belongs to that arm alone and `sent_brief`'s first-block read is unambiguous.
+  printf '%s\n' "$L1" > "$T/only-step2.txt"
+  s2_run() { # s2_run <rundir> [flags...] -> stdout, then RC=<n>
+    local _rd="$1"; shift
+    mkdir -p "$_rd"
+    rm -f "$T/fake-notify-log"; touch "$T/fake-notify-log"
+    ( OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
+      OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" OC_FANOUT_LEDGER="$LEDG" \
+      OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_SEND_TIMEOUT=5 OC_FANOUT_RUN_DIR="$_rd" \
+      FAKE_NOTIFY_LOG="$T/fake-notify-log" \
+        bash "$0" --title T --no-stamp --text 'brief {{UUID}}' "$@" 2>&1; printf 'RC=%s\n' "$?" )
+  }
+  # 2a. DEFAULT wave: rc 0, uuid on a line of its own, footer PRESENT.
+  #     reload-default-on is the POSITIVE CONTROL for reload-suppressed (2b):
+  #     without it, that arm passes on a tool that never emitted a footer.
+  S2_D="$(s2_run "$T/run-s2d" --only "$T/only-step2.txt")"
+  case "$S2_D" in *"RC=0"*) chk 0 step2-default-rc0 ;; *) chk 1 "step2-default-rc0 ($(tr '\n' '|' <<< "$S2_D" | cut -c1-300))" ;; esac
+  S2_BD="$(sent_brief)"
+  grep -qx "session: $L1" <<< "$S2_BD" \
+    && chk 0 session-line-own-line \
+    || chk 1 "session-line-own-line (brief lines: $(tr '\n' '|' <<< "$S2_BD" | cut -c1-140))"
+  grep -q '^RELOAD: run ' <<< "$S2_BD" && chk 0 reload-default-on || chk 1 "reload-default-on (no footer line in the default brief)"
+  # 2b. --no-reload is ACCEPTED (a flag the parser does not know dies rc 2, so
+  #     rc 0 is what proves the arm below is testing the flag and not a typo).
+  S2_N="$(s2_run "$T/run-s2n" --only "$T/only-step2.txt" --no-reload)"
+  case "$S2_N" in *"RC=0"*) chk 0 no-reload-accepted ;; *) chk 1 "no-reload-accepted ($(grep -o 'RC=[0-9]*' <<< "$S2_N" | tail -1))" ;; esac
+  S2_ND="$(sent_brief)"
+  grep -q 'RELOAD:' <<< "$S2_ND" && chk 1 "reload-suppressed (brief still carries a RELOAD: line)" || chk 0 reload-suppressed
+  # ...and suppression must not cost the uuid line, which is the OTHER half of
+  # step 2: a poll wave is the case the flag exists for, and it needs the id.
+  grep -qx "session: $L1" <<< "$S2_ND" \
+    && chk 0 no-reload-keeps-session-line \
+    || chk 1 "no-reload-keeps-session-line (brief lines: $(tr '\n' '|' <<< "$S2_ND" | cut -c1-140))"
+  # 2c. A body carrying its OWN ack instruction survives --no-reload verbatim.
+  #     The flag suppresses the footer, never rewrites what the caller wrote.
+  S2_A="$(s2_run "$T/run-s2a" --only "$T/only-step2.txt" --no-reload --text 'ACK: reply with your uuid when done.')"
+  S2_AD="$(sent_brief)"
+  case "$S2_AD" in
+    *"ACK: reply with your uuid when done."*) chk 0 no-reload-preserves-body-ack ;;
+    *) chk 1 "no-reload-preserves-body-ack (brief: $(tr '\n' '|' <<< "$S2_AD" | cut -c1-140))" ;;
+  esac
+  grep -q 'RELOAD:' <<< "$S2_AD" && chk 1 "no-reload-adds-no-footer (footer appended anyway)" || chk 0 no-reload-adds-no-footer
 
   # LAW 10 (defect #5, 2026-09-12): partial delivery surfaced + per-send bound.
   # 10a. --verify diffs the per-attempt manifest against .sent receipts:
@@ -990,7 +1060,7 @@ SEOF
   exit $?
 fi
 
-title="" text="" text_file="" roles="" excludes="" dry=0 stamp=1 include_self=0 verify_id="" self_uuid="" only_file=""
+title="" text="" text_file="" roles="" excludes="" dry=0 stamp=1 include_self=0 verify_id="" self_uuid="" only_file="" no_reload=0
 # LAW 5 (fixed 2026-09-12; rationale RE-BASED 2026-09-19): delivery mode, default
 # QUIET. A fan-out wave IS the `quiet` case named in fleet-directives.md
 # §Cross-lane message delivery discipline ("batch/fan-out notices ... a deliberate
@@ -1016,8 +1086,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --verify) [ $# -ge 2 ] || { echo "oc-notify-fanout: --verify needs a value" >&2; exit 2; }; verify_id=""$2""; shift 2 ;;
   --mode) [ $# -ge 2 ] || { echo "oc-notify-fanout: --mode needs a value" >&2; exit 2; }; mode=""$2""; shift 2 ;;
   --only) [ $# -ge 2 ] || { echo "oc-notify-fanout: --only needs a value" >&2; exit 2; }; only_file="$2"; shift 2 ;;
+  --no-reload) no_reload=1; shift ;;
   --help|-h) sed -n '2,40p' "$0"; exit 0 ;;
-  *) die "unknown flag '$1' (valid flags: --title, --text/--body, --text-file/--body-file, --roles, --exclude, --only, --mode, --forum-chat, --self, --dry-run, --no-stamp, --include-self, --verify, --help; see --help for usage details)" 2 ;;
+  *) die "unknown flag '$1' (valid flags: --title, --text/--body, --text-file/--body-file, --roles, --exclude, --only, --mode, --forum-chat, --self, --dry-run, --no-stamp, --no-reload, --include-self, --verify, --help; see --help for usage details)" 2 ;;
 esac; done
 
 # LAW 11 — --only <file>: an explicit target list, mutually exclusive with the
@@ -1378,6 +1449,14 @@ while IFS=$'\t' read -r uuid role topic wstate; do
   brief="${text}"
   brief="${brief//\{\{UUID\}\}/${uuid}}"
   brief="${brief//\{\{VERSION\}\}/${version}}"
+  # STEP 2 (#134, measured 2026-11-21): every brief carries the lane's OWN uuid
+  # on a line of its own. Before this, a brief that never mentioned {{UUID}}
+  # left the lane with no way to learn its id — while the poll procedure told
+  # it to answer into `session <uuid>`, a value that appeared nowhere in the
+  # message it received. Appended AFTER substitution, so it is always the
+  # literal uuid and never a token; law 1's survived-placeholder ABORT below
+  # still guards the rest of the text.
+  brief="${brief}"$'\n'"session: ${uuid}"
   # D-5 (HQ d72bd52d, 2026-09-13): this line used to pass ${version} as argv.
   # ${version} IS the live version THIS wave announces, so
   # `oc-drift-check <uuid> <version> --ack` had argv == live BY CONSTRUCTION:
@@ -1403,7 +1482,19 @@ while IFS=$'\t' read -r uuid role topic wstate; do
   # above. Emit the ABSOLUTE path, which resolves from any cwd — a lane's cwd is its
   # own worktree, not the skill root, so a root-relative path would only move the
   # defect one directory over.
-  brief="${brief} RELOAD: run ${SKILL_DIR}/tools/state/oc-drift-check ${uuid} --ack, re-read changed files."
+  # STEP 2 (#134): --no-reload suppresses the RELOAD footer. The footer is
+  # right for a standing lane reading changed files, and WRONG for a poll wave
+  # that already states its own ack policy — a brief carrying both an explicit
+  # ack instruction and a RELOAD: line tells the lane two different things.
+  # Default stays ON: the footer is the only drift-check prescription most
+  # lanes ever receive, so silence must be opt-in, never the default.
+  if [ "$no_reload" = 0 ]; then
+    # $'\n', not a space: the session: line above is the last line of the body,
+    # so a space separator glues the footer onto it and the uuid line stops
+    # being its own line in exactly the default case (measured 2026-11-21 while
+    # writing the arm that asserts it — the arm would have caught this).
+    brief="${brief}"$'\n'"RELOAD: run ${SKILL_DIR}/tools/state/oc-drift-check ${uuid} --ack, re-read changed files."
+  fi
   case "$brief" in *'{{'*'}}'*)
     receipts+="ABORT ${uuid} ${role} placeholder-token-survived-substitution(law1)"$'\n'
     failed=$((failed+1)); continue ;;
