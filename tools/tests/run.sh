@@ -65,6 +65,28 @@ BATTERY_WALL_MS=0
 BATTERY_SECTIONS_JSON='[]'
 BATTERY_SECTIONS_TSV=""
 
+# ---- live capture pointer (#133) -------------------------------------------
+# run_capture() sends each section's child output to a mktemp file, so the
+# operator sees the section header and then NOTHING until the child exits: a
+# section running slowly and a section wedged look byte-identical. Measured
+# 2026-11-21: a healthy run was diagnosed as a deadlock and kill -KILL'd at
+# ~22 min because the only visible evidence was silence; the child's capture
+# file had still been growing at the kill instant.
+#
+# The pointer lives OUTSIDE the tree on purpose. It must not become an
+# untracked path (that would set tree_changed on every receipt) and it must not
+# reach the transcript: `note` writes to stdout, and in parallel mode a chunk's
+# stderr is cat'd back into the transcript, so BOTH channels are transcript
+# surface. A file in /tmp is neither.
+#
+# One file PER PROCESS, not one shared path: --jobs N runs N chunks
+# concurrently, and a shared pointer would be last-writer-wins across them --
+# it would name whichever section started most recently rather than the one you
+# are watching, i.e. it would lie exactly when a parallel run is stuck. The
+# suffix is the shell pid, so `ls -lt /tmp/oc-battery-capture.current.*` lists
+# live sections newest-first and the top row names the file to tail.
+_CAP_PTR="${OC_BATTERY_CAPTURE_POINTER:-/tmp/oc-battery-capture.current}"
+
 # ---- helpers ---------------------------------------------------------------
 note()  { printf '%s\n' "$*"; }
 
@@ -163,6 +185,16 @@ run_capture() { # $1 = label, $2.. = command
   local label="$1"; shift
   local out rc n
   out="$(mktemp)"
+  # #133: publish WHERE this child's output is going. Rewritten in place, never
+  # appended, and nothing here reaches stdout or stderr -- the pointer is the
+  # whole signal. An operator seeing a long silence tails the file it names and
+  # watches it grow; a wedged child leaves it static. That single distinction is
+  # what the run lacked when a healthy run was killed at ~22 min. The pid
+  # suffix keeps concurrent chunks from overwriting each other's pointer.
+  [ -n "${_CAP_PTR:-}" ] && {
+    printf 'label\t%s\nfile\t%s\nstarted\t%s\n' \
+      "$label" "$out" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_CAP_PTR.$$" 2>/dev/null
+  }
   "$@" >"$out" 2>&1; rc=$?
   if [ "$rc" -eq 0 ]; then
     ok "$label"
@@ -178,6 +210,10 @@ run_capture() { # $1 = label, $2.. = command
       tail -n 20 "$out" | sed 's/^/       | /' | record
     fi
   fi
+  [ -n "${_CAP_PTR:-}" ] && {
+    printf 'label\t%s\nfile\t%s\nfinished\t%s\nrc\t%s\n' \
+      "$label" "$out" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc" > "$_CAP_PTR.$$" 2>/dev/null
+  }
   rm -f "$out"
   return "$rc"
 }
@@ -208,6 +244,21 @@ run_selftest() {
   rm -rf "$sd"
   return "$_rc"
 }
+
+# #133: tell the operator, once, where live child output can be watched. This
+# is the ONLY console mention of the pointer and it is parent-only, so it adds
+# exactly one line to the transcript and never appears in a chunk's log (a
+# chunk's stdout IS transcript surface when the parent cats it back).
+# Placement is load-bearing: it sits BEFORE the --jobs dispatch below, because a
+# parallel parent re-execs itself into chunks at that point and never reaches a
+# later section. Putting this next to section 00 meant --jobs N runs -- the ones
+# most likely to look stuck -- were the only ones that never announced it.
+# The glob is left unexpanded in a single quote: it must name the pattern, not
+# whatever happens to exist right now -- stale pointers from dead runs stay
+# listed, and `ls -lt` sorts them so the newest live one is the top row.
+if [ -z "${BATTERY_IN_CHUNK:-}" ]; then
+  note "  live output pointer: ${_CAP_PTR}.\$\$  (each running section names its own capture file; ls -lt /tmp/oc-battery-capture.current.* then tail -f the top row)"
+fi
 
 # ---- battery driver: --jobs N parallel mode + internal --chunk mode (v0.4.131)
 # Sections are fully isolated (each builds its own mktemp state, no shared
