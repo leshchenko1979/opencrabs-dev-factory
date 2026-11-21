@@ -92,6 +92,26 @@ git -C ~/opencrabs-wt/<task> merge-base --is-ancestor <branch> origin/main || {
 **Gate-idle question sweep:** CI gate and carrier build waits are idle time — do not sit silent on open questions. Circle back to the user in your topic with anything unresolved (scope doubts, naming, approach forks) while the chain runs; waiting is never a reason to hold a question or to guess.
 - **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
 
+## Rebase discipline — ONCE, at ship time (never mid-development) [LANE]
+
+**The rule.** A lane rebases `$BRANCH` onto fork `main` **only at ship time**: the single rebase immediately before `oc-ship-chain`, or the recovery rebase an exit-5 NON-FF forces (§Failure Modes cause (a)). **Never mid-development**, and never as a periodic "stay current" hygiene step. Commits land on the branch as they are; the branch is allowed to sit behind `main` for the whole development arc.
+
+**Why — a replay does not MOVE commits, it REPLACES them.** Every rebase re-writes each replayed commit under a new sha. Everything the lane recorded against the OLD shas goes stale in one operation, and none of it announces the break:
+
+| receipt recorded before the rebase | what the replay does to it |
+|---|---|
+| `deployed.sha` ancestor checks (`git merge-base --is-ancestor <commit> <deployed>`) | the old sha leaves the branch's history, so the check answers NO for work that IS deployed |
+| `Issue-Ref` / `Session-Id` trailers | survive as text but now name a sha that exists on no remote |
+| a `CHANGELOG`, ledger or issue comment citing a sha | same: the cited sha is unreachable, so no later reader can verify the citation |
+| `smoke-verdicts.log` PASS rows | a verdict taken on the pre-rebase tree no longer names the tree that ships |
+| the harvest ancestor-walk (`oc-harvest-dispatch`) | it matches ported commits by walking the range; a replay changes every patch's identity, so a ported commit can no longer be matched to its re-sha'd twin |
+
+**And the trailer loss is silent.** `fleet-directives.md §Swap-head signature for rebase/synthesis/merge-derived binaries` clause 4: rebase, cherry-pick and filter operations can STRIP `Session-Id` and `Issue-Ref` trailers, and the check is the TOOL (`oc-attrib --trailers-only --range <A..B>`), never a hand parse. A mid-development rebase performs that rewrite before there is any reason to, so the verification cost is paid repeatedly instead of once.
+
+**Measured churn this rule exists to stop:** 51 rebases box-wide, **147 commit subjects replayed 2+ times**, and the worst case (`chore/875-rebase`) picked the same 5 dependency commits **5 times each**: 25 replays minting 25 sets of shas for 5 logical changes.
+
+**What a lane does instead:** leave the branch alone and keep working. A moved `main` is not an emergency — the ship-time rebase handles it, and LEG3's `--ff-only` refusal at ship time is the DESIGNED signal to rebase then. If a conflict genuinely blocks (a file you must edit has moved under you), rebase once, immediately, and re-take every receipt that named an old sha. Do not make it a habit, and do not rebase "to keep CI honest": the gate runs on the tip, whatever its base.
+
 ## Docs-Only LEG1 Gate Skip (v0.4.161, owner ruling 2026-09-12 11:04Z) [LANE]
 
 **Owner ruling (verbatim, 2026-09-12 11:04Z):** *"We don't need the pure docs commits to pass through ci on our side."* Origin: a lane's docs-only commit burned LEG1 in full before the ruling landed.
