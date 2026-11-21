@@ -1,5 +1,34 @@
 # Changelog — opencrabs-dev
 
+## v0.4.328 — rebase once, at ship time: the churn had no rule stopping it
+
+**One rule, one home.** `editor-ship.md` §Rebase discipline states that a lane rebases
+`$BRANCH` onto fork `main` **only at ship time** — the single rebase immediately before
+`oc-ship-chain`, or the recovery rebase an exit-5 NON-FF forces. Never mid-development,
+never as periodic "stay current" hygiene. `editor.md` carries a pointer, not a copy.
+
+**Why it needed saying.** Nothing in the corpus forbade the mid-development rebase, and
+nothing said why it costs anything, so lanes did it as housekeeping. A rebase does not
+move commits — it **replaces** them under new shas — and every receipt recorded against
+the old ones goes stale in one operation without announcing the break: `deployed.sha`
+ancestor checks start answering NO for work that IS deployed; `Issue-Ref` / `Session-Id`
+trailers survive as text but name shas that exist on no remote; a `CHANGELOG`, ledger or
+issue comment citing a sha becomes unverifiable by any later reader; a `smoke-verdicts.log`
+PASS row no longer names the tree that ships; and the harvest ancestor-walk cannot match a
+ported commit to its re-sha'd twin, because the replay changed every patch's identity.
+`fleet-directives.md` §Swap-head signature clause 4 already said the trailer loss is silent
+and the check is the tool, never a hand parse — which is precisely the cost a mid-development
+rebase pays repeatedly for no reason.
+
+**Measured churn motivating it:** 51 rebases box-wide, **147 commit subjects replayed 2+
+times**, worst case `chore/875-rebase` replaying the same 5 dependency commits **5 times
+each** — 25 replays minting 25 sets of shas for 5 logical changes.
+
+**Stated instead of hidden: this release also carries a catch-up.** `78f3a3e7` bumped
+`SKILL.md` to `0.4.327` and never stamped the ledger, so `check-version` read
+`MISMATCH … SKILL.md=0.4.327` against a recorded `0.4.326` with a stale `law_digest` —
+the same UNBUMPED-LAW class this lane caught once before. The sync below stamps both.
+
 ## v0.4.327 — the law described a test leg that was deleted yesterday, and the cap-stall class lost its venue
 
 **Doc debt discharged (four sites, all HQ surface).** The blocking gate's test leg
