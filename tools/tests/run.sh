@@ -736,6 +736,48 @@ if [ "${BATTERY_IN_CHUNK:-0}" = "0" ] && [ "$JOBS" -gt 1 ]; then
   exit $?
 fi
 
+# ---- shared probe helpers: PRELUDE, never a section (factory #130) --------
+# extract_chunk() (above) emits PRELUDE + ONE section, so a helper defined in
+# section 88 is invisible to section 89 under --jobs N. Measured 2026-11-21:
+# `--jobs 2` reported PASS 432 / FAIL 6, all six being section 89's #76 legs
+# reading '' because `_pf_jobs` was "command not found" in that chunk, while
+# `--jobs 1` passed them -- a red receipt accusing eight healthy tools. The
+# `_pf*` family therefore lives HERE, where every chunk receives it. The static
+# leg in section 89 asserts none of them reappears inside a numbered section.
+_pf_src="${RUN_SCRIPT:-$0}"
+_pf() { # $1 = pids.max fixture content; $2 = --jobs value; remaining: NAME=VALUE env
+  # The jobs value is a PROBE ARGUMENT, never part of the env list: `env` scans
+  # NAME=VALUE pairs until the first non-assignment, so a `--jobs` arriving
+  # through "$@" is parsed as an env OPTION ("env: '--jobs': No such file or
+  # directory") and the probe never runs -- every leg then reads '' and the
+  # whole section fails for a harness reason, not a code reason.
+  local _v="$1" _j="$2"; shift 2
+  local _d; _d="$(mktemp -d)"
+  printf '%s\n' "$_v" > "$_d/pm"
+  env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
+      -u OC_BATTERY_JOBS \
+      "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
+      "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
+      bash "${_PF_SCRIPT:-$_pf_src}" --jobs "$_j" --resolve-jobs 2>&1
+  rm -rf "$_d"
+}
+_pf_jobs() { printf '%s\n' "$1" | sed -n 's/^jobs=//p'; }
+
+_pf_nojobs() { # $1 = pids.max fixture content; remaining: NAME=VALUE env
+  # No --jobs argument at all: this is the DEFAULT path, and `env` treats a bare
+  # `--jobs` in "$@" as an OPTION, so it cannot be smuggled through the env list.
+  local _v="$1"; shift
+  local _d; _d="$(mktemp -d)"
+  printf '%s\n' "$_v" > "$_d/pm"
+  env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
+      -u OC_BATTERY_JOBS \
+      "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
+      "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
+      bash "${_PF_SCRIPT:-$_pf_src}" --resolve-jobs 2>&1
+  rm -rf "$_d"
+}
+_pf_field() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
+
 # ---- 00. lib/oc-log.sh (unified tools log, KERNEL batch D0) -----------------
 section "lib/oc-log.sh (unified tools log)"
 if [ -f "$TOOLS_DIR/lib/oc-log.sh" ]; then
@@ -4415,24 +4457,6 @@ esac
 # fan-out. Driven through the real block via --resolve-jobs, never a
 # re-implementation: a copy of the arithmetic here would stay green while the
 # tool kept the bug.
-_pf_src="${RUN_SCRIPT:-$0}"
-_pf() { # $1 = pids.max fixture content; $2 = --jobs value; remaining: NAME=VALUE env
-  # The jobs value is a PROBE ARGUMENT, never part of the env list: `env` scans
-  # NAME=VALUE pairs until the first non-assignment, so a `--jobs` arriving
-  # through "$@" is parsed as an env OPTION ("env: '--jobs': No such file or
-  # directory") and the probe never runs -- every leg then reads '' and the
-  # whole section fails for a harness reason, not a code reason.
-  local _v="$1" _j="$2"; shift 2
-  local _d; _d="$(mktemp -d)"
-  printf '%s\n' "$_v" > "$_d/pm"
-  env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
-      -u OC_BATTERY_JOBS \
-      "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
-      "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
-      bash "${_PF_SCRIPT:-$_pf_src}" --jobs "$_j" --resolve-jobs 2>&1
-  rm -rf "$_d"
-}
-_pf_jobs() { printf '%s\n' "$1" | sed -n 's/^jobs=//p'; }
 
 # LEG 1 (POSITIVE CONTROL): the measured defect. 64 pids and --jobs 4 cannot
 # both hold, so the run must cap to 2 -- the exact shape that ran green.
@@ -4492,20 +4516,6 @@ rm -f "$_o74m"
 # Driven through the real block via --resolve-jobs, never a re-implementation: a
 # copy of the default or of the renice here would stay green while run.sh kept
 # the bug.
-_pf_nojobs() { # $1 = pids.max fixture content; remaining: NAME=VALUE env
-  # No --jobs argument at all: this is the DEFAULT path, and `env` treats a bare
-  # `--jobs` in "$@" as an OPTION, so it cannot be smuggled through the env list.
-  local _v="$1"; shift
-  local _d; _d="$(mktemp -d)"
-  printf '%s\n' "$_v" > "$_d/pm"
-  env -u BATTERY_IN_CHUNK -u OC_BATTERY_NO_PIDS_CAP -u OC_BATTERY_PIDS_MAX_FILE \
-      -u OC_BATTERY_JOBS \
-      "OC_BATTERY_LOCK=$_d/lk" "OC_BATTERY_NO_CGROUP=1" \
-      "OC_BATTERY_PIDS_MAX_FILE=$_d/pm" "$@" \
-      bash "${_PF_SCRIPT:-$_pf_src}" --resolve-jobs 2>&1
-  rm -rf "$_d"
-}
-_pf_field() { printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
 
 # LEG 1 (POSITIVE CONTROL): the default is 1, never nproc. Asserted on the
 # script's OWN report line, so the leg is honest about what a caller sees.
@@ -4579,6 +4589,27 @@ else
   fi
 fi
 
+# STATIC INVARIANT (factory #130): the `_pf*` family must live in the PRELUDE.
+# extract_chunk() emits PRELUDE + ONE section, so a definition inside a numbered
+# section is invisible to every OTHER section's chunk -- the exact shape that made
+# --jobs 2 report 6 FAILs against a healthy tree while --jobs 1 passed them.
+_pf_marker="$(grep -nE '^# ---- [0-9]' "$_pf_src" | head -1 | cut -d: -f1)"
+_pf_stray="$(grep -nE '^_pf(_src=|[A-Za-z_]*\(\))' "$_pf_src" \
+  | awk -F: -v m="${_pf_marker:-0}" '$1 >= m { print $1 }')"
+[ -z "$_pf_stray" ] \
+  && ok "#130: every _pf* helper is defined in the PRELUDE, so every chunk sees it" \
+  || bad "#130: _pf* definition(s) inside a numbered section at line(s) $_pf_stray — invisible to other chunks under --jobs N"
+# NEGATIVE CONTROL: the same check must FLAG a helper placed inside a section,
+# or the leg above could be green because the grep matched nothing at all.
+_pf_fx="$(mktemp)"
+{ printf '%s\n' '_pf_src="x"' '# ---- 01. fixture section' '_pf_jobs() { :; }'; } > "$_pf_fx"
+_pf_fm="$(grep -nE '^# ---- [0-9]' "$_pf_fx" | head -1 | cut -d: -f1)"
+_pf_fs="$(grep -nE '^_pf(_src=|[A-Za-z_]*\(\))' "$_pf_fx" \
+  | awk -F: -v m="${_pf_fm:-0}" '$1 >= m { print $1 }')"
+rm -f "$_pf_fx"
+[ -n "$_pf_fs" ] \
+  && ok "#130 NEGATIVE CONTROL: the check flags a _pf* helper inside a section (the leg can fail)" \
+  || bad "#130 NEGATIVE CONTROL: the check missed a helper placed inside a section — it is inert"
 # ---- 90. lib/oc-patch.sh: "else empty" must mean rc 0, never abort (#114) ---
 # Defect (measured 2026-11-20): oc_job_sha/oc_patch_id document "else empty" and
 # both are PIPELINES. Under a caller's `set -e` + `set -o pipefail` a no-match
