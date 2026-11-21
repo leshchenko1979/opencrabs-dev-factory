@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# tools/lib/oc-gh-close.sh — ONE implementation of "close an issue on a behavioural
-# receipt" (triage.md §Autonomous closure, class (d) behavioural-smoke-landed).
+# tools/lib/oc-gh-close.sh — ONE implementation of "close an issue on a receipt"
+# (triage.md §Autonomous closure: class (d) behavioural-smoke-landed and class (e)
+# battery-verified-landed). The receipt KIND differs per class; the guards do not.
 #
 # SOURCED, never executed. Provides oc_close_on_receipt().
 #
@@ -12,14 +13,22 @@
 # reading stops matching the one that is. One function, two callers, one guard set.
 #
 # CONTRACT
-#   oc_close_on_receipt <prog> <gh> <repo> <issue> <receipt-1> <receipt-2>
-#     prog       program name used in the stderr messages
-#     gh         gh binary (selftests pass a stub, so never hardcode `gh`)
-#     repo       owner/repo
-#     issue      NUMERIC issue number; a slug is refused (rc 4) — gh cannot close
-#                a slug and resolving one would be a guess about which tracker
-#     receipt-1  first receipt line, pre-formatted by the caller
-#     receipt-2  second receipt line, pre-formatted by the caller
+#   oc_close_on_receipt <prog> <gh> <repo> <issue> <receipt-1> <receipt-2> [class-label]
+#     prog        program name used in the stderr messages
+#     gh          gh binary (selftests pass a stub, so never hardcode `gh`)
+#     repo        owner/repo
+#     issue       NUMERIC issue number; a slug is refused (rc 4) — gh cannot close
+#                 a slug and resolving one would be a guess about which tracker
+#     receipt-1   first receipt line, pre-formatted by the caller
+#     receipt-2   second receipt line, pre-formatted by the caller
+#     class-label which closure class the comment CLAIMS, default
+#                 `class (d) behavioural-smoke-landed`. It is a parameter, not a
+#                 constant, because the classes do not share a receipt kind: a
+#                 `tools/**` fix closes on the harness battery (class (e),
+#                 triage.md §Autonomous closure, HQ ruling 2026-11-20) and a
+#                 comment asserting a behavioural smoke it never ran is a false
+#                 receipt on a public tracker. Callers pass THEIR class; the
+#                 default keeps `oc-smoke --close` byte-identical.
 #
 #   rc 0  closed by THIS call
 #      1  already CLOSED — idempotent no-op, nothing written (guard 4)
@@ -40,6 +49,7 @@
 
 oc_close_on_receipt() {
   local prog="${1:-oc-close}" gh="${2:-gh}" repo="$3" issue="$4" r1="$5" r2="$6"
+  local cls="${7:-class (d) behavioural-smoke-landed}"
   local state vrc comment out crc
 
   case "$issue" in
@@ -69,9 +79,16 @@ oc_close_on_receipt() {
     return 1
   fi
 
-  comment="$(printf '%s\n\n- %s\n- %s\n' \
-    "Closed on behavioural receipt (class (d) behavioural-smoke-landed)." \
-    "$r1" "$r2")"
+  # The class (d) wording is kept VERBATIM, because that caller's comment is
+  # already on hundreds of issues and a silent reword would look like a new
+  # kind of closure. Only the newer classes use the generic head.
+  local head
+  if [ "$cls" = "class (d) behavioural-smoke-landed" ]; then
+    head="Closed on behavioural receipt ($cls)."
+  else
+    head="Closed on receipt ($cls)."
+  fi
+  comment="$(printf '%s\n\n- %s\n- %s\n' "$head" "$r1" "$r2")"
 
   out="$("$gh" issue close "$issue" -R "$repo" --comment "$comment" 2>&1)" || {
     crc=$?
@@ -81,7 +98,7 @@ oc_close_on_receipt() {
     return 3
   }
 
-  printf '%s: closed %s#%s on the behavioural receipt (class (d) behavioural-smoke-landed)\n' \
-    "$prog" "$repo" "$issue"
+  printf '%s: closed %s#%s on the receipt (%s)\n' \
+    "$prog" "$repo" "$issue" "$cls"
   return 0
 }

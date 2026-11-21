@@ -44,13 +44,34 @@
 #   (4) a minimal row:       ts \t PASS \t issue=            (no sha, no run, no target)
 #
 # Usage: oc-closure-sweep [--repo <owner/repo>] [--log <path>] [--ledger <path>]
+#                         [--battery <path>] [--tree <dir>]
 #                         [--apply] [--json] [--selftest]
 #   DRY RUN IS THE DEFAULT. Without --apply this tool writes NOTHING to any
 #   tracker; it prints what it would close and exits 0.
 #   --repo      tracker to read state from and close on
 #               (default leshchenko1979/opencrabs-dev-factory — tooling issues)
 #   --log       smoke-verdicts.log (default $STATE_DIR/smoke-verdicts.log)
+#   --e-repo    the tracker a tools/** fix belongs to (default the factory)
 #   --ledger    workers-ledger.json (default $STATE_DIR/workers-ledger.json)
+#   --battery   tools/tests/battery-last.json — the class (e) receipt
+#               (default $SCRIPT_DIR/tests/battery-last.json)
+#   --tree      the git work tree the receipt and the fix commits live in
+#               (default: the toplevel of this tool's own repo)
+#   CLASS (e) — a `tools/**` fix writes no smoke verdict; the harness BATTERY is
+#   its receipt (triage.md §Autonomous closure, HQ ruling 2026-11-20, factory#127).
+#   Such an issue is a candidate when it has a `done` row and no smoke verdict, and
+#   it is closable ONLY when all three legs hold:
+#     (i)   the COMMITTED battery-last.json reads verdict=PASS, fail=0,
+#           tree_changed=false (the committed blob, never the working copy: the
+#           battery rewrites that file on every run, so the working copy is a
+#           receipt only once it is on the record);
+#     (ii)  the fix commit is an ANCESTOR of the receipt's commit — read with
+#           `git merge-base --is-ancestor`, never from a report's word;
+#     (iii) the fix commit's OWN SUBJECT names the issue. A trailer is a CLAIM:
+#           #112's `Issue-Ref:` sat on a commit about a different fix, so a
+#           trailer-keyed sweep closes issues on collateral references.
+#   With either input unusable the class is DISABLED and says so on stderr — an
+#   absent receipt is never a silent zero.
 #
 # Exit codes:
 #   0 sweep ran; every eligible issue closed or already CLOSED (dry run: ran clean)
@@ -63,6 +84,17 @@
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+# The git tree is resolved HERE, before the snap guard, and passed through the
+# environment. `oc_snap_guard` EXECs this script from an immutable MIRROR of
+# tools/ — no .git — so a tree resolved after it is always empty and class (e)
+# silently disables itself on the live box while every selftest (which runs the
+# tool from the real tree, guard and all, but with --tree) stays green.
+OC_CLOSURE_TREE="${OC_CLOSURE_TREE:-$(git -C "$_oc_d" rev-parse --show-toplevel 2>/dev/null || true)}"
+# Same reason for the receipt: the mirror's copy is a WORKING-COPY path with no
+# commit behind it, and leg (i) reads the COMMITTED blob — a receipt the tree
+# cannot address is not a receipt.
+OC_CLOSURE_BATTERY="${OC_CLOSURE_BATTERY:-$_oc_d/tests/battery-last.json}"
+export OC_CLOSURE_TREE OC_CLOSURE_BATTERY
 _OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
 if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
 
@@ -94,6 +126,15 @@ REPOS=("leshchenko1979/opencrabs-dev-factory" "leshchenko1979/opencrabs")
 REPO_GIVEN=0
 LOG="$STATE_DIR/smoke-verdicts.log"
 LEDGER="$STATE_DIR/workers-ledger.json"
+# Class (e) inputs. The battery receipt and the git tree it is judged in — both
+# overridable so the selftest can prove each leg against a fixture it owns, and
+# so a sweep can be pointed at another checkout without editing the tool.
+BATTERY="${OC_CLOSURE_BATTERY:-$SCRIPT_DIR/tests/battery-last.json}"
+# The ONE tracker whose number space the skill repo's commit subjects speak.
+# A `tools/**` fix is a FACTORY issue, so class (e) may never close a number that
+# only the binary fork holds — the two spaces collide constantly.
+E_REPO="${OC_CLOSURE_E_REPO:-leshchenko1979/opencrabs-dev-factory}"
+TREE="${OC_CLOSURE_TREE:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)}"
 APPLY=0
 JSON=0
 MODE=sweep
@@ -118,6 +159,9 @@ while [ $# -gt 0 ]; do
       REPOS+=("$2"); shift 2 ;;
     --log)    [ $# -ge 2 ] || die 2 "--log needs a path"; LOG="$2"; shift 2 ;;
     --ledger) [ $# -ge 2 ] || die 2 "--ledger needs a path"; LEDGER="$2"; shift 2 ;;
+    --battery) [ $# -ge 2 ] || die 2 "--battery needs a path"; BATTERY="$2"; shift 2 ;;
+    --tree)   [ $# -ge 2 ] || die 2 "--tree needs a directory"; TREE="$2"; shift 2 ;;
+    --e-repo) [ $# -ge 2 ] || die 2 "--e-repo needs owner/name"; E_REPO="$2"; shift 2 ;;
     --apply)  APPLY=1; shift ;;
     --json)   JSON=1; shift ;;
     --selftest) MODE=selftest; shift ;;
@@ -219,7 +263,11 @@ run_selftest() {
  {"n":10,"t":"2026-11-09T09:05:00Z","kind":"done","what":"#320 landed, leg 4 PARKED-OWNER-EYE"},
  {"n":11,"t":"2026-11-09T09:15:00Z","kind":"done","what":"#321 landed, leg 4 ABSENT"},
  {"n":12,"t":"2026-11-09T09:25:00Z","kind":"done","what":"#322 doc change landed"},
- {"n":13,"t":"2026-11-09T09:35:00Z","kind":"done","what":"#323 landed, all four legs ran"}
+ {"n":13,"t":"2026-11-09T09:35:00Z","kind":"done","what":"#323 landed, all four legs ran"},
+ {"n":14,"t":"2026-11-21T04:20:00Z","kind":"done","what":"#330 landed, named only by a trailer"},
+ {"n":15,"t":"2026-11-21T04:21:00Z","kind":"done","what":"#331 landed after the receipt"},
+ {"n":16,"t":"2026-11-21T04:22:00Z","kind":"done","what":"#332 landed \u2014 detail: \"quoted\" and\na second line"},
+ {"n":17,"t":"2026-11-21T04:23:00Z","kind":"done","what":"#333 a factory-shaped fix, but the number lives on the OTHER tracker"}
 ]}
 LEDGER
 
@@ -234,8 +282,8 @@ printf '%s\n' "$*" >> "$GH_CALLS"
 case "$1 $2" in
   "issue list")
     case "$4" in
-      o/one) echo '[{"number":260,"state":"OPEN"},{"number":279,"state":"OPEN"},{"number":300,"state":"CLOSED"},{"number":302,"state":"OPEN"},{"number":303,"state":"OPEN"},{"number":304,"state":"OPEN"},{"number":310,"state":"OPEN"},{"number":320,"state":"OPEN"},{"number":321,"state":"OPEN"},{"number":322,"state":"OPEN"},{"number":323,"state":"OPEN"}]' ;;
-      o/two) echo '[{"number":310,"state":"OPEN"},{"number":777,"state":"CLOSED"}]' ;;
+      o/one) echo '[{"number":260,"state":"OPEN"},{"number":279,"state":"OPEN"},{"number":300,"state":"CLOSED"},{"number":302,"state":"OPEN"},{"number":303,"state":"OPEN"},{"number":304,"state":"OPEN"},{"number":305,"state":"OPEN"},{"number":310,"state":"OPEN"},{"number":320,"state":"OPEN"},{"number":321,"state":"OPEN"},{"number":322,"state":"OPEN"},{"number":323,"state":"OPEN"},{"number":330,"state":"OPEN"},{"number":331,"state":"OPEN"},{"number":332,"state":"OPEN"}]' ;;
+      o/two) echo '[{"number":310,"state":"OPEN"},{"number":333,"state":"OPEN"},{"number":777,"state":"CLOSED"}]' ;;
       *) echo '[]' ;;
     esac ;;
   "issue view") case "$3" in 300) echo CLOSED ;; *) echo OPEN ;; esac ;;
@@ -245,14 +293,71 @@ exit 0
 STUB
   chmod +x "$D/gh"
 
+  # ---- class (e) fixture: a REAL git tree, because legs (ii) and (iii) are
+  # git reads and a stub would let them pass without being able to fail. The
+  # history is deliberately hostile in the three measured ways:
+  #   * the receipt commit's OWN SUBJECT names #305 — so a leg (iii) that scans
+  #     the receipt's ancestry INCLUSIVE would cite the receipt as its own fix
+  #     (self-consistency, proves nothing; the live shape is
+  #     `chore(tests): battery receipt PASS 445/0 with the #80 log bound in the
+  #     tree`).
+  #   * #330 is named ONLY by an `Issue-Ref:` trailer on a commit about another
+  #     change — the #112 trap, which must close NOTHING.
+  #   * #331's fix commit comes AFTER the receipt — leg (ii) must red.
+  G() { git -C "$D/tree" -c user.email=st@example.invalid -c user.name=st \
+        -c commit.gpgsign=false "$@"; }
+  mkdir -p "$D/tree/tools/tests"
+  G init -q
+  printf 'x\n' > "$D/tree/tools/x.sh"
+  G add -A
+  G commit -q -m 'fix(tools): bound the fetch timeout (#305)'
+  FIX305="$(G rev-parse HEAD)"
+  printf 'y\n' > "$D/tree/tools/y.sh"
+  G add -A
+  G commit -q -m 'fix(tools): a change about something else entirely
+
+Issue-Ref: leshchenko1979/opencrabs-dev-factory#330'
+  G checkout -q -b side
+  printf 'z\n' > "$D/tree/tools/z.sh"
+  G add -A
+  G commit -q -m 'fix(tools): late fix (#331)'
+  G checkout -q -
+  # the RECEIPT — committed, PASS/fail 0/tree_changed false, and its subject
+  # names #305 on purpose (see above).
+  printf '{"verdict":"PASS","fail":0,"tree_changed":false,"pass":445,"ts":"2026-11-21T04:23:13Z"}\n' \
+    > "$D/tree/tools/tests/battery-last.json"
+  G add -A
+  G commit -q -m 'chore(tests): battery receipt PASS 445/0 with the #305 bound in the tree'
+  RECEIPT="$(G rev-parse HEAD)"
+  # a SECOND receipt path that fails leg (i), so the disabled arm has a cause
+  # that is leg (i) specifically and not a missing file.
+  printf '{"verdict":"PASS","fail":3,"tree_changed":false,"pass":442,"ts":"2026-11-21T05:00:00Z"}\n' \
+    > "$D/tree/tools/tests/bad.json"
+  G add -A
+  G commit -q -m 'chore(tests): a receipt with three failures'
+
   # `|| rc=$?` is NOT decoration: under `set -e`, a bare `out="$(cmd)"` whose
   # cmd fails EXITS the whole selftest at that line, so the leg that would have
   # named the failure never runs and the run prints NOTHING — an abort that
   # reads exactly like a crashed tool (measured here: the done-row mutant went
   # rc 3 with zero output until this was fixed).
+  # The class (e) inputs are ALWAYS passed: the tool's own defaults point at the
+  # LIVE repo, so a selftest that omitted them would assert against whatever the
+  # working tree happens to contain — a fixture that changes with the tree it is
+  # testing is not a fixture.
   sweep() { # extra args...
     rc=0
-    out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" --repo o/one --repo o/two "$@" 2>"$D/err")" || rc=$?
+    out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" \
+      --repo o/one --repo o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/battery-last.json" \
+      "$@" 2>"$D/err")" || rc=$?
+  }
+  # the DISABLED arm: an explicit --battery that fails leg (i). Same tree, so the
+  # only thing that changed is the receipt.
+  sweep_badbattery() { # extra args...
+    rc=0
+    out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" \
+      --repo o/one --repo o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/bad.json" \
+      "$@" 2>"$D/err")" || rc=$?
   }
   # Tolerant on purpose: a leg that PARSES the JSON must never be the thing that
   # aborts the run. Without the fallback, a mutant that corrupts stdout kills the
@@ -270,11 +375,11 @@ except Exception:
   # ---- leg 1: the join is exactly the three pairs that have BOTH receipts ---
   : > "$D/calls"
   sweep --json
-  GOT="$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(str(r["issue"]) for r in json.load(sys.stdin)["rows"]))' 2>/dev/null || echo PARSE-FAIL)"
-  if [ "$rc" -eq 0 ] && [ "$GOT" = "260,279,300,310,320,321,322,323" ]; then
-    t_ok "the three-way join yields exactly the issues carrying BOTH receipts (rc=$rc)"
+  GOT="$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(str(r["issue"]) for r in sorted(json.load(sys.stdin)["rows"], key=lambda r: r["issue"])))' 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$rc" -eq 0 ] && [ "$GOT" = "260,279,300,305,310,320,321,322,323,330,331,332,333" ]; then
+    t_ok "the join yields the class (d) pairs AND the class (e) done-only rows (rc=$rc)"
   else
-    t_bad "join set (rc=$rc got=$GOT want=260,279,300,310 err=$(tr '\n' '|' < "$D/err"))"
+    t_bad "join set (rc=$rc got=$GOT want=260,279,300,305,310,320,321,322,323,330,331,332,333 err=$(tr '\n' '|' < "$D/err"))"
   fi
 
   # ---- leg 2: PASS-LATE-ENTRY is eligible (#279 is the regression case) -----
@@ -313,10 +418,15 @@ except Exception:
   # ---- leg 5: acceptance 3 — a done row with no smoke PASS is not eligible ---
   # #660: `<<<` not `printf | grep -q` — under pipefail an early-exiting grep
   # SIGPIPEs the writer, so the pipeline reports failure on a SUCCESSFUL match.
-  if ! grep -q '"305"' <<< "$J"; then
-    t_ok "a done row with NO smoke PASS is not a candidate (acceptance 3)"
+  # #305 is a done row with NO smoke verdict: under class (e) it IS a candidate
+  # (the battery is its receipt), so the old assertion inverted. What must still
+  # hold is that it carries the class (e) stream and claims no smoke at all — a
+  # row that invented a verdict to look closable is the defect.
+  V305="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("305",{}).get("verdict","MISSING"))')"
+  if [ "$V305" = "" ]; then
+    t_ok "a done row with NO smoke PASS is a class (e) candidate and claims no smoke verdict"
   else
-    t_bad "issue 305 (done, no smoke) became a candidate"
+    t_bad "issue 305 (done, no smoke) verdict='$V305' want='' (class e must not invent one)"
   fi
 
   # ---- leg 6: disqualifiers — off-taxonomy, retraction, FAIL, no-done-row ---
@@ -333,6 +443,38 @@ except Exception:
     t_ok "the excluded rows are REPORTED on stderr, not silently dropped"
   else
     t_bad "exclusion reasons missing from stderr ($(tr '\n' '|' < "$D/err"))"
+  fi
+
+  # ---- leg 5b: a done row whose `what` spans a NEWLINE or carries a quote ----
+  # The join stream is read line-by-line with \x1f separators, so a raw newline
+  # in a ledger detail shifts every field after it: the continuation line's text
+  # lands in the ISSUE column and the row is emitted as prose. Measured live
+  # 2026-11-21 — the real --json was UNPARSEABLE at char 56804, where a real
+  # #401 detail had wrapped, and no fixture row had ever contained a newline.
+  _shape="$(printf '%s' "$J" | python3 -c '
+import json,sys
+rows=json.load(sys.stdin)
+bad=[k for k in rows if not k.isdigit()]
+r=rows.get("332") or {}
+print("%d|%d|%s" % (len(bad), 1 if r else 0, r.get("ledger_n","-")))
+' 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$_shape" = "0|1|16" ]; then
+    t_ok "a multi-line / quoted ledger detail keeps the stream aligned and the JSON parseable"
+  else
+    t_bad "ledger detail with a newline corrupted the join (non-int rows|332 rows|ledger_n = $_shape, want 0|1|16)"
+  fi
+
+  # ---- leg 5c: a class (e) number held by the WRONG tracker ----------------
+  # #333 has a done row and no verdict, exactly like #305 — but its number lives
+  # on o/two, not on the factory-shaped repo the skill repo's commits speak. A
+  # commit subject carries NO repo, so closing it would assert that another
+  # tracker's #333 was fixed here. Measured live 2026-11-21: fork#471 was one
+  # dry run from exactly that close.
+  A333="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("333",{}).get("action",""))')"
+  if [ "$A333" = "skip-e-wrong-tracker" ] && grep -q 'CLASS-E-SKIPPED #333' "$D/err"; then
+    t_ok "a class (e) number held by a NON-factory tracker is refused, and says why"
+  else
+    t_bad "wrong-tracker class (e) (action='$A333' want=skip-e-wrong-tracker)"
   fi
 
   # ---- leg 6b: the SAME NUMBER on two OPEN trackers is reported, never closed
@@ -354,10 +496,10 @@ except Exception:
   : > "$D/calls"
   sweep --apply --json
   closed="$(grep -o 'issue close [0-9]*' "$D/calls" | awk '{print $3}' | sort -n | tr '\n' ' ')"
-  if [ "$closed" = "260 279 322 323 " ]; then
-    t_ok "--apply closes exactly the OPEN pairs and leaves CLOSED #300 alone (closed: $closed)"
+  if [ "$closed" = "260 279 305 322 323 " ]; then
+    t_ok "--apply closes exactly the OPEN pairs (class (d) and (e)) and leaves CLOSED #300 alone (closed: $closed)"
   else
-    t_bad "--apply close set (got='$closed' want='260 279 322 323 ')"
+    t_bad "--apply close set (got='$closed' want='260 279 305 322 323 ')"
   fi
   if grep -q 'smoke verdict: PASS 2026-11-01T10:00:00Z sha=aaaa run=111' "$D/calls" \
      && grep -q 'ledger: done #260 n=1' "$D/calls"; then
@@ -381,6 +523,56 @@ except Exception:
     t_ok "an ABSENT optional field stays absent — the late-entry receipt has no run= and no field shift"
   else
     t_bad "late-entry receipt shifted a field (calls=$(grep -c . "$D/calls") lines; look for run= on the #279 close)"
+  fi
+
+  # ---- legs 9c-9f: class (e) — a tools/** fix closes on the BATTERY ---------
+  # The discriminator is the cited FIX SHA. The fixture's receipt commit names
+  # #305 in its own subject, so a leg (iii) that scanned the receipt's ancestry
+  # INCLUSIVE would cite the receipt as its own fix — a marker one act records
+  # and re-reads, which is self-consistency and proves nothing. The live shape is
+  # `chore(tests): battery receipt PASS 445/0 with the #80 log bound in the tree`.
+  C305="$(grep -A3 'issue close 305' "$D/calls" | tr '\n' ' ' || true)"
+  if [ -n "$C305" ] && [[ "$C305" == *"fix=$FIX305"* ]] && [[ "$C305" != *"fix=$RECEIPT"* ]]; then
+    t_ok "class (e) cites the FIX commit, never the receipt that names the issue in its own subject"
+  else
+    t_bad "class (e) fix attribution (cited='${C305:0:200}' want fix=$FIX305)"
+  fi
+  if [[ "$C305" == *"receipt=$RECEIPT"* ]] && [[ "$C305" == *"class (e) battery-verified-landed"* ]]; then
+    t_ok "class (e) cites the committed receipt sha and claims class (e), not class (d)"
+  else
+    t_bad "class (e) receipt/class framing (cited='${C305:0:200}')"
+  fi
+  # A `tools/**` fix runs NO behavioural smoke. A close comment asserting one is a
+  # fabricated receipt on a public tracker — the exact reason the class label is a
+  # PARAMETER of oc_close_on_receipt rather than a constant.
+  if [[ "$C305" != *"class (d)"* ]] && [[ "$C305" != *"smoke verdict"* ]] && [[ "$C305" != *"behavioural"* ]]; then
+    t_ok "a class (e) close claims NO behavioural smoke — the label is the caller's, not a constant"
+  else
+    t_bad "class (e) close carries class (d) / behavioural framing (cited='${C305:0:200}')"
+  fi
+
+  # The two negative arms, from a DRY RUN: a trailer is a claim, and a fix that
+  # postdates the receipt is not in its ancestry.
+  : > "$D/calls"
+  sweep --json
+  EJ="$(printf '%s' "$out" | rows)"
+  eact() { printf '%s' "$EJ" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(sys.argv[1],{}).get("action",""))' "$1"; }
+  A330="$(eact 330)"; A331="$(eact 331)"
+  if [ "$A330" = "skip-no-subject" ] && [ "$A331" = "skip-not-ancestor" ]; then
+    t_ok "a trailer-only reference closes nothing, and a fix AFTER the receipt fails the ancestry leg"
+  else
+    t_bad "class (e) negative arms (330 action='$A330' want=skip-no-subject; 331 action='$A331' want=skip-not-ancestor)"
+  fi
+
+  # An unusable receipt must be a NAMED refusal, never a silent zero: with a
+  # receipt carrying fail=3 every class (e) candidate reports the leg (i) reason.
+  sweep_badbattery --json
+  BJ="$(printf '%s' "$out" | rows)"
+  B305="$(printf '%s' "$BJ" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("305",{}).get("action",""))')"
+  if [ "$B305" = "skip-no-battery" ] && grep -q 'leg (i) failed' "$D/err"; then
+    t_ok "a receipt that fails leg (i) DISABLES class (e) and names the reason on stderr"
+  else
+    t_bad "class (e) disabled arm (305 action='$B305' want=skip-no-battery; stderr=$(tr '\n' '|' < "$D/err"))"
   fi
 
   # ---- leg 10: missing input is rc 3, never an empty clean sweep ------------
@@ -456,8 +648,19 @@ command -v oc_close_on_receipt >/dev/null 2>&1 \
 # shapes and a JSON ledger); bash does the tracker reads and the closes, because
 # the gh stub in the selftest must be observable.
 #
-# Output: one US-delimited line per CANDIDATE (issue present on BOTH surfaces):
-#   issue \x1f ledger_n \x1f ledger_ts \x1f verdict \x1f smoke_ts \x1f sha \x1f run \x1f evidence \x1f what
+# Output: one US-delimited line per CANDIDATE:
+#   issue \x1f ledger_n \x1f ledger_ts \x1f verdict \x1f smoke_ts \x1f sha \x1f run \x1f evidence \x1f what \x1f class
+#
+# TWO candidate streams, one line shape:
+#   class `smoke`  — a smoke PASS and a `done` row (class (d), the T-10 join).
+#   class `e`      — a `done` row and NO smoke verdict: a `tools/**` fix writes
+#                    no behavioural smoke, the harness battery IS its receipt
+#                    (triage.md §Autonomous closure class (e), HQ 2026-11-20).
+#                    The three legs are proved in BASH, against git, because the
+#                    selftest must be able to observe them; here the row is only
+#                    declared, with an EMPTY verdict payload.
+# A done-only issue that a RETRACTION names is in neither stream: the retraction
+# is a kill for the whole number, not just for its smoke half.
 #
 # The separator is the ASCII UNIT SEPARATOR, never a TAB. TAB is IFS WHITESPACE,
 # so `IFS=$'\t' read` COLLAPSES a run of tabs into one delimiter and an EMPTY
@@ -484,6 +687,7 @@ log_path, ledger_path = sys.argv[1], sys.argv[2]
 verdict_of = {}   # issue -> newest eligible PASS record
 off_of     = {}   # issue -> newest off-taxonomy record
 killed     = set()
+spoke      = set()  # issues ANY timestamped row speaks about (any token, PASS or not)
 unparsed   = 0
 
 for raw in open(log_path, encoding="utf-8", errors="replace"):
@@ -505,6 +709,14 @@ for raw in open(log_path, encoding="utf-8", errors="replace"):
         if "=" in field:
             k, _, v = field.partition("=")
             kv.setdefault(k, v)          # first occurrence wins
+    # Record that the SMOKE SURFACE spoke about this issue at all, before any
+    # token filtering. Class (e) is for a fix that writes no smoke verdict, so an
+    # issue with a FAIL (or any other token) row is NOT class (e): the smoke
+    # surface has answered, and its answer is not a PASS.
+    for t in (kv.get("issue") or "").split(","):
+        t = t.strip().lstrip("#")
+        if t.isdigit():
+            spoke.add(t)
     if tok in KILL:
         # SCOPE THE KILL to the row's own issue= field when it carries one.
         # A hash scan of the whole LINE also harvests every #N quoted inside
@@ -573,12 +785,30 @@ for iss in sorted(verdict_of, key=lambda x: int(x)):
         continue
     v = verdict_of[iss]
     n, t, what = done_of[iss]
-    what = what.replace("\t", " ")
+    # One-line, separator-free: the stream is read with `read -r` per LINE, so a
+    # raw \n does not merely look ugly, it moves every later field one row down
+    # and the continuation text is emitted as an issue number.
+    what = " ".join(what.split())
     if len(what) > 200:
         what = what[:197] + "..."
+    ev = " ".join(v["evidence"].split())
     print("\x1f".join([iss, str(n), t, v["verdict"], v["ts"],
-                       v["sha"], v["run"],
-                       v["evidence"].replace("\t", " ").replace("\x1f", " "), what]))
+                       v["sha"], v["run"], ev, what, "smoke"]))
+
+# CLASS (e) stream — a `done` row and NO smoke verdict at all. The empty verdict
+# fields are DELIBERATE: this stream claims nothing about a smoke, and the three
+# battery legs are proved in bash so the selftest can watch each one fail on its
+# own. A retracted number is excluded here too — the kill is scoped to the
+# NUMBER, so a done-only issue whose verdict was withdrawn must not slip back in
+# through the class (e) door.
+for iss in sorted(done_of, key=lambda x: int(x)):
+    if iss in spoke or iss in killed:
+        continue
+    n, t, what = done_of[iss]
+    what = " ".join(what.split())
+    if len(what) > 200:
+        what = what[:197] + "..."
+    print("\x1f".join([iss, str(n), t, "", "", "", "", "", what, "e"]))
 PY
 )" || die 3 "join FAILED (python3 rc=$?)"
 
@@ -594,10 +824,18 @@ PY
 # ---------------------------------------------------------------------------
 declare -A TRACKER_OF=()   # "repo|number" -> STATE
 CAND=0; ELIGIBLE=0; ALREADY=0; APPLIED=0; FAILED=0; ABSENT=0; AMBIG=0; PARKED=0
+CE_NOT=0     # class (e) candidates that failed a battery leg (a named debt, never a silent skip)
+CE_OK=0      # class (e) candidates whose three legs held
 JSON_ROWS=""
 
-add_json() { # issue state verdict smoke_ts ledger_n action [repo]
-  JSON_ROWS="${JSON_ROWS}${JSON_ROWS:+,}{\"issue\":$1,\"state\":\"$2\",\"verdict\":\"$3\",\"smoke_ts\":\"$4\",\"ledger_n\":$5,\"action\":\"$6\",\"repo\":\"${7:-}\"}"
+add_json() { # issue state verdict smoke_ts ledger_n action [repo] [class]
+  # A `[ ... ] && x=...` tail returns 1 when the test fails, and under `set -e`
+  # that KILLS the caller mid-loop — the run then printed the first row and
+  # aborted, which read as a truncated tracker call rather than a shell fault.
+  local _cls="${8:-}" _rts=""
+  if [ "$_cls" = "e" ]; then _rts="$CE_TS"; fi
+  JSON_ROWS="${JSON_ROWS}${JSON_ROWS:+,}{\"issue\":$1,\"state\":\"$2\",\"verdict\":\"$3\",\"smoke_ts\":\"$4\",\"ledger_n\":$5,\"action\":\"$6\",\"repo\":\"${7:-}\",\"class\":\"$_cls\",\"receipt_ts\":\"$_rts\"}"
+  return 0
 }
 
 for _r in "${REPOS[@]}"; do
@@ -624,7 +862,114 @@ done
 
 short_repo() { case "$1" in leshchenko1979/opencrabs-dev-factory) echo factory ;; *) echo "${1##*/}" ;; esac; }
 
-while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT; do
+# ---------------------------------------------------------------------------
+# CLASS (e) — the battery receipt, resolved ONCE, and the three legs as three
+# separate functions so the selftest can red exactly one at a time.
+#
+# WHY THE COMMITTED BLOB, NOT THE WORKING COPY: the battery rewrites
+# battery-last.json on every run, so the file on disk is a receipt for a run
+# that may be five minutes old and uncommitted. The record is the blob at the
+# commit that touched it — that is what a later reader can re-derive. Reading
+# the working copy would let an uncommitted green run close a public issue.
+#
+# WHY STRICTLY BEFORE THE RECEIPT COMMIT: `git merge-base --is-ancestor` is TRUE
+# for equal shas, and the receipt commit's own subject routinely NAMES the issue
+# it closes ("chore(tests): battery receipt PASS 445/0 with the #80 log bound in
+# the tree"). Without the exclusion, legs (ii) and (iii) would both be satisfied
+# by the receipt citing itself — a marker one act records and re-reads, which is
+# self-consistency and proves nothing.
+# ---------------------------------------------------------------------------
+CE_ON=0; CE_WHY=""; CE_SHA=""; CE_TS=""; CE_REL=""; CE_LOG=""
+ce_disable() { CE_ON=0; CE_WHY="$1"; }
+
+if [ -z "${TREE:-}" ] || ! git -C "$TREE" rev-parse --git-dir >/dev/null 2>&1; then
+  ce_disable "no git tree ('${TREE:-<empty>}') — cannot judge an ancestry leg"
+elif [ ! -f "$BATTERY" ]; then
+  ce_disable "no battery receipt at $BATTERY"
+else
+  CE_REL="$(python3 -c '
+import os, sys
+rel = os.path.relpath(sys.argv[1], sys.argv[2])
+if rel.startswith(".."):
+    sys.exit(3)
+print(rel)
+' "$BATTERY" "$TREE" 2>/dev/null)" || CE_REL=""
+  if [ -z "$CE_REL" ]; then
+    ce_disable "$BATTERY is outside the tree $TREE"
+  else
+    CE_SHA="$(git -C "$TREE" log -1 --format=%H -- "$CE_REL" 2>/dev/null)" || CE_SHA=""
+    if [ -z "$CE_SHA" ]; then
+      ce_disable "$CE_REL has no commit in $TREE — the receipt is not on the record"
+    else
+      # leg (i) — read the COMMITTED blob. One python call, three assertions, and
+      # it PRINTS the ts so the close comment can cite the run it rests on.
+      _ce="$(git -C "$TREE" show "$CE_SHA:$CE_REL" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write("unparsable: %s\n" % exc); sys.exit(1)
+bad = []
+if d.get("verdict") != "PASS":      bad.append("verdict=%r" % d.get("verdict"))
+if d.get("fail") != 0:              bad.append("fail=%r" % d.get("fail"))
+if d.get("tree_changed") is not False: bad.append("tree_changed=%r" % d.get("tree_changed"))
+if bad:
+    sys.stderr.write("leg (i) failed: %s\n" % ", ".join(bad)); sys.exit(1)
+print(d.get("ts") or "")
+' 2>&1)" || { ce_disable "committed receipt $CE_SHA:$CE_REL fails leg (i): ${_ce//$'\n'/ }"; }
+      if [ "$CE_ON" -ne 0 ] || [ -z "$CE_WHY" ]; then CE_TS="$_ce"; fi
+      if [ -z "$CE_WHY" ]; then
+        CE_LOG="$(git -C "$TREE" log --all --format='%H%x1f%s' 2>/dev/null)" || CE_LOG=""
+        if [ -z "$CE_LOG" ]; then
+          ce_disable "receipt commit $CE_SHA has no history before it"
+        else
+          CE_ON=1
+        fi
+      fi
+    fi
+  fi
+fi
+
+# leg (iii) — the fix commit's OWN SUBJECT names the issue. A trailer is a
+# CLAIM: #112's `Issue-Ref:` sat on a commit about the verdict-rc alarm while its
+# real fix was 2d66803e, so a trailer-keyed sweep closes issues on collateral
+# references. Newest-first scan, and the match must be `#N` as a whole number
+# (#105 must not be satisfied by #1055).
+#
+# TWO scans, because the two legs must be separately observable: `ce_named_any`
+# proves the subject leg has a candidate at all, `ce_fix_sha` keeps only the ones
+# the receipt can actually descend from. A single scan over the ancestry makes
+# leg (ii) structurally unreachable — a guard that cannot be seen firing proves
+# nothing — and it is the unmerged-branch case (fix pushed, receipt predates the
+# merge) that leg (ii) exists to refuse.
+ce_named_any() {
+  local n="$1" sha subj
+  while IFS=$'\x1f' read -r sha subj; do
+    [ -n "${sha:-}" ] || continue
+    if [[ "$subj" =~ (^|[^0-9])#$n([^0-9]|$) ]]; then printf '%s' "$sha"; return 0; fi
+  done <<< "$CE_LOG"
+  return 1
+}
+ce_fix_sha() {
+  local n="$1" sha subj
+  while IFS=$'\x1f' read -r sha subj; do
+    [ -n "${sha:-}" ] || continue
+    # `merge-base --is-ancestor A B` is true when A == B, so without the
+    # inequality a receipt whose own subject names the issue cites ITSELF as the
+    # fix — the exact self-consistency this pair of scans exists to break.
+    if [[ "$subj" =~ (^|[^0-9])#$n([^0-9]|$) ]] \
+       && [ "$sha" != "$CE_SHA" ] \
+       && git -C "$TREE" merge-base --is-ancestor "$sha" "$CE_SHA" 2>/dev/null; then
+      printf '%s' "$sha"; return 0
+    fi
+  done <<< "$CE_LOG"
+  return 1
+}
+
+[ "$CE_ON" -eq 1 ] || printf '%s: NOTE class (e) DISABLED — %s; a tools/** fix cannot close on the battery this run\n' \
+  "$PROG" "${CE_WHY:-unknown}" >&2
+
+while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT CLS; do
   [ -n "${ISSUE:-}" ] || continue
   CAND=$((CAND + 1))
 
@@ -669,6 +1014,76 @@ while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT; do
     ALREADY=$((ALREADY + 1))
     [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" CLOSED "$VTKN" "$VTS" "$LN" "already closed — nothing owed"
     add_json "$ISSUE" "CLOSED" "$VTKN" "$VTS" "$LN" "skip-already-closed" "$TARGET_REPO"
+    continue
+  fi
+
+  # ---- class (e): the battery is the receipt -------------------------------
+  # A `tools/**` fix writes NO behavioural smoke, so the class (d) join can never
+  # see it — that is the gap factory#127 measured (eligible 0 across 225). The
+  # three legs are checked here, in order, and EVERY failure is named on stderr:
+  # a catch-up path that quietly declines to close is indistinguishable from one
+  # that found nothing, which is the same defect one class over.
+  if [ "${CLS:-smoke}" = "e" ]; then
+    # Scope before anything else: a `tools/**` fix lands in the SKILL repo, whose
+    # commit subjects speak the FACTORY number space. Measured live 2026-11-21 —
+    # fork#471 ("bash tool result carried ANOTHER session's spilled output") was
+    # one dry run away from closing on `ee4b1180`, whose subject says `(#471)`
+    # and whose own body says `Fixes #23`: a DIFFERENT tracker's 471. The join
+    # already refuses that ambiguity for issue STATE (AMBIGUOUS-TRACKER); the
+    # commit subjects need the same refusal, because a subject carries no repo.
+    if [ "$TARGET_REPO" != "$E_REPO" ]; then
+      CE_NOT=$((CE_NOT + 1))
+      printf '%s: CLASS-E-SKIPPED #%s — a tools/** fix speaks the FACTORY number space (%s); #%s is held by %s\n' \
+        "$PROG" "$ISSUE" "$E_REPO" "$ISSUE" "$TARGET_REPO" >&2
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "-" "-" "$LN" "wrong tracker for a tools/** fix — NOT closable"
+      add_json "$ISSUE" "OPEN" "" "" "$LN" "skip-e-wrong-tracker" "$TARGET_REPO"
+      continue
+    fi
+    if [ "$CE_ON" -ne 1 ]; then
+      CE_NOT=$((CE_NOT + 1))
+      printf '%s: CLASS-E-SKIPPED #%s — %s\n' "$PROG" "$ISSUE" "${CE_WHY:-battery receipt unusable}" >&2
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "-" "-" "$LN" "battery receipt unusable — NOT closable"
+      add_json "$ISSUE" "OPEN" "" "" "$LN" "skip-no-battery" "$TARGET_REPO"
+      continue
+    fi
+    CE_FIX="$(ce_fix_sha "$ISSUE")" || CE_FIX=""
+    if [ -z "$CE_FIX" ]; then
+      CE_NOT=$((CE_NOT + 1))
+      if CE_NAMED="$(ce_named_any "$ISSUE")"; then
+        # leg (ii) — named, but not in the receipt's ancestry: the receipt cannot
+        # vouch for a commit it does not descend from (an unmerged branch).
+        printf '%s: CLASS-E-SKIPPED #%s — leg (ii): %s names it but is not an ancestor of receipt %s\n' \
+          "$PROG" "$ISSUE" "$CE_NAMED" "$CE_SHA" >&2
+        [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "-" "-" "$LN" "fix not in the receipt's ancestry — NOT closable"
+        add_json "$ISSUE" "OPEN" "" "" "$LN" "skip-not-ancestor" "$TARGET_REPO"
+      else
+        # leg (iii) — nothing in any ref names it in its own SUBJECT.
+        printf '%s: CLASS-E-SKIPPED #%s — leg (iii): no commit names it in its OWN SUBJECT (a trailer is a claim, never a receipt; this issue closes BY HAND on written-out evidence)\n' \
+          "$PROG" "$ISSUE" >&2
+        [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "-" "-" "$LN" "no commit subject names it — close BY HAND"
+        add_json "$ISSUE" "OPEN" "" "" "$LN" "skip-no-subject" "$TARGET_REPO"
+      fi
+      continue
+    fi
+    CE_OK=$((CE_OK + 1))
+    ELIGIBLE=$((ELIGIBLE + 1))
+    R1="battery verdict: PASS fail=0 tree_changed=false ts=${CE_TS:-unknown} receipt=$CE_SHA fix=$CE_FIX"
+    R2="ledger: done #$ISSUE n=$LN — $LWHAT"
+    if [ "$APPLY" -eq 0 ]; then
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "BATTERY" "$CE_TS" "$LN" "WOULD CLOSE (dry run — pass --apply)"
+      add_json "$ISSUE" "OPEN" "" "" "$LN" "would-close" "$TARGET_REPO" "e"
+      continue
+    fi
+    if oc_close_on_receipt "$PROG" "$GH_BIN" "$TARGET_REPO" "$ISSUE" "$R1" "$R2" \
+         "class (e) battery-verified-landed"; then
+      APPLIED=$((APPLIED + 1))
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "BATTERY" "$CE_TS" "$LN" "CLOSED on both receipts"
+      add_json "$ISSUE" "OPEN" "" "" "$LN" "closed" "$TARGET_REPO" "e"
+    else
+      FAILED=$((FAILED + 1))
+      [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" "$(short_repo "$TARGET_REPO")" OPEN "BATTERY" "$CE_TS" "$LN" "CLOSE FAILED (see stderr)"
+      add_json "$ISSUE" "OPEN" "" "" "$LN" "close-failed" "$TARGET_REPO" "e"
+    fi
     continue
   fi
 
@@ -739,15 +1154,18 @@ if [ "$JSON" -eq 1 ]; then
   # PARSE-FAIL). Build the array literally instead.
   _repos_json=""
   for _r in "${REPOS[@]}"; do _repos_json="${_repos_json}${_repos_json:+,}\"$_r\""; done
-  printf '{"repos":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"rows":[%s]}\n' \
+  printf '{"repos":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"class_e_disabled":%s,"class_e_skipped":%d,"battery_verified":%d,"rows":[%s]}\n' \
     "$_repos_json" "$([ "$APPLY" -eq 1 ] && echo true || echo false)" \
-    "$CAND" "$ELIGIBLE" "$ALREADY" "$APPLIED" "$FAILED" "$ABSENT" "$AMBIG" "$PARKED" "$JSON_ROWS"
+    "$CAND" "$ELIGIBLE" "$ALREADY" "$APPLIED" "$FAILED" "$ABSENT" "$AMBIG" "$PARKED" \
+    "$([ "$CE_ON" -eq 1 ] && echo false || echo true)" "$CE_NOT" "$CE_OK" "$JSON_ROWS"
 fi
 
 oc_log_extra "candidates" "$CAND"
 oc_log_extra "eligible" "$ELIGIBLE"
 oc_log_extra "closed" "$APPLIED"
 oc_log_extra "parked" "$PARKED"
+oc_log_extra "battery_verified" "$CE_OK"
+oc_log_extra "class_e_skipped" "$CE_NOT"
 oc_log_extra "apply" "$APPLY"
 
 [ "$FAILED" -eq 0 ] || exit 1
