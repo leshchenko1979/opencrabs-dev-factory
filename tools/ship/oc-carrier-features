@@ -15,6 +15,13 @@
 #
 # Exit codes: 0 set printed · 2 usage · 3 carrier yml unfetchable ·
 #             4 no features input found / invalid shape
+# rc 3 carries a machine-readable token on stderr naming WHICH fact it is:
+#   OC_CARRIER_FETCH=timeout  the fetch exceeded OC_CARRIER_FETCH_TIMEOUT (default
+#                             120s) on both attempts — a transient network stall
+#   OC_CARRIER_FETCH=failed   the fetch returned non-zero on both attempts
+#   (neither token: the yml itself could not be read at origin/$REF)
+# factory #105: `git fetch` has NO short default timeout, so a stall inherited
+# whatever the caller allowed and ran 767.9s before aborting a ship.
 # =============================================================================
 set -u
 set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
@@ -70,10 +77,40 @@ extract_features_default() {
 
 valid_set() { printf '%s' "$1" | grep -Eq '^[a-z0-9_-]+(,[a-z0-9_-]+)*$'; }
 
+# factory #105 (2026-11-21): BOUNDED + RETRIED ONCE. Measured twice on
+# 2026-11-19/20, `--fetch` ran 767.9 s and 292.5 s (outer SIGTERM) and aborted a
+# ship with no carrier dispatched, while the SAME fetch measured 7.0-7.8 s
+# minutes later on the same box, same ref, no lock and no contention. A 7 s
+# operation that fails is far likelier transient than persistent, so one retry
+# buys most of the reliability; the bound is what stops a stall becoming a
+# 13-minute abort. `timeout` absent (a minimal image) fails OPEN with a warning
+# rather than refusing to run — a harness that cannot run is worse than one
+# running unbounded.
+FETCH_TIMEOUT="${OC_CARRIER_FETCH_TIMEOUT:-120}"
+case "$FETCH_TIMEOUT" in ''|*[!0-9]*) FETCH_TIMEOUT=120 ;; esac
+
 read_carrier() { # -> yml on stdout, rc 3 on failure
   if [ "$FETCH" -eq 1 ]; then
-    git -C "$REPO" fetch -q origin "$REF" >/dev/null 2>&1 \
-      || { echo "$PROG: git fetch origin $REF failed in $REPO" >&2; return 3; }
+    _try=0; _rc=0
+    while [ "$_try" -lt 2 ]; do
+      _try=$((_try+1)); _rc=0
+      if command -v timeout >/dev/null 2>&1; then
+        timeout "$FETCH_TIMEOUT" git -C "$REPO" fetch -q origin "$REF" >/dev/null 2>&1 || _rc=$?
+      else
+        git -C "$REPO" fetch -q origin "$REF" >/dev/null 2>&1 || _rc=$?
+      fi
+      [ "$_rc" -eq 0 ] && break
+      # 124 is timeout(1)'s own expiry; 143 is SIGTERM from an outer bound.
+      case "$_rc" in
+        124|143) echo "$PROG: OC_CARRIER_FETCH=timeout — git fetch origin $REF exceeded ${FETCH_TIMEOUT}s in $REPO (attempt $_try/2)" >&2 ;;
+        *)       echo "$PROG: OC_CARRIER_FETCH=failed — git fetch origin $REF rc=$_rc in $REPO (attempt $_try/2)" >&2 ;;
+      esac
+      if [ "$_try" -lt 2 ]; then
+        echo "$PROG: retrying once in 3s (a 7 s fetch failing is likelier transient than persistent)" >&2
+        sleep 3
+      fi
+    done
+    [ "$_rc" -eq 0 ] || return 3
   fi
   git -C "$REPO" show "origin/$REF:.github/workflows/quick-build-linux.yml" 2>/dev/null \
     || { echo "$PROG: cannot read carrier yml at origin/$REF in $REPO" >&2; return 3; }
@@ -123,6 +160,31 @@ if [ "$SELFTEST" -eq 1 ]; then
   "$0" --repo "$d/badshape" >/dev/null 2>&1; chk $? 4 "invalid shape -> 4"
 
   "$0" --repo "$d/good" --ref no-such-branch >/dev/null 2>&1; chk $? 3 "missing carrier branch -> 3"
+
+  # ---- #105: the fetch is BOUNDED and RETRIED, never unbounded -------------
+  # A shim `git` that sleeps past the bound exercises the TIMEOUT arm
+  # deterministically (no network, no black-hole host): two attempts at a 2 s
+  # bound plus one 3 s backoff must finish in ~7 s, not in the shim's 10 s each.
+  mkdir -p "$d/shim"
+  printf '#!/bin/sh\nsleep 10\n' > "$d/shim/git"; chmod +x "$d/shim/git"
+  T0=$(date +%s)
+  ERR="$(PATH="$d/shim:$PATH" OC_CARRIER_FETCH_TIMEOUT=2 "$0" --repo "$d/good" --fetch 2>&1 >/dev/null)"; RC=$?
+  T1=$(date +%s); EL=$((T1-T0))
+  chk "$RC" 3 "a stalled fetch fails as rc 3, never a hang"
+  [ "$EL" -le 15 ] && { pass=$((pass+1)); echo "selftest: the stall is BOUNDED (${EL}s, 2 s bound x2 attempts) OK"; } \
+    || { fail=$((fail+1)); echo "selftest: stall took ${EL}s -- the bound did not hold"; }
+  printf '%s' "$ERR" | grep -q 'OC_CARRIER_FETCH=timeout' \
+    && { pass=$((pass+1)); echo "selftest: a timeout is NAMED as one (OC_CARRIER_FETCH=timeout) OK"; } \
+    || { fail=$((fail+1)); echo "selftest: timeout token absent (got: $ERR)"; }
+  printf '%s' "$ERR" | grep -q 'attempt 2/2' \
+    && { pass=$((pass+1)); echo "selftest: the fetch is retried once (both attempts named) OK"; } \
+    || { fail=$((fail+1)); echo "selftest: no retry -- attempt 2/2 absent (got: $ERR)"; }
+  # Negative control: a HEALTHY fetch must NOT print a token or retry, else the
+  # legs above would pass on a tool that fails everything.
+  ERR2="$("$0" --repo "$d/good" --fetch 2>&1 >/dev/null)"; RC2=$?
+  [ "$RC2" -eq 0 ] && ! printf '%s' "$ERR2" | grep -q 'OC_CARRIER_FETCH' \
+    && { pass=$((pass+1)); echo "selftest: a healthy fetch is silent and rc 0 (negative control) OK"; } \
+    || { fail=$((fail+1)); echo "selftest: healthy fetch rc=$RC2 stderr='$ERR2'"; }
   "$0" --repo "$d/nope" >/dev/null 2>&1; chk $? 3 "missing repo -> 3"
 
   [ "$fail" -eq 0 ] && { echo "selftest OK ($pass checks)"; exit 0; } || { echo "selftest FAILED ($fail)" >&2; exit 1; }
