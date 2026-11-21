@@ -1,5 +1,46 @@
 # Changelog — opencrabs-dev
 
+## v0.4.327 — the law described a test leg that was deleted yesterday, and the cap-stall class lost its venue
+
+**Doc debt discharged (four sites, all HQ surface).** The blocking gate's test leg
+changed shape on 2026-11-20 and no skill file followed it. `SKILL.md:283`,
+`editor-ship.md:31`, `harvest.md` §PR-GATE-STANDING and `harvest.md` §Full-Gate-Pre-PR
+all still described the gate as `cargo test --locked --profile ci --all-features`.
+That leg was **DELETED 2026-11-20**; `pr-gates-nextest` is the blocking verdict now
+(`cargo nextest run --locked --cargo-profile ci --no-default-features --features
+<shipped set>`) plus a SEPARATE `cargo test --locked --profile ci --doc` step, because
+nextest never runs doctests. `nextest` appeared in **zero** live skill files before
+this entry — a lane reading only the law would dispatch a gate whose shape no longer
+exists.
+
+**Two further falsities corrected in the same pass.** (a) `editor-ship.md` told lanes
+that a FAST run's `Run tests` step reads `skipped`; there is no such step any more —
+`pr-gates-nextest` is **skipped outright** by its own job condition (`!inputs.fast`),
+so a FAST run has no test step to read at all. (b) The triad's flags were attributed
+to `pr-checks.yml`, which is a thin caller; the gate body is `ci-lane-impl.yml`.
+
+**Measured, and it retires a claim this lane made one turn earlier.** All three
+45-minute cap-hits that `#331` was filed against died in `gate / PR-lane gates` while
+it still carried the `--all-features` test leg. Since the promotion
+(`64a812fb9`, 2026-11-20T16:54:29Z) there have been **47 gate dispatches: 28 success,
+18 failure, 1 cancelled** — and that single cancellation was a sibling-failure
+cascade, not a timeout. **Zero cap-hits.** The blocking verdict has never been
+cancelled. Residual, stated rather than buried: `pr-gates` (fmt + clippy, job cap 45,
+clippy step cap 25) still compiles the whole tree and carries **no** STALLWATCH — a
+compile stall there still burns 25 minutes silently. STALLWATCH (flat-CPU 480 s /
+no-progress 780 s / silence 900 s) lives in the nextest job only, and
+`CARGO_BUILD_JOBS: "3"` is already set there.
+
+**A prior claim of this lane, withdrawn.** It told the owner that no silence watchdog
+existed and asked for one to be adopted. STALLWATCH was already armed and hardened
+(2026-11-20, re-homed from the deleted `cargo test` leg). The request was made from a
+grep that did not cover `ci-lane-impl.yml` — the same scope error as the `pr-checks.yml`
+misread, twice in one session.
+
+**Also recorded:** `#933` (filed by the audit that found this) — the gate never passes
+`features`, so it tests a second hardcoded copy of the shipped set; the two defaults
+happen to be equal today, which is why nobody noticed.
+
 ## v0.4.326 — class (e): a `tools/**` fix closes on the battery, and a trailer is not a receipt
 
 **What forced it.** factory#127 measured the gap rather than asserting it: `oc-closure-sweep`

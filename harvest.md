@@ -255,10 +255,15 @@ Rules:
   branch off `adolfousier/main` — NEVER a fork-main-based branch; base +
   atomicity check runs BEFORE the PR opens (a post-open atomicity FALSE
   (fork-divergence commits) means the base was wrong before the PR existed).
-- **PR-GATE-STANDING (step 2c):** triad flags VERBATIM from pr-checks.yml
-  (fmt soft-fail mirrors upstream; clippy --locked --lib --bins --tests
-  --all-features -D warnings; cargo test --locked --profile ci
-  --all-features) — green here predicts green on adolfo's full gate. Iterate
+- **PR-GATE-STANDING (step 2c):** triad flags VERBATIM from `ci-lane-impl.yml`
+  (the gate body; `pr-checks.yml` is a thin caller) — fmt soft-fail mirrors
+  upstream; clippy `--locked --lib --bins --tests --benches --all-features -D
+  warnings`; the test verdict is `pr-gates-nextest` (`cargo nextest run --locked
+  --cargo-profile ci --no-default-features --features <shipped set>`) plus a
+  SEPARATE `cargo test --locked --profile ci --doc` step, because nextest never
+  runs doctests. **The `cargo test --locked --profile ci --all-features` leg was
+  DELETED 2026-11-20** and nextest promoted to the blocking verdict — green here
+  predicts green on adolfo's full gate. Iterate
   by EDITING CODE and re-dispatching pr-checks — NEVER run cargo locally
   (box law); test-placement policy → `editor.md` §Phase 4.
 - Pre-flight gate (step 2c) is MANDATORY (v0.4.0): read the fmt STEP outcome,
@@ -461,7 +466,7 @@ Same root fact as ledger n=1537's `gh pr create` namespaced-head lesson.
 ## Full-Gate Pre-PR Testing Law (v0.4.149, owner order 2026-09-12) [LANE]
 
 - **Full CI Suite Mandatory for Upstream PRs**: The `--fast` flag (`fast=true`, lint/clippy only) is strictly permitted for internal Daytime Split-Gate merging (`oc-ship-chain`), but is **STRICTLY PROHIBITED** for final pre-PR verification.
-- **Upstream Triad Verification**: Before opening any upstream PR (`harvest.md` Phase 7 / 7c), the HARVEST lane MUST run the full test suite (`cargo test --all-features` + fmt + clippy) via `oc-prchecks` full gate:
+- **Upstream Triad Verification**: Before opening any upstream PR (`harvest.md` Phase 7 / 7c), the HARVEST lane MUST run the full test suite (`cargo nextest run --cargo-profile ci` + `cargo test --doc` + fmt + clippy — the `cargo test --all-features` leg was DELETED 2026-11-20) via `oc-prchecks` full gate:
   ```bash
   # Single-invocation blocking full gate:
   tools/harvest/oc-prchecks wait leshchenko1979/fix/<slug>
