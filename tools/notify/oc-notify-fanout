@@ -211,6 +211,22 @@ if [ "${1:-}" = "--selftest" ]; then
   # No real DB, no real sends, no real ledger touched.
   T="$(mktemp -d /tmp/fanout-selftest.XXXXXX)"
   trap 'rm -rf "$T"; oc_log_finish $?' EXIT
+  # ISOLATE THE RUN DIR FOR THE WHOLE SELFTEST (measured 2026-11-21).
+  # The tool's production default is `$SKILL_DIR/run` (:1018), and the wave id
+  # is DERIVED FROM THE BRIEF TEXT (:470) — so it is identical across every
+  # instance. An arm that omitted OC_FANOUT_RUN_DIR therefore wrote its lock
+  # into the PRODUCTION run dir under a wave id every concurrent instance
+  # shares. Two selftests at once (the battery's jobs=4) then collided on that
+  # one lock: `wave 230f0db95dea already in progress (law 7)`, rc 7.
+  # Reproduced 2026-11-21 22:2xZ: 3 of 4 concurrent instances failed, all on
+  # law1-placeholder-abort, because the lock refusal replaced the expected
+  # ABORT line; the battery saw the same collision as rc 4 (a set -e abort on
+  # the first non-zero child, so no FAIL line and no readable evidence).
+  # Evidence of the leak: 62 files in $SKILL_DIR/run, including .lock files
+  # stamped at the exact instants selftests ran. Exporting it here means no
+  # arm can inherit the production default, whether it sets the var or not.
+  export OC_FANOUT_RUN_DIR="$T/run-root"
+  mkdir -p "$OC_FANOUT_RUN_DIR"
   L1="11111111-1111-4111-8111-111111111111"  # live + bound to forum chat
   L2="22222222-2222-4222-8222-222222222222"  # live + bound ELSEWHERE (leak path)
   L3="33333333-3333-4333-8333-333333333333"  # live + UNBOUND (leak path)
@@ -221,6 +237,12 @@ if [ "${1:-}" = "--selftest" ]; then
   L8="88888888-8888-4888-8888-888888888888"  # live + forum-bound + dormant editor (law-17)
   L9="99999999-9999-4999-8999-999999999999"  # live + forum-bound + dormant core role (toolsmith) (law-17)
   L10="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" # live + forum-bound + dormant editor with claim (law-17)
+  # L11 is well-shaped and named by the roster, but ABSENT from the session DB.
+  # It is the ONLY fixture that reaches validate_target's live-session refusal:
+  # L4 dies on uuid SHAPE before the lookup and L5 on the all-zero segment, so
+  # neither can exercise the roster read (mutation M5, 2026-11-21: deleting that
+  # guard left the whole suite green at 90/0).
+  L11="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" # well-shaped, roster-named, NOT in the session DB
   FORUM="-1999999999"
   # Fixture DB built through the shared reader, not the `sqlite3` CLI (#371):
   # before 2026-09-19 that binary was not on this box at all, so this heredoc
@@ -266,15 +288,67 @@ EOF
 ]}
 JSON
 
-  run_fanout() { # args passed through; asserts rc 0 and returns receipts
-    OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" \
-    OC_FANOUT_LEDGER="$LEDG" OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_SEND_TIMEOUT=5 \
-    OC_FANOUT_RUN_DIR="${OC_FANOUT_RUN_DIR:-$T/run-default}" FAKE_NOTIFY_LOG="$T/fake-notify-log" \
-      bash "$0" --title "T" --text "brief {{UUID}}" --no-stamp "$@" 2>&1
+  # Runs the tool with fixture env and returns its receipts plus a trailing
+  # `RC=<n>` line. It ALWAYS returns 0 and it does NOT assert the child's
+  # status — read `RC=` for that (sum_field RC "$out").
+  #
+  # Both halves of that are deliberate, and both are corrections (measured
+  # 2026-11-21). The old comment claimed "asserts rc 0" and the body did not:
+  # it propagated the child's status, so under `set -euo pipefail` a non-zero
+  # child killed the whole harness at the assignment — no summary line, no FAIL
+  # line, no readable evidence. That is exactly how the battery saw this suite
+  # as `rc 4` (a PARTIAL DELIVERY code, from a branch the selftest never
+  # reached) with an empty fail log, and it took a manual 4-way repro to find.
+  # Propagating the status instead would just move the trap to every unguarded
+  # caller, so the status travels in the OUTPUT where an arm can assert it.
+  run_fanout() { # args passed through; receipts + `RC=<n>`; always rc 0
+    ( OC_NOTIFY_DB="${RF_DB:-$T/db.sqlite}" OC_NOTIFY_BIN="$T/fake-notify" OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" \
+      OC_FANOUT_LEDGER="$LEDG" OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_SEND_TIMEOUT=5 \
+      OC_FANOUT_RUN_DIR="${OC_FANOUT_RUN_DIR:-$T/run-default}" FAKE_NOTIFY_LOG="$T/fake-notify-log" \
+        bash "$0" --title "T" --text "brief {{UUID}}" --no-stamp "$@" 2>&1; printf 'RC=%s\n' "$?" )
   }
   F=0; P=0
   chk() { if [ "$1" = 0 ]; then P=$((P+1)); else F=$((F+1)); echo "FAIL: $2"; fi }
-  mkdir -p "$T/run-default"
+  # Summary fields are whitespace-separated `k=v`. A bare `grep -q 'sent=1 '` is
+  # NOT a test of the sent count: `absent=1 ` CONTAINS the substring `sent=1 `
+  # (a-b-SENT=1), so any wave that discloses an absence satisfies it — the arm
+  # can never go red in exactly the case it was written for. Measured 2026-11-21:
+  # mutation M3 drove sent to 2 and the count arm still passed. Extract the field
+  # anchored on a key boundary instead, and name the number in the failure.
+  sum_field() { # sum_field <field> <text> -> last value, empty when absent
+    grep -oE "(^|[[:space:]])$1=[0-9]+" <<< "$2" | tail -1 | sed 's/.*=//'
+  }
+  # (no mkdir here: the harness-wide export above already created the run dir)
+
+  # 0. HARNESS ISOLATION (measured 2026-11-21): the selftest must never write a
+  #    wave file into the tool's production run dir. This is not hygiene for its
+  #    own sake — the wave id is derived from the brief text, so a shared dir
+  #    makes two concurrent selftests collide on one lock (battery jobs=4).
+  #    The export at the top of this block is the fix; this arm is what makes it
+  #    load-bearing, because removing the export reddens HERE instead of
+  #    silently reintroducing a race that only shows up under parallel load.
+  case "${OC_FANOUT_RUN_DIR:-}" in
+    "$T"/*) chk 0 selftest-run-dir-isolated ;;
+    *)      chk 1 "selftest-run-dir-isolated (run dir '${OC_FANOUT_RUN_DIR:-<unset>}' is not under \$T — the production dir is writable from here)" ;;
+  esac
+
+  # 0b. THE HARNESS SURVIVES A NON-ZERO CHILD (measured 2026-11-21). This is the
+  #     other half of the same defect: run_fanout used to PROPAGATE the child's
+  #     status, so any failing invocation killed the suite at the assignment
+  #     under `set -e` — the battery saw `rc 4` and an empty fail log, and the
+  #     actual failure was invisible. The contract is now: receipts still come
+  #     back, the status travels as `RC=<n>`, the function returns 0. Asserted
+  #     against a genuinely failing child (an unreadable session DB, rc 3), not
+  #     a simulated one.
+  #     Note there is NO unconditional `chk 0` here: an arm that cannot go red
+  #     is decoration. That the harness survived is demonstrated by REACHING
+  #     these two arms at all — and by mutant M-A (restore status propagation),
+  #     which aborts the suite before the summary with rc 3, no FAIL line.
+  surv="$(RF_DB="$T/no-such-db.sqlite" OC_FANOUT_RUN_DIR="$T/run-surv" run_fanout)"
+  [ "$(sum_field RC "$surv")" = "3" ] && chk 0 failing-child-status-surfaced \
+    || chk 1 "failing-child-status-surfaced (RC=$(sum_field RC "$surv"), want 3)"
+  oc_has "$surv" "session DB unreadable" && chk 0 failing-child-receipt-kept \
+    || chk 1 failing-child-receipt-kept
 
   # 1. Default roster (all 5 non-self workers): ONLY L1 sendable — L6 is live
   #    and forum-bound but RETIRED, so law 9 is the only guard that stops it.
@@ -292,6 +366,26 @@ JSON
   grep -qF "$L6" "$T/fake-notify-log" && chk 1 retired-never-sent || chk 0 retired-never-sent
   grep -qF "$L2" "$T/fake-notify-log" && chk 1 leak-bound-elsewhere || chk 0 leak-bound-elsewhere
   grep -qF "$L3" "$T/fake-notify-log" && chk 1 leak-unbound || chk 0 leak-unbound
+
+  # 1a3. validate_target's LIVE-SESSION refusal, on its own ledger copy so the
+  #      shared fixture counts above stay put. L11 is well-shaped and the roster
+  #      names it, but the session DB has no such id — the frankenstein case
+  #      (n=2221 class) the FULL-ID match exists for. Without this arm the guard
+  #      could be deleted with the suite still green (M5, 2026-11-21).
+  #      Role is a CORE one on purpose: a core role bypasses LAW 17 dormancy, and
+  #      L11 has no recency row, so as an `editor` it was masked as DORMANT and
+  #      `not-live-never-attempted` could never fire — an arm that cannot go red
+  #      is decoration (measured: it survived M5 AND M5+M4 combined). As toolsmith
+  #      nothing below validate_target/scope can stop it, so the attempt arm is
+  #      the discriminator for a tool that loses BOTH guards.
+  jq '.workers += [{"uuid":"'"$L11"'","role":"toolsmith","topic_id":11}]' "$LEDG" > "$T/ledg11.json"
+  touch "$T/fn11.log"
+  l11out="$(OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" \
+    OC_FANOUT_LEDGER="$T/ledg11.json" OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_SEND_TIMEOUT=5 \
+    OC_FANOUT_RUN_DIR="$T/run-l11" FAKE_NOTIFY_LOG="$T/fn11.log" \
+    bash "$0" --title "T" --text "brief {{UUID}}" --no-stamp 2>&1)"
+  grep -q "SKIP $L11 .*not a live session" <<< "$l11out" && chk 0 skip-not-live-session || chk 1 "skip-not-live-session"
+  grep -qF "$L11" "$T/fn11.log" && chk 1 not-live-never-attempted || chk 0 not-live-never-attempted
 
   # LAW 17 (owner order 2026-09-13): dormancy/activity filter
   # L8 is a dormant editor without claim/worktree -> SKIP DORMANT
@@ -434,12 +528,12 @@ JSON
   # 4b. concurrent-refuse: a live lock (our own pid, fresh ts) refuses rc=7.
   WID="$(printf '%s' "T|brief {{UUID}}" | sha256sum | cut -c1-12)"
   printf '%s %s %s\n' "$$" "$(date +%s)" "$WID" > "$RD/wave-${WID}.lock"
-  out="$(OC_FANOUT_RUN_DIR="$RD" run_fanout)" && rc7=0 || rc7=$?
+  out="$(OC_FANOUT_RUN_DIR="$RD" run_fanout)"; rc7="$(sum_field RC "$out")"
   [ "$rc7" = "7" ] && chk 0 concurrent-refuse-rc7 || chk 1 "concurrent-refuse-rc7 (got rc=$rc7)"
   oc_has "$out" "already in progress" && chk 0 concurrent-refuse-names-holder || chk 1 concurrent-refuse-names-holder
   # 4c. stale-clear: dead pid in the lockfile -> run proceeds, lock cleared.
   printf '999999 1 %s\n' "$WID" > "$RD/wave-${WID}.lock"
-  out="$(OC_FANOUT_RUN_DIR="$RD" run_fanout)" && rcst=0 || rcst=$?
+  out="$(OC_FANOUT_RUN_DIR="$RD" run_fanout)"; rcst="$(sum_field RC "$out")"
   [ "$rcst" = "0" ] && chk 0 stale-lock-cleared || chk 1 "stale-lock-cleared (got rc=$rcst)"
   oc_has "$out" "DUPLICATE" && chk 0 stale-run-still-idempotent || chk 1 stale-run-still-idempotent
   rm -f "$RD/wave-${WID}.sent"
@@ -608,9 +702,12 @@ SLOWEOF
   oc_has "$tout" "PARTIAL DELIVERY" && chk 0 partial-delivery-named || chk 1 partial-delivery-named
   oc_has "$tout" "RC=4" && chk 0 partial-wave-exit-4 || chk 1 partial-wave-exit-4
   # 10c. the manifest itself: one row per attempted lane, retired rows never.
-  ls "$T"/run-default/wave-*.targets >/dev/null 2>&1 && chk 0 manifest-written || chk 1 manifest-written
-  grep -qxF "$L1" "$T"/run-default/wave-*.targets && chk 0 manifest-has-attempted-lane || chk 1 manifest-has-attempted-lane
-  grep -qxF "$L6" "$T"/run-default/wave-*.targets && chk 1 manifest-never-retired || chk 0 manifest-never-retired
+  # The run dir is the EFFECTIVE one (harness-wide export), not the per-call
+  # fallback: asserting on "$T/run-default" here passed only while the selftest
+  # could still be lured into the production dir (measured 2026-11-21).
+  ls "$OC_FANOUT_RUN_DIR"/wave-*.targets >/dev/null 2>&1 && chk 0 manifest-written || chk 1 manifest-written
+  grep -qxF "$L1" "$OC_FANOUT_RUN_DIR"/wave-*.targets && chk 0 manifest-has-attempted-lane || chk 1 manifest-has-attempted-lane
+  grep -qxF "$L6" "$OC_FANOUT_RUN_DIR"/wave-*.targets && chk 1 manifest-never-retired || chk 0 manifest-never-retired
   # LAW 15 (defect #15, 2026-09-12): a wave inherits the cgroup of its launcher.
   # When the launcher is a session hosted by the unit a swap bounces, the swap's
   # restart tears that cgroup down and SIGKILLs the wave mid-flight — the lanes
@@ -806,12 +903,94 @@ SEOF
     chk 1 "unknown-flag-ergonomics (out=$unrec_out)"
   fi
 
+  # ---- --only <file>: an explicit target list (poll mechanism step 1) --------
+  # Round 2 named 14 off-roster lanes and the wave simply came up short with no
+  # receipt saying so. These arms exist so that a target the roster cannot
+  # resolve is DISCLOSED (ABSENT) rather than silently dropped.
+  # (a) a named roster lane is sent
+  only_a="$T/only-a.txt"; printf '%s\n' "$L1" > "$only_a"
+  a_out="$(OC_FANOUT_RUN_DIR="$T/run-a" run_fanout --only "$only_a")"
+  #     Presence alone is NOT enough: the roster path also sends L1, so a tool
+  #     that ignored --only entirely would still print `SENT $L1` and pass. The
+  #     count is what distinguishes "named it" from "replaced the roster with
+  #     it" — measured 2026-11-21, mutation M7 (blank only_file after the
+  #     parser) left this arm green on presence while sent was 3.
+  if oc_has "$a_out" "SENT $L1" && [ "$(sum_field sent "$a_out")" = 1 ]; then
+    chk 0 only-sends-named-lane
+  else
+    chk 1 "only-sends-named-lane (sent=$(sum_field sent "$a_out") out=$a_out)"
+  fi
+  # (b) an off-roster uuid is reported ABSENT and does NOT become a send.
+  #     L7 is live + forum-bound + ACTIVE, so EVERY guard below the roster
+  #     lookup would let it through — only the absence check can stop it.
+  #     Three assertions, because each catches a different failure and the
+  #     obvious one alone is vacuous: (i) the ABSENT line exists, (ii) the send
+  #     COUNT is unchanged, (iii) the lane never reached the notify binary.
+  #     (ii) alone is not enough — a version that emitted ABSENT *and* sent
+  #     would fail it, but only if the pattern can match at all (see sum_field:
+  #     `grep 'sent=1 '` matched inside `absent=1 ` and never could). (ii) is
+  #     also weaker than (iii): an attempt that FAILS leaves the count at 1, so
+  #     the count cannot distinguish "never tried" from "tried and broke".
+  only_b="$T/only-b.txt"; printf '%s\n%s\n' "$L1" "$L7" > "$only_b"
+  b_out="$(OC_FANOUT_RUN_DIR="$T/run-b" run_fanout --only "$only_b")"
+  oc_has "$b_out" "ABSENT $L7 not-in-roster" && chk 0 only-absent-disclosed || chk 1 "only-absent-disclosed (out=$b_out)"
+  [ "$(sum_field sent "$b_out")" = 1 ] && chk 0 only-absent-not-sent || chk 1 "only-absent-not-sent (sent=$(sum_field sent "$b_out"))"
+  # `sent` is a WEAKER claim than "never attempted": a send that is attempted and
+  # then FAILS leaves sent at 1, so the counter alone cannot tell a target that
+  # was never tried from one that was tried and broke. Measured 2026-11-21 —
+  # mutation M3 (feed the absent uuid into the loop as well) did NOT move the
+  # count arm above, because the attempt died downstream. The fake-notify log is
+  # the only record of an ATTEMPT (house pattern: retired-never-sent,
+  # dormant-never-sent, leak-* above). Without this line the arm would pass on a
+  # tool that notifies an off-roster lane and merely fails to count it.
+  grep -qF "$L7" "$T/fake-notify-log" && chk 1 only-absent-never-attempted || chk 0 only-absent-never-attempted
+  # (c) --only is mutually exclusive with the roster selectors: refuse, and
+  #     name BOTH mechanisms. Merging them silently would leave the operator
+  #     unable to tell which selection actually ran.
+  OC_NOTIFY_BIN="$T/fake-notify" bash "$0" --title T --no-stamp \
+    --only "$only_a" --roles editor >"$T/mixed.err" 2>&1 && mixed_rc=0 || mixed_rc=$?
+  [ "$mixed_rc" = 2 ] && chk 0 only-excludes-roles-rc2 || chk 1 "only-excludes-roles-rc2 (got rc=$mixed_rc)"
+  if oc_has "$(cat "$T/mixed.err")" "--only" && oc_has "$(cat "$T/mixed.err")" "--roles"; then
+    chk 0 only-excludes-roles-names-both
+  else
+    chk 1 "only-excludes-roles-names-both (err=$(cat "$T/mixed.err"))"
+  fi
+  # (d) an --only wave leaves the same manifest shape a roster wave does, so
+  #     --verify / resume work on it unchanged (the plan's "byte-shaped" claim).
+  #     Compare SHAPE, not just the first line: the roster wave carries every
+  #     sendable lane (L1 + L9 core-role bypass + L10 claim holder), the --only
+  #     wave carries exactly the one lane it named.
+  OC_FANOUT_RUN_DIR="$T/run-d-roster" run_fanout >/dev/null 2>&1 || true
+  OC_FANOUT_RUN_DIR="$T/run-d-only"   run_fanout --only "$only_a" >/dev/null 2>&1 || true
+  d_rf="$(ls "$T"/run-d-roster/wave-*.targets 2>/dev/null | head -1)"
+  d_of="$(ls "$T"/run-d-only/wave-*.targets 2>/dev/null | head -1)"
+  d_rn=0; d_on=0
+  [ -n "$d_rf" ] && d_rn="$(grep -c . "$d_rf" || true)"
+  [ -n "$d_of" ] && d_on="$(grep -c . "$d_of" || true)"
+  if [ "$(basename "${d_rf:-x}")" = "$(basename "${d_of:-y}")" ] && [ "$d_on" = 1 ] && [ "$d_rn" -gt 1 ] && grep -qxF "$L1" "$d_of"; then
+    chk 0 only-manifest-matches-roster-shape
+  else
+    chk 1 "only-manifest-matches-roster-shape (roster=$(basename "${d_rf:-none}")/$d_rn only=$(basename "${d_of:-none}")/$d_on)"
+  fi
+  # (e) POSITIVE CONTROL — with no --only the roster path still behaves exactly
+  #     as before: 3 sends (L1, L9 core-role bypass, L10 claim holder) and NO
+  #     ABSENT line. Both halves are needed: a mutation that always took the
+  #     --only path would send 0 and emit no ABSENT either, so the count is what
+  #     catches it; a mutation that leaked --only rows into the roster path would
+  #     keep sent=3 but add ABSENT, so the absence check catches that one.
+  e_out="$(OC_FANOUT_RUN_DIR="$T/run-e" run_fanout)"
+  if [ "$(sum_field sent "$e_out")" = 3 ] && [ "$(sum_field absent "$e_out")" = 0 ] && oc_has "$e_out" "SENT $L1"; then
+    chk 0 only-positive-control-roster-path
+  else
+    chk 1 "only-positive-control-roster-path (out=$(grep 'sent=' <<< "$e_out"))"
+  fi
+
   echo "oc-notify-fanout selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
   exit $?
 fi
 
-title="" text="" text_file="" roles="" excludes="" dry=0 stamp=1 include_self=0 verify_id="" self_uuid=""
+title="" text="" text_file="" roles="" excludes="" dry=0 stamp=1 include_self=0 verify_id="" self_uuid="" only_file=""
 # LAW 5 (fixed 2026-09-12; rationale RE-BASED 2026-09-19): delivery mode, default
 # QUIET. A fan-out wave IS the `quiet` case named in fleet-directives.md
 # §Cross-lane message delivery discipline ("batch/fan-out notices ... a deliberate
@@ -836,9 +1015,21 @@ while [ $# -gt 0 ]; do case "$1" in
   --self) [ $# -ge 2 ] || { echo "oc-notify-fanout: --self needs a value" >&2; exit 2; }; self_uuid=""$2""; shift 2 ;;
   --verify) [ $# -ge 2 ] || { echo "oc-notify-fanout: --verify needs a value" >&2; exit 2; }; verify_id=""$2""; shift 2 ;;
   --mode) [ $# -ge 2 ] || { echo "oc-notify-fanout: --mode needs a value" >&2; exit 2; }; mode=""$2""; shift 2 ;;
+  --only) [ $# -ge 2 ] || { echo "oc-notify-fanout: --only needs a value" >&2; exit 2; }; only_file="$2"; shift 2 ;;
   --help|-h) sed -n '2,40p' "$0"; exit 0 ;;
-  *) die "unknown flag '$1' (valid flags: --title, --text/--body, --text-file/--body-file, --roles, --exclude, --mode, --forum-chat, --self, --dry-run, --no-stamp, --include-self, --verify, --help; see --help for usage details)" 2 ;;
+  *) die "unknown flag '$1' (valid flags: --title, --text/--body, --text-file/--body-file, --roles, --exclude, --only, --mode, --forum-chat, --self, --dry-run, --no-stamp, --include-self, --verify, --help; see --help for usage details)" 2 ;;
 esac; done
+
+# LAW 11 — --only <file>: an explicit target list, mutually exclusive with the
+# roster selectors. Two selection mechanisms on one invocation means neither
+# wins, and the operator cannot tell which was applied. Refuse, do not merge.
+# (Poll mechanism step 1: round 2 lost 14 off-roster lanes silently — a wave
+# that names its targets must DISCLOSE one it cannot resolve, never shrink
+# quietly. ABSENT receipts do that; they neither send nor count as skipped.)
+if [ -n "$only_file" ]; then
+  [ -f "$only_file" ] || die "--only: no such file '$only_file'" 2
+  [ -z "$roles$excludes" ] || die "--only is mutually exclusive with --roles/--exclude (got --only '$only_file' and --roles '$roles' --exclude '$excludes')" 2
+fi
 
 # LAW 5: the mode must be one the CLI accepts. Validate BEFORE any send — an
 # unrecognised value silently falling back to `now` is the defect this fixes.
@@ -1116,6 +1307,25 @@ if [ -z "${OC_FANOUT_SEND_TIMEOUT:-}" ] && [ "$dry" = 0 ]; then
 fi
 
 sent=0 skipped=0 failed=0 receipts="" ids=""
+# LAW 11 (--only): resolve every named uuid against the ledger roster BEFORE the
+# loop, so an unresolvable target becomes a line the operator can see instead of
+# a wave that quietly came up short. ABSENT neither sends nor counts as skipped —
+# a skip is a decision, an absence is a gap, and conflating them is how round 2
+# lost 14 lanes without a single receipt saying so.
+only_rows=""; absent_lines=""
+if [ -n "$only_file" ]; then
+  while IFS= read -r _u; do
+    _u="${_u%%[[:space:]]*}"                       # tolerate trailing space/comment
+    [ -n "$_u" ] || continue
+    case "$_u" in \#*) continue ;; esac
+    _row="$(jq -r --arg u "$_u" '.workers[] | select(.uuid==$u) | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv' "$LEDGER" 2>/dev/null | head -1)"
+    if [ -n "$_row" ]; then
+      only_rows+="${_row}"$'\n'
+    else
+      absent_lines+="ABSENT ${_u} not-in-roster"$'\n'
+    fi
+  done < <(grep -v '^[[:space:]]*$' "$only_file")
+fi
 while IFS=$'\t' read -r uuid role topic wstate; do
   [ -n "$uuid" ] || continue
   [ "$uuid" = "$self_uuid" ] && [ "$include_self" = 0 ] && continue
@@ -1249,11 +1459,14 @@ while IFS=$'\t' read -r uuid role topic wstate; do
   else
     receipts+="FAIL ${uuid} ${role} rc=${rc} ${LAT_MS}ms"$'\n'; failed=$((failed+1))
   fi
-done < <(jq -r '.workers[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv' "$LEDGER")
+done < <( if [ -n "$only_file" ]; then printf '%s' "$only_rows"; else jq -r '.workers[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv' "$LEDGER"; fi )
 
 echo "--- receipts ---"; printf '%s' "$receipts"
+printf '%s' "$absent_lines"
 echo "--- summary ---"
-echo "sent=$sent skipped=$skipped failed=$failed version=$version dry=$dry"
+absent_n=0
+if [ -n "$absent_lines" ]; then absent_n="$(printf '%s' "$absent_lines" | grep -c . || true)"; fi
+echo "sent=$sent skipped=$skipped failed=$failed absent=$absent_n version=$version dry=$dry"
 if [ "$stamp" = 1 ] && [ "$dry" = 0 ] && [ "$sent" -gt 0 ]; then
   # --by fallback (#19, 2026-09-12): oc-ledger refuses an anonymous row, so a
   # wave stamps under the caller's OC_ACTOR (or OPENCRABS_SESSION_ID) when set, else under the tool name.
