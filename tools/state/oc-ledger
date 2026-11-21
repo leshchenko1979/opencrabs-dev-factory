@@ -1158,8 +1158,32 @@ battery_receipt() { echo "$SKILL_DIR/tools/tests/battery-last.json"; }
 # every sibling of the same batch was named, so the version record could not
 # state their ship date. #505 was worse still — the v0.4.237 entry left the
 # routing OPEN ("routes to the Toolsmith") for work that had already closed.
+#
+# #94: the entry BODY, factored out of c8_naming_warn because the naming test
+# now reads a SET of entries rather than one. From its `## v<ver>` header to the
+# next `## v` header. Version dots are deliberately unescaped, matching the
+# existence gate's own grep — a version is 0.N.N and no header collides by
+# accident. Missing entry -> empty string, never an error: the existence gate
+# above already refused that case, and a WARN leg must not die on it.
+_c8_entry_body() { # $1 = version, e.g. 0.4.242 (a leading 'v' is tolerated)
+  # The version arrives in TWO forms. `$v` is bare ("0.4.242"), while `$spans`
+  # carries the ledger's own `what` field, whose first token is prefixed
+  # ("v0.4.8"). Building the pattern from the prefixed form searched for
+  # '## vv0.4.8', matched nothing, and returned an EMPTY body — silently, because
+  # a missing entry is deliberately not an error here. That empty body meant the
+  # #94 widening contributed nothing and the earlier-window commit stayed
+  # flagged, so the fix's own arm (m) went red instead of the WARN going quiet.
+  # Normalise at the seam: neither caller can get it wrong.
+  local ver="${1#v}"
+  awk -v v="$ver" '
+    BEGIN { p = "^## v" v "([ —(:]|$)" }
+    $0 ~ p { f = 1; next }
+    f && /^## v/ { exit }
+    f { print }
+  ' "$SKILL_DIR/CHANGELOG.md" 2>/dev/null || true
+}
 c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
-  local v="$1" anchor anchor_t anchor_e spans entry range c sha subj refs named missing="" skipped=0 selfids="" selfskip=0 self_id
+  local v="$1" anchor anchor_t anchor_e spans entry entries widen_note range c sha subj refs named missing="" skipped=0 selfids="" selfskip=0 self_id
   local bump_e bump_v range_after="" bounded_note="" 
   # The anchor is the previous SYNC commit. The pattern must name the SYNC FORM
   # this tool's own tail writes ("skill v<ver>: oc-ledger sync — <why>"), not
@@ -1269,18 +1293,38 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
       fi
     fi
   fi
-  # The entry BODY: from its header to the next '## v' header. Version dots are
-  # unescaped, matching the existence gate's own grep — a version is 0.N.N and
-  # no header will collide by accident.
-  entry="$(awk -v v="$v" '
-    BEGIN { p = "^## v" v "([ —(:]|$)" }
-    $0 ~ p { f = 1; next }
-    f && /^## v/ { exit }
-    f { print }
-  ' "$SKILL_DIR/CHANGELOG.md" 2>/dev/null || true)"
+  entry="$(_c8_entry_body "$v")"
+  # #94: the SET the naming test reads. A commit is "named" if any entry in the
+  # range's own window set names it — not only the newest one.
+  #
+  # WIDENING IS CONDITIONAL, and the condition is the whole point. When
+  # `range_after` is EMPTY the ledger bound did NOT fire, so the git range is
+  # unbounded and can span several version windows; a commit shipped under an
+  # earlier window is dated in THAT window's entry, and testing only `## v$v`
+  # flags it for lacking a ship date it actually has. The false positive is
+  # structural: it can only fire when the bound fails, and the bound failing is
+  # exactly what makes the range span more than one window.
+  #
+  # When the bound DID fire, earlier windows are excluded from the range by
+  # construction, so widening there would hide a genuine miss — the commit
+  # would be absent from the range AND we would stop looking for it. So a
+  # bounded range keeps single-entry behaviour.
+  entries="$entry"
+  widen_note=""
+  if [ -z "$range_after" ] && [ -n "$spans" ]; then
+    for sv in $spans; do
+      entries="$entries
+$(_c8_entry_body "$sv")"
+    done
+    widen_note="sync: note — C8 naming: the range is UNBOUNDED and spans more than one version window (v$v + $spans), so the naming test read the entries for all of them. A commit is named if ANY of those entries names it."
+  fi
   # Every NON-SYNC commit the sync bundles (hq.md:57), newest first.
   range="$(git -C "$SKILL_DIR" log --format='%h %s' --no-merges "$anchor"..HEAD $range_after 2>/dev/null || true)"
   [ -n "$range" ] || return 0
+  # #94: the scope note belongs HERE, not where the set was built. A note
+  # describing the scope of a test that never ran is noise, and the early return
+  # above is exactly that case (nothing bundled -> nothing tested).
+  [ -z "$widen_note" ] || echo "$widen_note" >&2
   # The syncing session's own commits, by Session-Id trailer. Built in ONE git
   # call (a per-commit read would be one process per commit on every sync).
   # The ambient session id, env var first (A1b: OC_ACTOR is the retired primary).
@@ -1352,11 +1396,11 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
         ;;
     esac
     named=0
-    case "$entry" in *"$sha"*) named=1 ;; esac
+    case "$entries" in *"$sha"*) named=1 ;; esac
     if [ "$named" -eq 0 ]; then
       refs="$(printf '%s' "$subj" | grep -oE '#[0-9]+' 2>/dev/null || true)"
       for r in $refs; do
-        case "$entry" in *"$r"*) named=1; break ;; esac
+        case "$entries" in *"$r"*) named=1; break ;; esac
       done
     fi
     [ "$named" -eq 1 ] || missing="$missing$sha $subj
@@ -1375,10 +1419,27 @@ EOF
     echo "sync: note — C8 naming: $selfskip commit(s) skipped as made by THIS syncing session (Session-Id trailer = $self_id) and carrying no Issue-Ref trailer. The entry is written before those commits exist, so it cannot name them; disclosed so the exclusion is never silent. A self-commit that DOES carry an Issue-Ref trailer is still listed — only the unnameable ones are skipped." >&2
   fi
   [ -n "$missing" ] || return 0   # named-everything is otherwise SILENT
-  echo "sync: WARN — C8 naming: the '## v$v' entry does not name every commit this sync bundles." >&2
+  # #94: the WARN must describe the entries ACTUALLY READ. When the range was
+  # unbounded and spanned several windows, "the '## v$v' entry" is false twice
+  # over — it was not the only entry read, and it is not the only place a ship
+  # date exists. Guidance that misnames its own scope sends the reader to edit a
+  # file that already names the commit, which is how a WARN gets ignored.
+  if [ -n "$widen_note" ]; then
+    echo "sync: WARN — C8 naming: none of the entries for the version windows this UNBOUNDED range spans (v$v + $spans) names every commit the sync bundles." >&2
+  else
+    echo "sync: WARN — C8 naming: the '## v$v' entry does not name every commit this sync bundles." >&2
+  fi
   printf '%s' "$missing" | sed 's/^/    unnamed: /' >&2
   echo "  WARN only, never a refusal: the range is other lanes' work and carries untrailered law commits by design." >&2
-  echo "  Name each one in the '## v$v' entry (short sha or issue ref) — the version record is the only place a bundled fix's ship date exists." >&2
+  if [ -n "$widen_note" ]; then
+    # Comma-separate the window list: `$spans` is space-separated (it is built by
+    # `tr '\n' ' '`), so echoing it raw produced "one of v0.4.2, v0.4.8 v0.4.9" —
+    # a list where the reader cannot tell whether "v0.4.8 v0.4.9" is one window
+    # or two. Same normalisation the straddle NOTE above needs and does not do.
+    echo "  Name each one in the entry for the window it actually shipped under — one of $(printf '%s' "v$v $spans" | sed 's/ /, /g') — because each window's entry is the only place that window's ship dates exist." >&2
+  else
+    echo "  Name each one in the '## v$v' entry (short sha or issue ref) — the version record is the only place a bundled fix's ship date exists." >&2
+  fi
   return 0
 }
 
@@ -2649,6 +2710,86 @@ PAYLOAD
   case "$C8LO" in *"BOUNDED to commits after"*)
       bad "c8-651-bound-applied-past-head-would-empty-the-range" ;; *) ok ;; esac
   case "$C8LO" in *"unnamed: $C8LSHA"*) ok ;; *) bad "c8-651-past-head-guard-emptied-the-range" ;; esac
+  # ------------------------------------------------------------------
+  # #94 — THE NAMING TEST MUST READ THE ENTRY SET THE RANGE SPANS.
+  # The existence gate and the naming test both read `## v$v`. When the range is
+  # BOUNDED that is correct: earlier windows are excluded by construction. When
+  # the bound does NOT fire the range is unbounded and can span several version
+  # windows, so a commit shipped under an earlier window is dated in THAT
+  # window's entry — and testing only `## v$v` flags it for lacking a ship date
+  # it actually has. The false positive is structural: it can only fire when the
+  # bound fails, and the bound failing is exactly what makes the range span more
+  # than one window.
+  #
+  # WIDENING IS CONDITIONAL, and arms (n) and (o) are the two directions: (m)/(n)
+  # prove an earlier-window entry silences an unbounded range, (o) proves a
+  # BOUNDED range still reads one entry — widening there would hide a genuine
+  # miss, because the commit is absent from the range's own window yet we would
+  # stop looking for it.
+  #
+  # The unbounded-with-spans shape is reachable ONLY through the past-head guard
+  # (leg (l)): a bump row stamped after every commit leaves the range unbounded
+  # while rows newer than the anchor still enumerate windows. That is the real
+  # incident shape — a lane publishes the bump row before the commit lands, or
+  # the clocks disagree — so the fixture builds it the same way.
+  C8M="$(c8mk m)"
+  c8commit "$C8M/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  c8commit "$C8M/skill" "fix(tools): #781 named in the earlier window" "2026-09-27T07:00:00 +0000"
+  C8MSHA="$(git -C "$C8M/skill" rev-parse --short HEAD)"
+  c8commit "$C8M/skill" "fix(tools): #782 named NOWHERE at all" "2026-09-27T07:30:00 +0000"
+  C8M2SHA="$(git -C "$C8M/skill" rev-parse --short HEAD)"
+  jq '.events += [{n: 9401, t: "2026-09-27T07:05:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.8 — in-range row"},
+                  {n: 9402, t: "2099-01-01T00:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.9 — past-head row"}]' \
+    "$C8M/state/workers-ledger.json" > "$C8M/wl.tmp" && mv "$C8M/wl.tmp" "$C8M/state/workers-ledger.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8M/skill/SKILL.md"
+  printf '# fixture changelog\n\n## v0.4.2\nc8 receipt names nothing\n\n## v0.4.8\nc8 earlier-window receipt names %s\n' "$C8MSHA" \
+    >> "$C8M/skill/CHANGELOG.md"
+  C8MO="$(OC_LEDGER="$C8M/state/workers-ledger.json" OC_SKILL_DIR="$C8M/skill" \
+    OC_DEPLOY_STATE_DIR="$C8M/state" bash "$ME" sync --version 0.4.2 --why selftest-94m 2>&1 || true)"
+  # (m) THE FIX: a commit dated in an earlier window's entry is NOT flagged. On
+  #     the pre-fix artifact only `## v0.4.2` is read, so this commit is listed
+  #     for lacking a ship date it has two windows back.
+  case "$C8MO" in *"unnamed: $C8MSHA"*) bad "c8-94-earlier-window-entry-ignored ($C8MSHA)" ;; *) ok ;; esac
+  # (n) POSITIVE CONTROL, same fixture: a commit named NOWHERE is still listed.
+  #     Without this the widening could have been "silence everything" and (m)
+  #     would have passed on a check that reads no entries at all.
+  case "$C8MO" in *"unnamed: $C8M2SHA"*) ok ;; *) bad "c8-94-unnamed-commit-lost ($C8M2SHA)" ;; esac
+  # the widening is DISCLOSED — a scope change nobody can see is how a check
+  # starts reporting on something other than what its message says.
+  case "$C8MO" in *"UNBOUNDED and spans more than one version window"*) ok ;; *) bad "c8-94-widen-note-missing" ;; esac
+  # The window list must be in the WIDEN NOTE ITSELF, not merely somewhere in the
+  # output: the older straddle NOTE above already prints "($spans)", so a bare
+  # *"v0.4.8"* match here is satisfied whether or not the widen note exists at
+  # all — measured, it stayed green under the mutation that neutered the
+  # widening. Assert the note's own wording and its window list together.
+  case "$C8MO" in *"more than one version window (v0.4.2 + v0.4.8 v0.4.9)"*) ok ;; *) bad "c8-94-widen-note-names-no-window" ;; esac
+  # and the guidance must be a READABLE list — `$spans` is space-separated, so the
+  # raw form "one of v0.4.2, v0.4.8 v0.4.9" leaves the reader unable to tell one
+  # window from two.
+  case "$C8MO" in *"one of v0.4.2, v0.4.8, v0.4.9"*) ok ;; *) bad "c8-94-guidance-window-list-unreadable" ;; esac
+  # and the WARN must describe the entries ACTUALLY read: claiming the '## v0.4.2'
+  # entry is the only place a ship date exists sends the reader to edit a file
+  # that already names the commit.
+  case "$C8MO" in *"none of the entries for the version windows this UNBOUNDED range spans"*) ok ;; *) bad "c8-94-warn-misnames-its-scope" ;; esac
+  # (o) THE BOUNDED DIRECTION — WIDENING MUST NOT APPLY. Here the bound fires, so
+  #     earlier windows are excluded from the range by construction; a commit IN
+  #     the range that is named only in an earlier entry must STILL be flagged.
+  #     Widening unconditionally would silence exactly the miss this leg exists
+  #     to surface, trading a false positive for a false negative.
+  C8N="$(c8mk n)"
+  c8commit "$C8N/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  jq '.events += [{n: 9501, t: "2026-09-27T06:30:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.5 — in-range row"}]' \
+    "$C8N/state/workers-ledger.json" > "$C8N/wl.tmp" && mv "$C8N/wl.tmp" "$C8N/state/workers-ledger.json"
+  c8commit "$C8N/skill" "fix(tools): #783 in the bounded window, named only earlier" "2026-09-27T07:00:00 +0000"
+  C8NSHA="$(git -C "$C8N/skill" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8N/skill/SKILL.md"
+  printf '# fixture changelog\n\n## v0.4.2\nc8 receipt names nothing\n\n## v0.4.5\nc8 earlier receipt names %s\n' "$C8NSHA" \
+    >> "$C8N/skill/CHANGELOG.md"
+  C8NO="$(OC_LEDGER="$C8N/state/workers-ledger.json" OC_SKILL_DIR="$C8N/skill" \
+    OC_DEPLOY_STATE_DIR="$C8N/state" bash "$ME" sync --version 0.4.2 --why selftest-94n 2>&1 || true)"
+  case "$C8NO" in *"BOUNDED to commits after"*) ok ;; *) bad "c8-94-bounded-note-missing" ;; esac
+  case "$C8NO" in *"unnamed: $C8NSHA"*) ok ;; *) bad "c8-94-bounded-range-widened-anyway ($C8NSHA)" ;; esac
+  case "$C8NO" in *"UNBOUNDED and spans"*) bad "c8-94-widen-note-fired-on-a-bounded-range" ;; *) ok ;; esac
   # 23-26: ack (v0.4.55: full 0.N.N shape — the old N.N regex could never
   # record a real skill version, which broke the reload convention's ack step)
   bash "$ME" ack short-uuid 0.4.2 >/dev/null 2>&1; chk "ack-bad-uuid" 2 $?
