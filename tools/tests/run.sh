@@ -692,6 +692,21 @@ if [ "${BATTERY_IN_CHUNK:-0}" = "0" ] && [ "$JOBS" -gt 1 ]; then
   NCH="$(grep -cE '^# ---- [0-9]' "$0")"
   PT="$(mktemp -d -t oc-battery-pt.XXXXXX)"
   RUN_SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  # THE LOCK COPROC IS A CHILD, AND BOTH `jobs -rp` AND A BARE `wait` SEE IT
+  # (factory #129, 2026-11-21). It holds the single-flight lock and never exits
+  # until this shell does, so referencing it at either site is fatal:
+  #   * a BARE `wait` blocked FOREVER once every chunk had finished -- measured
+  #     73/73 chunks complete, driver in do_wait, coproc `cat` in pipe_read,
+  #     zero bytes of output for 27m13s before the run was killed. This is the
+  #     "battery hangs with no output" shape, and it is deterministic, not
+  #     intermittent: the coproc only releases when the shell dies, which is
+  #     exactly what the shell was waiting for;
+  #   * `jobs -rp | wc -l` COUNTED the coproc as a worker, so `--jobs 2` ran ONE
+  #     chunk at a time (measured: 3 running jobs for 2 chunks + the coproc).
+  # Track the chunk PIDs and reference BOTH sites at that list, never at "all
+  # jobs". The coproc is never a member, so it can neither be counted nor
+  # waited on.
+  _chunk_pids=()
   for k in $(seq 1 "$NCH"); do
     # Each child records its own [start,end] as ms offsets from the PARENT's
     # clock, so the receipt shows the wave structure and the critical path.
@@ -699,9 +714,15 @@ if [ "${BATTERY_IN_CHUNK:-0}" = "0" ] && [ "$JOBS" -gt 1 ]; then
       bash "$RUN_SCRIPT" --chunk "$k" > "$PT/$k.log" 2>&1
       _be="$(date +%s%N)"
       printf '%s %s\n' "$(( (_bs - BATTERY_T0) / 1000000 ))" "$(( (_be - BATTERY_T0) / 1000000 ))" > "$PT/$k.ms" 2>/dev/null ) &
-    while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 0.05; done
+    _chunk_pids+=("$!")
+    while :; do
+      _live=0
+      for _cp in "${_chunk_pids[@]}"; do kill -0 "$_cp" 2>/dev/null && _live=$((_live + 1)); done
+      [ "$_live" -lt "$JOBS" ] && break
+      sleep 0.05
+    done
   done
-  wait
+  wait "${_chunk_pids[@]}"
   BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
   battery_collect_timing "$NCH" "$PT"
   PASS=0; FAIL=0
@@ -4759,6 +4780,63 @@ if [ -e "$_LK91_CH" ]; then
   bad "#107: a --chunk child opened the lock file -- it would deadlock against its own parent"
 else
   ok "a --chunk child never opens the lock file, so it cannot deadlock its parent (#107)"
+fi
+
+# --- (h) the PARALLEL DRIVER must not reference the coproc (#129) -----------
+# The lock coproc is a CHILD of the battery, so both `jobs -rp` and a bare
+# `wait` saw it: `wait` blocked forever once every chunk had finished (measured
+# 73/73 chunks done, driver in do_wait, zero output, 27m13s), and the throttle
+# counted it as a worker so --jobs 2 ran ONE chunk at a time. The driver now
+# tracks chunk PIDs; both arms below are driven, because a leg that only proves
+# "terminates" cannot tell the fix from a driver that never waited at all.
+_LK91_DRV="$_LK91/drv"; mkdir -p "$_LK91_DRV"
+cat > "$_LK91_DRV/fixed" <<'DRVFIX'
+#!/usr/bin/env bash
+set -u
+JOBS=2
+coproc LOCKER { flock -n 9 && echo READY && cat >/dev/null; } 9>"$1"
+read -r _st <&"${LOCKER[0]}"
+_pids=()
+for k in 1 2 3 4 5 6; do
+  ( sleep 1 ) & _pids+=("$!")
+  while :; do
+    _live=0
+    for _cp in "${_pids[@]}"; do kill -0 "$_cp" 2>/dev/null && _live=$((_live + 1)); done
+    [ "$_live" -lt "$JOBS" ] && break
+    sleep 0.05
+  done
+done
+wait "${_pids[@]}"
+DRVFIX
+# The OLD shape, kept as the NEGATIVE CONTROL: same coproc, the throttle that
+# counted it as a worker, and a bare `wait`. It MUST hang, or the fixed arm
+# below proves nothing -- a driver that never waited would also "terminate".
+cat > "$_LK91_DRV/old" <<'DRVOLD'
+#!/usr/bin/env bash
+set -u
+JOBS=2
+coproc LOCKER { flock -n 9 && echo READY && cat >/dev/null; } 9>"$1"
+read -r _st <&"${LOCKER[0]}"
+for k in 1 2 3 4 5 6; do
+  ( sleep 1 ) &
+  while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 0.05; done
+done
+wait
+DRVOLD
+chmod +x "$_LK91_DRV/fixed" "$_LK91_DRV/old"
+_T0="$(date +%s)"
+timeout 20 bash "$_LK91_DRV/fixed" "$_LK91_DRV/f.lock" >/dev/null 2>&1
+_RC_NEW=$?; _EL_NEW=$(( $(date +%s) - _T0 ))
+timeout 4 bash "$_LK91_DRV/old" "$_LK91_DRV/o.lock" >/dev/null 2>&1
+_RC_OLD=$?
+if [ "$_RC_OLD" -ne 124 ]; then
+  bad "#129: the OLD driver shape did NOT hang (rc=$_RC_OLD) -- the control is broken, so the fixed arm proves nothing"
+elif [ "$_RC_NEW" -ne 0 ]; then
+  bad "#129: the fixed driver did not terminate (rc=$_RC_NEW after ${_EL_NEW}s) -- bare wait still sees the coproc"
+elif [ "$_EL_NEW" -lt 3 ] || [ "$_EL_NEW" -gt 6 ]; then
+  bad "#129: 6x1s chunks at jobs=2 took ${_EL_NEW}s -- outside 3-6s, so the coproc is still being counted as a worker"
+else
+  ok "the parallel driver waits on chunk PIDs only: terminates (${_EL_NEW}s for 6x1s at jobs=2) while the old shape hangs (#129)"
 fi
 rm -rf "$_LK91"
 
