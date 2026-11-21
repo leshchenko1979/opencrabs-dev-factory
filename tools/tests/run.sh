@@ -241,33 +241,9 @@ if [ "${1:-}" = "--chunk" ] && [ -n "${2:-}" ] && [ -z "${BATTERY_IN_CHUNK:-}" ]
   exit $(( FAIL > 0 ? 1 : 0 ))
 fi
 
-# ---- single-flight lock: ONE battery run at a time (#449) -------------------
-# tools/tests/battery-last.json is ONE canonical path shared by every lane, and
-# this script writes it from two sites with no lock — so two concurrent runs
-# clobber each other's receipt (measured 2026-09-20: commit 284b8456 committed a
-# FAIL receipt under a "pass 213, fail 0" message) and the extra load flakes the
-# timing-sensitive oc-ship-chain detach-survival pair. The whole run is
-# serialized here. The canonical path is KEPT because consumers read it — a
-# per-lane receipt path would break them.
-#
-# Placement is load-bearing: this sits AFTER the --chunk branch above and is
-# guarded on BATTERY_IN_CHUNK, because a --chunk child takes its branch and
-# exits before reaching this line, and the prelude sourced INSIDE a child sees
-# BATTERY_IN_CHUNK=1. Locking any earlier would deadlock every child against
-# its own parent. rc 2 = harness condition, never a test verdict.
-if [ -z "${BATTERY_IN_CHUNK:-}" ]; then
-  BATTERY_LOCK="${OC_BATTERY_LOCK:-${TMPDIR:-/tmp}/oc-battery.lock}"
-  BATTERY_LOCK_WAIT="${OC_BATTERY_LOCK_WAIT:-900}"
-  exec 9>"$BATTERY_LOCK" || { note "battery: cannot open lock file $BATTERY_LOCK"; exit 2; }
-  if ! flock -n 9; then
-    note "battery: another run holds $BATTERY_LOCK — waiting up to ${BATTERY_LOCK_WAIT}s"
-    if ! flock -w "$BATTERY_LOCK_WAIT" 9; then
-      note "battery: lock not released within ${BATTERY_LOCK_WAIT}s — NOT a test failure and NOT a verdict."
-      note "battery: re-run once the holder finishes, or raise the budget with OC_BATTERY_LOCK_WAIT=<sec>."
-      exit 2
-    fi
-  fi
-fi
+# ---- single-flight lock: see the block after the cgroup isolation below --
+# (#449 single-flight, #107 holder child. It cannot live here: it must be
+#  entered exactly once, and the cgroup block below `exec`s this script.)
 
 # Default JOBS=1 (#76): the battery is background work, and $(nproc)=4 both
 # oversubscribed this host and lost the pids preflight below anyway. Same tree,
@@ -342,6 +318,87 @@ if [ -z "${BATTERY_IN_CHUNK:-}" ] && [ -z "${BATTERY_CGROUP_ISOLATED:-}" ] && [ 
     note "battery: WARNING: could not create a transient scope -- running in ${_oc_cg} unisolated (#720)"
   fi
 fi
+# >>> BATTERY LOCK BLOCK (#449/#107) -- extracted verbatim by the section 91 legs
+# ---- single-flight lock: ONE battery run at a time (#449, holder child #107) --
+# tools/tests/battery-last.json is ONE canonical path shared by every lane, and
+# this script writes it from two sites with no lock — so two concurrent runs
+# clobber each other's receipt (measured 2026-09-20: commit 284b8456 committed a
+# FAIL receipt under a "pass 213, fail 0" message) and the extra load flakes the
+# timing-sensitive oc-ship-chain detach-survival pair. The whole run is
+# serialized here. The canonical path is KEPT because consumers read it — a
+# per-lane receipt path would break them.
+#
+# Placement is load-bearing TWICE. (1) It sits AFTER the --chunk branch, because
+# a --chunk child exits before reaching this line and the prelude sourced INSIDE
+# a child sees BATTERY_IN_CHUNK=1; locking earlier would deadlock every child
+# against its own parent. (2) It sits AFTER the cgroup re-exec above, because
+# that block `exec`s this script and a second entry would re-acquire the lock
+# against a holder this process still owns.
+# rc 2 = harness condition, never a test verdict.
+#
+# THE LOCK FD LIVES IN A HOLDER CHILD, NOT IN THIS PROCESS (#107). Holding it
+# here meant every child inherited fd 9 — the --chunk children, and with the
+# default JOBS=1 every single tool the battery runs, since they are this shell's
+# own children. The lock then outlived the battery: SIGKILL the parent and it
+# stayed held by a grandchild that was not the battery at all, so the next run
+# waited BATTERY_LOCK_WAIT (900 s) for a process that would never release it.
+# Measured 2026-11-16: `fuser` named six holders, one of them a python
+# grandchild.
+#
+# Two candidate fixes were MEASURED and rejected. `flock --close` releases the
+# lock on exec — a second `flock -n` succeeded immediately, so it locks nothing.
+# Closing fd 9 in the --chunk branch fixes only the fan-out case and leaves the
+# JOBS=1 case, where the tools are this shell's own children.
+#
+# A `coproc` subshell holds it instead. A coproc's pipe ends are not inherited by
+# ordinary children (verified: a backgrounded child's fd table carries no pipe),
+# so nothing this script spawns can keep the lock alive; and the holder exits
+# when this shell's pipe write end closes, which the kernel does on death —
+# SIGKILL included, no trap required (verified: kill -9 the battery, then a
+# fresh `flock -n` succeeds).
+if [ -z "${BATTERY_IN_CHUNK:-}" ]; then
+  BATTERY_LOCK="${OC_BATTERY_LOCK:-${TMPDIR:-/tmp}/oc-battery.lock}"
+  BATTERY_LOCK_WAIT="${OC_BATTERY_LOCK_WAIT:-900}"
+
+  # Name the holders on failure (#107 acceptance): a bare "not released" sent the
+  # operator hunting with ps. fuser prints PIDs to stdout.
+  battery_lock_holders() {
+    fuser "$BATTERY_LOCK" 2>/dev/null | tr -s ' \t' ' ' | sed 's/^ //; s/ $//'
+  }
+
+  # fd 9 is opened INSIDE the coproc, so this shell never owns it. WAITING is
+  # announced before the bounded wait, so the operator sees the wait instead of a
+  # silent stall; TIMEOUT is distinguished from a refusal to open.
+  coproc BATTERY_LOCKER {
+    if ! flock -n 9; then
+      echo WAITING
+      if ! flock -w "$BATTERY_LOCK_WAIT" 9; then echo TIMEOUT; exit 1; fi
+    fi
+    echo READY
+    cat >/dev/null            # hold until this shell's write end closes
+  } 9>"$BATTERY_LOCK" || { note "battery: cannot open lock file $BATTERY_LOCK"; exit 2; }
+
+  _lk_state=""
+  read -r _lk_state <&"${BATTERY_LOCKER[0]}" || _lk_state=""
+  case "$_lk_state" in
+    READY) : ;;
+    WAITING)
+      note "battery: another run holds $BATTERY_LOCK — waiting up to ${BATTERY_LOCK_WAIT}s"
+      read -r _lk_state <&"${BATTERY_LOCKER[0]}" || _lk_state=""
+      if [ "$_lk_state" != "READY" ]; then
+        note "battery: lock not released within ${BATTERY_LOCK_WAIT}s — NOT a test failure and NOT a verdict."
+        note "battery: holder PID(s): $(battery_lock_holders)"
+        note "battery: re-run once the holder finishes, or raise the budget with OC_BATTERY_LOCK_WAIT=<sec>."
+        exit 2
+      fi ;;
+    *)
+      note "battery: cannot acquire $BATTERY_LOCK (holder said: ${_lk_state:-no response})"
+      note "battery: holder PID(s): $(battery_lock_holders)"
+      exit 2 ;;
+  esac
+fi
+# <<< BATTERY LOCK BLOCK
+
 # The cgroup this run is ACTUALLY in, read fresh -- and whether the re-exec
 # moved it. `isolated=true` asserts only what is observable: the flag is set AND
 # the path differs from the one the re-exec started in.
@@ -4024,11 +4081,23 @@ CI_BLOCK="$CI_FX/iso.sh"
 # The #74 pids preflight was then inserted between them and the extraction
 # silently swallowed it: the synth runs under `set -u` with no $JOBS, so it
 # died at the preflight's `[ "$JOBS" -gt ... ]` and FIVE #720 legs reported
-# failures about a healthy block. Alternation makes the end whichever section
-# marker comes first, so a future insertion between the two cannot re-arm it,
-# and the assertion below states the contract instead of trusting it.
-awk '/^# ---- cgroup isolation \(#720\)/,/^# ---- (red-receipt transcript|pids budget preflight)/' "$0" \
-  | sed -E '/^# ---- (red-receipt transcript|pids budget preflight)/d' > "$CI_BLOCK"
+# failures about a healthy block.
+# The first fix was an ALTERNATION of the marker names known at the time, and
+# its comment claimed "a future insertion between the two cannot re-arm it".
+# That claim was false, and #107 disproved it the same way #74 had: the
+# battery-lock block was inserted between those two names, the extraction
+# swallowed it (183 lines, 3 section headers, the lock fence twice), and the
+# synth then BLOCKED on the very lock this run holds — 900 s of waiting, then
+# `#720: a refused scope swallowed the run`. A harness timeout read as a red
+# block. Naming the markers you happen to know IS the proxy, one level up.
+# So the range ends at the FIRST line that opens a section by ANY form —
+# `# ---- ` or the `# >>> ` extraction fence — and the assertion below states
+# that contract (exactly one header, nothing after it) instead of trusting it.
+awk '
+  /^# ---- cgroup isolation \(#720\)/ { inside = 1 }
+  inside && !/^# ---- cgroup isolation \(#720\)/ && (/^# ---- / || /^# >>> /) { exit }
+  inside
+' "$0" > "$CI_BLOCK"
 if [ -s "$CI_BLOCK" ] && grep -q 'BATTERY_CGROUP_ISOLATED' "$CI_BLOCK"; then
   ok "isolation block extracted from run.sh ($(wc -l < "$CI_BLOCK") lines)"
 else
@@ -4042,6 +4111,25 @@ if grep -q 'pids budget preflight' "$CI_BLOCK"; then
 else
   ok "#74/#720: extraction stops at the isolation block's own end (the pids preflight is not swept in)"
 fi
+# The same overrun, one fence later (#107). The battery-lock block was inserted
+# between the two names the old alternation listed, and its `# >>> ` fence sits
+# ABOVE its own `# ---- ` header — so a `# ---- `-only end condition still
+# swallows it, and the synth then blocks on the lock THIS run holds. Restore the
+# old alternation and this leg goes red.
+if grep -q 'BATTERY LOCK BLOCK' "$CI_BLOCK"; then
+  bad "#449/#107/#720: the extracted block runs PAST the isolation block (it carries the battery lock) — the range end is a proxy again"
+else
+  ok "#449/#107/#720: extraction stops at the isolation block's own end (the battery lock is not swept in)"
+fi
+# STRUCTURAL, not a list of known successors: the extraction must be exactly ONE
+# section. Two headers means the end condition matched a name it does not know
+# about and kept going — which is how both #74 and #107 got in. This leg fires
+# on an insertion nobody has written yet, so it is the one that cannot be
+# re-armed by the next fence.
+_ci_hdrs="$(grep -c '^# ---- ' "$CI_BLOCK")"
+[ "$_ci_hdrs" -eq 1 ] \
+  && ok "#720: extraction is exactly one section (the end condition is structural, not a name list)" \
+  || bad "#720: extraction carries $_ci_hdrs section headers (expected 1) -- the range end is a name list again, and an unknown insertion will be swept in"
 # INPUT rewrite exactness: exactly one source line may differ (two diff sides).
 sed "s|\$(battery_cgroup_path)|\${CI_SVC_CG}|" "$CI_BLOCK" > "$CI_FX/exact.sh"
 _nd="$(diff "$CI_BLOCK" "$CI_FX/exact.sh" | grep -c '^[<>]')"
@@ -4528,6 +4616,151 @@ if oc_same_patch "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef "$(git -C "$2" re
 [ "$?" -eq 0 ] \
   && ok "oc_same_patch still refuses: unknown is never 'same' (control)" \
   || bad "oc_same_patch accepted an unresolvable sha as same, or could not reach its refusal"
+
+# ---- 91. battery lock: the fd lives in a holder child, not this shell (#107) --
+# THE DEFECT. The lock fd sat in THIS shell, so every child inherited it: the
+# --chunk children, and with the default JOBS=1 every single tool the battery
+# runs, since they are this shell's own children. The lock then outlived the
+# battery -- SIGKILL the parent and it stayed held by a grandchild that was not
+# the battery at all, so the next run burned BATTERY_LOCK_WAIT (900 s) waiting on
+# a process that would never release it (measured 2026-11-16: `fuser` named six
+# holders, one of them a python grandchild).
+# Every leg drives the REAL block, extracted verbatim from this file between its
+# fences. A copy of the block would keep passing after the real one regressed,
+# which is the one thing these legs exist to catch.
+#
+# TWO TRAPS these legs are built around, both measured while writing them.
+# (1) The probes MUST clear BATTERY_IN_CHUNK: this section is itself sourced by a
+#     `--chunk` run, so an inherited 1 makes the block skip and every "does not
+#     hold the lock" leg pass on an empty haystack. Hence `env -u` on every
+#     launch, and the BLOCK-ARMED marker: a skipped block is a FAIL, not a green.
+# (2) `disown` after each launch, or bash prints a "Killed" job notice into the
+#     battery log when the SIGKILL leg reaps its probe.
+section "battery lock: no child inherits the lock fd (#107)"
+
+_LK91="${TMPDIR:-/tmp}/lk91-$$"; rm -rf "$_LK91"; mkdir -p "$_LK91"
+_LK91_LOCK="$_LK91/oc-battery.lock"
+_LK91_BAT="$_LK91/battery.sh"
+{
+  printf '#!/usr/bin/env bash\nset -u\n'
+  printf 'note() { printf "%%s\\n" "$*"; }\n'
+  sed -n '/^# >>> BATTERY LOCK BLOCK/,/^# <<< BATTERY LOCK BLOCK/p' "$0"
+  cat <<'LK91BODY'
+# ---- probe body: this script IS the "battery" for the legs below -------------
+# Did the block even run? Without this, a skipped block makes every negative leg
+# below pass while asserting nothing.
+if [ -n "${BATTERY_LOCK:-}" ]; then echo BLOCK-ARMED; else echo BLOCK-SKIPPED; fi
+echo "BATTERY-PID $$"
+# Does THIS shell hold the lock fd? The fix says no; the old `exec 9>` said yes.
+if ls -l "/proc/$$/fd" 2>/dev/null | grep -qF "$BATTERY_LOCK"; then echo SELF-HOLDS; else echo SELF-CLEAN; fi
+# Does an ordinary child inherit it? This is the JOBS=1 case: every tool the
+# battery runs is exactly this shape of child. $BASHPID, not $$ -- $$ is still
+# the parent inside a subshell, so using it would test the parent twice.
+( if ls -l "/proc/$BASHPID/fd" 2>/dev/null | grep -qF "$BATTERY_LOCK"; then echo CHILD-HOLDS; else echo CHILD-CLEAN; fi )
+echo "HOLDERS $(fuser "$BATTERY_LOCK" 2>/dev/null | tr -s ' \t' ' ' | sed 's/^ //; s/ $//')"
+# A live grandchild, like a tool mid-run: it must NOT keep the lock alive.
+sleep 30 &
+echo "GRANDCHILD $!"
+echo PROBE-READY
+wait
+LK91BODY
+} > "$_LK91_BAT"
+
+# --- (a) POSITIVE CONTROL -----------------------------------------------------
+# Without this, every "does not hold the lock" leg below passes on a block that
+# stopped locking anything at all -- or never ran.
+env -u BATTERY_IN_CHUNK OC_BATTERY_LOCK="$_LK91_LOCK" bash "$_LK91_BAT" > "$_LK91/a.out" 2> "$_LK91/a.err" &
+_LK91_P1=$!; disown "$_LK91_P1" 2>/dev/null
+for _i in $(seq 1 120); do grep -q '^PROBE-READY' "$_LK91/a.out" 2>/dev/null && break; sleep 0.1; done
+_LK91_BLK="$(grep -m1 -E '^BLOCK-(ARMED|SKIPPED)$' "$_LK91/a.out" 2>/dev/null)"
+if grep -q '^PROBE-READY' "$_LK91/a.out" 2>/dev/null && [ "$_LK91_BLK" = BLOCK-ARMED ]; then
+  ok "the lock block runs and acquires while healthy (positive control for the legs below)"
+else
+  bad "#107: positive control failed (block=${_LK91_BLK:-NO-VERDICT}) -- the negative legs below would assert nothing ($(tail -n2 "$_LK91/a.err" 2>/dev/null | tr '\n' ' '))"
+fi
+
+# --- (b) the battery itself holds no lock fd ---------------------------------
+case "$(grep -m1 -E '^SELF-(HOLDS|CLEAN)$' "$_LK91/a.out" 2>/dev/null)" in
+  SELF-CLEAN) ok "the battery's own fd table carries no lock fd -- the holder is a child (#107)" ;;
+  SELF-HOLDS) bad "#107: the battery still holds the lock fd itself, so children can inherit it" ;;
+  *)          bad "#107: the probe produced no SELF verdict, so this leg asserts nothing" ;;
+esac
+
+# --- (c) an ordinary child inherits nothing (the JOBS=1 case) ----------------
+case "$(grep -m1 -E '^CHILD-(HOLDS|CLEAN)$' "$_LK91/a.out" 2>/dev/null)" in
+  CHILD-CLEAN) [ "$_LK91_BLK" = BLOCK-ARMED ] \
+                 && ok "an ordinary child of the battery inherits no lock fd -- tools cannot keep it alive (#107)" \
+                 || bad "#107: CHILD-CLEAN is vacuous here -- the block never ran (${_LK91_BLK:-no verdict})" ;;
+  CHILD-HOLDS) bad "#107: a child of the battery still inherits the lock fd (JOBS=1 tools would hold it)" ;;
+  *)           bad "#107: the probe produced no CHILD verdict, so this leg asserts nothing" ;;
+esac
+
+# --- (d) the lock IS held, and not by the battery ----------------------------
+_LK91_HOLDERS="$(sed -n 's/^HOLDERS //p' "$_LK91/a.out" 2>/dev/null | head -n1)"
+if [ -z "$_LK91_HOLDERS" ]; then
+  bad "#107: nothing holds the lock while a battery is running -- the block is not serializing anything"
+else
+  case " $_LK91_HOLDERS " in
+    *" $_LK91_P1 "*) bad "#107: the battery PID $_LK91_P1 is among the lock holders (${_LK91_HOLDERS})" ;;
+    *) ok "the lock is held by a child, not by the battery (fuser: ${_LK91_HOLDERS})" ;;
+  esac
+fi
+
+# --- (e) SIGKILL the battery with a live grandchild: the lock must go free ----
+_LK91_GRAND="$(sed -n 's/^GRANDCHILD //p' "$_LK91/a.out" 2>/dev/null | head -n1)"
+if [ "$_LK91_BLK" != BLOCK-ARMED ]; then
+  bad "#107: the SIGKILL leg is vacuous -- the block never ran, so no lock was ever taken"
+elif [ -z "$_LK91_GRAND" ] || ! kill -0 "$_LK91_GRAND" 2>/dev/null; then
+  bad "#107: no live grandchild to strand the lock on, so the SIGKILL leg would pass vacuously"
+else
+  kill -9 "$_LK91_P1" 2>/dev/null
+  _LK91_FREE=no
+  for _i in $(seq 1 100); do flock -n "$_LK91_LOCK" true 2>/dev/null && { _LK91_FREE=yes; break; }; sleep 0.1; done
+  if [ "$_LK91_FREE" = yes ] && kill -0 "$_LK91_GRAND" 2>/dev/null; then
+    ok "SIGKILL of the battery frees the lock while its grandchild is still alive (#107)"
+  elif [ "$_LK91_FREE" = yes ]; then
+    bad "#107: the lock came free but the grandchild had already exited -- the leg did not test inheritance"
+  else
+    bad "#107: the lock outlived a SIGKILLed battery -- a grandchild is still holding it ($(fuser "$_LK91_LOCK" 2>/dev/null | tr -s ' \t' ' '))"
+  fi
+  kill "$_LK91_GRAND" 2>/dev/null
+fi
+
+# --- (f) contention: bounded wait, rc 2, and the holders named ---------------
+env -u BATTERY_IN_CHUNK OC_BATTERY_LOCK="$_LK91_LOCK" bash "$_LK91_BAT" > "$_LK91/f.out" 2> "$_LK91/f.err" &
+_LK91_P2=$!; disown "$_LK91_P2" 2>/dev/null
+for _i in $(seq 1 120); do grep -q '^PROBE-READY' "$_LK91/f.out" 2>/dev/null && break; sleep 0.1; done
+if ! grep -q '^PROBE-READY' "$_LK91/f.out" 2>/dev/null; then
+  bad "#107: the second holder never started, so the contention legs assert nothing"
+else
+  env -u BATTERY_IN_CHUNK OC_BATTERY_LOCK="$_LK91_LOCK" OC_BATTERY_LOCK_WAIT=2 bash "$_LK91_BAT" > "$_LK91/f2.out" 2> "$_LK91/f2.err"
+  _LK91_RC2=$?
+  [ "$_LK91_RC2" -eq 2 ] \
+    && ok "a contended run gives up with rc 2 (a harness condition, never a verdict)" \
+    || bad "#107: a contended run exited $_LK91_RC2, not the harness code 2"
+  # `note` writes to STDOUT in this harness, so search BOTH streams: a leg that
+  # greps only stderr reads empty and calls a working message missing.
+  _LK91_TO="$(cat "$_LK91/f2.out" "$_LK91/f2.err" 2>/dev/null)"
+  case "$_LK91_TO" in
+    *"holder PID(s): "[0-9]*)
+      ok "the timeout names the holder PID(s), so no operator has to hunt with ps" ;;
+    *) bad "#107: the timeout did not name a holder PID ($(printf '%s' "$_LK91_TO" | tr '\n' ' ' | cut -c1-160))" ;;
+  esac
+fi
+kill -9 "$_LK91_P2" 2>/dev/null
+for _i in $(seq 1 100); do flock -n "$_LK91_LOCK" true 2>/dev/null && break; sleep 0.1; done
+
+# --- (g) a --chunk child takes no lock at all --------------------------------
+# The file must never even be created: the block is guarded on BATTERY_IN_CHUNK,
+# and a child that opened it would deadlock against its own parent.
+_LK91_CH="$_LK91/chunk.lock"; rm -f "$_LK91_CH"
+env -u BATTERY_IN_CHUNK OC_BATTERY_LOCK="$_LK91_CH" bash "$0" --chunk 999 > "$_LK91/g.out" 2>&1
+if [ -e "$_LK91_CH" ]; then
+  bad "#107: a --chunk child opened the lock file -- it would deadlock against its own parent"
+else
+  ok "a --chunk child never opens the lock file, so it cannot deadlock its parent (#107)"
+fi
+rm -rf "$_LK91"
 
 # #111: ONE receipt writer. Everything below used to be a hand-copied duplicate of
 # emit_summary() -- the same 17-field printf, already divergent in two ways: this
