@@ -244,8 +244,10 @@ cmd_selftest() {
   ME="$0"
   chk() { if [ "$2" = "$3" ]; then P=$((P+1)); else F=$((F+1)); echo "  FAIL oc-poll - $1 (want rc=$2 got rc=$3)" >&2; fi; }
   eqv() { if [ "$2" = "$3" ]; then P=$((P+1)); else F=$((F+1)); echo "  FAIL oc-poll - $1 (want '$2' got '$3')" >&2; fi; }
-  has()  { if printf '%s\n' "$1" | grep -qF -- "$2"; then P=$((P+1)); else F=$((F+1)); echo "  FAIL oc-poll - $3 (output lacks '$2')" >&2; fi; }
-  hasnt(){ if printf '%s\n' "$1" | grep -qF -- "$2"; then F=$((F+1)); echo "  FAIL oc-poll - $3 (output unexpectedly has '$2')" >&2; else P=$((P+1)); fi; }
+  # `<<<`, not `printf | grep -q`: under `set -o pipefail` an early-exiting
+  # grep SIGPIPEs the writer and the arm reads a failure that never happened.
+  has()  { if grep -qF -- "$2" <<< "$1"; then P=$((P+1)); else F=$((F+1)); echo "  FAIL oc-poll - $3 (output lacks '$2')" >&2; fi; }
+  hasnt(){ if grep -qF -- "$2" <<< "$1"; then F=$((F+1)); echo "  FAIL oc-poll - $3 (output unexpectedly has '$2')" >&2; else P=$((P+1)); fi; }
   sha1() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
   # uuids named under one difference header, and nothing else
   diffuuids() { printf '%s\n' "$1" | sed -n "/^$2 (/,/^[a-z-]* (/{/^$2 (/d;/^[a-z-]* (/d;p;}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tr '\n' ' ' | sed 's/ *$//'; }

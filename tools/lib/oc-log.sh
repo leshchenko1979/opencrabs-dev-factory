@@ -74,7 +74,7 @@ OC_LOG_START=""
 # other tool now logs normally. Battery section 00d holds this list EQUAL to the
 # real set of arms in both directions, and its negative control (the env hook
 # below) proves the arm is what suppresses the row.
-OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-deploy oc-ledger oc-roster oc-watcher-audit "
+OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-deploy oc-ledger oc-poll oc-roster oc-watcher-audit "
 OC_LOG_BARE_SELFTEST_TOOLS="${OC_LOG_BARE_SELFTEST_TOOLS:-$OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT}"
 oc_is_selftest() {
   case " $OC_LOG_ARGS " in
