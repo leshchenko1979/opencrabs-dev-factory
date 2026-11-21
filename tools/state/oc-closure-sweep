@@ -73,9 +73,40 @@
 #   With either input unusable the class is DISABLED and says so on stderr — an
 #   absent receipt is never a silent zero.
 #
+# THE CLAIMS RECONCILIATION LEG (#132, factory issue 2026-11-21)
+# -----------------------------------------------------------------------------
+# The class (d)/(e) legs above join the TRACKER to the RECEIPTS. This leg joins
+# the TRACKER to the OPEN CLAIMS — the other half of the same gap: 18 claims on
+# 15 CLOSED fork issues across 9 lanes, every one of them still holding a
+# reservation for work that shipped. Nothing retired them, because `done` rows
+# close claims only for the lane that wrote them and a claim abandoned mid-flight
+# has no such row at all.
+#
+# WHY HERE AND NOT IN THE PREDICATE: `claim_is_closed()` is deliberately offline
+# and pure — the dispatch path calls it in tight loops and it may never make a
+# network call. This sweep runs on purpose and is allowed to be slow.
+#
+# THE JOIN IS FREE: TRACKER_OF is already filled by the list calls above, so the
+# leg costs ZERO additional gh reads.
+#
+# THREE CLASSIFICATIONS, and only one of them releases:
+#   CLAIM-LIVE       OPEN on a board where the number exists — reservation earned.
+#   CLAIM-AMBIGUOUS  CLOSED on one board and OPEN on the other. A claim row
+#                    carries NO repo field and the two trackers collide on
+#                    numbers constantly, so retiring here releases on a guess.
+#                    Reported and LEFT ALONE.
+#   CLAIM-STALE      CLOSED on every board that has the number, with no ledger
+#                    close row. `--apply` releases it.
+# A release row is written AS THE CLAIMING LANE, never as the sweeper:
+# `claim_is_closed()`'s addressed arm retires on a row from ANY actor, so a
+# sweeper writing as itself could clear another lane's reservation — exactly the
+# actor confusion `actor_match` exists to prevent. It is also marked
+# SWEPT, NOT ATTESTED: the sweep observed tracker state, it did not verify work.
+#
 # Exit codes:
 #   0 sweep ran; every eligible issue closed or already CLOSED (dry run: ran clean)
-#   1 at least one close FAILED (or a state read failed) under --apply
+#   1 under --apply, at least one close FAILED, one claim RELEASE failed, or a
+#     state read failed — a write this run owed did not happen
 #   2 usage error
 #   3 an input file is missing or unreadable (log / ledger)
 # =============================================================================
@@ -626,6 +657,148 @@ print("%d|%d|%s" % (len(bad), 1 if r else 0, r.get("ledger_n","-")))
     t_bad "park guard over-refused (322 action='$A322' want=would-close; 323 action='$A323' want=would-close)"
   fi
 
+  # ---- #132: CLAIMS RECONCILIATION (tracker state joined to OPEN claims) ----
+  # DEDICATED fixtures — their own ledger, gh stub and release writer — so these
+  # legs cannot perturb the tracker fixtures the class (d)/(e) legs above depend
+  # on. The smoke log is EMPTY on purpose: an empty join leaves the claims leg as
+  # the only thing running, which is what makes each assertion below unambiguous.
+  cat > "$D/cl-ledger" <<'CLLEDGER'
+{"events":[
+ {"n":100,"t":"2026-11-10T09:00:00Z","kind":"claim","by":"11111111-1111-1111-1111-111111111111","what":"#777 CLAIM — stale: CLOSED on the tracker, no ledger close row"},
+ {"n":101,"t":"2026-11-10T09:01:00Z","kind":"claim","by":"22222222-2222-2222-2222-222222222222","what":"#310 CLAIM — live: OPEN on both boards"},
+ {"n":102,"t":"2026-11-10T09:02:00Z","kind":"claim","by":"33333333-3333-3333-3333-333333333333","what":"#888 CLAIM — ambiguous: CLOSED on o/one, OPEN on o/two"}
+]}
+CLLEDGER
+
+  # 777 is CLOSED on o/two and ABSENT from o/one  -> STALE (release it)
+  # 310 is OPEN on both                           -> LIVE
+  # 888 is CLOSED on o/one and OPEN on o/two      -> AMBIGUOUS (never release)
+  cat > "$D/cl-gh" <<'CLSTUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CL_GH_CALLS"
+case "$1 $2" in
+  "issue list")
+    case "$4" in
+      o/one) echo '[{"number":310,"state":"OPEN"},{"number":888,"state":"CLOSED"}]' ;;
+      o/two) echo '[{"number":310,"state":"OPEN"},{"number":888,"state":"OPEN"},{"number":777,"state":"CLOSED"}]' ;;
+      *) echo '[]' ;;
+    esac ;;
+  "issue view") echo OPEN ;;
+  "issue close") echo "closed #$3" ;;
+esac
+exit 0
+CLSTUB
+  chmod +x "$D/cl-gh"
+
+  # The release writer is stubbed so a leg can prove WHAT was written (and to
+  # WHOM) without a real ledger write, and so another leg can force a failure.
+  cat > "$D/cl-ledger-bin" <<'CLLEDGERBIN'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CL_REL_CALLS"
+if [ "${CL_REL_RC:-0}" = "0" ]; then echo "stamped"; exit 0; fi
+echo "ledger: boom" >&2
+exit "${CL_REL_RC}"
+CLLEDGERBIN
+  chmod +x "$D/cl-ledger-bin"
+
+  : > "$D/cl-log"        # empty smoke log: the claims leg runs alone
+  : > "$D/cl-rel-calls"
+  : > "$D/cl-gh-calls"
+
+  cl_run() { # runs the sweep against the claims fixture; extra args pass through
+    : > "$D/cl-rel-calls"
+    rc=0
+    CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
+      OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
+      "$SELF" --json --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two "$@" \
+      >"$D/cl-out" 2>"$D/cl-err" || rc=$?
+  }
+  cl_f() { python3 -c 'import json,sys;print(json.load(open(sys.argv[2])).get(sys.argv[1],"MISSING"))' "$1" "$D/cl-out" 2>/dev/null || echo PARSE-FAIL; }
+
+  # ---- leg A: DRY RUN classifies all three and writes NOTHING --------------
+  cl_run
+  if [ "$(cl_f claim_stale)" = "1" ] && [ "$(cl_f claim_live)" = "2" ] \
+     && [ "$(cl_f claim_ambiguous)" = "1" ] && [ "$(cl_f claim_released)" = "0" ] \
+     && [ ! -s "$D/cl-rel-calls" ]; then
+    t_ok "claims: a dry run names the stale claim, leaves the live and ambiguous ones, and writes nothing"
+  else
+    t_bad "claims dry run (stale=$(cl_f claim_stale) live=$(cl_f claim_live) ambig=$(cl_f claim_ambiguous) released=$(cl_f claim_released) writes=$(wc -l < "$D/cl-rel-calls"))"
+  fi
+
+  # ---- leg B: the dry run SAYS SO, it does not merely count ---------------
+  # A counters-only stream cannot be read by the operator who has to decide
+  # whether to trust the release, so this leg drives the HUMAN path (no --json)
+  # and requires the rows in words.
+  : > "$D/cl-rel-calls"
+  rc=0
+  CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
+    OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
+    "$SELF" --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two \
+    >"$D/cl-out" 2>"$D/cl-err" || rc=$?
+  if grep -q 'CLAIM-STALE' "$D/cl-out" && grep -q 'CLAIM-AMBIGUOUS' "$D/cl-out" \
+     && grep -q '#777' "$D/cl-out" && grep -q '#888' "$D/cl-out"; then
+    t_ok "claims: the dry run reports the stale and the ambiguous rows in words, not just as counters"
+  else
+    t_bad "claims dry-run rows (out=$(tr '\n' '|' < "$D/cl-out"))"
+  fi
+
+  # ---- leg C: --apply releases EXACTLY the stale claim, AS THE CLAIMING LANE --
+  # The attribution arm is the point: claim_is_closed()'s addressed arm retires
+  # on a row from ANY actor, so a sweeper writing as ITSELF could clear another
+  # lane's reservation. `--by` must be the claim's own uuid.
+  cl_run --apply
+  if [ "$(cl_f claim_released)" = "1" ] && [ "$(wc -l < "$D/cl-rel-calls")" = "1" ]; then
+    t_ok "claims: --apply releases exactly one claim (the stale one), not the live or the ambiguous"
+  else
+    t_bad "claims apply (released=$(cl_f claim_released) calls=$(wc -l < "$D/cl-rel-calls"))"
+  fi
+  if grep -q '#777' "$D/cl-rel-calls" \
+     && grep -q -- '--by 11111111-1111-1111-1111-111111111111' "$D/cl-rel-calls" \
+     && ! grep -q '#888' "$D/cl-rel-calls" && ! grep -q '#310' "$D/cl-rel-calls"; then
+    t_ok "claims: the release row is written AS THE CLAIMING LANE and names only the stale issue"
+  else
+    t_bad "claims attribution (calls=$(tr '\n' '|' < "$D/cl-rel-calls"))"
+  fi
+
+  # ---- leg D: the release row is SWEPT, NOT ATTESTED ----------------------
+  # A sweeper reporting "verified closed" when all it did was read a tracker
+  # state has written a false attestation into the ledger.
+  if grep -q 'SWEPT, NOT ATTESTED' "$D/cl-rel-calls"; then
+    t_ok "claims: the release row states it SWEPT the tracker state and did not attest the work"
+  else
+    t_bad "claims release row must be marked SWEPT, NOT ATTESTED (calls=$(tr '\n' '|' < "$D/cl-rel-calls"))"
+  fi
+
+  # ---- leg E: a failed release is COUNTED, not swallowed ------------------
+  rc=0
+  CL_REL_RC=3 CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
+    OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
+    "$SELF" --json --apply --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two \
+    >"$D/cl-out" 2>"$D/cl-err" || rc=$?
+  if [ "$(cl_f claim_release_failed)" = "1" ] && [ "$(cl_f claim_released)" = "0" ] && [ "$rc" -eq 1 ]; then
+    t_ok "claims: a release that fails is counted as failed, not reported as released — and rc is 1, not a silent 0"
+  else
+    t_bad "claims release failure (failed=$(cl_f claim_release_failed) released=$(cl_f claim_released) rc=$rc want=1)"
+  fi
+
+  # ---- leg F: POSITIVE CONTROL — no claims means every counter is 0 -------
+  # Without this, a leg that hard-codes stale=1, or that reads a fixture instead
+  # of the ledger, passes every assertion above.
+  printf '{"events":[]}\n' > "$D/cl-empty"
+  : > "$D/cl-rel-calls"
+  rc=0
+  CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
+    OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
+    "$SELF" --json --log "$D/cl-log" --ledger "$D/cl-empty" --repo o/one --repo o/two \
+    >"$D/cl-out" 2>"$D/cl-err" || rc=$?
+  if [ "$(cl_f claim_stale)" = "0" ] && [ "$(cl_f claim_live)" = "0" ] \
+     && [ "$(cl_f claim_ambiguous)" = "0" ] && [ "$(cl_f claim_released)" = "0" ] \
+     && [ ! -s "$D/cl-rel-calls" ]; then
+    t_ok "claims: an empty ledger yields zeros across the board and writes nothing (positive control)"
+  else
+    t_bad "claims positive control (stale=$(cl_f claim_stale) live=$(cl_f claim_live) writes=$(wc -l < "$D/cl-rel-calls"))"
+  fi
+
   printf 'oc-closure-sweep selftest: %s passed, %s failed\n' "$pass" "$fail"
   [ "$fail" -eq 0 ] || exit 1
   exit 0
@@ -1147,6 +1320,98 @@ while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT CLS; do
   fi
 done <<< "$JOIN"
 
+# ---------------------------------------------------------------------------
+# CLAIMS RECONCILIATION (#132) — tracker state joined to OPEN CLAIMS.
+#
+# NOTHING in the fleet performed this join. `claim_is_closed()` reads only LATER
+# LEDGER ROWS, so an issue closed by any path that stamped no ledger row — the
+# GitHub UI, a bare `gh issue close`, a hand-close with no sweep behind it —
+# leaves its reservation open FOREVER, and the dispatch predicate then reads
+# finished work as live. Measured 2026-11-21T06:05Z: 18 open claim rows on 15
+# CLOSED fork issues across 9 lanes.
+#
+# WHY HERE AND NOT IN THE PREDICATE: `claim_is_closed()` is deliberately offline
+# and pure — the dispatch path calls it in tight loops and it may never make a
+# network call. The reconciliation belongs in a sweep that runs on purpose and
+# is allowed to be slow. The predicate stays exactly as it is.
+#
+# THE JOIN IS FREE: TRACKER_OF was filled by the two list calls above, so this
+# leg costs ZERO additional gh reads.
+#
+# WHY THE RELEASE ROW IS ATTRIBUTED TO THE CLAIMING LANE, NEVER THE SWEEPER:
+# `claim_is_closed()`'s addressed arm retires on a row from ANY actor, so a
+# sweeper writing as itself COULD clear another lane's reservation — which is
+# precisely the actor-confusion `actor_match` exists to prevent. Writing the row
+# as the owner keeps the record honest about WHO attested the closure.
+#
+# WHY AN OPEN-ON-ONE-BOARD CASE IS NEVER RELEASED: a claim row carries NO repo
+# field, and the two trackers collide on numbers constantly. If the number is
+# CLOSED on one board and OPEN on the other, retiring would release on a guess.
+# It is reported as CLAIM-AMBIGUOUS and left alone.
+#
+# The release writer, overridable so the selftest can prove the legs against a
+# fixture it owns without a real ledger write (same seam shape as BATTERY/TREE).
+CLAIM_LEDGER_BIN="${OC_CLOSURE_LEDGER_BIN:-$SCRIPT_DIR/state/oc-ledger}"
+# Initialised OUTSIDE the guard below: `set -u` turns an unset counter into a
+# fatal error at the emit block, and a tool that dies AFTER doing its work is
+# worse than one that never ran — the caller reads rc 1 and no JSON.
+CLAIM_STALE=0; CLAIM_RELEASED=0; CLAIM_AMBIG=0; CLAIM_LIVE=0; CLAIM_FAILED=0
+if [ -f "$LEDGER" ]; then
+  # US separator, never TAB: TAB is IFS WHITESPACE, so `read` COLLAPSES a run of
+  # tabs and an empty field silently shifts every field after it (measured in
+  # this file's own JOIN, see the note above it).
+  CLAIM_ROWS="$(python3 - "$LEDGER" "$SCRIPT_DIR/lib" <<'PY'
+import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[2])
+try:
+    import oc_claims
+except Exception:
+    sys.exit(0)
+for c in oc_claims.get_active_claims(sys.argv[1]):
+    what = (c.get("what") or "").replace("\x1f", " ").replace("\n", " ")
+    print("%s\x1f%s\x1f%s" % (c.get("uuid", ""), c.get("issue", ""), what))
+PY
+)" || CLAIM_ROWS=""
+
+  if [ -n "$CLAIM_ROWS" ]; then
+    while IFS=$'\x1f' read -r _cuuid _ciss _cwhat; do
+      [ -n "${_cuuid:-}" ] && [ -n "${_ciss:-}" ] || continue
+      _closed_on=""; _open_on=""
+      for _r in "${REPOS[@]}"; do
+        case "${TRACKER_OF["$_r|$_ciss"]:-}" in
+          CLOSED) _closed_on="${_closed_on}${_closed_on:+,}$_r" ;;
+          OPEN)   _open_on="$_r" ;;
+        esac
+      done
+      # OPEN on any board where the number exists => the reservation is still earned.
+      if [ -n "$_open_on" ]; then
+        CLAIM_LIVE=$((CLAIM_LIVE + 1))
+        if [ -n "$_closed_on" ]; then
+          CLAIM_AMBIG=$((CLAIM_AMBIG + 1))
+          [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$_ciss" "$(short_repo "$_open_on")" OPEN - - - "CLAIM-AMBIGUOUS (CLOSED on $(short_repo "$_closed_on"); no repo field on the claim — not releasing on a guess)"
+        fi
+        continue
+      fi
+      # Absent from every board: nothing to join against.
+      [ -n "$_closed_on" ] || continue
+      CLAIM_STALE=$((CLAIM_STALE + 1))
+      if [ "$APPLY" -ne 1 ]; then
+        [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$_ciss" "$(short_repo "${_closed_on%%,*}")" CLOSED - - - "CLAIM-STALE (dry run — --apply releases)"
+        continue
+      fi
+      _cr="$("$CLAIM_LEDGER_BIN" stamp close "#$_ciss close — claim released on TRACKER state (#132): issue is CLOSED on ${_closed_on} and the claim row (lane ${_cuuid}) had no ledger close row, which is why the reservation outlived the issue. SWEPT, NOT ATTESTED: the sweep observed the tracker state, it did not verify the work. Original claim: ${_cwhat}" --by "$_cuuid" 2>&1)" && _crc=0 || _crc=$?
+      if [ "$_crc" -eq 0 ]; then
+        CLAIM_RELEASED=$((CLAIM_RELEASED + 1))
+        [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$_ciss" "$(short_repo "${_closed_on%%,*}")" CLOSED - - - "CLAIM-RELEASED"
+      else
+        CLAIM_FAILED=$((CLAIM_FAILED + 1))
+        [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$_ciss" "$(short_repo "${_closed_on%%,*}")" CLOSED - - - "CLAIM-RELEASE FAILED (${_cr//$'\n'/ })"
+      fi
+    done <<< "$CLAIM_ROWS"
+  fi
+fi
+
 if [ "$JSON" -eq 1 ]; then
   # `${REPOS[*]}` joins with the FIRST character of IFS only, so an
   # `IFS='","'` trick produces `"o/one"o/two"` — invalid JSON that every
@@ -1154,10 +1419,12 @@ if [ "$JSON" -eq 1 ]; then
   # PARSE-FAIL). Build the array literally instead.
   _repos_json=""
   for _r in "${REPOS[@]}"; do _repos_json="${_repos_json}${_repos_json:+,}\"$_r\""; done
-  printf '{"repos":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"class_e_disabled":%s,"class_e_skipped":%d,"battery_verified":%d,"rows":[%s]}\n' \
+  printf '{"repos":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"class_e_disabled":%s,"class_e_skipped":%d,"battery_verified":%d,"claim_stale":%d,"claim_released":%d,"claim_ambiguous":%d,"claim_live":%d,"claim_release_failed":%d,"rows":[%s]}\n' \
     "$_repos_json" "$([ "$APPLY" -eq 1 ] && echo true || echo false)" \
     "$CAND" "$ELIGIBLE" "$ALREADY" "$APPLIED" "$FAILED" "$ABSENT" "$AMBIG" "$PARKED" \
-    "$([ "$CE_ON" -eq 1 ] && echo false || echo true)" "$CE_NOT" "$CE_OK" "$JSON_ROWS"
+    "$([ "$CE_ON" -eq 1 ] && echo false || echo true)" "$CE_NOT" "$CE_OK" \
+    "$CLAIM_STALE" "$CLAIM_RELEASED" "$CLAIM_AMBIG" "$CLAIM_LIVE" "$CLAIM_FAILED" \
+    "$JSON_ROWS"
 fi
 
 oc_log_extra "candidates" "$CAND"
@@ -1167,6 +1434,15 @@ oc_log_extra "parked" "$PARKED"
 oc_log_extra "battery_verified" "$CE_OK"
 oc_log_extra "class_e_skipped" "$CE_NOT"
 oc_log_extra "apply" "$APPLY"
+oc_log_extra "claim_stale" "$CLAIM_STALE"
+oc_log_extra "claim_released" "$CLAIM_RELEASED"
+oc_log_extra "claim_ambiguous" "$CLAIM_AMBIG"
+oc_log_extra "claim_live" "$CLAIM_LIVE"
+oc_log_extra "claim_release_failed" "$CLAIM_FAILED"
 
-[ "$FAILED" -eq 0 ] || exit 1
+# A release that failed is a WRITE that failed, the same class as a close that
+# failed — and rc 0 here would tell a caller the reconciliation happened while
+# the ledger still holds the stale claim. Same rc 1, no new code: the contract's
+# "a close FAILED" clause already means "a write this run owed did not happen".
+if [ "$FAILED" -ne 0 ] || [ "$CLAIM_FAILED" -ne 0 ]; then exit 1; fi
 exit 0
