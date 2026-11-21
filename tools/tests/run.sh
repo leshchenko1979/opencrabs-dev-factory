@@ -879,6 +879,26 @@ DEMO
   [ "$(grep -c '^oc_has()' "$TOOLS_DIR/lib/oc-log.sh")" -eq 1 ] \
     && ok "oc_has: defined exactly once in lib/oc-log.sh" \
     || bad "oc_has: definition count is not 1"
+  # #80: the tools log is BOUNDED. Unbounded it reached 19.4 MB and, while still
+  # TRACKED, made every ledger stamp commit a full copy under the global lock.
+  # Both arms are asserted: under the cap it must NOT rotate, over it MUST.
+  _rot="$d/rot"; mkdir -p "$_rot"
+  printf 'aaaa\n' > "$_rot/t.log"
+  OC_TOOLS_LOG_MAX_BYTES=100 bash -c '. "$1"; oc_log_rotate "$2"' _ "$TOOLS_DIR/lib/oc-log.sh" "$_rot/t.log"
+  [ -f "$_rot/t.log" ] && [ ! -f "$_rot/t.log.1" ] \
+    && ok "#80: a log under the cap is NOT rotated (the bound is not a truncation)" \
+    || bad "#80: an under-cap log was rotated -- the bound truncates live history"
+  head -c 400 /dev/zero | tr '\0' 'x' > "$_rot/t.log"
+  OC_TOOLS_LOG_MAX_BYTES=100 bash -c '. "$1"; oc_log_rotate "$2"' _ "$TOOLS_DIR/lib/oc-log.sh" "$_rot/t.log"
+  [ -f "$_rot/t.log.1" ] && [ "$(wc -c <"$_rot/t.log")" -eq 0 ] \
+    && ok "#80: a log over the cap rotates to one generation and starts empty" \
+    || bad "#80: over-cap log did not rotate (live=$(wc -c <"$_rot/t.log") gen1=$([ -f "$_rot/t.log.1" ] && echo yes || echo no))"
+  [ "$(grep -c '^oc_log_rotate()' "$TOOLS_DIR/lib/oc-log.sh")" -eq 1 ] \
+    && ok "#80: oc_log_rotate is defined exactly once and is called from the append path" \
+    || bad "#80: oc_log_rotate definition count is not 1"
+  grep -q 'oc_log_rotate "\$logf"; printf' "$TOOLS_DIR/lib/oc-log.sh" \
+    && ok "#80: the rotation runs INSIDE the append's flock (no half-rotated pair)" \
+    || bad "#80: rotation is not inside the locked append -- a concurrent writer can see a split pair"
   rm -rf "$d"
 
 else

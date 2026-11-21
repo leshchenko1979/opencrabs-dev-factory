@@ -210,6 +210,30 @@ oc_log_extra() {
   return 0
 }
 
+# oc_log_rotate -- bound the log's GROWTH (factory #80). The file is append-only
+# and rewritten on nearly every tool call; unbounded it reached 19.4 MB, and
+# while it was still TRACKED that made every ledger stamp commit a full copy
+# under the global lock (6,199 commits, .git at 3.9 GB, 90 s lock timeouts that
+# silently cost lanes their ledger trail). Untracking stopped the COMMITS; this
+# stops the FILE. Called from inside the same flock as the append, so a
+# concurrent writer can never observe a half-rotated pair.
+# One generation is kept ($logf.1, already covered by .gitignore's tools.log.*):
+# the flood guard only reads the last 300 rows, so a single generation is ample
+# history, and the disk bound is 2 x the cap rather than unbounded.
+oc_log_rotate() { # $1 = log path
+  local _lf="${1:-}"
+  [ -n "$_lf" ] && [ -f "$_lf" ] || return 0
+  local _cap="${OC_TOOLS_LOG_MAX_BYTES:-33554432}"
+  case "$_cap" in ''|*[!0-9]*) _cap=33554432 ;; esac
+  [ "$_cap" -gt 0 ] || return 0
+  local _sz; _sz="$(wc -c <"$_lf" 2>/dev/null || echo 0)"
+  case "$_sz" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$_sz" -ge "$_cap" ] || return 0
+  mv -f "$_lf" "$_lf.1" 2>/dev/null || return 0
+  : > "$_lf" 2>/dev/null
+  return 0
+}
+
 # oc_log_finish <exit-code> — append the JSONL line. Never fails, never
 # changes the host tool's exit code.
 oc_log_finish() {
@@ -234,9 +258,10 @@ oc_log_finish() {
   logf="${OC_TOOLS_LOG:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}/tools.log}"
   mkdir -p "$(dirname "$logf")" 2>/dev/null
   if command -v flock >/dev/null 2>&1; then
-    ( flock -x 9; printf '%s\n' "$line" >>"$logf" ) 9>>"$logf.lock" 2>/dev/null \
-      || printf '%s\n' "$line" >>"$logf" 2>/dev/null
+    ( flock -x 9; oc_log_rotate "$logf"; printf '%s\n' "$line" >>"$logf" ) 9>>"$logf.lock" 2>/dev/null \
+      || { oc_log_rotate "$logf"; printf '%s\n' "$line" >>"$logf" 2>/dev/null; }
   else
+    oc_log_rotate "$logf"
     printf '%s\n' "$line" >>"$logf" 2>/dev/null
   fi
   return 0

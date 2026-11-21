@@ -298,7 +298,16 @@ _is_uuid() { # $1 -> rc 0 iff a canonical 8-4-4-4-12 lowercase-hex uuid
 #   path and lived ONLY on vpn with no version control, so a bad edit there was
 #   unrecoverable; the snapshot is the revert path, and it is TRACKED rather than
 #   generated because it changes only when someone updates it from vpn.
-STATE_TRACKED_PATHS="tools.log baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions base-red.json harvest-registry.json"
+# #80 (2026-11-21): `tools.log` is NO LONGER carried by this list. The state repo
+# untracked it and .gitignore'd it (`d57586f4e`), so `git status --porcelain`
+# can never return it -- naming it here claimed a coverage the mechanism cannot
+# provide, and `git add -- tools.log` on the ignored path exits 1, so any path
+# that ever DID hand it to git would report "git add refused". The declaration
+# in reference-glossary.md still lists it under TRACKED; that line is HQ's law
+# surface, so `state_tracked_audit` now WARNs at the next `sync` and the fix
+# belongs there, not here. Growth is bounded instead by `oc_log_rotate`
+# (tools/lib/oc-log.sh, OC_TOOLS_LOG_MAX_BYTES, default 32 MiB, one generation).
+STATE_TRACKED_PATHS="baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions base-red.json harvest-registry.json"
 # The harvest-state class (v0.4.237, HQ ruling 2026-09-22) is a SEPARATE
 # variable: it carries glob metacharacters and must reach git QUOTED and
 # DIRECTLY — an unquoted expansion pathname-expands against the CALLER's cwd.
@@ -3224,10 +3233,30 @@ FIXTURE
   # -- so tools.log sat modified-uncommitted in the live state dir for days.
   # The first assertion is the vacuity guard: if the probe were not dirty to
   # begin with, the second would pass without the fix.
+  # #80 (2026-11-21): tools.log is NO LONGER swept -- the real state repo
+  # untracked and .gitignore'd it, so the mechanism must not claim it. The
+  # fixture therefore carries the same .gitignore, and the leg asserts the NEW
+  # contract instead of the old one. baseline.json is the POSITIVE CONTROL: it
+  # is still in STATE_TRACKED_PATHS, so a green result cannot be vacuous -- if
+  # the auto-commit tail stopped sweeping entirely, that arm fails.
+  printf 'tools.log\ntools.log.*\n' > "$T/state/.gitignore"
+  git -C "$T/state" add .gitignore; git -C "$T/state" commit -q -m "probe: gitignore tools.log (#80)"
   printf 'probe\n' >> "$T/state/tools.log"
-  git -C "$T/state" status --porcelain -- tools.log | grep -q . && ok || bad "auto-commit-probe-not-dirty"
-  bash "$ME" stamp note "#508 auto-commit probe" >/dev/null 2>&1
-  git -C "$T/state" status --porcelain -- tools.log | grep -q . && bad "auto-commit-tools-log-left-dirty" || ok
+  git -C "$T/state" status --porcelain -- tools.log | grep -q . \
+    && bad "auto-commit-probe-still-dirty: tools.log is not ignored in the fixture (#80)" || ok
+  printf '{"probe":"#80 control"}\n' > "$T/state/baseline.json"
+  git -C "$T/state" status --porcelain -- baseline.json | grep -q . && ok || bad "auto-commit-control-not-dirty"
+  bash "$ME" stamp note "#508/#80 auto-commit probe" >/dev/null 2>&1
+  # the POSITIVE control: the tail still sweeps the TRACKED namespace
+  git -C "$T/state" status --porcelain -- baseline.json | grep -q . \
+    && bad "auto-commit-tail-inert: baseline.json left dirty -- the sweep stopped running" \
+    || ok "auto-commit tail still sweeps the TRACKED namespace (baseline.json control)"
+  # and the ignored log is neither staged nor lost
+  git -C "$T/state" ls-files --error-unmatch tools.log >/dev/null 2>&1 \
+    && bad "auto-commit-tools-log-tracked: the ignored log was committed (#80 regression)" || ok
+  grep -q probe "$T/state/tools.log" 2>/dev/null \
+    && ok "the log survives on disk (rotation, never deletion)" \
+    || bad "auto-commit-tools-log-lost: the log was deleted, not rotated"
   # DRY proof: the whitelist has exactly ONE home, and both callers reach it
   # through the shared function (a re-inlined copy is the regression this
   # guards -- the same shape as the claim-closure duplication in #441).
