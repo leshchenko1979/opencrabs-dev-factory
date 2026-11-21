@@ -57,7 +57,10 @@ cmd_overlap() {
   esac; done
   [ -n "$old_main" ] && [ -n "$new_main" ] || usage "overlap: --old-main and --new-main required"
   local repo="${tree:-.}"
-  [ -d "$repo/.git" ] || [ -f "$repo/.git" ] || die 3 "not a git repo: $repo"
+  # #70: a linked worktree has `.git` as a FILE, so `-d || -f` recognised it but
+  # still accepted any stray `.git` file. `rev-parse --git-dir` is the question the
+  # next line already asks, and the abort text is only true once this predicate is.
+  git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die 3 "not a git repo: $repo"
   git_ok "$repo" "$old_main" || die 3 "bad --old-main: $old_main"
   git_ok "$repo" "$new_main" || die 3 "bad --new-main: $new_main"
 
@@ -278,7 +281,25 @@ cmd_selftest() {
   [ $? -eq 1 ] && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-unrebased-conservative-rc: $t"
   grep -q '^MAIN-SHIFT' "$T/ov9.out" && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-unrebased-labelled: $t"
 
-  [ "$rc" -eq 0 ] && echo "selftest: 18/18 OK" >&2 || echo "selftest: FAILURES" >&2
+  # 10. #70: a LINKED WORKTREE has `.git` as a FILE. The old `-d || -f` accepted
+  #     it, but so did any stray `.git` file; the abort is now asked the question
+  #     the next line already asks, which a real worktree answers YES to.
+  git -C "$T/repo" worktree add -q -b wt70 "$T/wt" plain >/dev/null 2>&1
+  [ -f "$T/wt/.git" ] && [ ! -d "$T/wt/.git" ] && t=OK || { t=FAIL; rc=1; }
+  echo "selftest wt70-fixture-is-gitdir-file: $t"
+  "$SELF" overlap --old-main "$BASE" --new-main rmain --tree "$T/wt" >"$T/wt70.out" 2>"$T/wt70.err"
+  [ $? -ne 3 ] && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-worktree-not-aborted: $t"
+  grep -q 'not a git repo' "$T/wt70.err" && { t=FAIL; rc=1; } || t=OK
+  echo "selftest overlap-worktree-no-false-abort: $t"
+  # 11. CONTROL: a genuinely non-git directory still aborts 3. Without this the
+  #     predicate could degrade to "accept everything" and arm 10 would pass.
+  mkdir -p "$T/notgit"
+  "$SELF" overlap --old-main "$BASE" --new-main rmain --tree "$T/notgit" >/dev/null 2>"$T/ng70.err"
+  [ $? -eq 3 ] && t=OK || { t=FAIL; rc=1; }; echo "selftest overlap-nongit-still-aborts: $t"
+  grep -q 'not a git repo' "$T/ng70.err" && t=OK || { t=FAIL; rc=1; }
+  echo "selftest overlap-nongit-diagnostic: $t"
+
+  [ "$rc" -eq 0 ] && echo "selftest: 23/23 OK" >&2 || echo "selftest: FAILURES" >&2
   exit "$rc"
 }
 
