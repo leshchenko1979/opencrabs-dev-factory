@@ -3207,6 +3207,30 @@ grep -q "^trap '_battery_reap_mirrors' EXIT" "$0" 2>/dev/null \
 grep -q '^_battery_reap_mirrors() {' "$0" 2>/dev/null \
   && ok "battery defines the reap function its EXIT trap names" \
   || bad "the EXIT trap names a function the battery does not define"
+# (e) (#131) THE STAGE-DIR ARM MUST BE ABLE TO FIRE. It shipped reading
+# `_osr_pid="${_osr_tail%%.*}"`, which left the tool name attached
+# (`oc-deploy-999999`), so the numeric guard rejected EVERY stage dir and the arm
+# reaped nothing while reporting a confident 0. Legs (a)-(d) cover the MIRROR
+# population only, which is exactly why the dead arm survived #117.
+# Positive arm: a stage dir naming a dead pid must be counted AND removed.
+S53S="$S53/stage"
+mkdir -p "$S53S/.oc-snap-stage-oc-deploy-999999.4242"
+touch "$S53S/.oc-snap-stage-oc-deploy-999999.4242/f"
+STG_DRY="$(bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap --dry-run "$2"' _ "$S53" "$S53S" 2>/dev/null)"
+[ "$STG_DRY" = "1" ] \
+  && ok "oc-snap reap counts a leaked stage dir whose pid is dead (#131)" \
+  || bad "oc-snap reap counted [$STG_DRY] leaked stage dirs instead of 1 -- the stage arm cannot fire (#131)"
+STG_REAL="$(bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap "$2"' _ "$S53" "$S53S" 2>/dev/null)"
+[ "$STG_REAL" = "1" ] && [ ! -d "$S53S/.oc-snap-stage-oc-deploy-999999.4242" ] \
+  && ok "oc-snap reap REMOVES a leaked stage dir (count=1, dir gone)" \
+  || bad "oc-snap reap reported [$STG_REAL] and left the stage dir in place -- a false zero (#131)"
+# Negative control: the SAME shape naming a LIVE pid must survive both arms.
+# Without this, a reaper that deletes every stage dir it sees would score green.
+mkdir -p "$S53S/.oc-snap-stage-oc-deploy-$$.777"
+STG_LIVE="$(bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap "$2"' _ "$S53" "$S53S" 2>/dev/null)"
+[ "$STG_LIVE" = "0" ] && [ -d "$S53S/.oc-snap-stage-oc-deploy-$$.777" ] \
+  && ok "oc-snap reap leaves a stage dir whose pid is LIVE (negative control)" \
+  || bad "oc-snap reap reported [$STG_LIVE] on a LIVE stage dir and/or removed it -- the arm reaps what it must protect (#131)"
 rm -rf "$S53"
 
 section "oc-issue-dispatch SIGKILL evidence (#451)"

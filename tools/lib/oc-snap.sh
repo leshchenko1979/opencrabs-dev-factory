@@ -235,14 +235,22 @@ oc_snap_reap() {
   done
   # (#117) STAGE DIRS are a second population with a DIFFERENT name shape, so the
   # oc-snap-* glob above cannot see them: they are dot-prefixed and their last
-  # field is "<pid>.<rand>", which fails the numeric-pid test and `continue`s.
-  # A run KILLed between mkdir and rename leaks one, and nothing else would ever
-  # collect it. Same two conditions as a mirror: name-pid gone AND no live
-  # process naming the path in its argv.
+  # field is "<toolname>-<pid>.<rand>". A run KILLed between mkdir and rename
+  # leaks one, and nothing else would ever collect it. Same two conditions as a
+  # mirror: name-pid gone AND no live process naming the path in its argv.
+  #
+  # (#131) THE PID IS THE LAST DASH-SEGMENT, not the whole dotted part. This arm
+  # shipped reading `_osr_pid="${_osr_tail%%.*}"`, which left the tool name
+  # attached (`oc-deploy-999999`), so the numeric guard below matched EVERY stage
+  # dir and `continue`d on all of them: the arm could not remove anything, ever,
+  # while reporting a confident 0. #117 added the arm and no leg ever built a
+  # stage dir, so nothing caught it -- a reaper that cannot fire is
+  # indistinguishable from one with nothing to do.
   for _osr_d in "$_osr_root"/.oc-snap-stage-*; do
     [ -d "$_osr_d" ] || continue
     _osr_tail="${_osr_d##*/.oc-snap-stage-}"
     _osr_pid="${_osr_tail%%.*}"
+    _osr_pid="${_osr_pid##*-}"   # drop the <toolname>- prefix (#131)
     case "$_osr_pid" in
       ''|*[!0-9]*) continue ;;
     esac
