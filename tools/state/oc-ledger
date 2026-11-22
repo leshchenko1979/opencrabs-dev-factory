@@ -249,8 +249,22 @@ STATE_DIR() { dirname "$LEDGER"; }
 # The sites keep their OWN failure modes: this is a predicate, not a behaviour
 # helper, so a guard still skips and a precondition still aborts.
 _is_git_repo() { git -C "${1:-}" rev-parse --git-dir >/dev/null 2>&1; }
-ledger_ok() { [ -f "$LEDGER" ] && jq -e . "$LEDGER" >/dev/null 2>&1; }
-max_n() { jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER"; }
+ledger_ok() {
+  if _jsonl_mode; then jq -e -c . "$(_JSONL_EVENTS)" >/dev/null 2>&1; return $?; fi
+  [ -f "$LEDGER" ] && jq -e . "$LEDGER" >/dev/null 2>&1
+}
+# #149: in JSONL mode `n` is allocated from the RECORD, never from the view.
+# The view is gitignored once cut over, so a fresh clone has none — and a
+# max_n() that read a missing view would answer 0 and hand the next writer
+# n=1, colliding with every live row. Nulls stay null (spec trap 1): `.n // 0`
+# ignores them for the MAX but never rewrites them.
+max_n() {
+  if _jsonl_mode; then
+    jq -s '([.[] | .n // 0] | max // 0)' "$(_JSONL_EVENTS)" 2>/dev/null || echo 0
+    return 0
+  fi
+  jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER"
+}
 # _is_uuid (#441, DRY extraction): the ONE uuid-shape predicate. ack/enroll/
 # promote/retire each carried a byte-identical private copy of this regex;
 # claim-ref was the only verb that shipped WITHOUT one, which is how a bare
@@ -436,7 +450,7 @@ state_tracked_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
   # workers-ledger.json which git_state_commit stages on its OWN path and which
   # is deliberately NOT in STATE_TRACKED_PATHS (the auto-commit tail would
   # otherwise stage it against a foreign lock).
-  mech="$STATE_TRACKED_PATHS $STATE_TRACKED_GLOB workers-ledger.json"
+  mech="$STATE_TRACKED_PATHS $STATE_TRACKED_GLOB $(_ledger_tracked_names)"
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
     case "$tok" in
@@ -518,7 +532,7 @@ state_out_of_scope_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a g
   # different purpose — comparing declared TOKENS) silently marked
   # archive/orders.json as carried: a false NEGATIVE, i.e. a clean receipt over
   # an unswept file, which is the exact class this leg exists to expose.
-  local mech="$STATE_TRACKED_PATHS workers-ledger.json"
+  local mech="$STATE_TRACKED_PATHS $(_ledger_tracked_names)"
   local f top base m g hit
   : > "$d/out"
   while IFS= read -r f; do
@@ -617,7 +631,17 @@ _oc_flush_git_tail() { # runs AFTER $LEDGER.lock is released; never fatal
 _git_state_commit_now() { # $1=message — the commit/sweep/push tail itself; never fatal
   local sd; sd="$(STATE_DIR)"
   _is_git_repo "$sd" || return 0
-  if git -C "$sd" add "$(basename "$LEDGER")" 2>/dev/null \
+  # #149: in JSONL mode the RECORD is what gets committed. Staging only
+  # `basename "$LEDGER"` would stage the gitignored view and commit NOTHING —
+  # a state commit that reports ok with an empty tree, which is the same
+  # silent-success class as a guard that cannot see its target.
+  local stage_ok=1
+  if _jsonl_mode; then
+    git -C "$sd" add events.jsonl workers.json 2>/dev/null || stage_ok=0
+  else
+    git -C "$sd" add "$(basename "$LEDGER")" 2>/dev/null || stage_ok=0
+  fi
+  if [ "$stage_ok" -eq 1 ] \
      && git -C "$sd" commit -q -m "$1" 2>/dev/null; then
     # n=1744 hygiene: echo the auto-commit sha — a caller claiming "state commit
     # ok" without a sha in hand has nothing to verify against (phantom class).
@@ -746,27 +770,146 @@ sweep_stale_temps() { # $1 = state dir; best-effort — never fails the caller
   fi
   return 0
 }
+# ---- #149: JSONL record + materialized view ---------------------------------
+# THE record is events.jsonl (one JSON object per line, append-only) and
+# workers.json carries the non-event state. workers-ledger.json becomes a
+# MATERIALIZED VIEW regenerated from those two, existing only so the 25 legacy
+# consumers keep working — never authoritative.
+#
+# When events.jsonl is ABSENT the tool runs the LEGACY single-file path
+# unchanged, so every existing fixture, every un-migrated state dir and the
+# whole pre-#149 selftest battery behave exactly as before. That is deliberate:
+# the migration is opt-in per state dir and reversible by deleting one file.
+_JSONL_EVENTS() { printf '%s/events.jsonl' "$(STATE_DIR)"; }
+_JSONL_WORKERS() { printf '%s/workers.json' "$(STATE_DIR)"; }
+_jsonl_mode() { [ -f "$(_JSONL_EVENTS)" ]; }
+# _ledger_tracked_names — the basenames the state commit actually stages.
+# #149 (spec trap 4): the two audit `mech` strings hardcoded workers-ledger.json,
+# so after cutover they would compare a declaration against a file that is no
+# longer tracked — a guard that cannot see its target and reports clean. One
+# home for the answer, so a third format never needs three edits.
+# KEEP THIS FUNCTION SELF-CONTAINED: the selftest extracts the audit functions
+# STANDALONE by awk range, so a call to any helper outside that extraction
+# expands to EMPTY at fixture runtime — which un-carried the ledger and reddened
+# two arms while the live tool was correct. Measured 2026-11-22.
+_ledger_tracked_names() {
+  local ev; ev="$(STATE_DIR)/events.jsonl"
+  if [ -f "$ev" ]; then printf 'events.jsonl workers.json'; else printf 'workers-ledger.json'; fi
+}
+
+# ledger_load — emit the UNIFIED dict on stdout; the ONE reader.
+# A malformed line DIES here with its line number and is NEVER skipped: a
+# skipped line turns a corrupt row into a MISSING row, and every closure and
+# dispatch predicate then reads "no claim" — a false green on exactly the
+# surface this ledger exists to make honest (spec trap 5).
+# Validation is one `jq -e -c .` pass over the whole stream (jq reports
+# "at line N" itself), not one process per line.
+ledger_load() {
+  local ev wf
+  ev="$(_JSONL_EVENTS)"; wf="$(_JSONL_WORKERS)"
+  if [ ! -f "$ev" ]; then cat "$LEDGER"; return $?; fi
+  local jerr=""
+  if ! jerr="$(jq -e -c . "$ev" 2>&1 >/dev/null)"; then
+    echo "oc-ledger: ledger_load REFUSED — malformed JSONL in $ev. A partial read would make a corrupt row look like a missing event (a false 'no claim'): $jerr" >&2
+    return 3
+  fi
+  if [ -f "$wf" ]; then
+    jq -s --slurpfile w "$wf" '($w[0] // {}) + {events: .}' "$ev"
+  else
+    jq -s '{events: .}' "$ev"
+  fi
+}
+
+# ledger_write_view — regenerate the materialized view ATOMICALLY (tmp + mv on
+# the same filesystem, spec trap 6): a consumer reading mid-rewrite must never
+# see truncated JSON. $1 = a file holding the already-unified dict.
+ledger_write_view() { # $1 = path to the unified dict; rc 4 on failure
+  local src="$1" sd; sd="$(STATE_DIR)"
+  jq -e . "$src" >/dev/null 2>&1 || return 4
+  local tmp; tmp="$(mktemp "$sd/.view.XXXXXX")" || return 4
+  if ! cp "$src" "$tmp" 2>/dev/null || ! mv "$tmp" "$LEDGER" 2>/dev/null; then
+    rm -f "$tmp"; return 4
+  fi
+  return 0
+}
+
 atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse / 4 write-fail; live untouched on fail
   local sd; sd="$(STATE_DIR)"
   sweep_stale_temps "$sd"
   _OC_TMP="$(mktemp "$sd/.ledger.XXXXXX")" || { _OC_TMP=""; return 4; }
   local tmp="$_OC_TMP"
-  # (#570) NEVER let jq's own message die here. `2>/dev/null` turned a clear jq type
-  # error ("string and array cannot be added") into a bare rc=3 that was
-  # indistinguishable from a bad uuid or a missing ledger — Triage spent several turns
-  # re-deriving the cause. The ledger is still UNTOUCHED on failure; only the SILENCE
-  # is removed. stderr is captured (`2>&1 >"$tmp"` — fd2 to the capture, fd1 to the
-  # temp) so the message survives the redirection that used to eat it.
   local jerr=""
-  if ! jerr="$(jq "$@" "$LEDGER" 2>&1 >"$tmp")"; then
-    rm -f "$tmp"; _OC_TMP=""
+  if ! _jsonl_mode; then
+    # (#570) NEVER let jq's own message die here. `2>/dev/null` turned a clear jq type
+    # error ("string and array cannot be added") into a bare rc=3 that was
+    # indistinguishable from a bad uuid or a missing ledger — Triage spent several turns
+    # re-deriving the cause. The ledger is still UNTOUCHED on failure; only the SILENCE
+    # is removed. stderr is captured (`2>&1 >"$tmp"` — fd2 to the capture, fd1 to the
+    # temp) so the message survives the redirection that used to eat it.
+    if ! jerr="$(jq "$@" "$LEDGER" 2>&1 >"$tmp")"; then
+      rm -f "$tmp"; _OC_TMP=""
+      echo "oc-ledger: atomic_jq failed (rc=3) — the ledger was NOT modified: ${jerr:-<jq gave no message>}" >&2
+      return 3
+    fi
+    if ! jq -e . "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; _OC_TMP=""; return 4; fi
+    mv "$tmp" "$LEDGER" || { rm -f "$tmp"; _OC_TMP=""; return 4; }
+    _OC_TMP=""
+    return 0
+  fi
+  # ---- #149 JSONL path -------------------------------------------------------
+  # The caller's contract is UNCHANGED: it hands a jq program over a dict that
+  # has .events, .workers, .meta, … We load the unified dict, apply the program
+  # to it, then SPLIT the result back into the three files. Six call sites
+  # append events and several more mutate .workers; none of them learns a new
+  # API, so there is no second closure/dispatch predicate in the tree (the
+  # oc-claims-single-source guard would fail the battery for one).
+  local base="$sd/.ledger.base.$$" next="$sd/.ledger.next.$$" app="$sd/.ledger.app.$$"
+  if ! ledger_load > "$base" 2>"$base.err"; then
+    local e; e="$(cat "$base.err" 2>/dev/null)"
+    rm -f "$base" "$base.err" "$next" "$app" "$tmp"; _OC_TMP=""
+    echo "oc-ledger: atomic_jq load failed (rc=3) — the ledger was NOT modified: $e" >&2
+    return 3
+  fi
+  rm -f "$base.err"
+  if ! jerr="$(jq "$@" "$base" 2>&1 >"$next")"; then
+    rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""
     echo "oc-ledger: atomic_jq failed (rc=3) — the ledger was NOT modified: ${jerr:-<jq gave no message>}" >&2
     return 3
   fi
-  if ! jq -e . "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; _OC_TMP=""; return 4; fi
-  mv "$tmp" "$LEDGER" || { rm -f "$tmp"; _OC_TMP=""; return 4; }
-  _OC_TMP=""
+  if ! jq -e . "$next" >/dev/null 2>&1; then rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; fi
+  # TRUE APPEND when the program pushed exactly ONE event onto the END — that is
+  # the entire point of #149 (one ~200-byte line per stamp instead of a fresh
+  # 2.8MB blob). Anything else (a non-event mutation, or an event edit) falls
+  # back to rewriting the record wholesale, which is still one small file.
+  jq -c --slurpfile o "$base" '
+      (.events // []) as $new | ($o[0].events // []) as $old
+      | if ($new|length) == (($old|length) + 1) and ($new[0:($old|length)] == $old)
+        then $new[-1] else empty end' "$next" > "$app" 2>/dev/null
+  local ev; ev="$(_JSONL_EVENTS)"
+  if [ -s "$app" ]; then
+    # The RECORD first: if we die after this, events.jsonl is already right and
+    # the view is merely stale (the next write regenerates it). Fail toward the
+    # record, never toward the view.
+    cat "$app" >> "$ev" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
+    sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
+  else
+    if ! jq -c '.events[]?' "$next" > "$ev.tmp.$$" 2>/dev/null; then
+      rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4
+    fi
+    mv "$ev.tmp.$$" "$ev" || { rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4; }
+  fi
+  # Non-event state: only rewritten when it actually changed, so an append does
+  # not churn workers.json.
+  local wf; wf="$(_JSONL_WORKERS)"
+  jq -c 'del(.events)' "$next" > "$wf.tmp.$$" 2>/dev/null \
+    && { cmp -s "$wf.tmp.$$" "$wf" 2>/dev/null || mv "$wf.tmp.$$" "$wf"; } \
+    ; rm -f "$wf.tmp.$$"
+  # The view is the unified dict we just computed — no second read.
+  ledger_write_view "$next" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
+  rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""
+  return 0
 }
+
 with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
   local rc; exec 9>"$LEDGER.lock"
   # (#619) The waiter budget must EXCEED the holder's worst case, or a normal
@@ -2193,6 +2336,27 @@ cmd_commit_pending() {
   # state repo: ledger first
   if _is_git_repo "$sd"; then
     local head_n disk_n
+    if _jsonl_mode; then
+      # #149 (spec trap 3): the commit-window comparison must read the RECORD at
+      # HEAD. `HEAD:workers-ledger.json` is a materialized view that is
+      # gitignored after cutover — comparing against it would always report a
+      # window of zero (or a git error swallowed by `|| echo`) while real rows
+      # sat uncommitted. Read the committed JSONL and count its lines.
+      disk_n="$(jq -s '([.[] | .n // 0] | max // 0)' "$(_JSONL_EVENTS)" 2>/dev/null || echo 0)"
+      head_n="$(git -C "$sd" show HEAD:events.jsonl 2>/dev/null | jq -s '([.[] | .n // 0] | max // 0)' 2>/dev/null || echo 0)"
+      if [ "$(git -C "$sd" status --porcelain events.jsonl workers.json 2>/dev/null)" != "" ]; then
+        if git -C "$sd" add events.jsonl workers.json 2>/dev/null; then
+          if _commit_with_retry "$sd" "ledger commit-pending: events n=$((head_n+1))..$disk_n uncommitted (HQ sweep)"; then
+            echo "sweep: state ledger committed (n=$((head_n+1))..$disk_n)"
+            did=1
+          else
+            failed=1; _cp_errs="$_cp_errs; events.jsonl: $_CW_ERR"
+          fi
+        else
+          failed=1; _cp_errs="$_cp_errs; git add refused events.jsonl"
+        fi
+      fi
+    else
     disk_n="$(jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER" 2>/dev/null || echo 0)"
     head_n="$(git -C "$sd" show HEAD:workers-ledger.json 2>/dev/null | jq '([.events[]? | .n // 0] | max // 0)' 2>/dev/null || echo "$disk_n")"
     if [ "$(git -C "$sd" status --porcelain workers-ledger.json 2>/dev/null)" != "" ]; then
@@ -2206,6 +2370,7 @@ cmd_commit_pending() {
       else
         failed=1; _cp_errs="$_cp_errs; git add refused workers-ledger.json"
       fi
+    fi
     fi
     if [ "$bundle" -eq 1 ]; then
       # #508 (DRY): the TRACKED namespace lives in ONE home above, consumed by
@@ -2251,6 +2416,113 @@ cmd_commit_pending() {
     return 4
   fi
   [ "$did" -eq 1 ] || echo "sweep: clean — nothing pending"
+}
+
+# ---- #149: migrate — legacy single-file ledger -> append-only JSONL ----------
+# Owner order: "can the ledger be stored as text and not blob?" The RECORD
+# becomes events.jsonl (one JSON object per line) + workers.json; the old
+# workers-ledger.json survives as a regenerated MATERIALIZED VIEW so the legacy
+# consumers keep working.
+#
+# THE THREE SCHEMA GENERATIONS ARE CARRIED VERBATIM (spec trap 9, measured on the
+# live ledger): 87 rows carry no `kind`, 61 carry ts/at instead of `t`, 55 put
+# their text in text/summary/note/detail rather than `what`. Normalising them
+# would be silent data loss, so each row is copied with `jq -c '.events[]?'` and
+# nothing is rewritten. `n` is NOT unique either (trap 10: n=1258 x3 after the
+# 2026-09-03 merge), so nothing here keys, dedupes or joins on it — the rows are
+# a STREAM, not a map.
+#
+# EVERY ARTIFACT IS BUILT FROM THE FROZEN COPY AND INSTALLED LAST, so a failure
+# anywhere leaves the state dir exactly as it was. In particular the view is a
+# pure function of the RECORD being installed, never of the live file.
+cmd_migrate() {
+  local to="" src_override="" force=0 live_ok=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) echo "usage: oc-ledger migrate --to jsonl [--source <workers-ledger.json>] [--force] [--live]
+  Convert a legacy single-file ledger into events.jsonl + workers.json, leaving
+  workers-ledger.json as a regenerated view. Refuses to clobber an existing
+  events.jsonl unless --force, and refuses the LIVE state dir unless --live
+  (flipping the live write path is a declared window, not a side effect).
+  Prints the frozen source path, its sha256 and the row count so a parity gate
+  has something to check against."; exit 0 ;;
+      --to) to="${2:-}"; shift 2 ;;
+      --source) src_override="${2:-}"; shift 2 ;;
+      --force) force=1; shift ;;
+      --live) live_ok=1; shift ;;
+      *) die 2 "migrate: unknown argument '$1' (see --help)" ;;
+    esac
+  done
+  [ "$to" = "jsonl" ] || die 2 "migrate: --to jsonl is the only supported target (got '${to:-<empty>}')"
+
+  local sd; sd="$(STATE_DIR)"
+  # THE LIVE STATE DIR IS NOT A TEST TARGET. Measured 2026-11-22: a scratch run
+  # that set $LEDGER in the environment silently migrated the LIVE state dir,
+  # because parse_global resets LEDGER="" at :186 before reading it — so the
+  # "isolated" copy was never isolated and the write path flipped without a
+  # declared window. A guard on the DESTINATION catches that class regardless of
+  # how the path got there: flipping the live record is an explicit act.
+  if [ "$live_ok" -eq 0 ] && [ "$(cd "$sd" 2>/dev/null && pwd -P)" = "$(cd "$STATE_DIR_DEFAULT" 2>/dev/null && pwd -P)" ]; then
+    die 2 "migrate: refusing to migrate the LIVE state dir ($sd) — that flips the live write path (P3, a declared window). Use --ledger <scratch>/workers-ledger.json to migrate a copy, or pass --live to acknowledge the cutover."
+  fi
+  local src="${src_override:-$LEDGER}"
+  [ -f "$src" ] || die 2 "migrate: source ledger not found: $src"
+  local ev; ev="$(_JSONL_EVENTS)"
+  if [ -f "$ev" ] && [ "$force" -eq 0 ]; then
+    die 2 "migrate: $ev already exists — refusing to clobber a live record (freeze a copy and pass --force only if that is what you mean)"
+  fi
+  jq -e . "$src" >/dev/null 2>&1 || die 3 "migrate: source is not valid JSON: $src"
+
+  # FREEZE FIRST (spec trap 11): the ledger grows while you work — the plan's
+  # 6,043 baseline was already 6,044 when it was verified, because a stamp
+  # landed. A migration that reads the live file twice can convert a different
+  # population than the one it reports. Copy once, hash the copy, convert ONLY
+  # the copy.
+  local ts; ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  local frozen="$sd/migrate-source-$ts.json"
+  cp "$src" "$frozen" || die 4 "migrate: cannot freeze the source at $frozen"
+  local fsha; fsha="$(sha256sum "$frozen" | awk '{print $1}')"
+  local n_src; n_src="$(jq '[.events[]?] | length' "$frozen")" || die 3 "migrate: cannot count .events in the frozen copy"
+
+  local evtmp="$sd/.mig.ev.$$" wftmp="$sd/.mig.workers.$$" vtmp="$sd/.mig.view.$$"
+  _mig_clean() { rm -f "$evtmp" "$wftmp" "$vtmp" "$vtmp.err"; }
+  trap '_mig_clean' EXIT
+
+  if ! jq -c '.events[]?' "$frozen" > "$evtmp" 2>/dev/null; then
+    die 4 "migrate: could not serialise .events to JSONL"
+  fi
+  # A row spanning a newline would break the one-object-per-line contract and
+  # turn the next reader's "malformed line" die into a permanent refusal.
+  if ! jq -e -c . "$evtmp" >/dev/null 2>&1; then
+    die 4 "migrate: emitted JSONL does not re-parse — refusing to install it"
+  fi
+  local n_out; n_out="$(wc -l < "$evtmp" | tr -d ' ')"
+  [ "$n_out" = "$n_src" ] || die 4 "migrate: row count changed in flight (source $n_src, emitted $n_out) — refusing"
+
+  jq -c 'del(.events)' "$frozen" > "$wftmp" 2>/dev/null || die 4 "migrate: could not build workers.json"
+  # The view is regenerated FROM THE TWO ARTIFACTS BEING INSTALLED (same
+  # expression ledger_load uses), so it is provably a function of the record.
+  if ! jq -s --slurpfile w "$wftmp" '($w[0] // {}) + {events: .}' "$evtmp" > "$vtmp" 2>"$vtmp.err"; then
+    die 4 "migrate: could not regenerate the view: $(cat "$vtmp.err" 2>/dev/null)"
+  fi
+  jq -e . "$vtmp" >/dev/null 2>&1 || die 4 "migrate: regenerated view is not valid JSON — refusing"
+
+  # Install: non-event state, then the RECORD (its presence IS the mode switch),
+  # then the view last so no consumer can read a view that outruns the record.
+  mv "$wftmp" "$(_JSONL_WORKERS)" || die 4 "migrate: could not install workers.json"
+  mv "$evtmp" "$ev" || die 4 "migrate: could not install events.jsonl"
+  mv "$vtmp" "$LEDGER" || die 4 "migrate: record installed but the view rewrite failed"
+  rm -f "$vtmp.err"
+  trap - EXIT
+
+  echo "migrate: ok"
+  echo "  frozen source: $frozen"
+  echo "  source sha256: $fsha"
+  echo "  rows:          $n_out (source $n_src)"
+  echo "  record:        $ev"
+  echo "  workers:       $(_JSONL_WORKERS)"
+  echo "  view:          $LEDGER (regenerated from the record)"
+  echo "  NOTE: this state dir is now in JSONL mode — the live write path changed with it."
 }
 
 # ---- selftest (418 cases) -----------------------------------------------------
@@ -3163,6 +3435,7 @@ FIXTURE
   # a snippet sourced WITHOUT its helper makes every arm below report SKIPPED and
   # the assertions then measure a fixture that never ran (measured #70: 4 arms).
   awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$T/scope_fn.sh"
+  awk '/^_ledger_tracked_names\(\)/,/^}$/' "$ME" >> "$T/scope_fn.sh"
   awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" >> "$T/scope_fn.sh"
   # STATE_DIR is a FUNCTION in the tool, so the harness supplies its own.
   _scope() { SD="$1" STATE_TRACKED_PATHS="$STATE_TRACKED_PATHS" STATE_TRACKED_GLOB="$STATE_TRACKED_GLOB" \
@@ -4710,6 +4983,7 @@ EOF
   eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
   eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
   awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$W70/scope_fn.sh"
+  awk '/^_ledger_tracked_names\(\)/,/^}$/' "$ME" >> "$W70/scope_fn.sh"
   awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" >> "$W70/scope_fn.sh"
   chk "git70-scope-harness-carries-the-helper" "1" "$(grep -c '^_is_git_repo()' "$W70/scope_fn.sh")"
   _scope70() { SD="$1" STATE_TRACKED_PATHS="$STATE_TRACKED_PATHS" STATE_TRACKED_GLOB="$STATE_TRACKED_GLOB" \
@@ -4777,6 +5051,110 @@ EOF
   # a failing sync must be diagnosable, so its log is shown when it reddens
   [ -s "$W70/wtbump.out" ] || bad "git70-sync-worktree-bump-log-empty"
   rm -rf "$W70"
+
+  # ---- #149: migrate legacy ledger -> JSONL (P2) ---------------------------
+  # Every arm runs in a SCRATCH dir via OC_DEV_STATE/OC_LEDGER. Arm 1 exists
+  # because the first scratch run of this verb silently migrated the LIVE state
+  # dir: $LEDGER was set in the environment but parse_global resets it at :186,
+  # so "isolated" was never isolated. The destination guard is the fix, and an
+  # arm that proves it fires is the only thing that keeps it honest.
+  M149="$(mktemp -d)"
+  seed149() { # $1 = dir — three schema generations, duplicate n, null n, no kind
+    mkdir -p "$1/state"
+    cat > "$1/state/workers-ledger.json" <<'M149EOF'
+{"workers":[{"uuid":"14914914-9149-4914-9149-149149149149","role":"editor","topic_id":9}],
+ "events":[
+  {"n":1,"t":"2026-01-01T00:00:00Z","kind":"claim","what":"modern row"},
+  {"n":2,"t":"2026-01-02T00:00:00Z","kind":"note","what":"modern row two"},
+  {"t":"2026-01-03T00:00:00Z","type":"legacy","text":"legacy: ts+type+text, no n, no kind"},
+  {"n":3,"kind":"note","what":"no t at all"},
+  {"n":null,"t":"2026-01-04T00:00:00Z","kind":"note","what":"explicit null n"},
+  {"n":1258,"t":"2026-01-05T00:00:00Z","what":"no kind, duplicate n"},
+  {"n":1258,"t":"2026-01-05T00:00:01Z","what":"no kind, duplicate n again"},
+  {"n":4,"t":"2026-01-06T00:00:00Z","kind":"note","what":"tail row"}
+ ],
+ "meta":{"generation":3}}
+M149EOF
+  }
+  # (1) the LIVE state dir is refused without --live
+  M149L="$M149/live"; seed149 "$M149L"
+  OC_DEV_STATE="$M149L/state" OC_LEDGER="$M149L/state/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>"$M149L/err"
+  chk "mig149-refuses-the-live-state-dir" 2 $?
+  [ ! -f "$M149L/state/events.jsonl" ] && ok || bad "mig149-live-refusal-wrote-nothing"
+  grep -q 'refusing to migrate the LIVE state dir' "$M149L/err" && ok || bad "mig149-live-refusal-names-the-reason"
+
+  # (2) a scratch dir migrates
+  M149A="$M149/a"; seed149 "$M149A"
+  M149SRC="$M149A/state/workers-ledger.json"
+  OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" migrate --to jsonl >"$M149A/out" 2>&1
+  chk "mig149-scratch-migrate-rc" 0 $?
+  [ -s "$M149A/state/events.jsonl" ] && ok || bad "mig149-record-written"
+  [ -s "$M149A/state/workers.json" ] && ok || bad "mig149-workers-written"
+
+  # (3) every row carried, verbatim — the three schema generations survive
+  _m149n_src="$(jq '[.events[]?]|length' "$M149SRC")"
+  _m149n_out="$(wc -l < "$M149A/state/events.jsonl" | tr -d ' ')"
+  chk "mig149-row-count-preserved" "$_m149n_src" "$_m149n_out"
+  # trap 1: null n stays null, never renumbered
+  _m149null_src="$(jq '[.events[]?|select(.n==null)]|length' "$M149SRC")"
+  _m149null_out="$(jq -s '[.[]|select(.n==null)]|length' "$M149A/state/events.jsonl")"
+  chk "mig149-null-n-preserved" "$_m149null_src" "$_m149null_out"
+  # trap 10: duplicate n multiplicity, never deduped
+  _m149dup_src="$(jq '[.events[]?|.n]|group_by(.)|map(select(length>1))|length' "$M149SRC")"
+  _m149dup_out="$(jq -s '[.[]|.n]|group_by(.)|map(select(length>1))|length' "$M149A/state/events.jsonl")"
+  chk "mig149-duplicate-n-multiplicity" "$_m149dup_src" "$_m149dup_out"
+  # trap 9: rows without `kind` and rows carrying ts/type stay exactly as they were
+  _m149nk_src="$(jq '[.events[]?|select(has("kind")|not)]|length' "$M149SRC")"
+  _m149nk_out="$(jq -s '[.[]|select(has("kind")|not)]|length' "$M149A/state/events.jsonl")"
+  chk "mig149-kindless-rows-not-normalised" "$_m149nk_src" "$_m149nk_out"
+  _m149ts_src="$(jq '[.events[]?|select(has("ts"))]|length' "$M149SRC")"
+  _m149ts_out="$(jq -s '[.[]|select(has("ts"))]|length' "$M149A/state/events.jsonl")"
+  chk "mig149-legacy-ts-rows-carried" "$_m149ts_src" "$_m149ts_out"
+
+  # (4) the view is a FUNCTION OF THE RECORD, not a copy of the source
+  jq -S . "$M149A/state/workers-ledger.json" > "$M149A/view.canon"
+  jq -S -s --slurpfile w "$M149A/state/workers.json" '($w[0]//{})+{events:.}' \
+    "$M149A/state/events.jsonl" > "$M149A/derived.canon"
+  if diff -q "$M149A/view.canon" "$M149A/derived.canon" >/dev/null 2>&1; then
+    ok
+  else
+    bad "mig149-view-is-derived-from-the-record"
+  fi
+
+  # (5) refuses to clobber an existing record, and --force overwrites
+  OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>&1
+  chk "mig149-refuses-existing-record" 2 $?
+  OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" migrate --to jsonl --force >/dev/null 2>&1
+  chk "mig149-force-overwrites" 0 $?
+
+  # (6) refusals that must never write: bad target, non-JSON source
+  M149B="$M149/b"; seed149 "$M149B"
+  OC_DEV_STATE="$M149B/elsewhere" OC_LEDGER="$M149B/state/workers-ledger.json" \
+    bash "$ME" migrate --to yaml >/dev/null 2>&1
+  chk "mig149-refuses-unknown-target" 2 $?
+  M149C="$M149/c"; mkdir -p "$M149C/state"
+  printf 'not json at all\n' > "$M149C/state/workers-ledger.json"
+  OC_DEV_STATE="$M149C/elsewhere" OC_LEDGER="$M149C/state/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>&1
+  chk "mig149-refuses-non-json-source" 3 $?
+  [ ! -f "$M149C/state/events.jsonl" ] && ok || bad "mig149-non-json-refusal-wrote-nothing"
+
+  # (7) THE POINT OF THE WHOLE CHANGE: a stamp appends ONE line, it does not
+  # rewrite the blob. Without this arm the migration could be correct and the
+  # write path still be O(n) — the reason the owner asked for text.
+  _m149before="$(wc -l < "$M149A/state/events.jsonl" | tr -d ' ')"
+  OC_NO_FLOODGUARD=1 OC_ACTOR=14914914-9149-4914-9149-149149149149 \
+    OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" stamp note "mig149 append probe" >/dev/null 2>&1
+  _m149after="$(wc -l < "$M149A/state/events.jsonl" | tr -d ' ')"
+  chk "mig149-stamp-appends-exactly-one-line" "$((_m149before + 1))" "$_m149after"
+  chk "mig149-appended-row-is-the-last" "mig149 append probe" \
+    "$(tail -1 "$M149A/state/events.jsonl" | jq -r '.what // .text // .summary // ""')"
+  rm -rf "$M149"
 
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
@@ -5881,7 +6259,7 @@ cmd_mode() {
 
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
-case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
 if [ "$SELFTEST" -eq 1 ]; then
   # (#722) `selftest --help` must be a READ. parse_global consumes the bare
   # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
@@ -5907,6 +6285,7 @@ case "$sub" in
   commit-pending) cmd_commit_pending "${rest[@]+"${rest[@]}"}"; _cpd_rc=$?; oc_ship_audit_chain; [ "$_cpd_rc" -eq 0 ] || exit "$_cpd_rc" ;;
   claim) cmd_claim "${rest[@]+"${rest[@]}"}" ;;
   confirm) cmd_confirm "${rest[@]+"${rest[@]}"}" ;;
+  migrate) cmd_migrate "${rest[@]+"${rest[@]}"}" ;;
   claim-ref) cmd_claim_ref "${rest[@]+"${rest[@]}"}" ;;
   claims) cmd_claims "${rest[@]+"${rest[@]}"}" ;;
   sweep-closed-claims) cmd_sweep_closed_claims "${rest[@]+"${rest[@]}"}" ;;
@@ -5917,7 +6296,7 @@ case "$sub" in
   mode) cmd_mode "${rest[@]+"${rest[@]}"}" ;;
   selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
-    echo "stamp sync check-version law-digest cadence ack enroll promote retire commit-pending confirm claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
+    echo "stamp sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
     exit 0
     ;;
   *)
@@ -5930,7 +6309,7 @@ case "$sub" in
       kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
       push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
       version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
-      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
     esac
     ;;
 esac
