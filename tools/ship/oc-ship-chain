@@ -95,118 +95,42 @@
 #   Runs across Legs 1-3 sequentially. Call with bash tool parameter background: true.
 #   The daemon auto-resumes the session when SWAPPED (rc 0) or on structured exit.
 #
-# Exit: 0 SWAPPED (full chain complete)
-#       2 usage
-#       3 precondition not met — pre-flight: the fork checkout is ABSENT or is not
-#         a git checkout (a LINKED WORKTREE is accepted: `.git` is a file there,
-#         and the test is `git rev-parse --git-dir`, not `-d .git` — #69); dirty
-#         fork checkout, or $BRANCH
-#         absent from the fork remote (push it); or the LEG1 gate returned
-#         oc-prchecks rc 2 (its usage/sha-shape/unknown-ref class). A
-#         precondition is the LANE's to fix — it is never an infra fault.
-#       4 GATE-RED (oc-prchecks rc 3) or CARRIER-RED (ship wait verdict RED)
-#       5 — EIGHT distinguishable causes, named in the message and the journal
-#         (Design E, #415 step 11). They share the code because the lane's
-#         remedy differs, not the severity. #55: this header read "FOUR" while
-#         the tool already carried SIX rc-5 die sites, and the four it listed
-#         omitted ALREADY-LANDED and STALE-BASE entirely — a count the code
-#         contradicted, in the one block a lane reads before acting on rc 5.
-#         Enumerated from `grep -c 'die ".*" 5$'`, never recalled: keep the
-#         number equal to that command's output or delete it.
-#           NON-FF         branch not fast-forwardable onto fork main and the
-#                          tip is NOT a descendant of origin/main — a REAL
-#                          divergence. Lane rebases via oc-rebase-safety.
-#           STALE-BASE     caught BEFORE the merge attempt: origin/main itself
-#                          moved since the gate. Rebase with patch-id
-#                          carry-forward; the gated sha will not survive.
-#           ALREADY-LANDED the branch is already contained in fork main. Do
-#                          NOT re-gate — there is nothing to land.
-#           LOCAL-MAIN-AHEAD    (#55) the CHECKOUT's main carries commits
-#                          origin/main does not have, so an ff-merge onto the
-#                          branch cannot apply to it. NOT a rebase problem, and
-#                          reconciling is a NO-OP — main already contains
-#                          origin/main, so `merge --ff-only origin/main` says
-#                          "Already up to date." and the re-run reproduces the
-#                          identical rc 5. Wait for the owning lane to land its
-#                          commits, then re-run. Measured 2026-10-25, n=15480.
-#           LOCAL-MAIN-DIVERGED (#55) both sides moved. No single git command
-#                          reconciles it safely; settle the checkout with the
-#                          owner of the ahead commits first.
-#           STALE-LOCAL-MAIN  (#55, narrowed) the checkout's main is LEVEL with
-#                          origin/main and the tip is correctly based, yet the
-#                          ff was refused — so the refusal is the working tree
-#                          (uncommitted change or held index), not the history.
-#                          NOT a rebase problem. Read `git -C <fork> status`,
-#                          clear that refusal, re-run. This arm used to presume
-#                          "simply behind" and prescribe `merge --ff-only
-#                          origin/main` in EVERY reachable state, including the
-#                          AHEAD one where that command is a silent no-op.
-#           TIP-MOVED      the branch tip no longer equals --sha: a
-#                          rebase/force-push happened while the gate ran, so
-#                          LEG3 must not land an ungated tip — re-gate and
-#                          relaunch.
-#           REBASE-GATE    oc-deploy ship's own in-tool auto-rebase refused
-#                          the push (OC_DEPLOY_GATE=rebase-conflict /
-#                          rebase-audit-failed). Same lane fix as NON-FF —
-#                          rebase via oc-rebase-safety, then re-run.
-#       6 dispatch/poll infra failure (prchecks rc 4/7/8, ship rc other).
-#         A lineage-guard refusal surfaces here too (oc-deploy swap rc 2).
-#         The guard is REBASE-AWARE since v0.4.151: a deployed sha orphaned by
-#         a fork-main rebase whose change survives in the incoming lineage is
-#         accepted automatically as rewrite-equivalent-swap — just re-run the
-#         chain. Read-only verdict: `oc-deploy lineage-check --prev <deployed>
-#         --sha <incoming>`. NEVER hand-edit deployed.sha to re-point around a
-#         refusal — that is the regression the guard exists to catch. A genuine
-#         stale build is refused with `OC_DEPLOY_SWAP_GUARD=stale-build`; the
-#         fix is a fresh build from fork main, not a bypass.
-#       NOTE — a swap whose journal stops at marker-write (no receipt step)
-#       COMPLETED: the host is swapped, only the tail bookkeeping died. The
-#       usual cause is a swap launched inside the very unit it bounces (cgroup
-#       teardown at the restart line; fixed v0.4.153 by re-exec outside the
-#       cgroup). Do NOT re-run the swap — repair the missing ledger row with
-#       `oc-deploy recover-receipt` (rc 0 handled / rc 2 refused; `--dry-run`
-#       to inspect first) and confirm the result with `oc-deploy status`.
-#       7 gate still IN FLIGHT after its budget + resume-polls (prchecks rc 5,
-#         non-terminal). The run id is printed — do NOT re-dispatch (that
-#         concurrency-cancels the live run); wait for it and re-run with
-#         --gated-run <id>, which pre-verifies and skips dispatch.
-#       8 SHIP-WAIT-TIMEOUT — the carrier build did not reach a terminal
-#         state within the LEG4 --wait budget (oc-deploy ship rc 5, with no
-#         rebase-gate token). The run is still BUILDING — do NOT re-dispatch
-#         it; wait for it and resume with
-#         `oc-deploy poll --sha <sha> --execute --wait <sec>`, or re-run the
-#         chain with a larger --wait. Distinct from 6 (INFRA) so "the build
-#         is slow" and "the build is broken" stop sharing an exit code.
-#       9 SHIP-LOCK-TIMEOUT — another chain held the landing lock for the whole
-#         queue budget. NOT infra: the gate is fine and the holder is a real
-#         carrier build. Do NOT re-dispatch the gate (that burns a full gate
-#         cycle for the same answer) — wait for the holder, or raise the budget
-#         with SHIP_LOCK_TIMEOUT=<sec> / OC_SHIPCHAIN_LOCK_WAIT=<sec>.
-#         Distinct from 6 (INFRA) for the same reason 7 and 8 are: lock
-#         contention is a queue condition, not a broken component.
+# Exit (FULL register: tools/docs/RC-CONTRACT.md — `oc-ship-chain` row in the rc table):
+#   0 SWAPPED · 2 usage · 3 precondition not met (fork checkout ABSENT or not a git
+#   checkout — a LINKED WORKTREE is accepted, #69; dirty checkout; or $BRANCH absent
+#   from the fork remote. Lane fix, NEVER infra) · 4 GATE-RED / CARRIER-RED
+#   (structured verdict) · 6 dispatch/poll infra, incl. a lineage-guard refusal
+#   (rebase-aware: re-run; diagnose with `oc-deploy lineage-check`) · 7 gate still
+#   IN FLIGHT — do NOT re-dispatch, re-run with --gated-run <id> · 8 SHIP-WAIT-TIMEOUT
+#   — the build is still RUNNING, resume with `oc-deploy poll --execute` · 9
+#   SHIP-LOCK-TIMEOUT — another chain holds the landing lock; wait or raise
+#   SHIP_LOCK_TIMEOUT / OC_SHIPCHAIN_LOCK_WAIT.
+#   5 — EIGHT distinguishable causes, each a LANE fix; the message and journal name
+#   which one (remedies differ, severity does not):
+#     NON-FF              rebase via oc-rebase-safety, then re-run
+#     STALE-BASE          origin/main moved since the gate; rebase with patch-id
+#                         carry-forward — the gated sha will NOT survive
+#     ALREADY-LANDED      nothing to land; do NOT re-gate
+#     TIP-MOVED           tip != --sha (rebase+force-push mid-gate); re-gate
+#     REBASE-GATE         oc-deploy's own auto-rebase refused; same fix as NON-FF
+#     LOCAL-MAIN-AHEAD    the checkout's main is ahead of origin/main — wait for the
+#                         owning lane; `merge --ff-only` is a silent no-op here
+#     LOCAL-MAIN-DIVERGED both sides moved; settle with the owner of the ahead commits
+#     STALE-LOCAL-MAIN    the WORKING TREE refused it, not history — read
+#                         `git -C <fork> status`, clear it, re-run
+#   Keep the count equal to `grep -c 'die ".*" 5$'` or delete the number.
 #
-# Re-arms (factory #78) — which classes the tool will redo BY ITSELF, so a lane
-# reads the wake only for what actually needs a human. A re-arm `exec`s a fresh
-# chain from inside the EXIT handler; because `exec` replaces the process, the
-# wake call below it is unreachable, so a suppressed wake is structural rather
-# than a flag someone must remember to set.
-#   rc 3  NO   a precondition the lane must fix; a restart reproduces it exactly
-#   rc 4  NO   a gate/carrier verdict; the same code is still red on a re-run
-#   rc 5  NO   eight causes, every one a lane fix (rebase, re-gate, wait)
-#   rc 6  YES  ONLY when GATE_RUN_ID is empty — i.e. nothing external already
-#              happened. A witnessed failure is not retried: re-dispatching a
-#              gate that already ran buys the same answer for a full cycle.
-#   rc 7  NO   the gate is still IN FLIGHT; re-dispatching concurrency-cancels
-#              the live run (owner decision 2026-11-18 — 0 of 213 measured
-#              re-arms were this class, so the risk had no upside)
-#   rc 8  NO   the carrier build is still running — same reasoning as rc 7
-#   rc 9  YES  the lock holder is another real ship; wait-and-retry in-tool
-# Budget: OC_SHIPCHAIN_REARM_MAX (default 2) attempts, carried ACROSS the exec
-# in the environment (a fresh process re-initialises every variable it does not
-# inherit). On exhaustion the wake names the count, so "failed once" and
-# "failed after the whole budget, cause survived every restart" cannot read the
-# same. Opt out with --no-rearm / OC_SHIPCHAIN_NO_REARM=1.
-#
+# Re-arms (factory #78) — the classes this tool redoes BY ITSELF; a re-arm `exec`s a
+#   fresh chain from the EXIT handler, so the wake below it is unreachable and the
+#   suppression is structural, not a flag to remember.
+#     rc 3/4/5  NO   a lane fix or a verdict; a restart reproduces it exactly
+#     rc 6      YES  ONLY when GATE_RUN_ID is empty (nothing external happened yet)
+#     rc 7/8    NO   the gate/build is still running — a re-dispatch destroys it
+#     rc 9      YES  the lock holder is another real ship; wait-and-retry in-tool
+#   Budget: OC_SHIPCHAIN_REARM_MAX (default 2), carried ACROSS the exec in the
+#   environment. Opt out: --no-rearm / OC_SHIPCHAIN_NO_REARM=1. Class rationale and
+#   measured counts: tools/docs/RC-CONTRACT.md (`oc-ship-chain` row).
+
 # Chain-id: every leg stamps the ledger under one id (kind=shipchain)
 #   CHAIN-<shortsha>-<UTCstamp>  →  retrieve the whole run with
 #   jq -r '.events[] | select(.kind=="shipchain")
@@ -239,13 +163,12 @@
 #   OC_SHIPCHAIN_LEDGER  path for chain journal lines (default: oc-ledger)
 #   OC_TOOLS_NOLOG=1     suppress ledger stamps (battery/selftest)
 #
-# Actor (attribution — v0.4.152 §Attribution & Goal Hygiene A1):
-#   OC_ACTOR wins when set. Otherwise the chain derives the actor from the
-#   `Session-Id` trailer on the --sha commit (every editor commit carries one)
-#   and EXPORTS it, so this run's journal rows — and every child tool's rows —
-#   are attributed instead of landing as `(unattributed — pass --by or export
-#   OC_ACTOR)`. Nothing is invented: with no trailer and no OC_ACTOR the actor
-#   stays unset and oc-ledger keeps its loud unattributed message.
+# Actor (attribution — v0.4.152 §Attribution & Goal Hygiene A1): OC_ACTOR wins;
+#   otherwise the actor is derived from the `Session-Id` trailer on the --sha commit
+#   and EXPORTED, so this run's rows and every child tool's rows are attributed.
+#   With neither, the actor stays unset and oc-ledger keeps its loud unattributed
+#   message — nothing is invented. Canonical text: tools/docs/RC-CONTRACT.md
+#   (`oc-ship-chain` row, "Actor defaulting").
 
 # --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
