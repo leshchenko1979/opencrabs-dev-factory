@@ -4,7 +4,7 @@
 #
 # LAW TEXT NAMES TOOLS AND FLAGS. Nothing checked that those verbs and flags
 # exist. Two phantom invocations reached editors and cost real time —
-# `oc-ship-chain --resume` and `oc-ledger stamp proposal` — both found by an
+# `oc-ship --resume` and `oc-ledger stamp proposal` — both found by an
 # editor RUNNING the dead verb, never by a check. This tool is the check.
 #
 # PREDICATE — deliberately conservative: a linter that cries wolf gets ignored,
@@ -15,7 +15,7 @@
 # unit. That is what makes this usable — the first two drafts scoped to the
 # line and reported 40 then 13 findings on a corpus that was clean, every one of
 # them noise from a flag that belonged to a DIFFERENT command further along the
-# same line (`cargo test --locked` after `oc-prchecks`; `--gated-run` after
+# same line (`cargo test --locked` after `oc-gate`; `--gated-run` after
 # `oc-deploy`). A span is what a reader copies, so a span is what is checked.
 #
 #   PHANTOM-FLAG : a span invokes `oc-tool --flag`, and the tool's OWN SOURCE
@@ -77,7 +77,7 @@ SKILL_DIR="$(dirname "$TOOLS_DIR")"
 # failure this tool cannot afford, because the remedy (edit the law) destroys
 # correct text. So a small, EXPLICIT declaration admits a named host tool and
 # nothing else: a blanket "ignore unknown oc-* spans" would disable the very
-# check that caught `oc-ship-chain --resume` and `oc-ledger stamp proposal`.
+# check that caught `oc-ship --resume` and `oc-ledger stamp proposal`.
 # Membership is a claim about the box, not an exemption from existence: a
 # declared tool that is NOT on PATH is still reported, with a message that says
 # which half is missing.
@@ -151,7 +151,7 @@ citation_line() { # $1=file $2=line [$3=cited token]
   # lines that discuss phantom CLAIMS, or the lint's own phantom-flag verdicts,
   # while holding a perfectly good flag span -- measured: 4 live law lines were
   # suppressed by the bare word alone. A citation names THIS token as the
-  # phantom ("`oc-ship-chain --resume` phantom"), so the word must sit within 20
+  # phantom ("`oc-ship --resume` phantom"), so the word must sit within 20
   # chars either side of the cited token. Narrowing it to the uppercase verdict
   # forms instead was tried and produced a FALSE POSITIVE on fleet-directives.md
   # :440, a correct law line -- a false accusation against a correct law is the
@@ -351,7 +351,7 @@ EOT
   #  (a) NO tool owns the flag -> a real finding (class UNATTRIBUTABLE), and it is
   #      never misattributed to the tool named five tokens back;
   #  (b) SOME tool owns it -> a legitimate wide-gap citation, dropped (rc 0), which
-  #      is what GAPMAX is for (live shape: `--create`, owned by oc-ship-audit).
+  #      is what GAPMAX is for (live shape: `--create`, owned by oc-audit-ship).
   printf 'The law cites `oc-good stays the fallback only when --gamma` in prose.\n' > "$T/wide-gap.md"
   run "$T/wide-gap.md"; chk "wide-gap flag NO tool owns -> UNATTRIBUTABLE, rc 1" 1 "UNATTRIBUTABLE" "oc-good --gamma"
   printf 'The law cites `oc-good stays the fallback only when --beta` in prose.\n' > "$T/wide-gap-owned.md"
@@ -518,7 +518,7 @@ tool_path() {
 # flag_owned_anywhere <flag> — does ANY tool under tools/ carry this flag? (#643)
 # Used only for wide-gap candidates, to tell a LEGITIMATE citation from a phantom:
 #   owned  -> the law cites a real flag of some other tool a few tokens back
-#             (live case: `--create`, owned by oc-ship-audit, cited 5 tokens after
+#             (live case: `--create`, owned by oc-audit-ship, cited 5 tokens after
 #             `oc-wt`) — drop it, exactly as GAPMAX intends.
 #   unowned-> NO tool has the flag, so the law names a flag that does not exist.
 #             That is a real defect and must be reported, never silently dropped.

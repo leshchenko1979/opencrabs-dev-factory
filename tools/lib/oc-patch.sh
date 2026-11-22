@@ -37,7 +37,7 @@ oc_job_sha() {
   # `|| true` is the CONTRACT, not a patch: the docstring says "else empty", and
   # under a caller's `set -o pipefail` a no-match grep (or head's SIGPIPE, rc 141)
   # would otherwise return non-zero and `set -e` would abort the CALLER. Measured
-  # 2026-11-20: oc-ship-chain's LEG1 carry-forward died rc=1 with no message on a
+  # 2026-11-20: oc-ship's LEG1 carry-forward died rc=1 with no message on a
   # content-identical rebase, purely because gh listed a sha-less job FIRST.
   printf '%s\n' "${1:-}" | grep -oE '[0-9a-f]{40}' | head -1 || true
 }

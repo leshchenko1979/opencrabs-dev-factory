@@ -25,7 +25,7 @@
 # arms for a deliberate re-post. A FAILED read does not skip — it fails OPEN to
 # posting, because the per-commit note is mandatory and a duplicate is cheaper
 # than a missing note. This guard lives at the posting authority because the
-# tool has two callers (oc-ship-chain LEG2, oc-commit); a caller-side guard
+# tool has two callers (oc-ship LEG2, oc-commit); a caller-side guard
 # would cover only one.
 #
 # FOREIGN-TRACKER GUARD (factory #30, Triage change request lane 530c29ec).
@@ -58,7 +58,7 @@
 # resolved with a BARE `git log` against the CALLER's cwd, so the same sha
 # resolved from $HOME/opencrabs and failed rc 3 from the skill dir. Every
 # caller now names the checkout explicitly (oc-commit passes its own --repo,
-# oc-ship-chain passes $FORK_REPO). Default stays $PWD for backward
+# oc-ship passes $FORK_REPO). Default stays $PWD for backward
 # compatibility, but the resolution no longer SILENTLY depends on cwd: a
 # --repo-path that is not a git repo dies rc 4 rather than resolving against
 # an unrelated tree.
@@ -73,7 +73,7 @@ _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-issue-log" "$@"; else oc_log_finish() { :; }; oc_log_extra() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 # #621: the fleet's content-identity predicate — ONE home (lib/oc-patch.sh), the
-# same oc_same_patch oc-ship-chain LEG1's carry uses. A missing lib degrades the
+# same oc_same_patch oc-ship LEG1's carry uses. A missing lib degrades the
 # patch-id arm to non-match, which is the FAIL-SAFE direction here: the note is
 # mandatory, so a duplicate comment is cheaper than a missing one.
 _OC_PATCH_LIB="$OC_TOOLS_DIR/lib/oc-patch.sh"
@@ -128,7 +128,7 @@ while [ $# -gt 0 ]; do
       # the sha MUST resolve from a --repo-path unrelated to the caller's cwd.
       # Before the fix, running the tool from a cwd that is not the repo died
       # rc 3 on a perfectly valid sha — the cwd-dependence that made
-      # oc-ship-chain LEG2 fail open on every chain. Run the TOOL (not bare
+      # oc-ship LEG2 fail open on every chain. Run the TOOL (not bare
       # git) from / so the caller's cwd cannot supply the answer.
       _SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
       s2="$(cd / && OC_TOOLS_NOLOG=1 bash "$_SELF" 1 "$s" --repo-path "$d" --dry-run 2>&1)"; rc2=$?
@@ -170,7 +170,7 @@ FAKEGH
       [ "$a_rc" = 0 ] || { echo "selftest: idempotent skip expected rc 0, got $a_rc: $a_out" >&2; exit 1; }
       case "$a_out" in *"already posted"*) : ;; *) echo "selftest: skip did not report itself: $a_out" >&2; exit 1 ;; esac
       # #395: the verdict must be MACHINE-readable, not just prose — this is the
-      # token oc-ship-chain LEG2 journals and tools.log's extra{} carries.
+      # token oc-ship LEG2 journals and tools.log's extra{} carries.
       case "$a_out" in *"idem=skip"*) : ;; *) echo "selftest: skip did not emit idem=skip: $a_out" >&2; exit 1 ;; esac
       [ ! -f "$d/sentinel" ] || { echo "selftest: skip STILL posted a comment" >&2; exit 1; }
       # B. marker ABSENT -> post.
@@ -359,14 +359,14 @@ BODY="$(mktemp /tmp/oc-issue-log-body.XXXXXX.md)"
 if [ "$DRY" = "1" ]; then cat "$BODY"; rm -f "$BODY"; echo "dry-run: body composed, nothing posted"; exit 0; fi
 
 # ---- idempotency guard (defect fix 2026-09-19, issue #392) ------------------
-# oc-ship-chain LEG2 runs ABOVE the ship lock (tools/ship/oc-ship-chain:766 posts,
+# oc-ship LEG2 runs ABOVE the ship lock (tools/ship/oc-ship:766 posts,
 # :792 acquires), so a chain that dies in LEG3-LEG5 and is re-run executes LEG2
 # again with nothing serialising it — and this tool posted unconditionally, so
 # every retry added an identical comment to the same issue for the same sha
 # (live: #319 carried two for 6e26029d, 07:01Z and 07:15Z).
 #
 # The guard belongs HERE, at the posting authority, not in the caller: this tool
-# has TWO callers (oc-ship-chain LEG2 and oc-commit, which folds in the same
+# has TWO callers (oc-ship LEG2 and oc-commit, which folds in the same
 # post-commit comment), so a caller-side guard protects one path and leaves the
 # other able to duplicate. Identity marker = the FULL sha inside the body's own
 # marker line, so it cannot collide across commits or with a sha prefix.
@@ -375,7 +375,7 @@ MARKER="Implementation commit: ${BT}${FULL_SHA}${BT}"
 
 # The verdict is recorded from ONE place into TWO surfaces (issue #395). The
 # guard's outcome was invisible in every durable record: skip, post and
-# fail-open all exited 0 carrying extra{} in tools.log, and oc-ship-chain LEG2
+# fail-open all exited 0 carrying extra{} in tools.log, and oc-ship LEG2
 # runs this tool under OC_TOOLS_NOLOG=1 -- so on THAT path (the retry that
 # minted #392's duplicate) no row is written at all, and the chain's journal
 # read a bare "LEG2 issue-log done" whether the comment posted or the guard
@@ -455,7 +455,7 @@ else
     # tolerates a rebase (#581) while LEG2 duplicated on one.
     #
     # Reuse the fleet's existing content predicate rather than adding a second
-    # one — oc_same_patch from lib/oc-patch.sh, the same predicate oc-ship-chain
+    # one — oc_same_patch from lib/oc-patch.sh, the same predicate oc-ship
     # LEG1's carry and oc-rebase-safety's SAME/CHANGED arms use (one home, per
     # the oc-claims-single-source rule).
     #

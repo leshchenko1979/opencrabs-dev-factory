@@ -1485,7 +1485,7 @@ Target Branch: {branch_name}
   2. git cherry-pick {commits_str}
   3. tools/harvest/oc-harvest-sweep {branch_name} --base {base_ref} --port-of {port_of_str}
   4. git push origin {branch_name}
-  5. tools/harvest/oc-prchecks {branch_name}
+  5. tools/harvest/oc-gate {branch_name}
 {contract_line}'''
 
     w_uuid = selected_worker.get('uuid', '')

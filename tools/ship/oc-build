@@ -37,7 +37,7 @@ if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
 # consult, and a sha whose PR-lane gate was still IN FLIGHT reached the tip
 # (2026-09-18, ee4f6797a): fork main went clippy-RED and every lane inherited a
 # BASE-FAULT it did not own. These two helpers implement the guard, reusing
-# oc-ship-chain's --gated-run / --gated-sha vocabulary (DRY — one gate
+# oc-ship's --gated-run / --gated-sha vocabulary (DRY — one gate
 # vocabulary in the fleet, never a second) and the tool's OWN patch-id idiom
 # (line ~238's lineage twin) for the content-identical-rebase carry.
 #
@@ -291,7 +291,7 @@ case "$MODE" in
             echo "oc-deploy: UNGATED PUSH OVERRIDE ($GATE_STATE, gate=$GATE_SRC) — allowed by --allow-ungated-push: $UNGATED_JUSTIFY (actor ${RW_ACTOR})" >&2
           else
             shadow_log ship "$SHA" "$FEATURES" "gate-blocked:$GATE_STATE"
-            die 2 "OC_DEPLOY_GATE=gate-$GATE_STATE: refusing to push $SHA to refs/heads/main — gate=$GATE_SRC, verdict=$GATE_STATE. Land only a GREEN-gated sha (--gated-run <id> / --gated-sha <sha>, the oc-ship-chain contract). If the landing is genuinely justified, override explicitly and audibly: --allow-ungated-push \"<justification>\"."
+            die 2 "OC_DEPLOY_GATE=gate-$GATE_STATE: refusing to push $SHA to refs/heads/main — gate=$GATE_SRC, verdict=$GATE_STATE. Land only a GREEN-gated sha (--gated-run <id> / --gated-sha <sha>, the oc-ship contract). If the landing is genuinely justified, override explicitly and audibly: --allow-ungated-push \"<justification>\"."
           fi ;;
       esac
       PUSH_OK=0

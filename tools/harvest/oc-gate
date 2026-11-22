@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-prchecks — one-command PR-lane lint gate over pr-checks.yml (KERNEL C5,
-# 2026-08-29 four-lens review run-2; design: /root/oc-work/oc-prchecks-design-20260829.md).
+# oc-gate — one-command PR-lane lint gate over pr-checks.yml (KERNEL C5,
+# 2026-08-29 four-lens review run-2; design: /root/oc-work/oc-gate-design-20260829.md).
 #
 # Kills the 4-step flag-sensitive hand ritual of editor.md Phase 5:
 #   shape gate (full sha only) -> LOUD yml-on-carrier check -> dispatch under
@@ -28,8 +28,8 @@
 # dispatch+adopt and the newest run in window is always this lane's own.
 #
 # Usage:
-#   oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--test-threads N] [--no-log]
-#   oc-prchecks --selftest          offline, gh-shim injected (zero network)
+#   oc-gate [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--test-threads N] [--no-log]
+#   oc-gate --selftest          offline, gh-shim injected (zero network)
 #
 # Defaults: --repo leshchenko1979/opencrabs, --carrier ci/quick-build-linux,
 # --wait 600 (15s poll). Env: OC_GH (gh shim), OC_PRCHECKS_POLL,
@@ -56,7 +56,7 @@
 #       2 usage / sha-shape / unknown ref / repo-path-no-origin
 #       3 RED (run conclusion failure/timed_out/startup_failure,
 #         or a FAILED step — soft-fail exposed; skipped/neutral steps pass)
-#       5 non-terminal at verdict time (resume: oc-prchecks resume <id> --wait N)
+#       5 non-terminal at verdict time (resume: oc-gate resume <id> --wait N)
 # Verdict rule (v0.4.56, owner Go 08-31 03:05Z): the RUN conclusion is the
 # verdict; per-step detail is a tiebreak ONLY for conclusion=failure steps
 # (kills false GREEN on cancelled and false RED on skipped fmt — issue-lane
@@ -87,7 +87,7 @@ set -e            # F-lens (HQ GO batch 2026-09-09): a bare-typo command like th
                   # is the #124 time-bomb class.
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then
-  source "$_OC_LIB"; oc_log_init "oc-prchecks" "$@"
+  source "$_OC_LIB"; oc_log_init "oc-gate" "$@"
   # T-1: a DETACHED CHILD owns the journal line for its invocation (the parent
   # suppresses its own at the hand-off), so mark the row. Without this the one
   # surviving row is indistinguishable from a run that never detached.
@@ -183,7 +183,7 @@ POLL="${OC_PRCHECKS_POLL:-30}"
 RESOLVE_WAIT="${OC_PRCHECKS_RESOLVE_WAIT:-60}"
 RESOLVE_POLL="${OC_PRCHECKS_RESOLVE_POLL:-15}"
 LOCK_DIR="${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}"
-LOCK_FILE="$LOCK_DIR/.oc-prchecks-dispatch.lock"
+LOCK_FILE="$LOCK_DIR/.oc-gate-dispatch.lock"
 LOCK_WAIT="${OC_PRCHECKS_LOCK_WAIT:-90}"
 FAULT_TOOL="${OC_PRCHECKS_FAULT_SCOPE:-$OC_TOOLS_DIR/harvest/oc-pr-fault-scope}"   # E5: RED triage backend
 
@@ -221,7 +221,7 @@ usage() { # [reason] — C-#1: prints WHY before the usage block. A repeat of th
   [ $# -gt 0 ] && echo "$PROG: $1" >&2
   local _h _cf _now _ts=0 _cnt=0
   _h="$(printf '%s' "$CALL_ARGS" | cksum | cut -d' ' -f1)"
-  _cf="$LOCK_DIR/.oc-prchecks-rc2"
+  _cf="$LOCK_DIR/.oc-gate-rc2"
   _now="$(date +%s)"
   if [ -f "$_cf" ]; then
     _ts="$(cut -d' ' -f1 "$_cf" 2>/dev/null)"; _ts="${_ts:-0}"
@@ -750,7 +750,7 @@ do_selftest() {
     t_ok "#91 unparseable advisory regex -> 2 (loud, names the pattern)"
   else t_bad "#91 bad advisory regex (rc=$T_RC out=$T_OUT)"; fi
   run_t carrier_unresolvable "$SHA"
-  if [ "$T_RC" -eq 7 ] && case "$T_OUT" in *"carrier head unresolvable"*"re-run once the carrier ref resolves: oc-prchecks"*) true ;; *) false ;; esac; then
+  if [ "$T_RC" -eq 7 ] && case "$T_OUT" in *"carrier head unresolvable"*"re-run once the carrier ref resolves: oc-gate"*) true ;; *) false ;; esac; then
     t_ok "carrier head unresolvable -> 7 with re-run resume line"
   else t_bad "carrier_unresolvable (rc=$T_RC out=$T_OUT)"; fi
   run_t cancelled "$SHA" 
@@ -907,7 +907,7 @@ do_selftest() {
   OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
     OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
     OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$D/tools.log" "$SELF" "$SHA" >/dev/null 2>&1
-  if [ -f "$D/tools.log" ] && jq -e 'select(.tool=="oc-prchecks" and .exit==0 and .extra.verdict=="GREEN")' "$D/tools.log" >/dev/null 2>&1; then
+  if [ -f "$D/tools.log" ] && jq -e 'select(.tool=="oc-gate" and .exit==0 and .extra.verdict=="GREEN")' "$D/tools.log" >/dev/null 2>&1; then
     t_ok "journal line with extra.verdict=GREEN"
   else t_bad "journal line missing/wrong"; fi
   # --no-log suppresses
@@ -980,7 +980,7 @@ do_selftest() {
     t_ok "adoption pin: legitimate dispatch passes (adoption_pin=ok, GREEN intact)"
   else t_bad "adoption pin happy path ($(cat "$D/tools.log" 2>/dev/null))"; fi
   # dispatch lock contention -> 4 (background holder keeps the lock 6s; wait=1)
-  ( exec 8>"$D/state/.oc-prchecks-dispatch.lock"; flock 8; sleep 6 ) &
+  ( exec 8>"$D/state/.oc-gate-dispatch.lock"; flock 8; sleep 6 ) &
   HOLDER=$!
   sleep 0.4
   mk_shim "$D/gh" green
@@ -1020,7 +1020,7 @@ do_selftest() {
   OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
     OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
     OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$D/tools.log" "$SELF" resume 222 >/dev/null 2>&1
-  if jq -e 'select(.tool=="oc-prchecks" and .exit==0 and .extra.verdict=="GREEN" and .extra.resume=="222" and .extra.run_id=="222" and (.extra.dispatch==null))' "$D/tools.log" >/dev/null 2>&1; then
+  if jq -e 'select(.tool=="oc-gate" and .exit==0 and .extra.verdict=="GREEN" and .extra.resume=="222" and .extra.run_id=="222" and (.extra.dispatch==null))' "$D/tools.log" >/dev/null 2>&1; then
     t_ok "resume journal: extra.resume+run_id present, no dispatch key"
   else t_bad "resume journal row missing/wrong"; fi
 
@@ -1038,17 +1038,17 @@ do_selftest() {
       OC_TOOLS_NOLOG=1 "$SELF" "$@" 2>&1)" && T_RC=0 || T_RC=$?
   }
   # (a) exit-4 watch-death row WITH run_id witness + gh run view fails -> 8 AMBIGUOUS, dispatch refused
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":4,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$NOW_TS" "$SHA" "$SHA" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":4,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$NOW_TS" "$SHA" "$SHA" > "$CF_LOG"
   cf_run run_view_fail "$SHA"
   if [ "$T_RC" -eq 8 ] && case "$T_OUT" in *"AMBIGUOUS"*"777"*"REFUSED"*) true ;; *) false ;; esac; then
     t_ok "C-F2 fail-closed: exit-4 witness + unverifiable liveness -> 8 AMBIGUOUS, no dispatch (#115B)"
   else t_bad "C-F2 fail-closed (rc=$T_RC out=$T_OUT)"; fi
   # (a2) exit-0 GREEN row (previously invisible: exit==5-only matcher) -> still a witness -> 8
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":0,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$NOW_TS" "$SHA" "$SHA" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":0,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$NOW_TS" "$SHA" "$SHA" > "$CF_LOG"
   cf_run run_view_fail "$SHA"
   [ "$T_RC" -eq 8 ] && t_ok "C-F2 exit-agnostic: exit-0 row witness counts too -> 8 (#115B)" || t_bad "C-F2 exit-agnostic (rc=$T_RC out=$T_OUT)"
   # (b) branch invocation: row matched via extra.sha (args carry NO full sha) + live -> adopt, no dispatch
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":5,"args":"some-branch --wait 600","extra":{"run_id":"888","sha":"%s"}}\n' "$NOW_TS" "$SHA" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":5,"args":"some-branch --wait 600","extra":{"run_id":"888","sha":"%s"}}\n' "$NOW_TS" "$SHA" > "$CF_LOG"
   cf_run inflight some-branch --wait 1
   if [ "$T_RC" -eq 5 ] && case "$T_OUT" in *"C-F2 resume: run=888"*) true ;; *) false ;; esac; then
     t_ok "C-F2 branch-ref: extra.sha match adopts run 888 (args carry no sha) (#115B)"
@@ -1060,7 +1060,7 @@ do_selftest() {
     t_ok "C-F2 adopt: zero workflow-run dispatches on resume path (no concurrency-cancel)"
   else t_bad "C-F2 adopt: shim recorded $(wc -l < "$D/gh-dispatch.log") dispatch(es) — re-dispatch leak"; fi
   # (c) completed witness -> NOT adopted; fresh dispatch proceeds (222)
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":5,"args":"%s --wait 600","extra":{"run_id":"999","sha":"%s"}}\n' "$NOW_TS" "$SHA" "$SHA" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":5,"args":"%s --wait 600","extra":{"run_id":"999","sha":"%s"}}\n' "$NOW_TS" "$SHA" "$SHA" > "$CF_LOG"
   cf_run green "$SHA"
   if [ "$T_RC" -eq 0 ] && case "$T_OUT" in *"adopted run=222"*) true ;; *) false ;; esac && ! case "$T_OUT" in *"C-F2 resume"*) true ;; *) false ;; esac; then
     t_ok "C-F2 completed witness: fresh dispatch proceeds (adopted 222, no resume) (#115B)"
@@ -1069,7 +1069,7 @@ do_selftest() {
   # args-contains($ref), so ref "main" substring-matched args "feature/fix-main"
   # and a DIFFERENT branch's witness blocked this dispatch (rc 8). Row carries
   # extra.ref="feature/fix-main"; invocation ref="main" -> NOT a witness.
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":4,"args":"feature/fix-main --wait 600","extra":{"run_id":"778","sha":"othersha","ref":"feature/fix-main"}}\n' "$NOW_TS" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":4,"args":"feature/fix-main --wait 600","extra":{"run_id":"778","sha":"othersha","ref":"feature/fix-main"}}\n' "$NOW_TS" > "$CF_LOG"
   cf_run green main
   if [ "$T_RC" -eq 0 ] && case "$T_OUT" in *"adopted run=222"*) true ;; *) false ;; esac && ! case "$T_OUT" in *"C-F2 resume"*"AMBIGUOUS"*) true ;; *) false ;; esac; then
     t_ok "C-F2 ref-equality: main does NOT witness feature/fix-main (fresh dispatch, no rc-8) (#115B)"
@@ -1077,7 +1077,7 @@ do_selftest() {
   # (d) stale witness (7h > 6h dedup window) -> ignored; dispatch proceeds
   # (watch then fails rc 4 under run_view_fail). Window was 600s, widened
   # 2026-09-08 to OC_PRCHECKS_DEDUP_WINDOW (default 6h) — see dedup comment.
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":5,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$OLD_TS" "$SHA" "$SHA" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":5,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$OLD_TS" "$SHA" "$SHA" > "$CF_LOG"
   cf_run run_view_fail "$SHA"
   if [ "$T_RC" -eq 4 ] && ! case "$T_OUT" in *"AMBIGUOUS"*) true ;; *) false ;; esac; then
     t_ok "C-F2 cutoff: 11-min-old witness ignored, no fail-closed (rc 4 = watch-death after fresh dispatch) (#115B)"
@@ -1085,7 +1085,7 @@ do_selftest() {
   # (e) pre-dispatch dedup (2026-09-08 study): an 11-min-old witness with a
   # LIVE run is now IN window (6h default) -> adopted, not re-dispatched
   # (builds outlive the old 600s window; re-dispatch concurrency-cancelled).
-  printf '{"ts":"%s","tool":"oc-prchecks","exit":5,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$OLD11_TS" "$SHA" "$SHA" > "$CF_LOG"
+  printf '{"ts":"%s","tool":"oc-gate","exit":5,"args":"%s --wait 600","extra":{"run_id":"777","sha":"%s"}}\n' "$OLD11_TS" "$SHA" "$SHA" > "$CF_LOG"
   cf_run inflight "$SHA" --wait 1
   if [ "$T_RC" -eq 5 ] && case "$T_OUT" in *"C-F2 resume: run=777"*) true ;; *) false ;; esac; then
     t_ok "dedup window 6h: 11-min-old witness with LIVE run adopted (no re-dispatch cancel)"
@@ -1316,7 +1316,7 @@ do_selftest() {
   # ==========================================================================
   # #727: cgroup-safe detach contract (legs 21a-21h)
   #   opencrabs-ops.service runs KillMode=control-group, so a DIRECT
-  #   `oc-prchecks` wait armed from a session dies with a daemon restart — no
+  #   `oc-gate` wait armed from a session dies with a daemon restart — no
   #   verdict, no report. These legs pin the escape: it fires ONLY inside the
   #   unit's cgroup, ONLY for a long wait, ONLY once, with argv and stdio intact.
   # ==========================================================================
@@ -1408,7 +1408,7 @@ FSD
   grep -q -- '--scope' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: --scope used" || t_bad "21f detach caps: no --scope ($(cat "$D/sdrun.log" 2>/dev/null))"
   grep -q -- '-p MemoryMax=512M' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: -p MemoryMax=512M" || t_bad "21f detach caps: MemoryMax missing"
   grep -q -- '-p CPUQuota=50%' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: -p CPUQuota=50%" || t_bad "21f detach caps: CPUQuota missing"
-  grep -q -- '--unit oc-prchecks-' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: named scope (the kill handle)" || t_bad "21f detach caps: no --unit — an anonymous scope is unkillable by name"
+  grep -q -- '--unit oc-gate-' "$D/sdrun.log" 2>/dev/null && t_ok "21f detach caps: named scope (the kill handle)" || t_bad "21f detach caps: no --unit — an anonymous scope is unkillable by name"
 
   # 21g. FALLBACK: with NO systemd-run reachable, the tool must fall back to
   #      `setsid -w` (blocks and passes rc through — never bare `setsid`, which
@@ -1573,7 +1573,7 @@ FDV
 }
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   cat <<'EOH'
-Usage: oc-prchecks [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
+Usage: oc-gate [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
   <branch-or-sha>  the TREE to gate. A full 40-hex sha is preferred and is what the
                    carrier inputs require: a short sha is REFUSED (carrier inputs are
                    FULL-sha-bound). The workflow yml always comes from --carrier, so
@@ -1649,7 +1649,7 @@ if [ "$RESUME_MODE" -eq 1 ]; then   # #74 H2: positional is a NUMERIC run id, no
 fi
 
 # ---------- #121: CARRIER-TREE guard ---------------------------------------
-# `oc-prchecks ci/quick-build-linux --wait 2400` is the obvious-looking way to
+# `oc-gate ci/quick-build-linux --wait 2400` is the obvious-looking way to
 # gate a carrier yml change, and it is wrong in a way that produces a MISLEADING
 # RED. The positional ref becomes the dispatch's `-f ref=` — the gated SOURCE
 # TREE — while the yml ALWAYS comes from --carrier. So that invocation gates the
@@ -1727,7 +1727,7 @@ fi
 # This is not a new contract. Commit 14780053 (2026-09-08) gave oc-waiter exactly
 # this escape (`systemd-run --user --scope`, unit oc-waiter-<id>); retiring that
 # tool (v0.4.135) deleted the fix with it, and the hand-rolled waiters came back.
-# The shape survived in oc-ship-chain:526-560 and oc-deploy:341, so a CHAIN-run
+# The shape survived in oc-ship:526-560 and oc-deploy:341, so a CHAIN-run
 # gate inherits it transitively — the hole is a DIRECT call, which is precisely
 # what editor and harvest lanes do.
 #
@@ -1745,7 +1745,7 @@ fi
 #   OC_PRCHECKS_DETACHED       loop guard (the re-exec exports it)
 #   OC_PRCHECKS_DETACH_MIN     shortest WAIT_SECS that earns a detach (default 300)
 #   OC_PRCHECKS_LOG            where the detached re-exec binds stdout+stderr
-#                              (default /tmp/oc-prchecks-detached-<pid>.log)
+#                              (default /tmp/oc-gate-detached-<pid>.log)
 prchecks_in_bounce_cgroup() { # rc 0 = this process IS inside the unit's cgroup
   local unit="${OC_PRCHECKS_UNIT:-opencrabs-ops.service}" cg dflt=auto
   # SELFTEST HERMETICITY: under `auto` this reads the HOST's /proc/self/cgroup, so
@@ -1777,12 +1777,12 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
       # so the caps are not decoration (#720 — an uncapped escape can eat the box).
       #      --unit is NOT cosmetic (design §Risks, accepted-risk mitigation):
       #      the named scope IS the kill handle for a waiter whose pid is
-      #      otherwise unreachable — `systemctl --user stop oc-prchecks-<id>` —
+      #      otherwise unreachable — `systemctl --user stop oc-gate-<id>` —
       #      and it is what makes the escape auditable. An anonymous
       #      `run-r<hex>.scope` gives an operator nothing to aim at, which is
       #      the very invisibility #727 exists to end. `$$` is the detaching
       #      process's pid, stable across the exec and unique among the living.
-      cmd="systemd-run --user --scope --collect --unit oc-prchecks-$$ -p MemoryMax=512M -p CPUQuota=50%"
+      cmd="systemd-run --user --scope --collect --unit oc-gate-$$ -p MemoryMax=512M -p CPUQuota=50%"
     else
       cmd="setsid -w"
       echo "$PROG: systemd-run unavailable — falling back to '$cmd' (blocks and passes rc, but does NOT escape the cgroup)" >&2
@@ -1790,8 +1790,8 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
   fi
   # Bind stdio to a FILE. The scope survives the cgroup teardown while the
   # launching call still owns the pipes, so an unredirected re-exec dies EPIPE on
-  # its first stderr write — the oc-ship-chain 0-byte-log field case (LAW 17).
-  local dlog="${OC_PRCHECKS_LOG:-/tmp/oc-prchecks-detached-$$.log}"
+  # its first stderr write — the oc-ship 0-byte-log field case (LAW 17).
+  local dlog="${OC_PRCHECKS_LOG:-/tmp/oc-gate-detached-$$.log}"
   echo "$PROG: this CI wait is INSIDE ${OC_PRCHECKS_UNIT:-opencrabs-ops.service}'s cgroup — a daemon restart would SIGTERM it mid-wait with NO verdict (#727). Re-executing outside via: $cmd" >&2
   echo "$PROG: detached log: $dlog" >&2
   # #28: binding the re-exec's stdio to a FILE (above) kept the scope alive past
@@ -1799,7 +1799,7 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
   # the verdict landed in $dlog where nothing read it, so a daemon bg-task caller
   # was woken with NO verdict (measured 2026-10-06, session cbdfde4a: bg run
   # 57e369f9-4f4e-4a5b-819a-66e7b3156a0a, output_bytes 327, code 0, while
-  # /tmp/oc-prchecks-detached-2849867.log held the real "VERDICT CANCELLED" line).
+  # /tmp/oc-gate-detached-2849867.log held the real "VERDICT CANCELLED" line).
   # #742 named that byte-relocation; this is the return leg.
   #
   # The child runs in the BACKGROUND with the same stdio binding, so it still
@@ -1820,7 +1820,7 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
   local _drc=0 _dchild=0
   # HQ order 2026-11-21: hand the CHILD the exact path this function printed.
   # Without OC_PRCHECKS_LOG in its environment the child re-derives
-  # /tmp/oc-prchecks-detached-$$.log from its OWN $$ — a different file from the
+  # /tmp/oc-gate-detached-$$.log from its OWN $$ — a different file from the
   # one the caller was told to read, and the journal row below then has no path to
   # record. A tool that knows the path and withholds it is the defect.
   OC_PRCHECKS_DETACHED=1 OC_PRCHECKS_LOG="$dlog" $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1 &
@@ -1869,7 +1869,7 @@ oc_log_extra "repo" "$REPO"
 # ---------- step 0: FORK-LANE gate (finding 2026-08-31, suggest-options lane)
 case "$REPO" in
   leshchenko1979/opencrabs) : ;;
-  *) echo "$PROG: $REPO not supported — oc-prchecks is fork-lane only (carrier workflow lives on the fork; upstream PR waits use detached gh run list pollers)" >&2
+  *) echo "$PROG: $REPO not supported — oc-gate is fork-lane only (carrier workflow lives on the fork; upstream PR waits use detached gh run list pollers)" >&2
      oc_log_extra "fork_lane_gate" "refused:$REPO"
      exit 2 ;;
 esac
@@ -1986,7 +1986,7 @@ if command -v jq >/dev/null 2>&1 && [ -f "${OC_TOOLS_LOG:-/nonexistent}" ]; then
   # liveness unverifiable -> fail-closed rc 8 (#115B, n=1663 Q2).
   PR_CUTOFF="$(($(date +%s) - ${OC_PRCHECKS_DEDUP_WINDOW:-21600}))"
   PR_PRIOR="$(tail -n 300 "$OC_TOOLS_LOG" 2>/dev/null | jq -R -r --arg sha "$SHA" --arg ref "$REF" --argjson cutoff "$PR_CUTOFF" \
-    "${OC_LOG_JQ_TS:-}"'fromjson? | select(.tool == "oc-prchecks")
+    "${OC_LOG_JQ_TS:-}"'fromjson? | select(.tool == "oc-gate")
     | select(((.extra.run_id // "") | tostring) != "")
     | select(((.extra.sha // "") == $sha) or ((.args // "") | contains($sha)) or ((.extra.ref // "") == $ref and ($ref | length) > 3))
     | select((ts_epoch) >= $cutoff)
@@ -1999,7 +1999,7 @@ if command -v jq >/dev/null 2>&1 && [ -f "${OC_TOOLS_LOG:-/nonexistent}" ]; then
       # #115 B fail-closed (refusal semantics per n=1663 Q2): a same-ref run
       # witness exists but its liveness is undeterminable — dispatching would
       # risk concurrency-cancelling a live run. Refuse; the lane resolves.
-      echo "$PROG: AMBIGUOUS: journal shows same-ref run=$PR_PRIOR (sha ${SHA:0:8}) but gh run view cannot determine its status — dispatch REFUSED (fail-closed, #115B). Resolve: gh run view $PR_PRIOR --repo $REPO ; still live -> oc-prchecks resume $PR_PRIOR --wait N ; confirmed dead -> re-run this command" >&2
+      echo "$PROG: AMBIGUOUS: journal shows same-ref run=$PR_PRIOR (sha ${SHA:0:8}) but gh run view cannot determine its status — dispatch REFUSED (fail-closed, #115B). Resolve: gh run view $PR_PRIOR --repo $REPO ; still live -> oc-gate resume $PR_PRIOR --wait N ; confirmed dead -> re-run this command" >&2
       oc_log_extra "cf2_ambiguous" "$PR_PRIOR"
       flock -u 8
       exit 8
@@ -2143,7 +2143,7 @@ RUN_ID=""
 # so a stale older lane's run is never adopted.
 CARRIER_HEAD="$("$GH_BIN" api "repos/$REPO/git/ref/heads/$CARRIER" --jq '.object.sha' 2>/dev/null || true)"
 [ -n "$CARRIER_HEAD" ] || {
-  echo "$PROG: carrier head unresolvable via branches API (ref $CARRIER on $REPO) — refusing time-window adoption (would match ANY run); re-run once the carrier ref resolves: oc-prchecks $REF --wait $WAIT_SECS" >&2
+  echo "$PROG: carrier head unresolvable via branches API (ref $CARRIER on $REPO) — refusing time-window adoption (would match ANY run); re-run once the carrier ref resolves: oc-gate $REF --wait $WAIT_SECS" >&2
   oc_log_extra "carrier_head" "unresolvable"
   exit 7
 }
@@ -2241,7 +2241,7 @@ while :; do
   STATUS="$(printf '%s' "$ST" | jq -r '.status')"
   [ "$STATUS" = "completed" ] && break
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "IN-FLIGHT run=$RUN_ID $RUN_URL (still $STATUS after ${WAIT_SECS}s — resume: oc-prchecks resume $RUN_ID --wait $WAIT_SECS)"
+    echo "IN-FLIGHT run=$RUN_ID $RUN_URL (still $STATUS after ${WAIT_SECS}s — resume: oc-gate resume $RUN_ID --wait $WAIT_SECS)"
     oc_log_extra "watch" "timeout"
     exit 5
   fi
@@ -2300,7 +2300,7 @@ red_diagnostics() { # $1=run-id ; reads $JOBS ; always returns 0
 # Verdicts fire ONLY on a terminal run conclusion (the 23:45:07Z RED fired 7s
 # BEFORE conclusion=success — stale reads must never verdict).
 if [ -z "$CONCLUSION" ] || [ "$CONCLUSION" = "null" ]; then
-  echo "IN-FLIGHT run=$RUN_ID $RUN_URL (non-terminal at verdict time — resume: oc-prchecks resume $RUN_ID --wait $WAIT_SECS)" >&2
+  echo "IN-FLIGHT run=$RUN_ID $RUN_URL (non-terminal at verdict time — resume: oc-gate resume $RUN_ID --wait $WAIT_SECS)" >&2
   oc_log_extra "verdict_reason" "non-terminal"
   exit 5
 fi
@@ -2327,7 +2327,7 @@ case "$CONCLUSION" in
     # failure, and this tiebreak used to read it as one. Measured (lane
     # 212b3c83, run 44531344769): job `gate / PR-lane all-features tests
     # (non-blocking)` concluded `failure` from a 40-minute step timeout while
-    # the RUN concluded `success`, and `oc-ship-chain` LEG1 read RED 19s later
+    # the RUN concluded `success`, and `oc-ship` LEG1 read RED 19s later
     # on a gate that was green — the lane could not ship.
     #
     # The tiebreak is structurally redundant in this arm and that is the point:
@@ -2485,9 +2485,9 @@ $_wf_raw2"
     # rc 6 and losing the recovery hint entirely. The handler must always reach
     # exit 6 with whatever hint it can build.
     if [ -n "${SHA:-}" ]; then
-      REARM_HINT=" (re-arm: oc-prchecks $SHA --wait $WAIT_SECS${SUP:+ — or resume superseding run: oc-prchecks resume $SUP --wait $WAIT_SECS})"
+      REARM_HINT=" (re-arm: oc-gate $SHA --wait $WAIT_SECS${SUP:+ — or resume superseding run: oc-gate resume $SUP --wait $WAIT_SECS})"
     elif [ -n "$SUP" ]; then
-      REARM_HINT=" (re-arm: oc-prchecks resume $SUP --wait $WAIT_SECS)"
+      REARM_HINT=" (re-arm: oc-gate resume $SUP --wait $WAIT_SECS)"
     else
       REARM_HINT=""
     fi

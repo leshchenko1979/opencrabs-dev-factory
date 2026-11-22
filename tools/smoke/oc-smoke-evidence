@@ -29,7 +29,7 @@
 #   written to whatever directory the caller happened to be in, a decoy holding
 #   none of the evidence (2 rows lost). A divergent ABSOLUTE path is honoured but
 #   announced LOUDLY on stderr, naming the canonical one.
-#   --markers is canonical (matches oc-artifact-verify); --strings is a
+#   --markers is canonical (matches oc-verify-artifact); --strings is a
 #   deprecated FLAG alias kept for back-compat (E2 finding 6, v0.4.72). The
 #   alias names the FLAG only: since #376 neither form invokes strings(1) --
 #   the scan is a byte-level grep -a -F against the file itself, so a box

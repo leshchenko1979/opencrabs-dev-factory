@@ -31,7 +31,7 @@ oc_snap_guard() {
   _os_root="${OC_SNAP_ROOT:-/tmp}"
 
   # Already running from a mirror? Then THIS file is the private copy — run it.
-  # This is what makes nesting safe: a mirror's own oc-prchecks is invoked via
+  # This is what makes nesting safe: a mirror's own oc-gate is invoked via
   # the mirror's $TOOLS_DIR and must run as-is, not raise a mirror of a mirror.
   case "$_os_tool" in
     "$_os_root"/oc-snap-*) return 0 ;;
@@ -46,7 +46,7 @@ oc_snap_guard() {
   _os_sd="${OC_TOOLS_DIR:-$(cd "$(dirname "$_os_tool")" && pwd)}" || return 0
   _os_sn="$(basename "$_os_tool")"
   # The tool's path RELATIVE to the tools root. Since v0.4.254 the fleet is
-  # grouped into kind-based subdirs (tools/state/oc-ledger, tools/ship/oc-ship-chain),
+  # grouped into kind-based subdirs (tools/state/oc-ledger, tools/ship/oc-ship),
   # so the BASENAME alone names a path that does not exist in the mirror: the
   # copy lands at $_os_mir/state/oc-ledger while a basename test looks for
   # $_os_mir/oc-ledger, misses, and returns 0 with NO diagnostic -- the guard
@@ -60,7 +60,7 @@ oc_snap_guard() {
   # executable -- while tar was still filling it. Measured 2026-11-20 (HQ
   # receipt, chain CHAIN-3f75b276): a mirror was observed holding 3 of its 14
   # directories, still filling, while its name-pid was already gone; and
-  # tools/ship/oc-ship-chain exec'd from a mirror that lacked state/oc-ledger,
+  # tools/ship/oc-ship exec'd from a mirror that lacked state/oc-ledger,
   # dying rc=127 at line 1153 mid-run -- first lost journal line `pre-flight
   # ok`. Every guard below tests ONE path (the tool itself), so a mirror that
   # has the entry point but not its SIBLINGS passes every check and then breaks
@@ -75,9 +75,9 @@ oc_snap_guard() {
     return 0
   }
 
-  # FULL COPY, deliberately not symlinks. oc-ship-chain and oc-deploy invoke
-  # siblings through $TOOLS_DIR (oc-prchecks, oc-deploy, oc-ledger,
-  # oc-issue-log, oc-order-validate, oc-artifact-verify, oc-seal-state,
+  # FULL COPY, deliberately not symlinks. oc-ship and oc-deploy invoke
+  # siblings through $TOOLS_DIR (oc-gate, oc-deploy, oc-ledger,
+  # oc-issue-log, oc-verify-order, oc-verify-artifact, oc-seal,
   # oc-attrib). A symlinked sibling resolves to the MUTABLE original, which
   # re-opens the very hole this guard closes. A new inode for every entry is the
   # whole point.
@@ -172,7 +172,7 @@ oc_snap_guard() {
 
   # Universal verification hook: OC_SNAP_VERBOSE=1 proves, for ANY tool, that
   # this run came off an immutable copy — without adding selftest code to each.
-  #   OC_SNAP_VERBOSE=1 bash tools/harvest/oc-prchecks --selftest 2>&1 | grep 'oc-snap:'
+  #   OC_SNAP_VERBOSE=1 bash tools/harvest/oc-gate --selftest 2>&1 | grep 'oc-snap:'
   [ -n "${OC_SNAP_VERBOSE:-}" ] && \
     printf 'oc-snap: running from %s (pid %s, tool %s)\n' \
       "$_os_mir/$_os_rel" "$$" "$_os_sn" >&2
@@ -187,7 +187,7 @@ oc_snap_guard() {
 #
 # A mirror is named oc-snap-<tool>-<pid>, where <pid> is the TOP-LEVEL guard
 # process. That process forks children (e.g. oc-deploy poll,
-# oc-carrier-features --fetch) which inherit the mirror path in their argv but
+# oc-features --fetch) which inherit the mirror path in their argv but
 # carry their OWN pids -- so a dead name-pid does NOT prove the mirror is
 # unused. Both conditions must hold before removal:
 #   (1) the name pid is gone, AND

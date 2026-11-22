@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-carrier-features — print the carrier workflow's `features:` default set.
+# oc-features — print the carrier workflow's `features:` default set.
 #
 # KERNEL batch D1 (C1, 2026-08-28). The carrier branch ci/quick-build-linux
 # owns the ONLY quick-build-linux.yml; its workflow_dispatch `features:` input
@@ -10,8 +10,8 @@
 # tool and ABORTS on read failure (never a silent fallback set).
 #
 # Usage:
-#   ./tools/ship/oc-carrier-features [--repo ~/opencrabs] [--ref ci/quick-build-linux] [--fetch]
-#   ./tools/ship/oc-carrier-features --selftest
+#   ./tools/ship/oc-features [--repo ~/opencrabs] [--ref ci/quick-build-linux] [--fetch]
+#   ./tools/ship/oc-features --selftest
 #
 # Exit codes: 0 set printed · 2 usage · 3 carrier yml unfetchable ·
 #             4 no features input found / invalid shape
@@ -30,11 +30,11 @@ _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r";
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
-if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-carrier-features" "$@"; else oc_log_finish() { :; }; fi
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-features" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
 PROG="$(basename "$0")"
-usage() { [ -n "${1:-}" ] && echo "oc-carrier-features: $1" >&2; echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest" >&2; exit 2; }   # lens C MED-2 (v0.4.79)
+usage() { [ -n "${1:-}" ] && echo "oc-features: $1" >&2; echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest" >&2; exit 2; }   # lens C MED-2 (v0.4.79)
 help()   { echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest"; echo "Exit: 0 set printed / 2 usage / 3 carrier yml unfetchable / 4 no-features-input"; }  # C-#3: help=0
 
 REPO="$HOME/opencrabs"; REF="ci/quick-build-linux"; FETCH=0; SELFTEST=0

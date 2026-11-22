@@ -626,7 +626,7 @@ OC_ACTOR="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}"
 [ -n "$OC_ACTOR" ] || { echo "gate-fail: OC_ACTOR unset — Session-Id trailer cannot be derived" >&2; exit 3; }
 # gate 2b (#754): the actor MUST be the BARE 36-char session uuid. The trailer
 # carries it VERBATIM, so any other shape passes this tool and is then WIPED by
-# gate 4 (oc-order-validate SIGNATURE), which refuses the ship UNSIGNED and
+# gate 4 (oc-verify-order SIGNATURE), which refuses the ship UNSIGNED and
 # strands fork main — the fault surfaces ~25 CI-minutes later, at SHIP time,
 # where it is expensive (measured 2026-10-01, chain CHAIN-541119b2). Normalise
 # the two observed non-bare forms, then REFUSE anything else HERE, at commit

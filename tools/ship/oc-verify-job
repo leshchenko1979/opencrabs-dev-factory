@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-job-verify — verify a quick-build run's identity + outcome BEFORE trusting it.
+# oc-verify-job — verify a quick-build run's identity + outcome BEFORE trusting it.
 #
 #   Under carrier dispatch, run headSha = carrier branch tip — NEVER the built
 #   tree. The ONLY identity anchor is the JOB NAME embed "(<full-sha>, <features>)"
@@ -34,7 +34,7 @@ if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
 set -u
 set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
-if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-job-verify" "$@"; else oc_log_finish() { :; }; fi
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-verify-job" "$@"; else oc_log_finish() { :; }; fi
 _OC_EMBED="$OC_TOOLS_DIR/lib/oc-embed.sh"
 [ -f "$_OC_EMBED" ] && source "$_OC_EMBED"   # single embed decoder (E2 finding 3, v0.4.72)
 trap 'oc_log_finish $?' EXIT
@@ -46,17 +46,17 @@ JSON_OUT=0
 IDENTITY_ONLY=0
 VERBOSE=0
 
-fail() { echo "oc-job-verify: $2" >&2; exit "$1"; }
+fail() { echo "oc-verify-job: $2" >&2; exit "$1"; }
 say()  { [ "$VERBOSE" = 1 ] && echo "$*" >&2 || true; }
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's LEGACY rc 1 on STDERR
   # Deliberately does NOT exit: the callers choose the rc (this register's usage
   # error is 1, not the fleet's 2 -- RC-CONTRACT legacy row), so only the STREAM
   # is selected here. #748a: `--help` was rc=0 with the text on STDERR, so
-  # `oc-job-verify --help | grep` found nothing while the rc leg stayed green.
+  # `oc-verify-job --help | grep` found nothing while the rc leg stayed green.
   local fd=2
   [ "${1:-1}" = 0 ] && fd=1
-  echo "Usage: oc-job-verify <run-id> <source-ref-40hex> [--features SET] [--wait N] [--repo R] [--json] [--identity-only] [--verbose] [--selftest]" >&$fd
+  echo "Usage: oc-verify-job <run-id> <source-ref-40hex> [--features SET] [--wait N] [--repo R] [--json] [--identity-only] [--verbose] [--selftest]" >&$fd
   echo "Exit: 0 VERIFIED | 1 invocation | 2 IN-FLIGHT | 3 FAILED | 4 REF-MISMATCH | 5 RUN-NOT-FOUND" >&$fd
 }
 

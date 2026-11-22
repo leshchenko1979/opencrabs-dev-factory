@@ -41,7 +41,7 @@ now, never from skill text or session memory *(the yml evolved twice in one day,
 
 The autonomous delta-check cycle is RETIRED. Intake protocol:
 
-1. VALIDATE the ordered sha with the canonical tool — `./tools/oc-order-validate <full-sha> [--features <set>]`. The ORDER carries TWO dimensions (v0.4.15 P7/P8): sha AND feature set — pass the set through (`--features`), it becomes the dispatch `features=` input; a bare sha is ambiguous under single-flight (same sha, different set = DISTINCT build). The tool checks merge-base containment vs `origin/main` + Session-Id trailer scan; exit codes = the register (0 VALID / 1 invocation / 2 UNMERGED / 3 UNSIGNED / 4 UNKNOWN-REF, SKILL.md §Tool table). No manual `git merge-base` / trailer hand-scan on the happy path — signing is self-enforcing: an unsigned author cannot order a build.
+1. VALIDATE the ordered sha with the canonical tool — `./tools/oc-verify-order <full-sha> [--features <set>]`. The ORDER carries TWO dimensions (v0.4.15 P7/P8): sha AND feature set — pass the set through (`--features`), it becomes the dispatch `features=` input; a bare sha is ambiguous under single-flight (same sha, different set = DISTINCT build). The tool checks merge-base containment vs `origin/main` + Session-Id trailer scan; exit codes = the register (0 VALID / 1 invocation / 2 UNMERGED / 3 UNSIGNED / 4 UNKNOWN-REF, SKILL.md §Tool table). No manual `git merge-base` / trailer hand-scan on the happy path — signing is self-enforcing: an unsigned author cannot order a build.
 2. SINGLE-DISPATCH INVARIANT (owner directive 2026-08-26: ONE CI flight, ever —
    GitHub Actions budget): at most ONE quick-build dispatch exists at any moment.
    - ordered sha ⊆ F's recorded source_ref R → **COALESCE**: sender becomes a
@@ -104,7 +104,7 @@ gh run list --workflow=quick-build-linux.yml -R leshchenko1979/opencrabs \
 
 - The run's `headSha` field = the CARRIER branch tip (`ci/quick-build-linux`) —
   NOT the built tree. Verify what the run BUILDS with the canonical tool —
-  `./tools/oc-job-verify <run-id> <full-source-ref> [--features <set>]`: it
+  `./tools/oc-verify-job <run-id> <full-source-ref> [--features <set>]`: it
   resolves the run, then checks the JOB-NAME embed (which carries `(source_ref,
   features)`, the ONLY trusted identity anchor — headSha is expected to equal the
   carrier tip and is reported but never trusted). Exit 0 = exists + GREEN +
@@ -162,7 +162,7 @@ every verification step below is still mandatory.
    ```bash
    gh run download <run-id> -R leshchenko1979/opencrabs -D /tmp/oc-artifact-<run-id>
    ```
-2. Sanity + presence in ONE canonical call — `./tools/oc-artifact-verify <run-id> <binary> '<marker>'` (downloaded-artifact check): ELF64/executable → sha256sum → `--version` sanity → static marker probe on the DOWNLOADED artifact (`strings|grep -c`). Exit 0 = identity + FEATURE-PRESENCE confirmed, emits evidence JSON (sha + `--version` + marker found line); exit 3 = marker MISSING → **NO SWAP** — report "feature missing from build" as a regression, do NOT install; exit 4 = not found/verify failed.
+2. Sanity + presence in ONE canonical call — `./tools/oc-verify-artifact <run-id> <binary> '<marker>'` (downloaded-artifact check): ELF64/executable → sha256sum → `--version` sanity → static marker probe on the DOWNLOADED artifact (`strings|grep -c`). Exit 0 = identity + FEATURE-PRESENCE confirmed, emits evidence JSON (sha + `--version` + marker found line); exit 3 = marker MISSING → **NO SWAP** — report "feature missing from build" as a regression, do NOT install; exit 4 = not found/verify failed.
    - IDENTITY semantics (this is provenance, not byte-equality): the recorded sha256sum is that artifact's identity, carried into the swap receipt + Step 5 baseline. It does NOT need to match the INSTALLED binary — a real update changes bytes by definition, so byte-equality would only prove a same-build re-swap. Provenance chain: job-name embed = `source_ref` (Step 1) → ELF64/executable → `--version` sanity. *(2026-08-25: `--version` prints `0.3.83` on every build, brand-new trees included.)* `--version` output is DECORATIVE and never identifies the build (execution sanity signal only — neither a smoke test nor code tests, SKILL.md §Test ontology).
 3. Backup the live binary:
    ```bash
@@ -212,7 +212,7 @@ oc-postswap-health.sh; zero oc-bounce units loaded). Destinations stay FIXED:
 opacity caused a false "lost report" audit on 2026-08-26; that is why both are
 written here.
 
-**Phase A - pre-restart seal (same turn as the swap):** seal via the canonical tool `./tools/oc-seal-state <full-sha> ...` (Step 5 item 4 owns these writes; raw jq/hand rewrites forbidden), then fire the restart as ONE chained
+**Phase A - pre-restart seal (same turn as the swap):** seal via the canonical tool `./tools/oc-seal <full-sha> ...` (Step 5 item 4 owns these writes; raw jq/hand rewrites forbidden), then fire the restart as ONE chained
 detached unit (owner order 2026-08-26 13:58:02Z, ingress log verified: "did you
 attach &sleep to the restart command? you should have…" — the sleep MUST ride
 the restart command itself, NOT a post-resume step):
@@ -286,7 +286,7 @@ which may already be ahead of what the binary holds):
    or PINGED-SILENT → one retry → `a2a_send` fallback → still nothing: record
    UNREACHABLE in the closing report, never block. No ledger "pinged" entries
    without wake evidence.
-4. Seal the state with the canonical tool — `./tools/oc-seal-state <full-sha> --run-id <id> --binary-sha <artifact-sha> --features <set> [--contributors <uuid1,uuid2>...] [--marker <marker> --found <1|0> --evidence '<line>']`. Writes/rewrites `baseline.json` + appends `orders.json` (if the ledger is non-empty) in ONE atomic call, exit codes = the register (0 ok / 1 invocation / 2 scan-fail / 3 write-fail, SKILL.md §Tool table). Contributor list is trailer-derived (Step 5 item 3); a `--marker` group carries the FEATURE-PRESENCE evidence (`feature_presence:{marker,found,evidence}`) from Step 3 item 2 into the schema. Never hand-edit baseline/orders via `jq` inline — the tool owns the write (read-back verified).
+4. Seal the state with the canonical tool — `./tools/oc-seal <full-sha> --run-id <id> --binary-sha <artifact-sha> --features <set> [--contributors <uuid1,uuid2>...] [--marker <marker> --found <1|0> --evidence '<line>']`. Writes/rewrites `baseline.json` + appends `orders.json` (if the ledger is non-empty) in ONE atomic call, exit codes = the register (0 ok / 1 invocation / 2 scan-fail / 3 write-fail, SKILL.md §Tool table). Contributor list is trailer-derived (Step 5 item 3); a `--marker` group carries the FEATURE-PRESENCE evidence (`feature_presence:{marker,found,evidence}`) from Step 3 item 2 into the schema. Never hand-edit baseline/orders via `jq` inline — the tool owns the write (read-back verified).
 
 Failure attribution (red CI logs, or an editor's smoke-test report came back
 FAIL — the two failure kinds, SKILL.md Test ontology):

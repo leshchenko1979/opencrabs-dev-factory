@@ -2865,7 +2865,7 @@ def run_selftest():
     }
     lane_toolsmith = {
         "uuid": "lane-toolsmith", "class": "ACTIVE", "is_busy": False,
-        "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy, oc-prchecks)",
+        "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy, oc-gate)",
         "raw": {"role": "toolsmith"},
     }
     lane_editor_verbose = {
@@ -3073,11 +3073,11 @@ def run_selftest():
     assert_true("#27 ANALOGY: a tool named only as an analogy's sibling does not "
                 "claim the domain",
                 "tools" not in detect_issue_domains(
-                    {"title": "", "body": "the same defect class as oc-prchecks: the "
+                    {"title": "", "body": "the same defect class as oc-gate: the "
                                           "verdict never wakes the caller"}))
     assert_true("#27 ANALOGY control: the analogy's own subject still claims",
                 "tools" in detect_issue_domains(
-                    {"title": "", "body": "oc-prchecks self-detaches and strands the verdict"}))
+                    {"title": "", "body": "oc-gate self-detaches and strands the verdict"}))
     assert_true("#27 NEGATION: a negated tool mention does not claim the domain",
                 "tools" not in detect_issue_domains(
                     {"title": "", "body": "this is not oc-ledger work"}))
@@ -3148,7 +3148,7 @@ def run_selftest():
                      "streaming-guard #105 transfer: rebase+gate feat/streaming-empty-finish-guard",
                      "#92 demoted-host guard",
                      "#438 local half - skill curation (compaction signal / token bound / mechanical shed)",
-                     "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy, oc-prchecks)"):
+                     "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy, oc-gate)"):
         assert_true("#546: prose feature %r does NOT arm the bash domain" % _generic[:38],
                     "bash" not in _domains_for_text(_generic))
     for _shell in ("bash tool env carries no session identity",

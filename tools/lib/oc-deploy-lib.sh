@@ -68,10 +68,10 @@ DEPLOYED="$STATE_DIR/deployed.sha"
 DEPLOYED_META="$STATE_DIR/deployed.meta.json"
 JOURNAL_DIR="$STATE_DIR/oc-deploy/journal"
 TOOLS_DIR="$OC_TOOLS_DIR"   # script-relative (Duty-6 P0 fix 2026-08-31: $STATE_DIR/tools/ never existed post-split — latent ship breaker, lenses B+E)
-VALIDATE="${OC_DEPLOY_VALIDATE:-$TOOLS_DIR/ship/oc-order-validate}"
+VALIDATE="${OC_DEPLOY_VALIDATE:-$TOOLS_DIR/ship/oc-verify-order}"
 # CONSENT tool var retired 2026-08-28 (consent process eliminated by owner order)
-ARTVERIFY="${OC_DEPLOY_ARTVERIFY:-$TOOLS_DIR/ship/oc-artifact-verify}"
-SEAL="${OC_DEPLOY_SEAL:-$TOOLS_DIR/ship/oc-seal-state}"
+ARTVERIFY="${OC_DEPLOY_ARTVERIFY:-$TOOLS_DIR/ship/oc-verify-artifact}"
+SEAL="${OC_DEPLOY_SEAL:-$TOOLS_DIR/ship/oc-seal}"
 ATTRIB="${OC_DEPLOY_ATTRIB:-$TOOLS_DIR/state/oc-attrib}"   # issue #24 D1: contributors/fanout backend
 REMOTE="${OC_DEPLOY_REMOTE:-https://github.com/leshchenko1979/opencrabs.git}"
 FORK="${OC_DEPLOY_FORK:-leshchenko1979/opencrabs}"
@@ -153,7 +153,7 @@ lineage_next_step() { # <verdict> <prev> <sha> <twin>
   case "$1" in
     monotonic) echo "next: proceed — the incoming build is a descendant of the deployed sha." ;;
     rewritten) echo "next: proceed — the deployed change is preserved as $4 in the incoming lineage (accepted automatically; no action needed)." ;;
-    absent)    echo "next: DO NOT swap. The incoming build does not carry the deployed change. Re-dispatch a fresh build from fork main (oc-ship-chain), or, if the regression is intentional and audited, re-run with --allow-rewritten-lineage \"<justification>\"." ;;
+    absent)    echo "next: DO NOT swap. The incoming build does not carry the deployed change. Re-dispatch a fresh build from fork main (oc-ship), or, if the regression is intentional and audited, re-run with --allow-rewritten-lineage \"<justification>\"." ;;
     unknown)   echo "next: cannot judge — $2 or $3 is not an object in this repo. Check OC_DEPLOY_REPO and that both shas were fetched." ;;
   esac
 }
@@ -163,8 +163,8 @@ lineage_next_step() { # <verdict> <prev> <sha> <twin>
 # ----------------------------------------------------------------------------
 # T-5 (2026-11-20): ONE value, ONE entry. `oc-deploy features` is the
 # DOCUMENTED way to ask "what feature set does the carrier define"; the
-# standalone oc-carrier-features is an INTERNAL helper behind it. Before this,
-# the live journal carried 660 direct oc-carrier-features invocations against
+# standalone oc-features is an INTERNAL helper behind it. Before this,
+# the live journal carried 660 direct oc-features invocations against
 # 2734 oc-deploy ones — two commands, one value, and a lane that asked the
 # helper directly got a value the ship path could disagree with.
 #
@@ -172,7 +172,7 @@ lineage_next_step() { # <verdict> <prev> <sha> <twin>
 # contract); this verb is a THIN, argument-transparent wrapper. "Same value"
 # is therefore structural, not a coincidence of two implementations: there is
 # only one implementation.
-CARRIER_TOOL_PATH() { echo "${OC_DEPLOY_CARRIER:-$(cd "$(dirname "$0")" && pwd)/oc-carrier-features}"; }
+CARRIER_TOOL_PATH() { echo "${OC_DEPLOY_CARRIER:-$(cd "$(dirname "$0")" && pwd)/oc-features}"; }
 
 # carrier_features [--repo P] [--ref B] [--no-fetch] -> prints the set
 carrier_features() {
@@ -456,7 +456,7 @@ shadow_log() { # <op> <sha> <features> <result>
 # Resolve the fork-main tip from the DEDICATED ref this tool's own fetch writes
 # (`+refs/heads/main:refs/oc-deploy/main`), and only fall back to FETCH_HEAD.
 # FETCH_HEAD is ONE shared, mutable file per repository, rewritten by EVERY
-# `git fetch` in that repo — oc-prchecks fetches ci/quick-build-linux, harvest
+# `git fetch` in that repo — oc-gate fetches ci/quick-build-linux, harvest
 # lanes fetch adolfousier/upstream — so a concurrent fetch landing in the ~2 s
 # window between our fetch and this read silently substituted another remote's
 # tip. Measured 2026-09-29 08:33Z (chain oc-ship-702-082945, sha 2a39b676): the
@@ -856,7 +856,7 @@ oc_deploy_parse_args() { # $@ = flags for THIS invocation (the verb already shif
 SHA=""; FEATURES=""; FEATURES_EXPLICIT=0; EXECUTE=0; RUN_ID=""; DRILL=0; ARTDIR=""; DRYRUN=0; WITH_DELTA=0; ALLOW_DROP=0   # FEATURES="" = resolve from carrier (KERNEL D2, 2026-08-28)
 WAIT_SECS=0; NOTIFY_SESSION=""   # C-#2: poll --wait / --notify-session
 ALLOW_REWRITTEN_LINEAGE=0; RW_JUSTIFY=""; RW_ACTOR="${OC_DEPLOY_ACTOR:-$(id -un 2>/dev/null || echo unknown)}"   # v0.4.151: audited swap-guard override
-GATED_RUN=""; GATED_SHA=""; ALLOW_UNGATED=0; UNGATED_JUSTIFY=""   # #355: gate-before-land (reuses oc-ship-chain's --gated-run/--gated-sha contract)
+GATED_RUN=""; GATED_SHA=""; ALLOW_UNGATED=0; UNGATED_JUSTIFY=""   # #355: gate-before-land (reuses oc-ship's --gated-run/--gated-sha contract)
 # #77: scheduling class. `low` (nice 19 + ionice class idle) is the default
 # because ship/poll sit in remote-CI waits for minutes and must not compete with
 # the daemon. `normal` is the opt-out.
@@ -909,7 +909,7 @@ done
 # scheduling priority #77 (moved verbatim: 2158-2196)
 # ----------------------------------------------------------------------------
 # ---- scheduling priority (#77) ----------------------------------------------
-# Applied to THIS process so every child (gh, git, oc-prchecks) inherits it at
+# Applied to THIS process so every child (gh, git, oc-gate) inherits it at
 # fork. `renice` rather than a `nice -n 19` wrapper: swap-execute may already
 # have re-exec'd us out of the unit cgroup, and a second exec layer would make
 # "which PID is the deploy" depend on which branches fired.
@@ -977,7 +977,7 @@ printf 'oc-deploy %s: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
 # ----------------------------------------------------------------------------
 oc_features_resolve() {
 # KERNEL D2 (2026-08-28): --features omitted -> resolve the carrier's
-# features default via oc-carrier-features. A carrier read FAILURE ABORTS —
+# features default via oc-features. A carrier read FAILURE ABORTS —
 # the hardcoded fallback set was deleted, never silently ship a wrong set.
 # FEATURE-DEFAULT law (HQ 2026-09-07, incident #125 lane d5863180 / carrier
 # run 34143410835): the carrier default (telegram) DESYNCED from the live
@@ -991,7 +991,7 @@ oc_features_resolve() {
 # and `eval` could never reach the live binary. The old justification does
 # not hold for an addition — within one ship->poll->swap chain the same
 # $FEATURES feeds the dispatch (-f features=), swap-execute --features and
-# oc-seal-state --features, so build and swap cannot disagree. So: an
+# oc-seal --features, so build and swap cannot disagree. So: an
 # explicit --features that DROPS a deployed feature fails fast here (unless
 # --allow-features-drop), an addition proceeds and is shadow-logged, and an
 # omitted --features still defers to deployed.meta.json WHEN THE CARRIER

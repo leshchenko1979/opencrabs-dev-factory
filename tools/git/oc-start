@@ -274,5 +274,5 @@ WT_BASE="$(oc_wt_base)"
 WT="$(oc_wt_resolve "$TASK")"
 echo "STARTED issue=#$ISSUE branch=$BRANCH worktree=$WT"
 echo "  next: edit in $WT, commit via oc-commit, then ship:"
-echo "  oc-ship-chain --sha <head-sha> --branch $BRANCH --issue $ISSUE"
+echo "  oc-ship --sha <head-sha> --branch $BRANCH --issue $ISSUE"
 exit 0

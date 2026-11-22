@@ -167,9 +167,9 @@ swap_execute() {
     AV_OUT="$(OC_REPO="$FORK" "$ARTVERIFY" "$BIN" --source "$SHA" --run-id "$RUN_ID" --repo "$FORK" --json 2>&1)"; AV_RC=$?
     if [ "$AV_RC" -ne 0 ] || [ -n "$SRC_FLAG" ] && [ "$SRC_FLAG" != "$SHA" ]; then
       jline verify "${AV_RC:-1}" "$(jq -cn --arg r "$RUN_ID" --arg s "$SRC_FLAG" --arg o "${AV_OUT:0:400}" '{run_id:$r, source_ref:$s, artifact_sha256:$o, reason:"artifact-verify-fail"}')"
-      die 2 "oc-artifact-verify FAILED (exit $AV_RC) or source_ref mismatch ($SRC_FLAG != $SHA) — nothing touched"
+      die 2 "oc-verify-artifact FAILED (exit $AV_RC) or source_ref mismatch ($SRC_FLAG != $SHA) — nothing touched"
     fi
-    jline verify 0 "$(jq -cn --arg r "$RUN_ID" --arg s "$SHA" --arg a "$EXPECTED" --arg f "$FEATURES" --arg sf "$SRC_FLAG" '{run_id:$r, source_ref:$s, artifact_sha256:$a, features:$f, build_flags_ref:$sf, provenance:"oc-artifact-verify PASS"}')"
+    jline verify 0 "$(jq -cn --arg r "$RUN_ID" --arg s "$SHA" --arg a "$EXPECTED" --arg f "$FEATURES" --arg sf "$SRC_FLAG" '{run_id:$r, source_ref:$s, artifact_sha256:$a, features:$f, build_flags_ref:$sf, provenance:"oc-verify-artifact PASS"}')"
   fi
 
   # --- 3. backup (MUST land before install; skip aborts the swap) ---

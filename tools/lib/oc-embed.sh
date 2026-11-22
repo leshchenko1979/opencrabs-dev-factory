@@ -6,9 +6,9 @@
 # "(<40-hex>)". TWO functions, ONE home for each predicate:
 #   oc_decode_job_embed    -> "sha|features" or empty   (TWO-FIELD ONLY)
 #   oc_decode_job_sha_any  -> 40-hex sha or empty        (EITHER shape)
-# ONE implementation: oc-job-verify and oc-artifact-verify both had private
+# ONE implementation: oc-verify-job and oc-verify-artifact both had private
 # copies that had already drifted (grep vs sed, plus a dead identical fallback
-# in oc-job-verify); oc-deploy carried a private any-shape copy from #72 until
+# in oc-verify-job); oc-deploy carried a private any-shape copy from #72 until
 # factory #34 moved it here.
 #
 # Function form so callers keep their own gh/jq plumbing; sourcing guard

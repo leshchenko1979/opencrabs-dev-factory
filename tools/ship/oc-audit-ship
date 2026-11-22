@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-ship-audit — C6 (lens C, Duty-6 2026-08-31): dispatch-WITHOUT-swap alarm.
+# oc-audit-ship — C6 (lens C, Duty-6 2026-08-31): dispatch-WITHOUT-swap alarm.
 # Scans the unified tools.log for SUCCESSFUL ship dispatches (oc-deploy
 # "ship --sha <sha> ... --execute", exit 0) and pairs each against swap
 # evidence: a swap journal (swap-<sha>*.jsonl with a step:"auto-swap" line)
@@ -19,7 +19,7 @@
 # build that was never swapped.
 #
 # Usage:
-#   oc-ship-audit [--hours N] [--log <tools.log>] [--journal-dir <dir>]
+#   oc-audit-ship [--hours N] [--log <tools.log>] [--journal-dir <dir>]
 #                 [--grace <min>] [--meta <deployed.meta.json>]
 #                 [--supersede-hours N] | --selftest
 #
@@ -36,7 +36,7 @@ _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r";
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
-if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-ship-audit" "$@"; else oc_log_finish() { :; }; fi
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-audit-ship" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
 usage() { echo "usage: $0 [--hours N] [--log <tools.log>] [--journal-dir <dir>] [--grace <min>] | --selftest" >&2; exit 2; }
@@ -144,12 +144,12 @@ OCDEV_DIR="${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
 DEPLOYED_META="$OCDEV_DIR/deployed.meta.json"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --hours) [ $# -ge 2 ] || { echo "oc-ship-audit: --hours needs a value" >&2; usage; exit 2; }; HOURS=""$2""; shift 2 ;;
-    --log) [ $# -ge 2 ] || { echo "oc-ship-audit: --log needs a value" >&2; usage; exit 2; }; LOG=""$2""; shift 2 ;;
-    --journal-dir) [ $# -ge 2 ] || { echo "oc-ship-audit: --journal-dir needs a value" >&2; usage; exit 2; }; JDIR=""$2""; shift 2 ;;
-    --grace) [ $# -ge 2 ] || { echo "oc-ship-audit: --grace needs a value" >&2; usage; exit 2; }; GRACE=""$2""; shift 2 ;;
-    --meta) [ $# -ge 2 ] || { echo "oc-ship-audit: --meta needs a value" >&2; usage; exit 2; }; DEPLOYED_META=""$2""; shift 2 ;;
-    --supersede-hours) [ $# -ge 2 ] || { echo "oc-ship-audit: --supersede-hours needs a value" >&2; usage; exit 2; }; SUPERSEDE_HOURS=""$2""; shift 2 ;;
+    --hours) [ $# -ge 2 ] || { echo "oc-audit-ship: --hours needs a value" >&2; usage; exit 2; }; HOURS=""$2""; shift 2 ;;
+    --log) [ $# -ge 2 ] || { echo "oc-audit-ship: --log needs a value" >&2; usage; exit 2; }; LOG=""$2""; shift 2 ;;
+    --journal-dir) [ $# -ge 2 ] || { echo "oc-audit-ship: --journal-dir needs a value" >&2; usage; exit 2; }; JDIR=""$2""; shift 2 ;;
+    --grace) [ $# -ge 2 ] || { echo "oc-audit-ship: --grace needs a value" >&2; usage; exit 2; }; GRACE=""$2""; shift 2 ;;
+    --meta) [ $# -ge 2 ] || { echo "oc-audit-ship: --meta needs a value" >&2; usage; exit 2; }; DEPLOYED_META=""$2""; shift 2 ;;
+    --supersede-hours) [ $# -ge 2 ] || { echo "oc-audit-ship: --supersede-hours needs a value" >&2; usage; exit 2; }; SUPERSEDE_HOURS=""$2""; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -162,7 +162,7 @@ done
 # can emit a false CLEAN. Pre-pass: isolate JSON lines, count and NAME the
 # skipped ones loudly.
 JSON_LOG="$(mktemp)" || exit 3
-trap '_rc=$?; rm -f "$JSON_LOG" /tmp/.oc-ship-audit.$$; oc_log_finish "$_rc"' EXIT
+trap '_rc=$?; rm -f "$JSON_LOG" /tmp/.oc-audit-ship.$$; oc_log_finish "$_rc"' EXIT
 BAD=0
 while IFS= read -r line; do
   case "$line" in
@@ -277,13 +277,13 @@ OC_BUILD_CAND
   else
     printf 'SWAPPED\t%s\t%s\t%s\t%s\n' "$short" "$ts" "$LAG" "$EV"
   fi
-done > /tmp/.oc-ship-audit.$$ 2>/dev/null
+done > /tmp/.oc-audit-ship.$$ 2>/dev/null
 
-if [ -s /tmp/.oc-ship-audit.$$ ]; then
-  cat /tmp/.oc-ship-audit.$$
-  grep -q '^ORPHANED' /tmp/.oc-ship-audit.$$ && ORPHANS=1
+if [ -s /tmp/.oc-audit-ship.$$ ]; then
+  cat /tmp/.oc-audit-ship.$$
+  grep -q '^ORPHANED' /tmp/.oc-audit-ship.$$ && ORPHANS=1
 fi
-rm -f /tmp/.oc-ship-audit.$$
+rm -f /tmp/.oc-audit-ship.$$
 if [ "$ORPHANS" -eq 1 ]; then
   echo "audit: ORPHANED dispatch found — dispatch-only rc=0 is NOT a shipped build" >&2
   exit 1

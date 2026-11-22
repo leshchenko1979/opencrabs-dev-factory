@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# chain-selftest.sh — the BODY of `oc-ship-chain --selftest`, moved VERBATIM
+# ship-selftest.sh — the BODY of `oc-ship --selftest`, moved VERBATIM
 # (one assertion adapted, see below).
 #
-# SOURCED at top level by the SELFTEST_MODE=2 arm of tools/ship/oc-ship-chain.
+# SOURCED at top level by the SELFTEST_MODE=2 arm of tools/ship/oc-ship.
 # It used to be `eval "$(sed -n '/^selftest_impl()/,/^}$/p' "$SELF")"` — a
 # function text-scraped out of its own file, which CANNOT work once the body
 # lives elsewhere: the scrape matches nothing and the suite silently runs ZERO
@@ -25,7 +25,7 @@
   PASS=0; FAIL=0
   # The owning session the fixture commits declare via a Session-Id trailer —
   # the same trailer every editor commit carries (SKILL.md §Session-notify
-  # loop). Test 12 proves oc-ship-chain defaults OC_ACTOR from it.
+  # loop). Test 12 proves oc-ship defaults OC_ACTOR from it.
   FIXTURE_SESSION="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
   # The identity the WAKE fixture lends the chain through the ENVIRONMENT. A
   # selftest must never read the CALLER's identity: tools/tests/run.sh:44
@@ -92,17 +92,17 @@ echo "$*" >> "${FAKE_PRCHECKS_LOG:-/dev/null}"
 # to kill inside. Unset for every other test -> byte-identical behaviour.
 [ -n "${FAKE_SLOW_GATE:-}" ] && sleep "$FAKE_SLOW_GATE"
 # #92: CANCELLED-superseded, emitted in prchecks' OWN line shape
-# (oc-prchecks:2134) so the capture is exercised against the real format
+# (oc-gate:2134) so the capture is exercised against the real format
 # rather than a convenient one -- including the REARM_HINT appended to the
 # SAME line, which is where the phrase `superseding run:` occurs a second
-# time. That second occurrence is `resume superseding run: oc-prchecks
+# time. That second occurrence is `resume superseding run: oc-gate
 # resume <id>`: non-digit text sits between the colon and the number, so it
 # cannot match the capture pattern. The fixture therefore reproduces the
 # real shape and does NOT claim to exercise `head -1`, which is defensive
 # (see the capture site's comment).
 if [ "${FAKE_GATE:-green}" = "infra6" ]; then
-  printf 'oc-prchecks: VERDICT RED (infra) -- the gate run was cancelled by a superseding run\n'
-  printf '  superseding run: 222 -- https://example.invalid/runs/222 (re-arm: oc-prchecks abc --wait 600 — or resume superseding run: oc-prchecks resume 222 --wait 600)\n'
+  printf 'oc-gate: VERDICT RED (infra) -- the gate run was cancelled by a superseding run\n'
+  printf '  superseding run: 222 -- https://example.invalid/runs/222 (re-arm: oc-gate abc --wait 600 — or resume superseding run: oc-gate resume 222 --wait 600)\n'
   exit 6
 fi
 # green unless FAKE_GATE=red
@@ -593,7 +593,7 @@ FGHEOF
   #    causes share; worse, its fixture never reached NON-FF at all. J-1
   #    converts a non-descendant tip into STALE-BASE before the ff-merge runs,
   #    and nothing between J-1 and that merge touches the network, so ancestry
-  #    cannot change in between -- NON-FF (oc-ship-chain, residual arm) is
+  #    cannot change in between -- NON-FF (oc-ship, residual arm) is
   #    unreachable within one run and has NO leg, deliberately: a leg for a
   #    state the fixture cannot build would be decoration (CODE.md item 3).
   #    This fixture -- divergent but NON-CONFLICTING -- is exactly the state
@@ -706,7 +706,7 @@ FGHEOF
   RC=0; OUT="$(run_chain --sha "$TSHA" --branch feat 2>&1)" || RC=$?
   check_rc "tip-moved-rc5" "$RC" 5
   case "$OUT" in *"branch tip moved under the chain"*) ok "tip-moved-message" ;; *) bad "tip-moved-message: $OUT" ;; esac
-  case "$OUT" in *"oc-ship-chain --sha "*"--branch feat"*) ok "tip-moved-resume-command" ;; *) bad "tip-moved-resume-command: $OUT" ;; esac
+  case "$OUT" in *"oc-ship --sha "*"--branch feat"*) ok "tip-moved-resume-command" ;; *) bad "tip-moved-resume-command: $OUT" ;; esac
   grep -q "LEG3 TIP-MOVED" "$T/journal.log" && ok "tip-moved-journal" || bad "tip-moved-journal"
   [ "$(git -C "$T/clone" rev-parse HEAD)" = "$MAIN_BEFORE" ] && ok "tip-moved-main-untouched" || bad "tip-moved-main-untouched"
   git -C "$T/clone" branch -f feat "$FSHA"   # restore for the tests that follow
@@ -1158,7 +1158,7 @@ EOF
     *) ok "gated-run-gh-failure-no-phantom-verdict" ;;
   esac
 
-  # 6b. gated-run with in_progress status triggers oc-prchecks resume
+  # 6b. gated-run with in_progress status triggers oc-gate resume
   cat > "$T/fake-gh-run-inprogress" <<'EOF'
 #!/usr/bin/env bash
 echo "in_progress null in_progress"
@@ -1183,7 +1183,7 @@ EOF
   # and would bypass the ledger path under test. The battery exports it =1
   # globally, so neutralize it explicitly and redirect the tool log instead.
   mkdir -p "$T/bin"
-  cp "$SELF" "$T/bin/oc-ship-chain"
+  cp "$SELF" "$T/bin/oc-ship"
   mkdir -p "$T/bin/state"
   cat > "$T/bin/state/oc-ledger" <<'EOF'
 #!/usr/bin/env bash
@@ -1196,7 +1196,7 @@ EOF
     OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" \
     OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$T/tools.log" \
     OC_SHIPCHAIN_FREEZE_OVERRIDE=1 OC_DEPLOY_STATE_DIR="$T/state" \
-      bash "$T/bin/oc-ship-chain" "$@"
+      bash "$T/bin/oc-ship" "$@"
   }
   rm -f "$T/journal.log"
   git -C "$T/clone" checkout -q main
@@ -1276,7 +1276,7 @@ EOF
     *) ok "journal-rc9-not-rc4" ;; esac
 
   # 9-11. LEG1 gate rc 5 is NON-TERMINAL, never infra (defect fix 2026-09-11,
-  # lane 4b4463d5). oc-prchecks rc 5 = "still in flight after --wait" with the
+  # lane 4b4463d5). oc-gate rc 5 = "still in flight after --wait" with the
   # live run id on stdout; the old `*)` arm made it fatal, so a FRESH chain
   # killed itself while its own gate was still building — ledger n=2595 / n=2609
   # / n=2611: three chains, three identical rc-5 deaths, ZERO SWAPPED rows ever.
@@ -1354,7 +1354,7 @@ EOF
   check_rc "wake-rc7-exit-code" "$RC" 7
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"EXITED rc=7"*) ok "wake-rc7-fires" ;;
     *) bad "wake-rc7-fires: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
-  case "$(cat "$T/wake.log" 2>/dev/null)" in *"--sender oc-ship-chain"*) ok "wake-rc7-sender" ;;
+  case "$(cat "$T/wake.log" 2>/dev/null)" in *"--sender oc-ship"*) ok "wake-rc7-sender" ;;
     *) bad "wake-rc7-sender" ;; esac
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"$LEG_UUID"*) ok "wake-rc7-targets-env-lane" ;;
     *) bad "wake-rc7-targets-env-lane" ;; esac
@@ -1501,7 +1501,7 @@ EOF
   [ -s "$T/wake.log" ] && bad "wake-hermetic-no-allow-flag" || ok "wake-hermetic-no-allow-flag"
 
   # 14. #14: a NON-chain invocation must never wake the arming lane. Measured
-  #     2026-10-05: `oc-ship-chain --help` piped into a short reader raised
+  #     2026-10-05: `oc-ship --help` piped into a short reader raised
   #     SIGPIPE (awk, rc 141) which, under set -e, aborted BEFORE `exit 0` and
   #     fired the EXIT-trap wake with SHA and STATE_DIR BOTH unset -- so
   #     "${STATE_DIR:-}/deployed.sha" resolved to the ROOT path, was absent, and
@@ -1589,13 +1589,13 @@ EOF
   # The pushed branch must still pass — the pre-flight is not a blanket block.
   RC=0; OUT="$(run_chain --sha "$FSHA" --branch feat --dry-run 2>&1)" || RC=$?
   check_rc "branch-preflight-pushed-passes" "$RC" 0
-  # oc-prchecks rc 2 is its documented USAGE/PRECONDITION class ("usage /
+  # oc-gate rc 2 is its documented USAGE/PRECONDITION class ("usage /
   # sha-shape / unknown ref / repo-path-no-origin"), never infra — the rc-6
   # contract lists only prchecks 4/7/8 as infra. It must not be funnelled into
   # "gate infra" rc 6 (the reporter's second finding).
   cat > "$T/fake-prchecks-rc2" <<'EOF2'
 #!/usr/bin/env bash
-echo "oc-prchecks: sha deadbeef not found on leshchenko1979/opencrabs" >&2
+echo "oc-gate: sha deadbeef not found on leshchenko1979/opencrabs" >&2
 exit 2
 EOF2
   chmod +x "$T/fake-prchecks-rc2"
@@ -1614,7 +1614,7 @@ EOF2
   esac
 
   # #495 (lane 2fbfb2f8 report): an ABBREVIATED --sha must converge. Pre-fix the
-  # abbreviation reached oc-prchecks, which refused it as "short sha refused
+  # abbreviation reached oc-gate, which refused it as "short sha refused
   # (carrier inputs are FULL-sha-bound; got N chars)" — correctly — and the
   # chain then died rc 2 telling the lane to "push it and re-run" with the SAME
   # abbreviation. The branch and sha were on the remote and matched exactly, so
@@ -1622,7 +1622,7 @@ EOF2
   # printed command could not succeed for ANY input.
   #
   # The stub below is a faithful model of that refusal: it fails rc 2 on a
-  # non-40-char hex argument, exactly as tools/harvest/oc-prchecks:811 does. So this
+  # non-40-char hex argument, exactly as tools/harvest/oc-gate:811 does. So this
   # leg asserts the NORMALISATION (the chain must hand it 40 chars), not merely
   # that some chain ran.
   # MUTATION KILL: delete the entry normalisation block and this leg reddens —
@@ -1632,7 +1632,7 @@ EOF2
   # route.
   cat > "$T/fake-prchecks-sha-bound" <<'EOF2'
 #!/usr/bin/env bash
-# Model oc-prchecks's OWN refusal (tools/harvest/oc-prchecks:811): carrier inputs are
+# Model oc-gate's OWN refusal (tools/harvest/oc-gate:811): carrier inputs are
 # FULL-sha-bound. ONLY the first positional argument is the ref — the invocation
 # is `<bin> <ref> [--repo R] --wait N [--fast]`, and a blanket "every all-hex
 # argument" test misfires on a wait value like 2700;  `--wait` numbers and the
@@ -1642,7 +1642,7 @@ case "$a" in
   *[!0-9a-f]*|'') exit 0 ;;          # not hex (or empty) -> not a ref
 esac
 if [ "${#a}" -ne 40 ]; then
-  echo "oc-prchecks: short sha refused (carrier inputs are FULL-sha-bound; got ${#a} chars)" >&2
+  echo "oc-gate: short sha refused (carrier inputs are FULL-sha-bound; got ${#a} chars)" >&2
   exit 2
 fi
 echo "$*" >> "${FAKE_PRCHECKS_LOG:-/dev/null}"
@@ -1679,7 +1679,7 @@ EOF2
   # assertion would be about a state the fix removed, which is not a control.
   cat > "$T/fake-prchecks-short-refuse" <<'EOF2'
 #!/usr/bin/env bash
-echo "oc-prchecks: short sha refused (carrier inputs are FULL-sha-bound; got 9 chars)" >&2
+echo "oc-gate: short sha refused (carrier inputs are FULL-sha-bound; got 9 chars)" >&2
 exit 2
 EOF2
   chmod +x "$T/fake-prchecks-short-refuse"
@@ -1701,7 +1701,7 @@ EOF2
   # ...and the remediation CONVERGES: it prints the full sha, not the
   # abbreviation it was handed.
   case "$OUT" in
-    *"oc-ship-chain --sha $FSHA --branch feat"*) ok "short-sha-remediation-converges" ;;
+    *"oc-ship --sha $FSHA --branch feat"*) ok "short-sha-remediation-converges" ;;
     *) bad "short-sha-remediation-converges (want --sha $FSHA): $OUT" ;;
   esac
   # Control: the NON-short rc-2 shape keeps the push instruction, so the split
@@ -2378,7 +2378,7 @@ EOF
     sed -n "1,${2}p" "$1" | grep -vE '^[[:space:]]*#' \
       | grep -E '\[[[:space:]]+-d[[:space:]]+"?\$[A-Za-z_]*FORK[A-Za-z_]*/\.git' || true
   }
-  _wt69_prod_end="$(grep -c '' "$SELF")"   # body now lives in tests/chain-selftest.sh, so $SELF is ALL production code
+  _wt69_prod_end="$(grep -c '' "$SELF")"   # body now lives in tests/ship-selftest.sh, so $SELF is ALL production code
   if [ -n "$(_wt69_scan "$SELF" "$_wt69_prod_end")" ]; then
     bad "wt69-no-gitdir-proxy: a \`-d .../.git\` test survives in the CODE — it refuses every linked worktree: $(_wt69_scan "$SELF" "$_wt69_prod_end" | head -1)"
   else
@@ -2506,7 +2506,7 @@ EOF
   # reach the ledger row. Both assertions ride this arm deliberately: 21a is the
   # only place a detach actually FIRES, so they cannot pass on a chain that never
   # detached. `detach-fired` above is their positive control.
-  grep -qF "oc-ship-chain: detached log: $T/detach-stdio.log" <<< "$OUT" \
+  grep -qF "oc-ship: detached log: $T/detach-stdio.log" <<< "$OUT" \
     && ok "detach-prints-log-path" || bad "detach-prints-log-path (stderr lacked the path; got: $(head -c 300 <<< "$OUT"))"
   grep -qF "detached log: $T/detach-stdio.log" "$T/journal.log" 2>/dev/null \
     && ok "detach-journals-log-path" || bad "detach-journals-log-path (journal has no path row: $(head -c 300 "$T/journal.log" 2>/dev/null))"
@@ -2644,7 +2644,7 @@ DRIVER
     OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" OC_FORK_REPO="$T/clone" \
     bash "$SELF" --eval-docs-skip "$FSHA" 2>&1)" || RC=$?
   check_rc "priority-stderr-line-rc1" "$RC" 1
-  grep -q 'oc-ship-chain: priority=low (nice=19' <<< "$OUT" \
+  grep -q 'oc-ship: priority=low (nice=19' <<< "$OUT" \
     && ok "priority-stderr-names-class" || bad "priority-stderr-names-class (got: $OUT)"
 
   # ---- #79: a SIGNAL must terminate the chain, and must be LABELLED so a

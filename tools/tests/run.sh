@@ -9,7 +9,7 @@
 # fatal during the build. Exit 0 only if EVERY test passes; any failure prints
 # a line and exits nonzero (1 = test failed, 2 = harness error/tool missing).
 #
-# The oc-seal-state IFS-join regression here is the one that silently dropped
+# The oc-seal IFS-join regression here is the one that silently dropped
 # pipe operators between jq filters (fix 2026-08-26) — if it ever comes back,
 # this suite goes red before anyone trusts a seal.
 
@@ -91,7 +91,7 @@ _CAP_PTR="${OC_BATTERY_CAPTURE_POINTER:-/tmp/oc-battery-capture.current}"
 note()  { printf '%s\n' "$*"; }
 
 # ---- oc-snap mirror reap on the EXIT path (factory #53) ----------------------
-# The tools this battery invokes (oc-deploy, oc-smoke, oc-job-verify, oc-prchecks)
+# The tools this battery invokes (oc-deploy, oc-smoke, oc-verify-job, oc-gate)
 # each create a /tmp/oc-snap-* mirror through oc_snap_guard, and NOTHING reaped
 # them when the run ended. Measured 2026-10-20: one 392-leg run left 126 mirrors
 # totalling 2.0 GB with zero live owner pids, on a root filesystem at 84%.
@@ -375,7 +375,7 @@ fi
 # this script writes it from two sites with no lock — so two concurrent runs
 # clobber each other's receipt (measured 2026-09-20: commit 284b8456 committed a
 # FAIL receipt under a "pass 213, fail 0" message) and the extra load flakes the
-# timing-sensitive oc-ship-chain detach-survival pair. The whole run is
+# timing-sensitive oc-ship detach-survival pair. The whole run is
 # serialized here. The canonical path is KEPT because consumers read it — a
 # per-lane receipt path would break them.
 #
@@ -496,7 +496,7 @@ fi
 #   jobs=2 -> 398/0, ZERO such rows, 747s
 #   jobs=1 -> 398/0, ZERO such rows, 1171s
 # and all eight "failing" tools pass standalone (oc-deploy 401/0, oc-ledger
-# 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship-chain 278/0,
+# 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship 278/0,
 # oc-watcher-audit 40/0, oc-commit OK, oc-smoke-evidence OK). `dmesg` names the
 # rejection in the run's OWN scope: "cgroup: fork rejected by pids controller in
 # .../run-r985c6cdd….scope". A red that describes the cgroup and not the tree
@@ -864,7 +864,7 @@ DEMO
   # oc-deploy:2976 dispatches `--selftest|selftest) selftest "$@" ;;` as ONE
   # case arm, so a flag-only predicate let a bare-subcommand selftest log every
   # fixture child it spawned into the PRODUCTION tools.log -- 93 rows per run,
-  # six phantom shas across two weeks, read back by oc-ship-audit as ORPHANED
+  # six phantom shas across two weeks, read back by oc-audit-ship as ORPHANED
   # dispatches (rc=1, gating `oc-ledger commit-pending`).
   # #749b made the bare-subcommand arm TOOL-SCOPED: only a tool named in
   # OC_LOG_BARE_SELFTEST_TOOLS suppresses on a first positional reading
@@ -1159,9 +1159,9 @@ _vf_seed oc-ledger 1 4; _vfv="$(_vf_drive oc-ledger)"
 _vf_seed oc-ledger 7 4; _vf7="$(_vf_drive oc-ledger)"
 [ "$_vf7" = "8" ] && ok "flood guard: the SAME tool failing rc 7 still arms it -> rc 8" \
                   || bad "verdict exemption swallowed a real failure: 4x 'oc-ledger rc 7' -> rc $_vf7 (expected 8)"
-_vf_seed oc-job-verify 1 4; _vfu="$(_vf_drive oc-job-verify)"
+_vf_seed oc-verify-job 1 4; _vfu="$(_vf_drive oc-verify-job)"
 [ "$_vfu" = "8" ] && ok "flood guard: an UNLISTED tool's rc 1 still arms it -> rc 8 (no blanket rc-1 rule)" \
-                  || bad "flood guard exempts every rc 1, not the declared ones: 'oc-job-verify rc 1' -> rc $_vfu (expected 8)"
+                  || bad "flood guard exempts every rc 1, not the declared ones: 'oc-verify-job rc 1' -> rc $_vfu (expected 8)"
 rm -rf "$_vfd"
 # ... and the list itself must not outlive the contract it is derived from. Each
 # listed tool needs an RC-CONTRACT.md row declaring rc 1 as an OUTCOME; an entry
@@ -1235,7 +1235,7 @@ PY
 # stream -- and pairs the negative with the positive: each consumer must
 # reference the shared parser.
 _738_naive_re='\.ts // "" \| fromdateiso8601'
-for _738_c in lib/oc-log.sh harvest/oc-prchecks; do
+for _738_c in lib/oc-log.sh harvest/oc-gate; do
   if grep -v '^[[:space:]]*#' "$TOOLS_DIR/$_738_c" | grep -Eq "$_738_naive_re"; then
     bad "$_738_c keeps a naive ts read: $(grep -v '^[[:space:]]*#' "$TOOLS_DIR/$_738_c" | grep -Em1 "$_738_naive_re")"
   else
@@ -1335,33 +1335,33 @@ if [ -f "$TOOLS_DIR/lib/oc-log.sh" ]; then
   rm -rf "$_dsd"
 fi
 
-# ---- 1. oc-order-validate --------------------------------------------------
-section "oc-order-validate"
-run_selftest oc-order-validate
-if tool oc-order-validate; then
-  "$TOOLS_DIR/ship/oc-order-validate" --no-such-arg >/dev/null 2>&1; [ $? -eq 1 ] && ok "unknown arg -> 1 (usage)" || bad "unknown arg -> expected 1"
+# ---- 1. oc-verify-order --------------------------------------------------
+section "oc-verify-order"
+run_selftest oc-verify-order
+if tool oc-verify-order; then
+  "$TOOLS_DIR/ship/oc-verify-order" --no-such-arg >/dev/null 2>&1; [ $? -eq 1 ] && ok "unknown arg -> 1 (usage)" || bad "unknown arg -> expected 1"
 fi
 
-# ---- 02. oc-job-verify -----------------------------------------------------
-section "oc-job-verify"
-run_selftest oc-job-verify
+# ---- 02. oc-verify-job -----------------------------------------------------
+section "oc-verify-job"
+run_selftest oc-verify-job
 
-# ---- 03. oc-artifact-verify ------------------------------------------------
-section "oc-artifact-verify"
-run_selftest oc-artifact-verify
+# ---- 03. oc-verify-artifact ------------------------------------------------
+section "oc-verify-artifact"
+run_selftest oc-verify-artifact
 
-# ---- 04. oc-seal-state -----------------------------------------------------
+# ---- 04. oc-seal -----------------------------------------------------
 # The REGRESSION test: multi-filter merges must keep the pipe operators.
 # The fix was IFS='|' (was IFS=' | ' which joined with a space, dropping the
 # pipes between jq filters -> silent data loss on .sha + .feature_presence).
-section "oc-seal-state (incl. IFS-join regression)"
-run_selftest oc-seal-state
-if tool oc-seal-state; then
+section "oc-seal (incl. IFS-join regression)"
+run_selftest oc-seal
+if tool oc-seal; then
   d="$(mktemp -d)"
   printf '{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_id":1,"name":"keep-me"}' > "$d/b.json"
   printf '{"orders":[]}' > "$d/o.json"
   S="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  OUT="$("$TOOLS_DIR/ship/oc-seal-state" --baseline "$d/b.json" --orders "$d/o.json" \
+  OUT="$("$TOOLS_DIR/ship/oc-seal" --baseline "$d/b.json" --orders "$d/o.json" \
     --sha "$S" --run-id 42 --marker width=1600 --found 1 --dry-run)"
   rc=$?
   [ "$rc" -eq 0 ] || { bad "seal merge exit=$rc (expected 0)"; rm -rf "$d"; }
@@ -1426,7 +1426,7 @@ if [ -f "$TOOLS_DIR/lib/oc-embed.sh" ]; then
     || bad "embed real-prelanegates should be empty, got: '$out'"
 
   # ---- oc_decode_job_sha_any (factory #34): EITHER shape ---------------------
-  # The GATE-MODE anchor. oc-job-verify / oc-artifact-verify verify runs whose
+  # The GATE-MODE anchor. oc-verify-job / oc-verify-artifact verify runs whose
   # only 40-hex job name is the gates job's bare "(<sha>)" -- in gate mode the
   # build job is SKIPPED, so its two-field name never renders and the two-field
   # decoder above finds nothing. This function is the fix; oc_decode_job_embed
@@ -1828,7 +1828,7 @@ fi
 # ---- 8. oc-ci-parity RETIRED v0.4.117 (owner "3 - ok" 21:44Z: zero live use in 12d, C-H2; three-way-diff check in merge runbook supersedes) ----
 
 # ---- 9. oc-contributors RETIRED v0.4.72 (E2 #1: subset of oc-attrib, zero live callers) ----
-# coverage lives in the oc-attrib section; oc-seal-state derives the same list.
+# coverage lives in the oc-attrib section; oc-seal derives the same list.
 
 # ---- 9b. oc-attrib -----------------------------------------------------------
 section "oc-attrib"
@@ -1945,33 +1945,33 @@ fi
 #         process eliminated; tool archived to tools/archive/). Tests removed.
 section "oc-consent-check (RETIRED — skipped)"
 
-# ---- 9d. oc-seal-state orders vocabulary/purge ---------------------------------
-section "oc-seal-state orders"
-run_selftest oc-seal-state
-if tool oc-seal-state; then
+# ---- 9d. oc-seal orders vocabulary/purge ---------------------------------
+section "oc-seal orders"
+run_selftest oc-seal
+if tool oc-seal; then
   d="$(mktemp -d)"; O="$d/orders.json"
   printf '{"orders":[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":"telegram","status":"queued"},{"order_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"dispatched","run_id":"7"}]}\n' > "$O"
-  "$TOOLS_DIR/ship/oc-seal-state" --orders "$O" --mark-order aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --status deployed --order-evidence "PID 1 disk==proc" >/dev/null 2>&1
+  "$TOOLS_DIR/ship/oc-seal" --orders "$O" --mark-order aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --status deployed --order-evidence "PID 1 disk==proc" >/dev/null 2>&1
   [ $? -eq 0 ] && ok "status-only mark accepted" || bad "status-only mark rejected"
   [ "$(jq -r '.orders[0].status' "$O")" = "DEPLOYED" ] && ok "vocabulary uppercased + stored" || bad "status not DEPLOYED"
   [ "$(jq -r '.orders[0].evidence' "$O")" = "PID 1 disk==proc" ] && ok "per-row evidence stored" || bad "evidence missing"
-  "$TOOLS_DIR/ship/oc-seal-state" --orders "$O" --mark-order bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --with-run 99 >/dev/null 2>&1
+  "$TOOLS_DIR/ship/oc-seal" --orders "$O" --mark-order bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --with-run 99 >/dev/null 2>&1
   [ "$(jq -r '.orders[1].run_id' "$O")" = "99" ] && ok "legacy order_sha row markable" || bad "legacy row missed"
   [ "$(jq -r '.orders[1].status' "$O")" = "DISPATCHED" ] && ok "default status DISPATCHED" || bad "default status wrong"
-  "$TOOLS_DIR/ship/oc-seal-state" --orders "$O" --mark-order aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --status BOGUS >/dev/null 2>&1
+  "$TOOLS_DIR/ship/oc-seal" --orders "$O" --mark-order aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --status BOGUS >/dev/null 2>&1
   [ $? -eq 1 ] && ok "invalid vocabulary -> 1" || bad "BOGUS accepted"
-  "$TOOLS_DIR/ship/oc-seal-state" --orders "$O" --purge-order bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1
+  "$TOOLS_DIR/ship/oc-seal" --orders "$O" --purge-order bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1
   [ "$(jq '.orders|length' "$O")" -eq 1 ] && ok "purge removes matching row" || bad "purge failed"
-  "$TOOLS_DIR/ship/oc-seal-state" --orders "$O" --purge-order bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1
+  "$TOOLS_DIR/ship/oc-seal" --orders "$O" --purge-order bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb >/dev/null 2>&1
   [ $? -eq 1 ] && ok "purge unknown sha -> 1" || bad "purge miss not refused"
   rm -rf "$d"
 fi
 
-# ---- 9e. oc-carrier-features (KERNEL C1) -----------------------------------
-section "oc-carrier-features"
-run_selftest oc-carrier-features
-if tool oc-carrier-features; then
-  "$TOOLS_DIR/ship/oc-carrier-features" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
+# ---- 9e. oc-features (KERNEL C1) -----------------------------------
+section "oc-features"
+run_selftest oc-features
+if tool oc-features; then
+  "$TOOLS_DIR/ship/oc-features" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
 fi
 
 # ---- 9f. oc-issue-sweep (KERNEL C3) -----------------------------------------
@@ -2115,7 +2115,7 @@ section "oc-deploy"
 # M2-21 (2026-09-12) e2e: the selftest must be LOG-HERMETIC BY CONSTRUCTION,
 # not by argv shape. Run the BARE subcommand -- the spelling that slipped the
 # flag-only predicate -- with OC_TOOLS_LOG pointed at a temp file and require
-# ZERO rows. Pre-fix this wrote 93 rows of fixture dispatches; oc-ship-audit
+# ZERO rows. Pre-fix this wrote 93 rows of fixture dispatches; oc-audit-ship
 # read six of them back as ORPHANED and rc=1'd a gate that fronts
 # `oc-ledger commit-pending`. OC_TOOLS_NOLOG=0 is REQUIRED: the battery exports
 # it as 1 globally (run.sh:21), which would make this assertion vacuous.
@@ -2236,15 +2236,15 @@ else
 fi
 rm -rf "$d"
 
-# ---- 13. oc-prchecks (KERNEL C5 — one-command PR lint gate) ----------------
-section "oc-prchecks"
-run_selftest oc-prchecks
-if tool oc-prchecks; then
-  SD_PRC="$(mktemp -d)"   # hermetic: usage() writes .oc-prchecks-rc2 into the state dir (goal C, ts 18:34:19Z leak)
-  OC_DEPLOY_STATE_DIR="$SD_PRC" "$TOOLS_DIR/harvest/oc-prchecks" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
-  OC_DEPLOY_STATE_DIR="$SD_PRC" "$TOOLS_DIR/harvest/oc-prchecks" abc123 >/dev/null 2>&1; [ $? -eq 2 ] && ok "short sha -> 2 (FULL-sha shape gate)" || bad "short sha -> expected 2"
+# ---- 13. oc-gate (KERNEL C5 — one-command PR lint gate) ----------------
+section "oc-gate"
+run_selftest oc-gate
+if tool oc-gate; then
+  SD_PRC="$(mktemp -d)"   # hermetic: usage() writes .oc-gate-rc2 into the state dir (goal C, ts 18:34:19Z leak)
+  OC_DEPLOY_STATE_DIR="$SD_PRC" "$TOOLS_DIR/harvest/oc-gate" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
+  OC_DEPLOY_STATE_DIR="$SD_PRC" "$TOOLS_DIR/harvest/oc-gate" abc123 >/dev/null 2>&1; [ $? -eq 2 ] && ok "short sha -> 2 (FULL-sha shape gate)" || bad "short sha -> expected 2"
   rm -rf "$SD_PRC"
-  [ ! -f "${OC_DEPLOY_STATE_DIR:-/root/.opencrabs/profiles/ops/opencrabs-dev}/.oc-prchecks-rc2" ] || true   # informational; real check: no NEW writes below
+  [ ! -f "${OC_DEPLOY_STATE_DIR:-/root/.opencrabs/profiles/ops/opencrabs-dev}/.oc-gate-rc2" ] || true   # informational; real check: no NEW writes below
 fi
 
 # ---- 14. oc-upstream-delta (KERNEL C6 — watch-cycle arithmetic) ------------
@@ -2422,10 +2422,10 @@ if tool oc-commit; then
   "$TOOLS_DIR/git/oc-commit" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
 fi
 
-section "oc-ship-audit"
-run_selftest oc-ship-audit
-if tool oc-ship-audit; then
-  "$TOOLS_DIR/ship/oc-ship-audit" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
+section "oc-audit-ship"
+run_selftest oc-audit-ship
+if tool oc-audit-ship; then
+  "$TOOLS_DIR/ship/oc-audit-ship" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
 fi
 
 section "oc-tg-audit"
@@ -2457,12 +2457,12 @@ if tool oc-roster; then
   "$TOOLS_DIR/state/oc-roster" --no-such-arg >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2" || bad "unknown arg -> expected 2"
 fi
 
-# ---- 18. oc-ship-chain (5→swapped orchestrator, owner GO 16:16Z) -----------
-section "oc-ship-chain (5→swapped orchestrator, owner GO 16:16Z)"
-run_selftest oc-ship-chain
-if tool oc-ship-chain; then
-  "$TOOLS_DIR/ship/oc-ship-chain" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
-  "$TOOLS_DIR/ship/oc-ship-chain" --no-such-arg >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2" || bad "unknown arg -> expected 2"
+# ---- 18. oc-ship (5→swapped orchestrator, owner GO 16:16Z) -----------
+section "oc-ship (5→swapped orchestrator, owner GO 16:16Z)"
+run_selftest oc-ship
+if tool oc-ship; then
+  "$TOOLS_DIR/ship/oc-ship" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
+  "$TOOLS_DIR/ship/oc-ship" --no-such-arg >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2" || bad "unknown arg -> expected 2"
 fi
 
 
@@ -2491,7 +2491,7 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   # (#115) The bound is 60s, not 20s, and the rc is NAMED. A bare `timeout 20`
   # reddened on whichever innocent tool landed on a loaded moment: battery-115
   # (2026-11-20T13:32:24Z) had oc-t5-sweep FAIL here and PASS in its own section
-  # (66c) of the SAME run, and the victim MOVED between runs (oc-ship-chain
+  # (66c) of the SAME run, and the victim MOVED between runs (oc-ship
   # rc=124 under load 11.66). Two measured causes: the tree had grown to 16 MB
   # on disk while the bound stayed at the 36-file figure it was set for, and
   # every oc-* invocation copies that tree through oc_snap_guard before exec
@@ -2892,7 +2892,7 @@ if tool oc-lint-laws; then
   # c24 J-1: the LIVE corpus, actually LINTED. Every leg above and every leg in
   # the tool's own selftest points at a fixture tools/ dir, so DEFAULT_CORPUS is
   # never read and a phantom flag in the SHIPPED law stays green -- which is how
-  # the dead `oc-ship-chain --resume` citation went unseen for weeks. The leg
+  # the dead `oc-ship --resume` citation went unseen for weeks. The leg
   # below runs the real corpus and requires rc 0; the control plants a phantom
   # and requires rc 1, so the leg cannot pass by measuring nothing.
   _LLT="$(mktemp -d -t oc-battery-lint.XXXXXX)"
@@ -4154,7 +4154,7 @@ fi
 # sweep for the second time in this battery.
 EP_DYN=0
 EP_STARVED=0
-for rel in state/oc-ledger ship/oc-deploy harvest/oc-prchecks audit/oc-lint-laws \
+for rel in state/oc-ledger ship/oc-deploy harvest/oc-gate audit/oc-lint-laws \
            smoke/oc-smoke git/oc-commit issue/oc-issue-scope notify/oc-ping-proof \
            tests/run.sh; do
   t="$TOOLS_DIR/$rel"
@@ -4607,7 +4607,7 @@ esac
 # tree at ONE commit: --jobs 4 -> 390 PASS / 8 FAIL carrying 63 "Resource
 # temporarily unavailable" rows; --jobs 2 -> 398/0 and --jobs 1 -> 398/0 with
 # ZERO such rows; and every one of the eight passes standalone (oc-deploy
-# 401/0, oc-ledger 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship-chain
+# 401/0, oc-ledger 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship
 # 278/0, oc-watcher-audit 40/0). `dmesg` names the run's OWN scope: "cgroup:
 # fork rejected by pids controller in .../run-r985c6cdd....scope", and that
 # scope carries pids.max=64. So the preflight reads pids.max BEFORE the
@@ -4772,7 +4772,7 @@ rm -f "$_pf_fx"
 # both are PIPELINES. Under a caller's `set -e` + `set -o pipefail` a no-match
 # grep (or head's SIGPIPE, rc 141) returns non-zero, so the ASSIGNMENT fails and
 # set -e aborts the caller BEFORE the line that handles the empty case can run.
-# oc-ship-chain died rc=1 with no stderr at all on a content-identical rebase,
+# oc-ship died rc=1 with no stderr at all on a content-identical rebase,
 # journalling "LEG1 gate resume rejected" and nothing else, purely because gh
 # listed a sha-less job FIRST -- a leg whose whole purpose is to avoid burning a
 # second full gate, failing on job ORDER rather than on content.

@@ -12,7 +12,7 @@
 #     {"ts":"…Z","tool":"oc-x","actor":"<uuid>","args":"…","exit":0,"secs":1.2,"extra":{},"pid":123}
 #
 # "per process", not "per invocation": a tool that RE-EXECS itself writes one
-# row per process, and `oc-prchecks` does exactly that (its detach escalation
+# row per process, and `oc-gate` does exactly that (its detach escalation
 # re-execs $0 from the immutable mirror, so the parent and the escaped child
 # each run this lib's EXIT trap). The rows are distinguished by `pid` — the
 # parent's hand-off sets OC_LOG_ENABLED=0 so only the CHILD journals, and the
@@ -51,7 +51,7 @@ OC_LOG_START=""
 # the bare SUBCOMMAND slipped the flag-only predicate. Consequence: OC_TOOLS_NOLOG
 # was never exported, so every fixture child the selftest spawned was logged to the
 # PRODUCTION tools.log -- six fixture shas across two weeks (08-31 -> 09-12) that
-# oc-ship-audit read back as ORPHANED dispatches, reddening a gate that fronts
+# oc-audit-ship read back as ORPHANED dispatches, reddening a gate that fronts
 # `oc-ledger commit-pending`. The same predicate guards oc_log_flood_guard, which
 # must never trip on a selftest replaying its own failure fixtures.
 # First-token match for the bare form ONLY: a VALUE that happens to read
@@ -151,11 +151,11 @@ OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601?
 #   oc-issue-dispatch / oc-harvest-dispatch / oc-harvest-census / oc-census
 #                        1 = refused/vetting-failed   — refusal, not an answer
 #   oc-smoke             1 = "Smoke FAIL"              — writes a ledger row, closes
-#   oc-seal-state        1 = bare noop                 — keep the guard strict
-#   oc-job-verify / oc-order-validate / oc-pr-atomicity / oc-deploy /
-#   oc-artifact-verify   1 = legacy USAGE code         — exempting it hides a
+#   oc-seal        1 = bare noop                 — keep the guard strict
+#   oc-verify-job / oc-verify-order / oc-pr-atomicity / oc-deploy /
+#   oc-verify-artifact   1 = legacy USAGE code         — exempting it hides a
 #                                                        real usage bug
-OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-ship-audit:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-t5-sweep:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
+OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-audit-ship:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-t5-sweep:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
 OC_LOG_VERDICT_RCS="${OC_LOG_VERDICT_RCS:-$OC_LOG_VERDICT_RCS_DEFAULT}"
 
 # oc_log_flood_guard — C-F1 (lens C 2026-08-31, owner "Go all"): a runaway
@@ -279,7 +279,7 @@ oc_ledger_path() {
 # oc_session_trailer <commit-message-text> — Duty-6 lens F task 2 (v0.4.91 batch)
 # ONE Session-Id convention for ALL tools: git interpret-trailers semantics —
 # the LAST Session-Id trailer wins (trailers are an ordered stack; the last one
-# is the most recent attribution). Replaces the head -1 (oc-order-validate) vs
+# is the most recent attribution). Replaces the head -1 (oc-verify-order) vs
 # tail -1 (oc-attrib) split that let one quoted-trailer message validate as
 # signed but attribute as unsigned. Falls back to grep semantics when git
 # interpret-trailers is unavailable (non-git context).

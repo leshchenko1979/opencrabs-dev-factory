@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-seal-state — pre-restart state seal (tools/archive/compiler.md Step 5 / Phase A).
+# oc-seal — pre-restart state seal (tools/archive/compiler.md Step 5 / Phase A).
 #
 # Merges this swap's facts into baseline.json (schema-preserving: unknown keys
 # are kept) and optionally records order ledger transitions in orders.json.
@@ -41,7 +41,7 @@ _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r";
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
-if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-seal-state" "$@"; else oc_log_finish() { :; }; fi
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-seal" "$@"; else oc_log_finish() { :; }; fi
 trap 'oc_log_finish $?' EXIT
 
 BASE="${OC_BASELINE:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}/baseline.json}"
@@ -52,17 +52,17 @@ CONTRIB_FROM="" CONTRIB_TO=""
 ADD_ORDER="" ADD_ORDER_FEAT="" MARK_ORDER="" WITH_RUN="" MARK_STATUS="" ORDER_EVIDENCE="" PURGE_ORDER=""
 DRY=0 VERBOSE=0
 
-fail() { echo "oc-seal-state: $2" >&2; exit "$1"; }
+fail() { echo "oc-seal: $2" >&2; exit "$1"; }
 say()  { [ "$VERBOSE" = 1 ] && echo "$*" >&2 || true; }
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's LEGACY rc 2 on STDERR
   # Deliberately does NOT exit: the callers choose the rc (2 for an unknown flag
   # per F-L1, and the bare-invocation noop is 1), so only the STREAM is selected
   # here. #748a: `--help` was rc=0 with the text on STDERR, so
-  # `oc-seal-state --help | grep` found nothing while the rc leg stayed green.
+  # `oc-seal --help | grep` found nothing while the rc leg stayed green.
   local fd=2
   [ "${1:-2}" = 0 ] && fd=1
-  echo "Usage: oc-seal-state [--baseline P] [--orders P] [--git P] [--sha S] [--run-id N] [--binary-sha H] [--features F] [--marker M] [--found 0|1] [--evidence L] [--set-note T] [--cycle N] [--contrib-from A --contrib-to B] [--add-order S --order-features F] [--mark-order S --with-run N] [--status S] [--order-evidence T] [--purge-order S] [--dry-run] [--verbose] [--selftest]" >&$fd
+  echo "Usage: oc-seal [--baseline P] [--orders P] [--git P] [--sha S] [--run-id N] [--binary-sha H] [--features F] [--marker M] [--found 0|1] [--evidence L] [--set-note T] [--cycle N] [--contrib-from A --contrib-to B] [--add-order S --order-features F] [--mark-order S --with-run N] [--status S] [--order-evidence T] [--purge-order S] [--dry-run] [--verbose] [--selftest]" >&$fd
 }
 
 selftest() {
@@ -206,11 +206,11 @@ if [ -n "$ADD_ORDER" ] || [ -n "$MARK_ORDER" ] || [ -n "$PURGE_ORDER" ]; then
     if [ -z "$ADD_ORDER_FEAT" ]; then
       # F2 (lens F, v0.4.72): NO hardcoded feature default — the carrier yml is
       # the single source of truth (SKILL.md §Shared environment facts);
-      # resolve via oc-carrier-features,
+      # resolve via oc-features,
       # abort loudly on read failure (same law as oc-deploy ship).
-      ADD_ORDER_FEAT="$("$OC_TOOLS_DIR/ship/oc-carrier-features" 2>/dev/null)" \
-        || fail 3 "--order-features unset and oc-carrier-features failed — pass --order-features explicitly"
-      [ -n "$ADD_ORDER_FEAT" ] || fail 3 "oc-carrier-features returned an empty feature set"
+      ADD_ORDER_FEAT="$("$OC_TOOLS_DIR/ship/oc-features" 2>/dev/null)" \
+        || fail 3 "--order-features unset and oc-features failed — pass --order-features explicitly"
+      [ -n "$ADD_ORDER_FEAT" ] || fail 3 "oc-features returned an empty feature set"
     fi
     NEWORDERS="$(jq --arg s "$ADD_ORDER" --arg f "$ADD_ORDER_FEAT" \
       '.orders += [{"sha":$s, "features":$f, "status":"queued"}] | .orders |= unique_by(.sha)' "$ORDERS")" \
@@ -243,7 +243,7 @@ if [ -n "$ADD_ORDER" ] || [ -n "$MARK_ORDER" ] || [ -n "$PURGE_ORDER" ]; then
     NEWORDERS="$(printf '%s' "$BASE_ORD" | jq --arg s "$PURGE_ORDER" \
       '.orders |= map(select((.sha // .order_sha) != $s))')" \
       || fail 3 "orders purge failed"
-    if [ "$VERBOSE" = 1 ]; then echo "oc-seal-state: purged: $PURGED" >&2; fi
+    if [ "$VERBOSE" = 1 ]; then echo "oc-seal: purged: $PURGED" >&2; fi
   fi
 fi
 

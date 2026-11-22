@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oc-ship-chain — single-invocation orchestrator: CI gate → issue-log → ff-merge
+# oc-ship — single-invocation orchestrator: CI gate → issue-log → ff-merge
 # into fork main → oc-deploy ship → oc-deploy poll until SWAPPED.
 #
 # Owner GO 2026-09-09 16:16Z ("Go" on the 5→swapped design). Scope ends at
@@ -13,13 +13,13 @@
 # never retries internally.
 #
 # Usage:
-#   oc-ship-chain --sha <sha> --branch <branch> [--issue <n>] [--issue-repo <slug>]
+#   oc-ship --sha <sha> --branch <branch> [--issue <n>] [--issue-repo <slug>]
 #                 [--repo <fork-slug>]
 #                 [--gated-sha <sha>] [--gated-run <id>] [--wait <sec>]
 #                 [--gate-wait <sec>] [--full] [--test-threads <N>]
 #                 [--dry-run] [--no-ledger] [--no-rearm] [--selftest] [--help]
 #                 [--priority low|normal] [--resolve-priority]
-#   oc-ship-chain --eval-docs-skip [<sha>]
+#   oc-ship --eval-docs-skip [<sha>]
 #
 #   --priority low|normal  Scheduling class for the chain and every child it
 #                    forks (default: low = nice 19 + I/O class idle). A chain is
@@ -38,7 +38,7 @@
 #                    fast-forwards the entire branch into main, so a code commit
 #                    under a docs-only tip must gate (#322).
 #                    Can also be paired with --sha <sha>.
-#   --fast           Default gate mode (passes fast=true to oc-prchecks).
+#   --fast           Default gate mode (passes fast=true to oc-gate).
 #   --full|--no-fast Opt-in full test suite gate (~30 min).
 #   --no-rearm       Disable the #78 Class A re-arm supervisor for this run.
 #                    #92: a CANCELLED-superseded gate is re-armed by RESUMING
@@ -57,7 +57,7 @@
 #                    (OC_SHIPCHAIN_REARM_MAX). Env form: OC_SHIPCHAIN_NO_REARM=1.
 #   --test-threads <N>  LEG1 gate: libtest --test-threads for the carrier's
 #                    `Run tests` step — the #1936 Stage-1 hang mitigation,
-#                    forwarded to oc-prchecks' dispatch (factory #39).
+#                    forwarded to oc-gate' dispatch (factory #39).
 #                    FRESH-DISPATCH ONLY: on the --gated-sha / --gated-run
 #                    paths NO leg runs here, so the flag is INERT and the
 #                    chain SAYS SO on stderr rather than dropping it silently
@@ -68,7 +68,7 @@
 #
 # --issue-repo <slug>  The tracker that OWNS --issue, for LEG2's mandatory
 #                    per-commit comment. `--repo` above is the FORK CHECKOUT's
-#                    slug (used by oc-prchecks); this is the ISSUE's tracker.
+#                    slug (used by oc-gate); this is the ISSUE's tracker.
 #                    Resolution order: --issue-repo, then OC_ISSUE_LOG_REPO,
 #                    then a probe of the three known trackers (fork
 #                    leshchenko1979/opencrabs, binary opencrabs/opencrabs,
@@ -87,7 +87,7 @@
 #                    failure — defect #336).
 #                    Env: OC_SHIPCHAIN_SHIP_WAIT.
 # --gate-wait <sec>  LEG1 CI-gate budget (default 2700 = 45 min; the PR-lane
-#                    gate runs ~30 min here, and oc-prchecks' own default is
+#                    gate runs ~30 min here, and oc-gate' own default is
 #                    600 s, which is SHORTER than the gate — see Exit 5/7).
 #                    Env: OC_SHIPCHAIN_GATE_WAIT.
 #
@@ -95,7 +95,7 @@
 #   Runs across Legs 1-3 sequentially. Call with bash tool parameter background: true.
 #   The daemon auto-resumes the session when SWAPPED (rc 0) or on structured exit.
 #
-# Exit (FULL register: tools/docs/RC-CONTRACT.md — `oc-ship-chain` row in the rc table):
+# Exit (FULL register: tools/docs/RC-CONTRACT.md — `oc-ship` row in the rc table):
 #   0 SWAPPED · 2 usage · 3 precondition not met (fork checkout ABSENT or not a git
 #   checkout — a LINKED WORKTREE is accepted, #69; dirty checkout; or $BRANCH absent
 #   from the fork remote. Lane fix, NEVER infra) · 4 GATE-RED / CARRIER-RED
@@ -129,7 +129,7 @@
 #     rc 9      YES  the lock holder is another real ship; wait-and-retry in-tool
 #   Budget: OC_SHIPCHAIN_REARM_MAX (default 2), carried ACROSS the exec in the
 #   environment. Opt out: --no-rearm / OC_SHIPCHAIN_NO_REARM=1. Class rationale and
-#   measured counts: tools/docs/RC-CONTRACT.md (`oc-ship-chain` row).
+#   measured counts: tools/docs/RC-CONTRACT.md (`oc-ship` row).
 
 # Chain-id: every leg stamps the ledger under one id (kind=shipchain)
 #   CHAIN-<shortsha>-<UTCstamp>  →  retrieve the whole run with
@@ -141,7 +141,7 @@
 #    non-existent retrieval path reads "no rows" as "chain never ran".)
 #
 # Env (selftest hooks — never needed in production):
-#   OC_PRCHECKS_BIN  default tools/harvest/oc-prchecks
+#   OC_PRCHECKS_BIN  default tools/harvest/oc-gate
 #   OC_SHIPCHAIN_NO_DOCS_SKIP=1  force the LEG1 gate even for a docs-only sha
 #                    (test/debug hook — the skip is AUTO-DETECTED, never
 #                    lane-declared; see the #20 note at leg 1)
@@ -168,7 +168,7 @@
 #   and EXPORTED, so this run's rows and every child tool's rows are attributed.
 #   With neither, the actor stays unset and oc-ledger keeps its loud unattributed
 #   message — nothing is invented. Canonical text: tools/docs/RC-CONTRACT.md
-#   (`oc-ship-chain` row, "Actor defaulting").
+#   (`oc-ship` row, "Actor defaulting").
 
 # --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
@@ -197,7 +197,7 @@ if [ -f "$TOOLS_DIR/lib/oc-patch.sh" ]; then . "$TOOLS_DIR/lib/oc-patch.sh"; fi
 _OC_LIB="$TOOLS_DIR/lib/oc-log.sh"
 if [ -f "$_OC_LIB" ]; then
   source "$_OC_LIB"
-  oc_log_init "oc-ship-chain" "$@"
+  oc_log_init "oc-ship" "$@"
 else
   oc_log_finish() { :; }
 fi
@@ -426,7 +426,7 @@ _chain_wake_arming_lane() { # $1 = exit code
     *[!0-9]*) : ;;
     *) _rearm_note=" This run was already RE-ARMED ${OC_SHIPCHAIN_REARM_ATTEMPT} time(s) in-tool (budget ${OC_SHIPCHAIN_REARM_MAX:-2}) and the restart did not clear it, so the cause is NOT transient." ;;
   esac
-  oc_notify_session "$bin" "$prof" "oc-ship-chain" "$uuid" \
+  oc_notify_session "$bin" "$prof" "oc-ship" "$uuid" \
     "SHIP-CHAIN ${CHAIN:-?}: EXITED rc=$rc" \
     "The chain armed by this lane has STOPPED with rc=$rc. ${_state} -- ${_rem:-Re-read the chain journal for the failing leg.} Re-read the chain journal for ${SHA:-?} before re-arming. This wake exists because a settled lane is not resumed by the boot classifier.${_rearm_note}" >/dev/null 2>&1 || true
 }
@@ -587,7 +587,7 @@ else
   SELFTEST_MODE=0
 fi
 
-PRCHECKS_BIN="${OC_PRCHECKS_BIN:-$TOOLS_DIR/harvest/oc-prchecks}"
+PRCHECKS_BIN="${OC_PRCHECKS_BIN:-$TOOLS_DIR/harvest/oc-gate}"
 DEPLOY_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-deploy}"
 ISSUELOG_BIN="${OC_ISSUELOG_BIN:-$TOOLS_DIR/issue/oc-issue-log}"
 FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
@@ -608,7 +608,7 @@ usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF" || 
 # on the exit path, where a failing substitution would REPLACE the chain's own
 # rc and corrupt the very audit surface the code is.
 CHAIN_DIE_MSG=""
-die() { CHAIN_DIE_MSG="$1"; printf 'oc-ship-chain: %s\n' "$1" >&2; exit "${2:-2}"; }
+die() { CHAIN_DIE_MSG="$1"; printf 'oc-ship: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 # #69: "is this a git checkout?" must be asked with GIT's predicate, never with a
 # proxy for it. `[ -d "$repo/.git" ]` is false in a LINKED WORKTREE, where `.git`
@@ -657,7 +657,7 @@ GATE_RUN_ID="${GATE_RUN_ID:-}"
 GATE_SUPERSEDING="${GATE_SUPERSEDING:-}"
 FAST=0
 # LEG1 gate budget (defect fix 2026-09-11, lane 4b4463d5). The PR-lane gate on
-# this box takes ~30 min end-to-end; oc-prchecks' own --wait default is 600 s,
+# this box takes ~30 min end-to-end; oc-gate' own --wait default is 600 s,
 # so a fresh chain ALWAYS timed out mid-build and died on a non-terminal code.
 GATE_WAIT="${OC_SHIPCHAIN_GATE_WAIT:-2700}"        # 45 min — one gate, comfortably
 GATE_RESUMES="${OC_SHIPCHAIN_GATE_RESUMES:-2}"     # max rc-5 resume-polls before an honest give-up
@@ -692,9 +692,9 @@ WAIT="${OC_SHIPCHAIN_SHIP_WAIT:-2700}"             # 45 min — one carrier buil
 # over this default; OC_SHIPCHAIN_LOCK_WAIT is the file's own-prefix alias.
 SHIP_LOCK_WAIT="${OC_SHIPCHAIN_LOCK_WAIT:-$((WAIT + 600))}"
 [ "$SELFTEST_MODE" = "1" ] && OC_SHIPCHAIN_IMPL=1 OC_SHIPCHAIN_SELFTEST=1 exec bash "$SELF"
-if [ "$SELFTEST_MODE" = "2" ]; then   # body lives in tests/chain-selftest.sh
-  _csf="$TOOLS_DIR/tests/chain-selftest.sh"
-  if [ ! -f "$_csf" ]; then printf 'oc-ship-chain selftest: %s missing (broken LOCAL TOOL TREE)\n' "$_csf" >&2; exit 2; fi
+if [ "$SELFTEST_MODE" = "2" ]; then   # body lives in tests/ship-selftest.sh
+  _csf="$TOOLS_DIR/tests/ship-selftest.sh"
+  if [ ! -f "$_csf" ]; then printf 'oc-ship selftest: %s missing (broken LOCAL TOOL TREE)\n' "$_csf" >&2; exit 2; fi
   . "$_csf"; exit $?
 fi
 
@@ -794,7 +794,7 @@ EVAL_DOCS_SKIP=0
 PRIORITY="low"
 PRIORITY_PROBE=0
 # factory #39: the #1936 Stage-1 hang mitigation, forwarded to LEG1's
-# oc-prchecks dispatch. The env default follows the house pattern
+# oc-gate dispatch. The env default follows the house pattern
 # (OC_SHIPCHAIN_GATE_WAIT / OC_SHIPCHAIN_SHIP_WAIT); EMPTY = not requested,
 # the only value that leaves the dispatch byte-identical to pre-#39 behaviour.
 TEST_THREADS="${OC_SHIPCHAIN_TEST_THREADS:-}"
@@ -858,7 +858,7 @@ while [ $# -gt 0 ]; do
     --test-threads)    shift; TEST_THREADS="${1:-}"
                        # Shape is validated HERE, not left to the callee: a
                        # typo must die at the caller's own arg boundary (rc 2
-                       # usage) rather than reach oc-prchecks as a bad input.
+                       # usage) rather than reach oc-gate as a bad input.
                        case "$TEST_THREADS" in
                          ''|*[!0-9]*) die "--test-threads needs a non-negative integer (got '$TEST_THREADS')" 2 ;;
                        esac
@@ -885,7 +885,7 @@ while [ $# -gt 0 ]; do
 done
 
 # ---- scheduling priority (#77) ----------------------------------------------
-# Applied to THIS process, so every child (gh, git, oc-prchecks) inherits it at
+# Applied to THIS process, so every child (gh, git, oc-gate) inherits it at
 # fork. `renice` rather than a `nice -n 19` wrapper: the chain may already have
 # re-exec'd itself once, and a second exec layer would make "which PID is the
 # chain" depend on which branches fired.
@@ -904,19 +904,19 @@ oc_priority_apply() {  # $1 = low|normal ; sets PRIORITY_NICE/PRIORITY_IOPRIO/PR
       if renice -n 19 -p $$ >/dev/null 2>&1; then
         a="renice"
       else
-        printf '%s\n' "oc-ship-chain: WARNING: renice -n 19 failed -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+        printf '%s\n' "oc-ship: WARNING: renice -n 19 failed -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
       fi
     else
-      printf '%s\n' "oc-ship-chain: WARNING: no renice -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+      printf '%s\n' "oc-ship: WARNING: no renice -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
     fi
     if command -v ionice >/dev/null 2>&1; then
       if ionice -c3 -p $$ >/dev/null 2>&1; then
         a="${a:+$a+}ionice"
       else
-        printf '%s\n' "oc-ship-chain: WARNING: ionice -c3 failed -- I/O priority unchanged (#77)" >&2
+        printf '%s\n' "oc-ship: WARNING: ionice -c3 failed -- I/O priority unchanged (#77)" >&2
       fi
     else
-      printf '%s\n' "oc-ship-chain: WARNING: no ionice -- I/O priority unchanged (#77)" >&2
+      printf '%s\n' "oc-ship: WARNING: no ionice -- I/O priority unchanged (#77)" >&2
     fi
     PRIORITY_APPLIED="${a:-none}"
     PRIORITY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
@@ -935,7 +935,7 @@ if [ "$PRIORITY_PROBE" = "1" ]; then
     "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" "${PRIORITY_CHILD_NICE:-}"
   exit 0
 fi
-printf 'oc-ship-chain: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
+printf 'oc-ship: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
   "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" >&2
 
 if [ "$EVAL_DOCS_SKIP" = "1" ]; then
@@ -945,10 +945,10 @@ if [ "$EVAL_DOCS_SKIP" = "1" ]; then
     || die "bad commit or unknown ref: $SHA" 3
   if EVAL_PATHS="$(shipchain_docs_only)"; then
     printf '%s\n' "$EVAL_PATHS"
-    printf 'oc-ship-chain: DOCS-ONLY gate skip permitted for %s\n' "$SHA" >&2
+    printf 'oc-ship: DOCS-ONLY gate skip permitted for %s\n' "$SHA" >&2
     exit 0
   else
-    printf 'oc-ship-chain: GATE-REQUIRED for %s (contains code or compiled-in markdown)\n' "$SHA" >&2
+    printf 'oc-ship: GATE-REQUIRED for %s (contains code or compiled-in markdown)\n' "$SHA" >&2
     exit 1
   fi
 fi
@@ -970,7 +970,7 @@ CHAIN_INTENT=1
 #   real chain  reaches THIS guard                              -> rc 3
 # The previous form ran the guard before arg parsing with a `for ... break`
 # "exemption": `break` exits only the loop, the following `if` still fired, so
-# --selftest died rc 3 and the battery lost 3 assertions (oc-ship-chain
+# --selftest died rc 3 and the battery lost 3 assertions (oc-ship
 # selftest/no-args/unknown-arg). Freeze enforcement was never weakened.
 # OC_SHIPCHAIN_FREEZE_FILE keeps the guard hermetically testable (selftest
 # points it at a temp file); production always uses the canonical path.
@@ -1013,7 +1013,7 @@ fi
 # or the chain's exit code is lost and a NON-FF refusal reads as success) ·
 # OC_SHIPCHAIN_DETACHED (loop guard) ·
 # OC_SHIPCHAIN_LOG (where the detached re-exec binds stdout+stderr; default
-# /tmp/oc-ship-chain-detached-<pid>.log).
+# /tmp/oc-ship-detached-<pid>.log).
 shipchain_in_bounce_cgroup() { # rc 0 = this process IS inside the unit's cgroup
   local unit="${OC_SHIPCHAIN_UNIT:-opencrabs-ops.service}" cg dflt=auto
   # SELFTEST HERMETICITY (2026-09-12): under `auto` this reads the HOST's
@@ -1039,19 +1039,19 @@ shipchain_ensure_detached() { # re-exec outside the bounce cgroup (argv from ORI
   [ "${OC_SHIPCHAIN_DETACHED:-0}" = "1" ] && return 0   # already detached (loop guard)
   shipchain_in_bounce_cgroup || return 0
   local cmd="${OC_SHIPCHAIN_DETACH_CMD:-systemd-run --user --scope --collect}"
-  echo "oc-ship-chain: chain is INSIDE ${OC_SHIPCHAIN_UNIT:-opencrabs-ops.service}'s cgroup — a swap's restart would SIGKILL it mid-leg, truncating the run with NO failure report (LAW 17, defect #21). Re-executing outside the unit via: $cmd" >&2
+  echo "oc-ship: chain is INSIDE ${OC_SHIPCHAIN_UNIT:-opencrabs-ops.service}'s cgroup — a swap's restart would SIGKILL it mid-leg, truncating the run with NO failure report (LAW 17, defect #21). Re-executing outside the unit via: $cmd" >&2
   # Bind stdio to a FILE. The scope is what survives the cgroup teardown; the
   # launching tool call still owns the pipes, so an unredirected re-exec dies
   # EPIPE on its first stderr write (see the block comment above).
-  local dlog="${OC_SHIPCHAIN_LOG:-/tmp/oc-ship-chain-detached-$$.log}"
+  local dlog="${OC_SHIPCHAIN_LOG:-/tmp/oc-ship-detached-$$.log}"
   # HQ order 2026-11-21: say where the log went, and hand the child the SAME path.
   # Both halves matter. The echo alone is not enough — without OC_SHIPCHAIN_LOG in
-  # the child's environment it re-derives /tmp/oc-ship-chain-detached-$$.log from
+  # the child's environment it re-derives /tmp/oc-ship-detached-$$.log from
   # its OWN $$, a DIFFERENT file from the one just printed, so the operator reads a
   # path that was never written while the real log sits beside it under a pid that
   # is not the one that launched it. A tool that knows the path and withholds it is
   # the defect.
-  echo "oc-ship-chain: detached log: $dlog" >&2
+  echo "oc-ship: detached log: $dlog" >&2
   OC_SHIPCHAIN_DETACHED=1 OC_SHIPCHAIN_LOG="$dlog" exec $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1
 }
 shipchain_ensure_detached
@@ -1088,11 +1088,11 @@ journal() {
     # honest actor is the TOOL, not an anonymous row (precedent: oc-deploy
     # stamps `--by "oc-deploy recover-receipt"`). This keeps the chain's ledger
     # trail intact instead of trading it for a loud journal failure.
-    out="$("$TOOLS_DIR/state/oc-ledger" stamp shipchain "$line" --by "${OC_ACTOR:-oc-ship-chain}" 2>&1)" || rc=$?
+    out="$("$TOOLS_DIR/state/oc-ledger" stamp shipchain "$line" --by "${OC_ACTOR:-oc-ship}" 2>&1)" || rc=$?
     if [ "$rc" -ne 0 ]; then
       JOURNAL_FAILS=$((JOURNAL_FAILS + 1))
       if [ "$JOURNAL_FAILS" -eq 1 ]; then
-        printf '%s\n' "oc-ship-chain: WARNING — ledger journaling FAILED (rc=$rc) for $CHAIN." >&2
+        printf '%s\n' "oc-ship: WARNING — ledger journaling FAILED (rc=$rc) for $CHAIN." >&2
         printf '%s\n' "  oc-ledger said: $out" >&2
         printf '%s\n' "  first lost line: $line" >&2
         printf '%s\n' "  the chain CONTINUES, but this run will have NO ledger trail." >&2
@@ -1132,7 +1132,7 @@ journal() {
 }
 journal_summary() { # call before exit: one line if any journal write was lost
   [ "$JOURNAL_FAILS" -gt 0 ] || return 0
-  printf '%s\n' "oc-ship-chain: $JOURNAL_FAILS journal line(s) lost for $CHAIN (see the first warning above)" >&2
+  printf '%s\n' "oc-ship: $JOURNAL_FAILS journal line(s) lost for $CHAIN (see the first warning above)" >&2
 }
 
 # ---- detached log path (HQ order 2026-11-21) ------------------------------
@@ -1201,12 +1201,12 @@ acquire_ship_lock() {
   if flock -n "$SHIP_LOCK_FD" 2>/dev/null; then
     LOCK_HELD=1
     journal "SHIP-LOCK acquired immediately (uncontended)"
-    printf '%s\n' "oc-ship-chain: landing lock acquired (uncontended)" >&2
+    printf '%s\n' "oc-ship: landing lock acquired (uncontended)" >&2
     return 0
   fi
 
   journal "SHIP-LOCK contended — waiting in queue (timeout=${timeout}s)..."
-  printf '%s\n' "oc-ship-chain: landing lock contended — waiting in queue..." >&2
+  printf '%s\n' "oc-ship: landing lock contended — waiting in queue..." >&2
 
   while true; do
     if flock -n "$SHIP_LOCK_FD" 2>/dev/null; then
@@ -1214,14 +1214,14 @@ acquire_ship_lock() {
       now="$(date +%s)"
       elapsed=$((now - start_ts))
       journal "SHIP-LOCK acquired after ${elapsed}s wait"
-      printf '%s\n' "oc-ship-chain: landing lock acquired after ${elapsed}s" >&2
+      printf '%s\n' "oc-ship: landing lock acquired after ${elapsed}s" >&2
       return 0
     fi
     now="$(date +%s)"
     elapsed=$((now - start_ts))
     if [ "$elapsed" -ge "$timeout" ]; then
       journal "SHIP-LOCK timeout after ${elapsed}s (budget ${timeout}s)"
-      printf '%s\n' "oc-ship-chain: landing lock timeout after ${elapsed}s (budget ${timeout}s)" >&2
+      printf '%s\n' "oc-ship: landing lock timeout after ${elapsed}s (budget ${timeout}s)" >&2
       die "SHIP-LOCK-TIMEOUT: another ship held the landing lock for the whole ${timeout}s queue budget. This is NOT an infrastructure fault and the gate is NOT broken — do NOT re-dispatch the gate (that burns another full gate cycle for the same answer). The holder is serializing LEG3+LEG4+LEG5, i.e. a real carrier build; re-run the chain once it finishes, or raise the budget with SHIP_LOCK_TIMEOUT=<sec> (or OC_SHIPCHAIN_LOCK_WAIT=<sec>)." 9
     fi
     sleep 1
@@ -1269,7 +1269,7 @@ git -C "$FORK_REPO" rev-parse --verify -q "$SHA^{commit}" >/dev/null 2>&1 \
 
 # NORMALISE an abbreviated --sha to the full 40-char commit id (#495, lane
 # 2fbfb2f8 report). Nothing between argument parsing and the LEG1 dispatch
-# resolved an abbreviation, so `--sha a32eebf8b` reached oc-prchecks, which
+# resolved an abbreviation, so `--sha a32eebf8b` reached oc-gate, which
 # refused it — correctly — as "short sha refused (carrier inputs are
 # FULL-sha-bound; got 9 chars)". The chain then discarded that specificity and
 # died rc 2 telling the lane the branch/sha was "not usable on the fork remote;
@@ -1283,7 +1283,7 @@ if [ "${#SHA}" -ne 40 ] && [ "${OC_SHIPCHAIN_SHA_AS_IS:-0}" != "1" ]; then
   FULL_SHA="$(git -C "$FORK_REPO" rev-parse --verify -q "$SHA^{commit}" 2>/dev/null || true)"
   if [ -n "$FULL_SHA" ]; then
     journal "sha '$SHA' is a ${#SHA}-char abbreviation — resolved to full $FULL_SHA (#495)"
-    printf 'oc-ship-chain: --sha %s is a %d-char abbreviation; resolved to the full 40-char %s\n' \
+    printf 'oc-ship: --sha %s is a %d-char abbreviation; resolved to the full 40-char %s\n' \
       "$SHA" "${#SHA}" "$FULL_SHA" >&2
     SHA="$FULL_SHA"
   fi
@@ -1358,7 +1358,7 @@ if [ -z "$GATED_RUN" ] && [ -z "$GATED_SHA" ] && [ "${OC_SHIPCHAIN_NO_DOCS_SKIP:
   # the sha and the reason, so an auditor can tell a skip from a green run.
   journal "GATE-SKIPPED-DOCS sha=$SHA reason=every-changed-path-is-markdown-and-none-is-compiled-into-the-binary paths=${DOCS_ONLY_FLAT%,}"
   GATE_SKIPPED_DOCS="1"
-  printf 'oc-ship-chain: LEG1 GATE SKIPPED for %s — docs-only commit, no changed path is include_str!/include_bytes!-compiled (paths: %s). Owner ruling 2026-09-12 11:04Z; force the gate with OC_SHIPCHAIN_NO_DOCS_SKIP=1.\n' "$SHA" "${DOCS_ONLY_FLAT%,}" >&2
+  printf 'oc-ship: LEG1 GATE SKIPPED for %s — docs-only commit, no changed path is include_str!/include_bytes!-compiled (paths: %s). Owner ruling 2026-09-12 11:04Z; force the gate with OC_SHIPCHAIN_NO_DOCS_SKIP=1.\n' "$SHA" "${DOCS_ONLY_FLAT%,}" >&2
 elif [ -n "$GATED_RUN" ]; then
   # Verify specific run ID passed explicitly (or watch/resume it if still in flight)
   journal "LEG1 gate resume: checking run $GATED_RUN for $SHA"
@@ -1378,7 +1378,7 @@ elif [ -n "$GATED_RUN" ]; then
       GATE_CARRIED_FORWARD="1"
       ;;
     "in_progress"*|"queued"*)
-      journal "LEG1 gate run $GATED_RUN is still $RUN_INFO — attaching via oc-prchecks resume"
+      journal "LEG1 gate run $GATED_RUN is still $RUN_INFO — attaching via oc-gate resume"
       set +e
       GATE_OUT="$("$PRCHECKS_BIN" resume "$GATED_RUN" ${REPO:+--repo "$REPO"} --wait "$GATE_WAIT" 2>&1)"
       GATE_RC=$?
@@ -1386,7 +1386,7 @@ elif [ -n "$GATED_RUN" ]; then
       case "$GATE_RC" in
         0) journal "LEG1 gate GREEN (resumed run $GATED_RUN)"; GATE_CARRIED_FORWARD="1" ;;
         3) journal "LEG1 gate RED (resumed run $GATED_RUN)"; printf '%s\n' "$GATE_OUT"; die "GATE-RED" 4 ;;
-        5) journal "LEG1 gate run $GATED_RUN still in flight after budget"; printf '%s\n' "$GATE_OUT"; die "gate still in flight (run=$GATED_RUN) — wait for it, then re-run: oc-ship-chain --sha $SHA --branch $BRANCH --gated-run $GATED_RUN" 7 ;;
+        5) journal "LEG1 gate run $GATED_RUN still in flight after budget"; printf '%s\n' "$GATE_OUT"; die "gate still in flight (run=$GATED_RUN) — wait for it, then re-run: oc-ship --sha $SHA --branch $BRANCH --gated-run $GATED_RUN" 7 ;;
         *) journal "LEG1 gate resume failed rc=$GATE_RC"; printf '%s\n' "$GATE_OUT"; die "gate resume failed" 6 ;;
       esac
       ;;
@@ -1417,7 +1417,7 @@ EOF_JOBNAMES
           fi
           if [ -n "$REBASED_FROM" ]; then
             journal "LEG1 gated-run $GATED_RUN matched by CONTENT: job sha $REBASED_FROM is a content-identical rebase of $SHA (same patch-id) — carrying the gate forward"
-            printf 'oc-ship-chain: LEG1 gate carried forward — run %s was gated on %s, a content-identical rebase of %s (same patch-id; Duty-4 n=2520).\n' "$GATED_RUN" "$REBASED_FROM" "$SHA" >&2
+            printf 'oc-ship: LEG1 gate carried forward — run %s was gated on %s, a content-identical rebase of %s (same patch-id; Duty-4 n=2520).\n' "$GATED_RUN" "$REBASED_FROM" "$SHA" >&2
             GATE_CARRIED_FORWARD="1"
           fi
           ;;
@@ -1457,7 +1457,7 @@ elif [ -n "$GATED_SHA" ]; then
   if [ "$GATED_SHA" != "$SHA" ]; then
     if command -v oc_same_patch >/dev/null 2>&1 && oc_same_patch "$FORK_REPO" "$GATED_SHA" "$SHA"; then
       journal "LEG1 gated-sha $GATED_SHA is a content-identical rebase of $SHA (same patch-id) — carrying the gate forward"
-      printf 'oc-ship-chain: LEG1 gate carried forward — %s was gated, %s is a content-identical rebase (same patch-id; Duty-4 n=2520).\n' "$GATED_SHA" "$SHA" >&2
+      printf 'oc-ship: LEG1 gate carried forward — %s was gated, %s is a content-identical rebase (same patch-id; Duty-4 n=2520).\n' "$GATED_SHA" "$SHA" >&2
       GATE_CARRIED_FORWARD="1"
     else
       die "--gated-sha ($GATED_SHA) does not match --sha ($SHA) and is not a content-identical rebase (patch-id differs or is uncomputable)" 2
@@ -1488,7 +1488,7 @@ elif [ -n "$GATED_SHA" ]; then
     # existing run. Without this the banner claimed the FAST dispatch mode.
     GATE_CARRIED_FORWARD="1"
     if [ "${MATCHED_SHA:-$SHA}" != "$SHA" ]; then
-      printf 'oc-ship-chain: LEG1 gate carried forward — run %s was gated on %s, a content-identical rebase of %s (same patch-id; Duty-4 n=2520).\n' "$MATCHED_RUN" "$MATCHED_SHA" "$SHA" >&2
+      printf 'oc-ship: LEG1 gate carried forward — run %s was gated on %s, a content-identical rebase of %s (same patch-id; Duty-4 n=2520).\n' "$MATCHED_RUN" "$MATCHED_SHA" "$SHA" >&2
     fi
     if [ "${MATCHED_SHA:-$SHA}" != "$SHA" ]; then
       journal "LEG1 gate pre-verified GREEN (gh run $MATCHED_RUN: completed success on $MATCHED_SHA = content-identical rebase of $SHA)"
@@ -1506,7 +1506,7 @@ else
   PRCHECKS_CALL+=(--wait "$GATE_WAIT")
   [ "$FAST_GATE" -eq 1 ] && PRCHECKS_CALL+=(--fast)
   # factory #39: the #1936 Stage-1 hang mitigation rides the FRESH dispatch.
-  # The carrier-yml contract check is NOT duplicated here -- oc-prchecks owns
+  # The carrier-yml contract check is NOT duplicated here -- oc-gate owns
   # it and refuses rc 4 with NO dispatch when the yml cannot honour the input,
   # which is the loud behaviour a caller-requested mitigation requires.
   [ -n "$TEST_THREADS" ] && PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")
@@ -1520,7 +1520,7 @@ else
   GATE_RC=$?
   set -e
   # rc 5 is NON-TERMINAL, never infra (defect fix 2026-09-11, lane 4b4463d5).
-  # oc-prchecks documents rc 5 as "still in flight after --wait", with the live
+  # oc-gate documents rc 5 as "still in flight after --wait", with the live
   # run id on stdout (`run=<id>`) for exactly this resume. The old `*)` arm
   # funnelled it into a fatal `die 6`, so a FRESH chain killed itself while its
   # own gate was still building — ledger n=2595 / n=2609 / n=2611: three
@@ -1542,7 +1542,7 @@ else
     fi
     GATE_ATTEMPTS=$((GATE_ATTEMPTS + 1))
     journal "LEG1 gate in flight (run=$GATE_RUN_ID) — resume-poll $GATE_ATTEMPTS/$GATE_RESUMES"
-    printf '%s\n' "oc-ship-chain: LEG1 gate still in flight run=$GATE_RUN_ID — resume-poll $GATE_ATTEMPTS/$GATE_RESUMES" >&2
+    printf '%s\n' "oc-ship: LEG1 gate still in flight run=$GATE_RUN_ID — resume-poll $GATE_ATTEMPTS/$GATE_RESUMES" >&2
     set +e
     GATE_OUT="$("$PRCHECKS_BIN" resume "$GATE_RUN_ID" ${REPO:+--repo "$REPO"} --wait "$GATE_WAIT" 2>&1)"
     GATE_RC=$?
@@ -1550,7 +1550,7 @@ else
   done
   case "$GATE_RC" in
     0) journal "LEG1 gate GREEN"
-       # #355: retain the run id on the SUCCESS path. oc-prchecks prints
+       # #355: retain the run id on the SUCCESS path. oc-gate prints
        # `run=<id>` on stdout; the rc=5 loop already relied on that shape, so
        # this is the same parse, simply not withheld from the happy path.
        GATE_RUN_ID="$(printf '%s' "$GATE_OUT" | grep -oE 'run=[0-9]+' | head -1 | cut -d= -f2 || true)"
@@ -1578,20 +1578,20 @@ else
        # command that actually works.
         if [ "${#SHA}" -ne 40 ]; then
           FULL_HINT="$(git -C "$FORK_REPO" rev-parse "$SHA" 2>/dev/null || printf '%s' "$SHA")"
-          die "gate precondition failed rc=2 — '${SHA}' is a ${#SHA}-char ABBREVIATION and carrier inputs are FULL-sha-bound (see the oc-prchecks line above). The branch/sha state on the fork remote is NOT in question; nothing needs pushing. Re-run with the full 40-char sha: oc-ship-chain --sha ${FULL_HINT} --branch $BRANCH. This is NOT an infrastructure fault." 3
+          die "gate precondition failed rc=2 — '${SHA}' is a ${#SHA}-char ABBREVIATION and carrier inputs are FULL-sha-bound (see the oc-gate line above). The branch/sha state on the fork remote is NOT in question; nothing needs pushing. Re-run with the full 40-char sha: oc-ship --sha ${FULL_HINT} --branch $BRANCH. This is NOT an infrastructure fault." 3
         else
-          die "gate precondition failed rc=2 — the branch/sha is not usable on the fork remote (see the oc-prchecks line above); push it and re-run: oc-ship-chain --sha $SHA --branch $BRANCH. This is NOT an infrastructure fault." 3
+          die "gate precondition failed rc=2 — the branch/sha is not usable on the fork remote (see the oc-gate line above); push it and re-run: oc-ship --sha $SHA --branch $BRANCH. This is NOT an infrastructure fault." 3
         fi ;;
     *) journal "LEG1 gate INFRA rc=$GATE_RC"; printf '%s\n' "$GATE_OUT"
        # #92: a CANCELLED-superseded gate NAMES its superseder on the prchecks
        # line printed just above (`  superseding run: <id> — <url>`,
-       # oc-prchecks:2134). Capture it so the supervisor can RESUME that run:
+       # oc-gate:2134). Capture it so the supervisor can RESUME that run:
        # re-dispatching onto the same gated ref is precisely what cancels the
        # run being waited for, while resuming touches no ref and starts nothing.
        # `head -1` is DEFENSIVE, not required by today's emit shape: the only
-       # line carrying `superseding run: <digits>` is oc-prchecks:2134, and the
+       # line carrying `superseding run: <digits>` is oc-gate:2134, and the
        # second occurrence of the phrase on that same line (inside REARM_HINT,
-       # `... or resume superseding run: oc-prchecks resume <id> ...`) has
+       # `... or resume superseding run: oc-gate resume <id> ...`) has
        # non-digit text between the colon and the number, so it cannot match
        # this pattern. It is kept because the alternative failure is silent: a
        # future second match would make GATE_SUPERSEDING a multi-line value,
@@ -1626,19 +1626,19 @@ elif [ "$GATE_CARRIED_FORWARD" = "1" ]; then
   SHIP_GATE_MODE="CARRIED-FORWARD"
   SHIP_GATE_NOTE="no gate leg ran in THIS chain; the gate was carried forward from an earlier run (see the LEG1 line above for its id and patch-id)"
 fi
-printf 'oc-ship-chain: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
+printf 'oc-ship: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
 journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
 
 # factory #39: --test-threads is a DISPATCH-time request, and on the
 # CARRIED-FORWARD / SKIPPED-DOCS paths NO gate leg is dispatched HERE -- so the
 # mitigation cannot apply to the gate being carried. Say so out loud: a silent
-# drop is exactly what oc-prchecks' #33 contract refuses, and a caller who
+# drop is exactly what oc-gate' #33 contract refuses, and a caller who
 # believed the mitigation applied would read a carried run as mitigated
 # evidence it never received. The FRESH path (FAST/FULL) prints nothing here.
 if [ -n "$TEST_THREADS" ]; then
   case "$SHIP_GATE_MODE" in
     CARRIED-FORWARD|SKIPPED-DOCS)
-      printf 'oc-ship-chain: --test-threads %s is INERT on this path -- GATE MODE = %s: no gate leg is dispatched here, so the #1936 mitigation CANNOT apply to the gate being carried. To apply it, dispatch the gate out-of-band first: %s %s --test-threads %s --wait <sec>, then re-arm with --gated-run <id>.\n' \
+      printf 'oc-ship: --test-threads %s is INERT on this path -- GATE MODE = %s: no gate leg is dispatched here, so the #1936 mitigation CANNOT apply to the gate being carried. To apply it, dispatch the gate out-of-band first: %s %s --test-threads %s --wait <sec>, then re-arm with --gated-run <id>.\n' \
         "$TEST_THREADS" "$SHIP_GATE_MODE" "${PRCHECKS_BIN##*/}" "$SHA" "$TEST_THREADS" >&2
       journal "LEG1 --test-threads $TEST_THREADS INERT (GATE MODE $SHIP_GATE_MODE: no dispatch here)"
       ;;
@@ -1718,8 +1718,8 @@ if [ -n "$ISSUE" ]; then
       else
         ISSUE_REPO_RESOLVED="$FORK_ISSUE_SLUG"
         ISSUE_REPO_SRC="fork default (AMBIGUOUS:$_list)"
-        printf 'oc-ship-chain: WARNING — issue #%s resolves on MORE THAN ONE tracker:%s\n' "$ISSUE" "$_list" >&2
-        printf 'oc-ship-chain: defaulting to the fork (%s). If the issue lives elsewhere, re-run with --issue-repo <slug>.\n' "$FORK_ISSUE_SLUG" >&2
+        printf 'oc-ship: WARNING — issue #%s resolves on MORE THAN ONE tracker:%s\n' "$ISSUE" "$_list" >&2
+        printf 'oc-ship: defaulting to the fork (%s). If the issue lives elsewhere, re-run with --issue-repo <slug>.\n' "$FORK_ISSUE_SLUG" >&2
       fi
     fi
   fi
@@ -1779,7 +1779,7 @@ TIP="$(git -C "$FORK_REPO" rev-parse --verify --quiet "refs/heads/$BRANCH" || tr
 [ -n "$TIP" ] || die "branch $BRANCH not found in $FORK_REPO — push it to the fork remote first" 3
 if [ "$TIP" != "$SHA" ]; then
   journal "LEG3 TIP-MOVED branch=$BRANCH tip=$(printf '%s' "$TIP" | cut -c1-8) expected=$(printf '%s' "$SHA" | cut -c1-8)"
-  die "branch tip moved under the chain: $BRANCH is now $(printf '%s' "$TIP" | cut -c1-8), expected $SHA — the gate validated $SHA, so re-gate and relaunch: oc-ship-chain --sha $TIP --branch $BRANCH" 5
+  die "branch tip moved under the chain: $BRANCH is now $(printf '%s' "$TIP" | cut -c1-8), expected $SHA — the gate validated $SHA, so re-gate and relaunch: oc-ship --sha $TIP --branch $BRANCH" 5
 fi
 
 # ---- J-1 (c23): PRE-LEG3 ANCESTRY RE-CHECK --------------------------------
@@ -1840,7 +1840,7 @@ if ! git -C "$FORK_REPO" merge-base --is-ancestor origin/main "$TIP" 2>/dev/null
       git -C "$FORK_REPO" update-ref "$_rb_ref" "$_rb_new" 2>/dev/null || true
       if "$REBASE_SAFETY_BIN" audit --repo "$FORK_REPO" --old-tip "$TIP" --new-tip "$_rb_new" --base "$_rb_base" >/dev/null 2>&1; then
         journal "LEG3 STALE-BASE RECOVERED from=$(printf '%s' "$TIP" | cut -c1-8) to=$(printf '%s' "$_rb_new" | cut -c1-12) — per-file patch-ids SAME, gate on $SHA carries forward"
-        printf '%s\n' "oc-ship-chain: STALE-BASE recovered — rebased $(printf '%s' "$TIP" | cut -c1-8) onto origin/main with NO content change (per-file patch-ids SAME). The gate on $SHA carries forward (Duty-4 n=2520); landing $(printf '%s' "$_rb_new" | cut -c1-12)." >&2
+        printf '%s\n' "oc-ship: STALE-BASE recovered — rebased $(printf '%s' "$TIP" | cut -c1-8) onto origin/main with NO content change (per-file patch-ids SAME). The gate on $SHA carries forward (Duty-4 n=2520); landing $(printf '%s' "$_rb_new" | cut -c1-12)." >&2
         TIP="$_rb_new"; SHA="$_rb_new"; _rb_ok=1
       else
         _rb_why="rebased to $(printf '%s' "$_rb_new" | cut -c1-12) but oc-rebase-safety found a CHANGED or DROPPED patch, so the gate on $SHA is VOID for the new text"
@@ -1849,14 +1849,14 @@ if ! git -C "$FORK_REPO" merge-base --is-ancestor origin/main "$TIP" 2>/dev/null
   fi
   if [ "$_rb_ok" != "1" ]; then
     [ -n "$_rb_ref" ] && { git -C "$FORK_REPO" update-ref -d "$_rb_ref" 2>/dev/null || true; }
-    die "STALE-BASE (rc 5, caught BEFORE the merge attempt): origin/main advanced while this chain waited for the landing lock, so $BRANCH is no longer based on it. The gate validated $SHA. AUTOMATIC RECOVERY DID NOT CARRY THE GATE: $_rb_why. Recover BY HAND: rebase $BRANCH onto the current main, then re-run: oc-ship-chain --sha <rebased-tip> --branch $BRANCH. PROVE the rebase moved nothing but the parent before you claim a carry-forward: oc-rebase-safety audit --repo "$FORK_REPO" --old-tip $TIP --new-tip <rebased-tip> --base <merge-base> must report per-file patch-ids SAME. NOTE: if the rebase changes NOTHING but the parent -- i.e. the same patch-id -- oc-ship-chain --gated-run carries the existing GREEN forward instead of burning a fresh ~25-min gate (Duty-4 n=2520)." 5
+    die "STALE-BASE (rc 5, caught BEFORE the merge attempt): origin/main advanced while this chain waited for the landing lock, so $BRANCH is no longer based on it. The gate validated $SHA. AUTOMATIC RECOVERY DID NOT CARRY THE GATE: $_rb_why. Recover BY HAND: rebase $BRANCH onto the current main, then re-run: oc-ship --sha <rebased-tip> --branch $BRANCH. PROVE the rebase moved nothing but the parent before you claim a carry-forward: oc-rebase-safety audit --repo "$FORK_REPO" --old-tip $TIP --new-tip <rebased-tip> --base <merge-base> must report per-file patch-ids SAME. NOTE: if the rebase changes NOTHING but the parent -- i.e. the same patch-id -- oc-ship --gated-run carries the existing GREEN forward instead of burning a fresh ~25-min gate (Duty-4 n=2520)." 5
   fi
 fi
 
 # ---- #755: SIGNATURE pre-check (pure git, BEFORE the ff-merge) -------------
 # upstream-merge-runbook.md (HQ ruling 2026-09-26, §Swap-head signature) states
 # the chain pre-checks SIGNATURE before LEG3's merge so a bad trailer never
-# strands main. The ORDER validator (oc-order-validate) runs INSIDE oc-deploy
+# strands main. The ORDER validator (oc-verify-order) runs INSIDE oc-deploy
 # at LEG4 — AFTER this merge — and oc-deploy is push-then-validate by design
 # (`git push` then `die 2 ORDER gates failed post-push`), so a shape fault
 # landed main at an ungated tip and only THEN refused (measured 2026-09-26,
@@ -1875,7 +1875,7 @@ _SID="$(printf '%s' "$_SID" | tr -d '[:space:]')"
 case "$_SID" in ????????-????-????-????-????????????) : ;; *) _SID="" ;; esac
 if [ -z "$_SID" ]; then
   journal "LEG3 PRE-SIGNATURE FAIL tip=$(printf '%s' "$TIP" | cut -c1-8) — no valid Session-Id trailer"
-  die "UNSIGNED (rc 3, caught BEFORE the merge): $SHA carries no valid Session-Id trailer (the BARE 36-char session uuid). gate 4 would wipe it and refuse the ship at LEG4, AFTER the ff-merge — stranding main at an unattributable tip. Re-sign the commit's trailer and re-run: oc-ship-chain --sha <re-signed-sha> --branch $BRANCH" 3
+  die "UNSIGNED (rc 3, caught BEFORE the merge): $SHA carries no valid Session-Id trailer (the BARE 36-char session uuid). gate 4 would wipe it and refuse the ship at LEG4, AFTER the ff-merge — stranding main at an unattributable tip. Re-sign the commit's trailer and re-run: oc-ship --sha <re-signed-sha> --branch $BRANCH" 3
 fi
 
 set +e
@@ -1929,7 +1929,7 @@ if [ "$FF_RC" != "0" ]; then
     _lm_orig="$(git -C "$FORK_REPO" rev-parse --short origin/main 2>/dev/null || echo '?')"
     if [ "$_lm_ahead" -gt 0 ] && [ "$_lm_behind" -gt 0 ]; then
       journal "LEG3 LOCAL-MAIN-DIVERGED local-main=$_lm_main origin-main=$_lm_orig ahead=$_lm_ahead behind=$_lm_behind tip=$(printf '%s' "$TIP" | cut -c1-8) — the checkout's main and origin/main have each moved; the ff-merge failed on the CHECKOUT, not on the branch"
-      die "LOCAL-MAIN-DIVERGED (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main. The LOCAL fork checkout's main has DIVERGED from origin/main — it carries $_lm_ahead commit(s) origin/main does not have and is missing $_lm_behind of origin/main's. A fast-forward onto $BRANCH cannot apply to a diverged main, and no single git command reconciles it safely. Do NOT rebase $BRANCH: it is correctly based, and a rebase would rewrite a gated tip. Settle the checkout FIRST — with the owner of those $_lm_ahead commit(s): land them, or abandon them — then re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
+      die "LOCAL-MAIN-DIVERGED (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main. The LOCAL fork checkout's main has DIVERGED from origin/main — it carries $_lm_ahead commit(s) origin/main does not have and is missing $_lm_behind of origin/main's. A fast-forward onto $BRANCH cannot apply to a diverged main, and no single git command reconciles it safely. Do NOT rebase $BRANCH: it is correctly based, and a rebase would rewrite a gated tip. Settle the checkout FIRST — with the owner of those $_lm_ahead commit(s): land them, or abandon them — then re-run: oc-ship --sha $SHA --branch $BRANCH" 5
     fi
     if [ "$_lm_ahead" -gt 0 ]; then
       journal "LEG3 LOCAL-MAIN-AHEAD local-main=$_lm_main origin-main=$_lm_orig ahead=$_lm_ahead behind=0 tip=$(printf '%s' "$TIP" | cut -c1-8) — the checkout's main carries commits origin/main does not have; the ff-merge failed on the CHECKOUT, not on the branch"
@@ -1943,10 +1943,10 @@ if [ "$FF_RC" != "0" ]; then
     # cause it cannot prove, and NO selftest leg claims it: a leg for a state
     # the fixture cannot build would be decoration (CODE.md item 3).
     journal "LEG3 STALE-LOCAL-MAIN local-main=$_lm_main origin-main=$_lm_orig ahead=0 behind=$_lm_behind tip=$(printf '%s' "$TIP" | cut -c1-8) — tip descends from origin/main but the ff-merge was refused by the CHECKOUT's own state"
-    die "STALE-LOCAL-MAIN (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main, so the refusal is the LOCAL fork checkout's, not the branch's — its main is not ahead of origin/main ($_lm_main) yet the fast-forward was refused, which points at that working tree (an uncommitted change or a held index) rather than at the history. Do NOT rebase. Read why git refused (git -C $FORK_REPO status), clear that refusal — stash or commit it — then re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
+    die "STALE-LOCAL-MAIN (rc 5, NOT a rebase problem): $BRANCH is correctly based on origin/main, so the refusal is the LOCAL fork checkout's, not the branch's — its main is not ahead of origin/main ($_lm_main) yet the fast-forward was refused, which points at that working tree (an uncommitted change or a held index) rather than at the history. Do NOT rebase. Read why git refused (git -C $FORK_REPO status), clear that refusal — stash or commit it — then re-run: oc-ship --sha $SHA --branch $BRANCH" 5
   fi
   journal "LEG3 NON-FF — branch not fast-forwardable and tip is NOT a descendant of origin/main (real divergence)"
-  die "NON-FF: rebase $BRANCH onto fork main (oc-rebase-safety) and re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
+  die "NON-FF: rebase $BRANCH onto fork main (oc-rebase-safety) and re-run: oc-ship --sha $SHA --branch $BRANCH" 5
 fi
 MERGED="$(git -C "$FORK_REPO" rev-parse --short HEAD)"
 # T10: the STALE-BASE recovery pin has served its purpose once the landing
@@ -2017,7 +2017,7 @@ case "$SHIP_RC" in
     esac
     if [ -n "$REBASE_CAUSE" ]; then
       journal "LEG4 ship REBASE-GATE $REBASE_CAUSE"
-      die "REBASE-GATE ($REBASE_CAUSE): oc-deploy's in-tool auto-rebase refused the push — rebase $BRANCH onto fork main (verify with oc-rebase-safety audit), then re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
+      die "REBASE-GATE ($REBASE_CAUSE): oc-deploy's in-tool auto-rebase refused the push — rebase $BRANCH onto fork main (verify with oc-rebase-safety audit), then re-run: oc-ship --sha $SHA --branch $BRANCH" 5
     fi
     journal "LEG4 ship WAIT-TIMEOUT (${WAIT}s budget exhausted)"
     die "SHIP-WAIT-TIMEOUT: the carrier build did not reach a terminal state within the LEG4 --wait budget (${WAIT}s). The run is still BUILDING — do NOT re-dispatch it. Wait for it, then resume with: oc-deploy poll --sha $SHA --execute --wait <sec>  (or re-run the chain with a larger --wait)" 8 ;;
@@ -2028,15 +2028,15 @@ case "$SHIP_RC" in
     case "$SHIP_OUT" in
       *OC_DEPLOY_GATE=gate-missing*|*OC_DEPLOY_GATE=gate-inflight*|*OC_DEPLOY_GATE=gate-red*|*OC_DEPLOY_GATE=gate-mismatch*)
         journal "LEG4 ship GATE-NOT-GREEN (oc-deploy refused the ungated landing)"
-        die "GATE-NOT-GREEN: oc-deploy refused to land $SHA — the gate carried into ship was missing, in flight, or not green. This is a chain bookkeeping fault, NOT infra: re-run naming the run that gated this sha, oc-ship-chain --sha $SHA --branch $BRANCH --gated-run <id>." 4 ;;
+        die "GATE-NOT-GREEN: oc-deploy refused to land $SHA — the gate carried into ship was missing, in flight, or not green. This is a chain bookkeeping fault, NOT infra: re-run naming the run that gated this sha, oc-ship --sha $SHA --branch $BRANCH --gated-run <id>." 4 ;;
       *OC_DEPLOY_GATE=order-gate-failed*)
-        # #756: oc-deploy's post-push ORDER validator (oc-order-validate:
+        # #756: oc-deploy's post-push ORDER validator (oc-verify-order:
         # SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA AFTER the push.
         # Before this arm the producer emitted no token, so the fault fell to
         # the INFRA catch-all below and sent the lane hunting a broken
         # component instead of its own commit.
         journal "LEG4 ship ORDER-GATE-FAILED (oc-deploy's post-push ORDER validator rejected $SHA)"
-        die "ORDER-GATE-FAILED: oc-deploy's post-push ORDER validator (SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA after the push — the sha is now on fork main but ungated. This is a chain bookkeeping fault, NOT infra: run oc-order-validate --repo <fork> --ledger <ledger> $SHA to read which gate failed, fix the branch (re-sign / rebase so it is contained in fork main), then re-run: oc-ship-chain --sha <new-sha> --branch $BRANCH" 4 ;;
+        die "ORDER-GATE-FAILED: oc-deploy's post-push ORDER validator (SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA after the push — the sha is now on fork main but ungated. This is a chain bookkeeping fault, NOT infra: run oc-verify-order --repo <fork> --ledger <ledger> $SHA to read which gate failed, fix the branch (re-sign / rebase so it is contained in fork main), then re-run: oc-ship --sha <new-sha> --branch $BRANCH" 4 ;;
     esac
     journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
 esac

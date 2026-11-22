@@ -386,7 +386,7 @@ FSTUB
 
   # 5d-f. #704: the fork-main tip is read from refs/oc-deploy/main — the DEDICATED
   #   ref this tool's own fetch writes — NEVER from FETCH_HEAD, which is ONE shared
-  #   mutable file per repo that ANY concurrent fetch rewrites (oc-prchecks fetches
+  #   mutable file per repo that ANY concurrent fetch rewrites (oc-gate fetches
   #   ci/quick-build-linux, harvest lanes fetch upstream). Measured 2026-09-29
   #   08:33Z, chain oc-ship-702-082945: FETCH_HEAD held ci/quick-build-linux, the
   #   tip read was upstream main, and a clean FF was auto-rebased onto the wrong
@@ -1302,8 +1302,8 @@ NSTUB3
   #      journaled BEFORE the swap-result ledger stamp.
   local SD2="$T/state2" FJ2 N_FJ2 FETS LETS
   mkdir -p "$SD2/tools/ship" "$SD2/backups" "$T/art"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD2/tools/ship/oc-artifact-verify"; chmod +x "$SD2/tools/ship/oc-artifact-verify"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD2/tools/ship/oc-seal-state";     chmod +x "$SD2/tools/ship/oc-seal-state"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD2/tools/ship/oc-verify-artifact"; chmod +x "$SD2/tools/ship/oc-verify-artifact"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD2/tools/ship/oc-seal";     chmod +x "$SD2/tools/ship/oc-seal"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD2/workers-ledger.json"
   echo prev > "$SD2/deployed.sha"
   printf 'v1-artifact' > "$T/art/opencrabs"; chmod +x "$T/art/opencrabs"
@@ -1314,7 +1314,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
-    OC_DEPLOY_SEAL="$SD2/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD2/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD2/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD2/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --run 777 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "wire-green-rc" $rc 0
@@ -1337,8 +1337,8 @@ NSTUB3
   # 17l. NOFANOUT guard: swap completes, fan-out suppressed entirely.
   local SD3="$T/state3"
   mkdir -p "$SD3/tools/ship" "$SD3/backups"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD3/tools/ship/oc-artifact-verify"; chmod +x "$SD3/tools/ship/oc-artifact-verify"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD3/tools/ship/oc-seal-state";     chmod +x "$SD3/tools/ship/oc-seal-state"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD3/tools/ship/oc-verify-artifact"; chmod +x "$SD3/tools/ship/oc-verify-artifact"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD3/tools/ship/oc-seal";     chmod +x "$SD3/tools/ship/oc-seal"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD3/workers-ledger.json"
   echo prev > "$SD3/deployed.sha"
   : > "$NOTIFY_LOG"
@@ -1347,7 +1347,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-    OC_DEPLOY_SEAL="$SD3/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD3/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD3/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD3/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --run 777 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "wire-nofanout-rc" $rc 0
@@ -1361,8 +1361,8 @@ NSTUB3
   #      with --allow-features-drop proceeds to SWAP COMPLETE.
   local SD5="$T/state5"
   mkdir -p "$SD5/tools/ship" "$SD5/backups"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD5/tools/ship/oc-artifact-verify"; chmod +x "$SD5/tools/ship/oc-artifact-verify"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD5/tools/ship/oc-seal-state";     chmod +x "$SD5/tools/ship/oc-seal-state"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD5/tools/ship/oc-verify-artifact"; chmod +x "$SD5/tools/ship/oc-verify-artifact"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD5/tools/ship/oc-seal";     chmod +x "$SD5/tools/ship/oc-seal"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD5/workers-ledger.json"
   echo prev > "$SD5/deployed.sha"
   printf '{"sha":"prevprevprevprevprevprevprevprevprevprevprevprevprevprev","run_id":42,"artifact_sha256":"aa","features":"telegram,code-graph","swapped_at":"2026-09-04T06:36:06Z","auth":"auto-swap","prev_sha":"old"}' > "$SD5/deployed.meta.json"
@@ -1374,7 +1374,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-    OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 881 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featdrop-refused-rc" $rc 4
@@ -1389,7 +1389,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-    OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 882 --features telegram --allow-features-drop --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featdrop-allowed-rc" $rc 0
@@ -1403,7 +1403,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-    OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
     --run 883 --features telegram,code-graph,voice --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featadd-passes-rc" $rc 0
@@ -1416,8 +1416,8 @@ NSTUB3
   #        17u negative control — guard ON => zero gh release calls
   local SD7="$T/state7" RELCAP="$T/relcap"
   mkdir -p "$SD7/tools/ship" "$SD7/backups" "$RELCAP/in" "$RELCAP/x" "$T/crepo"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD7/tools/ship/oc-artifact-verify"; chmod +x "$SD7/tools/ship/oc-artifact-verify"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD7/tools/ship/oc-seal-state";     chmod +x "$SD7/tools/ship/oc-seal-state"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD7/tools/ship/oc-verify-artifact"; chmod +x "$SD7/tools/ship/oc-verify-artifact"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD7/tools/ship/oc-seal";     chmod +x "$SD7/tools/ship/oc-seal"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD7/workers-ledger.json"
   echo prev > "$SD7/deployed.sha"
   printf '{"sha":"prevprevprevprevprevprevprevprevprevprevprevprevprevprev","run_id":42,"artifact_sha256":"aa","features":"telegram","swapped_at":"2026-09-04T06:36:06Z","auth":"auto-swap","prev_sha":"old"}' > "$SD7/deployed.meta.json"
@@ -1431,7 +1431,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-    OC_DEPLOY_SEAL="$SD7/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD7/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD7/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD7/tools/ship/oc-verify-artifact" \
     OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_NOPUBLISH="${5:-0}" \
     OC_TEST_REL_EXISTS="${3:-}" OC_TEST_REL_FAIL="${4:-}" OC_TEST_REL_CAPTURE="$RELCAP/in" \
     "$SELF_BIN" swap-execute --sha "$1" --run "$2" --features telegram --artifact-dir "$T/art" 2>&1
@@ -1540,8 +1540,8 @@ NSTUB3
   #      in-sync units untouched; sandbox systemctl shims + OC_SWAP_SIDECARS=2.
   local SD4="$T/state4" SCJ
   mkdir -p "$SD4/tools/ship" "$SD4/backups" "$SD4/proc/111" "$SD4/proc/222" "$SD4/bin"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD4/tools/ship/oc-artifact-verify"; chmod +x "$SD4/tools/ship/oc-artifact-verify"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD4/tools/ship/oc-seal-state";     chmod +x "$SD4/tools/ship/oc-seal-state"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD4/tools/ship/oc-verify-artifact"; chmod +x "$SD4/tools/ship/oc-verify-artifact"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD4/tools/ship/oc-seal";     chmod +x "$SD4/tools/ship/oc-seal"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD4/workers-ledger.json"
   echo prev > "$SD4/deployed.sha"
   printf 'v1-artifact' > "$T/art/opencrabs"          # restamp: 17l consumed prior artifact
@@ -1564,7 +1564,7 @@ NSTUB3
     OC_SWAP_PROC_PREFIX="$SD4/proc" \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
-    OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 778 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "sidecar-green-rc" $rc 0
@@ -1585,7 +1585,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
-    OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 779 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "sidecar-guard-rc" $rc 0
@@ -1602,7 +1602,7 @@ NSTUB3
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
-    OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal-state" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-artifact-verify" \
+    OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-verify-artifact" \
     "$SELF_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
     --run 780 --features telegram --artifact-dir "$T/art" >/dev/null 2>&1
   N_SC2="$(grep -h '"step":"sidecar-sync"' "$SD4"/oc-deploy/journal/*.jsonl 2>/dev/null | grep -c 'drill-or-sandbox-or-disabled')"
@@ -1770,8 +1770,8 @@ NSTUB
   #          guard is skipped under --drill, so a drill case would assert nothing.
   local SD6="$T/state6" LOUT LERR LRC LJF
   mkdir -p "$SD6/tools/ship" "$SD6/backups"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD6/tools/ship/oc-artifact-verify"; chmod +x "$SD6/tools/ship/oc-artifact-verify"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD6/tools/ship/oc-seal-state";     chmod +x "$SD6/tools/ship/oc-seal-state"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD6/tools/ship/oc-verify-artifact"; chmod +x "$SD6/tools/ship/oc-verify-artifact"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SD6/tools/ship/oc-seal";     chmod +x "$SD6/tools/ship/oc-seal"
   printf 'v1-artifact' > "$T/art/opencrabs"; chmod +x "$T/art/opencrabs"
   printf 'v0-current' > "$T/bin/oc-lin-target"; chmod +x "$T/bin/oc-lin-target"
   : > "$NOTIFY_LOG"
@@ -1785,8 +1785,8 @@ NSTUB
       OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
       OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
       OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-      OC_DEPLOY_REPO="$LREPO" OC_DEPLOY_SEAL="$SD6/tools/ship/oc-seal-state" \
-      OC_DEPLOY_ARTVERIFY="$SD6/tools/ship/oc-artifact-verify" \
+      OC_DEPLOY_REPO="$LREPO" OC_DEPLOY_SEAL="$SD6/tools/ship/oc-seal" \
+      OC_DEPLOY_ARTVERIFY="$SD6/tools/ship/oc-verify-artifact" \
       "$SELF_BIN" swap-execute --sha "$sha" --run 777 --features telegram \
       --artifact-dir "$T/art" "$@" 2>"$T/lin.err")"
     LRC=$?
@@ -1867,8 +1867,8 @@ NSTUB
   mkdir -p "$SD7/tools/ship" "$SD7/backups" "$SD8/tools/ship" "$SD8/backups"
   local d
   for d in "$SD7" "$SD8"; do
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tools/ship/oc-artifact-verify"; chmod +x "$d/tools/ship/oc-artifact-verify"
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tools/ship/oc-seal-state";     chmod +x "$d/tools/ship/oc-seal-state"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tools/ship/oc-verify-artifact"; chmod +x "$d/tools/ship/oc-verify-artifact"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/tools/ship/oc-seal";     chmod +x "$d/tools/ship/oc-seal"
   done
   # restart shim: kill the ORIGINAL process group (what a unit teardown does)
   cat > "$T/cgkill.sh" <<'EOS'
@@ -1897,8 +1897,8 @@ EOS
       OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
       OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
       OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
-      OC_DEPLOY_REPO="$LREPO" OC_DEPLOY_SEAL="$sdir/tools/ship/oc-seal-state" \
-      OC_DEPLOY_ARTVERIFY="$sdir/tools/ship/oc-artifact-verify" \
+      OC_DEPLOY_REPO="$LREPO" OC_DEPLOY_SEAL="$sdir/tools/ship/oc-seal" \
+      OC_DEPLOY_ARTVERIFY="$sdir/tools/ship/oc-verify-artifact" \
       OC_SWAP_IN_UNIT_CGROUP=1 OC_SWAP_DETACH_CMD="setsid -w" OC_SWAP_DETACHED="$det" \
       setsid "$T/cgwrap.sh" "$SELF_BIN" swap-execute --sha "$sha" --run 790 \
       --features telegram --artifact-dir "$T/art" "$@" 2>"$T/cg.err" )"
@@ -1963,7 +1963,7 @@ EOS
   # 22f. rc PROPAGATION through the detach. A non-blocking launcher (bare
   #      `setsid`) returns 0 the moment it forks, so the swap's own exit code
   #      is lost — a guard refusal (rc 2) would read as success to every caller,
-  #      including oc-ship-chain, which branches on it. The detach command must
+  #      including oc-ship, which branches on it. The detach command must
   #      BLOCK and pass the child's rc through (`systemd-run --scope`, `setsid -w`).
   cg_swap "$SD7" "$LSTALE" "$LNEW" 0
   check_rc "cg-detached-rc-propagation" $CRC 2
@@ -2072,7 +2072,7 @@ OCPY
   check_rc "features-rc0" "$rc" 0
   check_has "features-prints-the-set" "$out" "telegram,browser"
   # same value as the helper itself, read in the same run — with the SAME
-  # flags the acceptance names (`oc-carrier-features --fetch`)
+  # flags the acceptance names (`oc-features --fetch`)
   helper_out="$("$SD/tools/carrier-multi" --fetch 2>/dev/null)"
   if [ "$out" = "$helper_out" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: features value != helper value"; fi
 

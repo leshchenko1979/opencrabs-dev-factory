@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Mutation guard for #34 — prove the GATE-MODE (bare-form) legs are LIVE.
 #
-# #34: `oc-job-verify <run> <sha> --identity-only` returned rc 4 REF-MISMATCH on
+# #34: `oc-verify-job <run> <sha> --identity-only` returned rc 4 REF-MISMATCH on
 # EVERY gate-mode run. Its identity anchor was the two-field build-job embed
 # "(<sha>, <features>)", which a GATE run never produces: the build job is
 # SKIPPED, so its name renders as the literal "${{ inputs.source_ref }}"
 # placeholder and the ONLY 40-hex in the run is the bare "(<sha>)" on the gates
-# job. oc-artifact-verify's provenance leg had the same blind spot. oc-deploy had
+# job. oc-verify-artifact's provenance leg had the same blind spot. oc-deploy had
 # already solved this in #72 with a private decode_job_sha_any.
 #
 # The fix: ONE any-shape decoder (oc_decode_job_sha_any) in lib/oc-embed.sh, and
@@ -52,11 +52,11 @@ SKILL_DIR="/root/.opencrabs/profiles/ops/skills/opencrabs-dev"
 #: affordance the only way to test the regression path is to break the live tree.
 SRC="${OC_NEGCTL_SRC:-$SKILL_DIR/tools}"
 LIB_REL="lib/oc-embed.sh"
-JV_REL="ship/oc-job-verify"
-AV_REL="ship/oc-artifact-verify"
+JV_REL="ship/oc-verify-job"
+AV_REL="ship/oc-verify-artifact"
 #: legs that depend on the fallback: jv 13 (bare form -> rc 0) + jv 14 (bare form
 #: with a different sha -> rc 4 'job embed sha'), and the same pair in
-#: oc-artifact-verify (15, 16). Neutering the decoder reddens BOTH legs of each
+#: oc-verify-artifact (15, 16). Neutering the decoder reddens BOTH legs of each
 #: tool: with pass 2 dead, leg 14/16 no longer reaches its own sha gate, so it
 #: reports the no-embed message instead — more than one failure is expected here.
 EXPECTED_DROP=2
@@ -149,28 +149,28 @@ rc_av="$(run_st "$WORK/base/$AV_REL" "$WORK/base.av.out")"
 n_jv="$(passed_of "$WORK/base.jv.out")"
 n_av="$(passed_of "$WORK/base.av.out")"
 
-[ "$rc_jv" = 0 ] && ok "baseline oc-job-verify GREEN (rc=0, ${n_jv:-?} passed)" \
-                 || bad "baseline oc-job-verify rc=$rc_jv (expected 0)"
-[ "$rc_av" = 0 ] && ok "baseline oc-artifact-verify GREEN (rc=0, ${n_av:-?} passed)" \
-                 || bad "baseline oc-artifact-verify rc=$rc_av (expected 0)"
+[ "$rc_jv" = 0 ] && ok "baseline oc-verify-job GREEN (rc=0, ${n_jv:-?} passed)" \
+                 || bad "baseline oc-verify-job rc=$rc_jv (expected 0)"
+[ "$rc_av" = 0 ] && ok "baseline oc-verify-artifact GREEN (rc=0, ${n_av:-?} passed)" \
+                 || bad "baseline oc-verify-artifact rc=$rc_av (expected 0)"
 [ -n "$n_jv" ] && [ -n "$n_av" ] || bad "baseline did not print a pass-count marker (cannot measure the drop)"
 
 # The guard is vacuous unless the pristine tree carries the fixtures it later
 # requires to redden: a renamed or deleted gate-mode leg would silently disable it.
 grep -qF 'gate / PR-lane gates' "$SRC/$JV_REL" \
-  && ok "baseline carries the gate-mode fixture (oc-job-verify)" \
-  || bad "the gate-mode fixture is MISSING from oc-job-verify — the guard would be vacuous"
+  && ok "baseline carries the gate-mode fixture (oc-verify-job)" \
+  || bad "the gate-mode fixture is MISSING from oc-verify-job — the guard would be vacuous"
 grep -qF 'gate / PR-lane gates' "$SRC/$AV_REL" \
-  && ok "baseline carries the gate-mode fixture (oc-artifact-verify)" \
-  || bad "the gate-mode fixture is MISSING from oc-artifact-verify — the guard would be vacuous"
+  && ok "baseline carries the gate-mode fixture (oc-verify-artifact)" \
+  || bad "the gate-mode fixture is MISSING from oc-verify-artifact — the guard would be vacuous"
 
 # Baseline probes: the aimed scenario must PASS before the mutation means anything.
 p_jv="$(probe "$WORK/base" jv)"
 p_av="$(probe "$WORK/base" av)"
-[ "$p_jv" = 0 ] && ok "baseline probe: gate-mode bare form -> rc 0 (oc-job-verify)" \
-                || bad "baseline probe oc-job-verify rc=$p_jv (expected 0 — the probe itself is broken)"
-[ "$p_av" = 0 ] && ok "baseline probe: gate-mode bare form -> rc 0 (oc-artifact-verify)" \
-                || bad "baseline probe oc-artifact-verify rc=$p_av (expected 0 — the probe itself is broken)"
+[ "$p_jv" = 0 ] && ok "baseline probe: gate-mode bare form -> rc 0 (oc-verify-job)" \
+                || bad "baseline probe oc-verify-job rc=$p_jv (expected 0 — the probe itself is broken)"
+[ "$p_av" = 0 ] && ok "baseline probe: gate-mode bare form -> rc 0 (oc-verify-artifact)" \
+                || bad "baseline probe oc-verify-artifact rc=$p_av (expected 0 — the probe itself is broken)"
 
 # --- mutant ------------------------------------------------------------------
 cp -a "$SRC" "$WORK/mut" || { bad "could not copy the tools tree"; echo "MUTATION GUARD FAILED (failures=$fails)"; exit 1; }
@@ -195,7 +195,7 @@ else
   m_jv="$(passed_of "$WORK/mut.jv.out")"
   m_av="$(passed_of "$WORK/mut.av.out")"
 
-  for pair in "oc-job-verify|$rc_mjv|$n_jv|$m_jv" "oc-artifact-verify|$rc_mav|$n_av|$m_av"; do
+  for pair in "oc-verify-job|$rc_mjv|$n_jv|$m_jv" "oc-verify-artifact|$rc_mav|$n_av|$m_av"; do
     name="${pair%%|*}"; rest="${pair#*|}"; rc_m="${rest%%|*}"; rest="${rest#*|}"; b="${rest%%|*}"; m="${rest#*|}"
     if [ "$rc_m" = 0 ]; then
       bad "[$name] mutant selftest PASSED (rc=0) — the gate-mode legs do not catch the regression"
@@ -217,10 +217,10 @@ else
   # Aimed scenario, named: the fixture that reproduced #34 must invert.
   q_jv="$(probe "$WORK/mut" jv)"
   q_av="$(probe "$WORK/mut" av)"
-  [ "$q_jv" = 4 ] && ok "[aimed leg] oc-job-verify gate-mode bare form: rc 0 -> rc $q_jv under the mutant (this is the #34 repro)" \
-                  || bad "[aimed leg] oc-job-verify gate-mode bare form rc=$q_jv under the mutant, expected 4"
-  [ "$q_av" = 4 ] && ok "[aimed leg] oc-artifact-verify gate-mode bare form: rc 0 -> rc $q_av under the mutant" \
-                  || bad "[aimed leg] oc-artifact-verify gate-mode bare form rc=$q_av under the mutant, expected 4"
+  [ "$q_jv" = 4 ] && ok "[aimed leg] oc-verify-job gate-mode bare form: rc 0 -> rc $q_jv under the mutant (this is the #34 repro)" \
+                  || bad "[aimed leg] oc-verify-job gate-mode bare form rc=$q_jv under the mutant, expected 4"
+  [ "$q_av" = 4 ] && ok "[aimed leg] oc-verify-artifact gate-mode bare form: rc 0 -> rc $q_av under the mutant" \
+                  || bad "[aimed leg] oc-verify-artifact gate-mode bare form rc=$q_av under the mutant, expected 4"
 fi
 
 echo

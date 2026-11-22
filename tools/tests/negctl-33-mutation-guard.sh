@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mutation guard for #33 — prove the --test-threads passthrough legs are LIVE.
 #
-# #33: `oc-prchecks` could not pass the carrier's `test_threads` workflow input
+# #33: `oc-gate` could not pass the carrier's `test_threads` workflow input
 # (the #1936 Stage 1 hang-capture mitigation). Its dispatch carried only
 # `-f ref=`, `-f fast=`, `-f no_cancel=`, so a lane hitting the fleet-wide
 # parallel-test deadlock could not ask the gate for a bounded libtest thread
@@ -15,11 +15,11 @@
 # gate WITHOUT the mitigation while the caller believed it applied.
 #
 # A leg that cannot fail is decoration. This guard reverts the dispatch block on
-# a COPY of the tools tree and requires `oc-prchecks --selftest` to fail on that
+# a COPY of the tools tree and requires `oc-gate --selftest` to fail on that
 # copy, with the aimed legs among the FAIL lines, while the unmutated copy stays
 # green.
 #
-# ASSERTION SHAPE — oc-prchecks' selftest COUNTS failures (it prints
+# ASSERTION SHAPE — oc-gate' selftest COUNTS failures (it prints
 # `selftest: $pass/$((pass+fail)) passed` and returns `[ "$fail" -eq 0 ]`); it
 # does NOT abort at the first failing leg. So the strongest available assertion
 # is: the mutant's rc is non-zero AND the aimed leg's TOKEN appears on a FAIL line.
@@ -52,7 +52,7 @@ ulimit -u $(( $(ps -e --no-headers | wc -l) + 200 )) 2>/dev/null || true
 SKILL_DIR="/root/.opencrabs/profiles/ops/skills/opencrabs-dev"
 SRC="$SKILL_DIR/tools"
 #: One home for the location (v0.4.255 regroup moved the fleet into kind subdirs).
-TOOL_REL="harvest/oc-prchecks"
+TOOL_REL="harvest/oc-gate"
 AIMED="test_threads/dispatched"
 AIMED_FAIL="test_threads/contract"
 export OC_TOOLS_NOLOG=1
@@ -65,10 +65,10 @@ fails=0
 ok()  { echo "  ok   - $1"; }
 bad() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
-echo "=== #33 mutation guard (oc-prchecks --test-threads passthrough) ==="
+echo "=== #33 mutation guard (oc-gate --test-threads passthrough) ==="
 
 run_st() {  # run_st <tool-path> <outfile> -> echoes rc
-  # No OC_SKILL_DIR pin here: unlike oc-ledger, oc-prchecks reads no $SKILL_DIR
+  # No OC_SKILL_DIR pin here: unlike oc-ledger, oc-gate reads no $SKILL_DIR
   # artifact (grep: zero SKILL_DIR / SKILL.md refs), so a tools-only copy is a
   # faithful stand-in.
   local tool="$1" outfile="$2" rc=0 out=""
@@ -82,9 +82,9 @@ cp -a "$SRC" "$WORK/baseline" || { echo "copy failed"; exit 2; }
 base_out="$WORK/baseline.out"
 rc_base="$(run_st "$WORK/baseline/$TOOL_REL" "$base_out")"
 if [ "$rc_base" = "0" ]; then
-  ok "baseline oc-prchecks --selftest GREEN (rc=0)"
+  ok "baseline oc-gate --selftest GREEN (rc=0)"
 else
-  bad "baseline oc-prchecks rc=$rc_base (expected 0)"
+  bad "baseline oc-gate rc=$rc_base (expected 0)"
 fi
 grep -Eq 'selftest: [0-9]+/[0-9]+ passed' "$base_out" \
   && ok "baseline prints the pass-count marker" \
@@ -97,7 +97,7 @@ for label in "$AIMED" "$AIMED_FAIL"; do
   if grep -qF "$label" "$SRC/$TOOL_REL"; then
     ok "baseline carries leg '${label:0:60}…'"
   else
-    bad "leg '$label' is MISSING from oc-prchecks — the guard would be vacuous"
+    bad "leg '$label' is MISSING from oc-gate — the guard would be vacuous"
   fi
 done
 

@@ -37,7 +37,7 @@ if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
 # The poll handoff (below) had NO in-flight guard: whenever the newest GREEN
 # run's built sha differed from `deployed.sha` it unconditionally armed a NEW
 # `oc-swap-<sha8>-<epoch>` unit. A caller that loops faster than the marker
-# flips — `oc-ship-chain` LEG5 polls 12x at 10 s, and `deployed.sha` does not
+# flips — `oc-ship` LEG5 polls 12x at 10 s, and `deployed.sha` does not
 # move until the swap unit has downloaded, verified, backed up, installed and
 # bounced (minutes) — therefore armed a DUPLICATE unit on every pass. Measured
 # 2026-10-01 (run 36799172575, sha e1525d27): THREE units ~19 s apart, all real,
@@ -457,7 +457,7 @@ case "$MODE" in
     if [ "$STAGE" = S2 ] || [ "$STAGE" = S3 ]; then
       plan "auto-swap armed: GREEN run + artifact verify -> swap (consent eliminated owner 2026-08-28)"
       if [ "$EXECUTE" = 1 ]; then
-        plan "swap chain: download artifact run=$RUN_ID -> oc-artifact-verify -> backup to $BACKUP_DIR -> atomic install -> seal -> marker writes -> bounce -> disk==proc verify -> ledger stamp -> receipt (auto-rollback on verify fail)"
+        plan "swap chain: download artifact run=$RUN_ID -> oc-verify-artifact -> backup to $BACKUP_DIR -> atomic install -> seal -> marker writes -> bounce -> disk==proc verify -> ledger stamp -> receipt (auto-rollback on verify fail)"
         # #729: do NOT arm a duplicate unit while one for THIS sha is in flight
         # (see swap_inflight_units above). Exit 0 pre-bounce by design — exactly
         # like a successful handoff: the live unit owns the swap and will flip

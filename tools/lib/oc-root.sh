@@ -75,7 +75,7 @@
 #      siblings and assert the tool uses THOSE, so a walk that escaped the
 #      fixture to the real tools/ would silently defeat the test's isolation
 #      (measured 2026-09-25: without this fallback, TOOLS_DIR walked past the
-#      fixture and oc-ship-chain's journal legs read rc=127 against the real
+#      fixture and oc-ship's journal legs read rc=127 against the real
 #      tree). A fixture that copies a REAL lib/ beside the tool keeps case 1 —
 #      that is oc-snap.sh's mirror, and it must still resolve to the mirror.
 #

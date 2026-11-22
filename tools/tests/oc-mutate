@@ -119,7 +119,7 @@ case "$TMO" in ''|*[!0-9]*) printf '%s: --timeout must be a positive integer, go
 # them silently reports "0 legs reddened" for every other tool — which then
 # reads as a SURVIVED mutant, i.e. a false accusation against a good guard:
 #
-#   selftest: <leg> FAIL              (oc-smoke, oc-prchecks)
+#   selftest: <leg> FAIL              (oc-smoke, oc-gate)
 #   selftest: <leg> FAILED — <why>    (oc-commit, stderr)
 #   (  FAIL - <msg>)                  (oc-questions)
 #     FAIL selftest - <msg>           (oc-ledger)

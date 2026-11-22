@@ -42,7 +42,7 @@ set -e
 SCRIPT_DIR="$OC_TOOLS_DIR"
 STATE_DIR="${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}}"
 # #673: the fork checkout, for the by-hand lineage ancestry check. Same
-# convention as oc-ship-chain (OC_FORK_REPO, else $HOME/opencrabs).
+# convention as oc-ship (OC_FORK_REPO, else $HOME/opencrabs).
 FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 CANON_LOG="$STATE_DIR/smoke-verdicts.log"
 EVIDENCE_TOOL="$SCRIPT_DIR/smoke/oc-smoke-evidence"

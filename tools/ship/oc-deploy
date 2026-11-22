@@ -70,8 +70,8 @@
 # Exit codes: 0 ok/noop | 1 usage | 2 rebase/gate/push/verify/rollback fail
 #             / watch stray | 3 retired (was consent) | 4 stage gate / launch fail
 #             | 5 poll --wait timeout (C-#2) | 9 kill file
-# Deps: git, gh, jq, curl; oc-order-validate (ship execute);
-#       oc-artifact-verify + oc-seal-state (swap-execute real mode)
+# Deps: git, gh, jq, curl; oc-verify-order (ship execute);
+#       oc-verify-artifact + oc-seal (swap-execute real mode)
 # =============================================================================
 #
 # --- FOUR-WAY SPLIT (owner order, plan task T5-bis) ---------------------------

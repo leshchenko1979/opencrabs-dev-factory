@@ -143,13 +143,13 @@
 #   swap-result notify-fanout shipchain
 #   (v1.1 change 2026-08-29: Duty-7 IDEA from editor lane 7e1ebbb6, task #34 —
 #   the ISSUE ROUTING row requires a claim shape; two lanes hit the gap live.)
-#   (v1.2 change 2026-09-11: shipchain — oc-ship-chain journal() lines. The tool
+#   (v1.2 change 2026-09-11: shipchain — oc-ship journal() lines. The tool
 #   shipped stamping this kind while it was absent from the enum, so the whole
 #   journal path was dead: rc 2 swallowed by `|| true`, 216/216 in tools.log.)
 #   (v1.3 change 2026-09-11: roster-retire — the removal half of the roster
 #   lifecycle. enroll could create and promote could mutate, but NOTHING could
 #   drop a row, so a wrongly-enrolled uuid signed forever; the sign gate keys on
-#   uuid PRESENCE (oc-order-validate selects .role by uuid), which is why a
+#   uuid PRESENCE (oc-verify-order selects .role by uuid), which is why a
 #   demote revokes nothing and only removal works. ROW-SCOPED since the same
 #   day's defect fix: retire takes --topic/--role EXACT selectors and refuses
 #   rc 2 when a uuid matches >1 row without one — it used to remove every
@@ -188,7 +188,7 @@ SELFTEST=0
 # confirm + swap-result: tool-written mechanical kinds (cmd_confirm, oc-deploy
 # ledger_stamp) admitted v0.4.77 — the enum is closed to EVERY writer now.
 # shipchain (2026-09-11, defect fix lane 4b4463d5): the FOURTH tool-written
-# mechanical kind, admitted the same way — oc-ship-chain's journal() stamps one
+# mechanical kind, admitted the same way — oc-ship's journal() stamps one
 # line per leg. Until today it stamped a kind that was never in this enum, so
 # EVERY chain journal line died rc 2 under `|| true` (216/216 rows in tools.log,
 # 0 rows in the ledger): no chain ever had a ledger trail. Note is NOT the
@@ -827,7 +827,7 @@ derive_by() { # default stamp attribution (v0.4.58, Duty-4 IDEA from lane 7e1ebb
     # NOT a refusal (the queue's first cut, option (b)): 64 of the 86 full-uuid
     # sentinel rows belong to uuids that ARE rostered today — they were stamped
     # inside the pre-`enroll` window — so refusing the sentinel would have
-    # blocked legitimate stamps. And `oc-ship-chain` passes an explicit `--by`
+    # blocked legitimate stamps. And `oc-ship` passes an explicit `--by`
     # fallback: a refusal here would trade its whole ledger trail for a warning
     # (the chain CONTINUES). Meaningful labels (hq/opencrabs-dev-factory) are
     # not fragments and keep the sentinel.
@@ -965,7 +965,7 @@ for tok in oc.primary_issue_tokens(sys.argv[2]):
 # WARN, never REFUSE. derive_by:604 already records why: 64 of the 86 full-uuid
 # sentinel rows belong to uuids that ARE rostered today — they were stamped
 # inside the pre-`enroll` window — so a hard refusal would retroactively block a
-# legitimately-unresolvable shape. And oc-ship-chain passes an explicit `--by`
+# legitimately-unresolvable shape. And oc-ship passes an explicit `--by`
 # fallback: a refusal would trade its whole ledger trail for a warning.
 #
 # Silent when: the value is a LABEL (carries a non-hex/non-dash char in the
@@ -2069,7 +2069,7 @@ cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
 cmd_retire() { # retire <uuid> [--topic N] [--role R] [--why TEXT] — REMOVE one roster row.
   # The correction path the roster lifecycle was missing. enroll refuses a dup
   # uuid, promote only mutates in place, and the sign gate keys on uuid
-  # PRESENCE (`oc-order-validate` selects .role by uuid) — so a wrongly-enrolled
+  # PRESENCE (`oc-verify-order` selects .role by uuid) — so a wrongly-enrolled
   # uuid kept signing and NOTHING could drop it. A demote revokes nothing;
   # only removal does. Live case that motivated this: enrollment n=2457 put
   # `editor 359fe71b` on topic 49607 + feature cron-session-isolation, which
@@ -2938,7 +2938,7 @@ ACKEOF
   bash "$ME" retire 22222222-2222-2222-2222-222222222222 --why "wrong topic 49607" >/dev/null 2>&1; chk "retire-happy" 0 $?
   chk "retire-row-gone" "0" "$(jq '[.workers[] | select(.uuid == "22222222-2222-2222-2222-222222222222")] | length' "$OC_LEDGER")"
   chk "retire-roster-drops" "0" "$(bash "$ME" roster 2>/dev/null | grep -c '22222222-2222-2222-2222-222222222222' || true)"
-  # the sign gate's own predicate (oc-order-validate:98): .role selected by uuid.
+  # the sign gate's own predicate (oc-verify-order:98): .role selected by uuid.
   # After retire it is EMPTY -> the gate's `[ -n "$ROLE" ] || fail 3 UNSIGNED`.
   chk "retire-loses-signing" "" "$(jq -r --arg u 22222222-2222-2222-2222-222222222222 '.workers[] | select(.uuid == $u) | .role // empty' "$OC_LEDGER")"
   chk "retire-event-kind" "roster-retire" "$(jq -r '[.events[] | select(.by == "oc-ledger retire")] | last | .kind' "$OC_LEDGER")"
@@ -4174,7 +4174,7 @@ EOF
   chk "notify-fanout-kind-accepted" 0 $?
   jq -e --arg u "$W4" '[.events[] | select(.kind=="notify-fanout")] | length > 0' "$OC_LEDGER" >/dev/null 2>&1 && ok || bad "notify-fanout-row-on-ledger"
   # 55b (2026-09-11, defect fix lane 4b4463d5): shipchain kind acceptance —
-  # oc-ship-chain's journal() stamps this kind per leg; it was absent from the
+  # oc-ship's journal() stamps this kind per leg; it was absent from the
   # enum, so 216/216 journal stamps died rc 2 under `|| true` and no chain ever
   # had a ledger trail. Regression guard: the kind must be accepted AND land.
   OC_ACTOR="$W4" bash "$ME" stamp shipchain "[CHAIN-abc12345-20260911T000000Z] LEG1 gate GREEN" >/dev/null 2>&1
@@ -5416,11 +5416,11 @@ sys.stdout.write("S\t%d\t%d\t%d\t%d\n"
 oc_ship_audit_chain() {
   [ "${OC_SHIP_AUDIT_CHAIN:-1}" = "1" ] || return 0
   local AUDIT RC=0
-  AUDIT="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/oc-ship-audit"
+  AUDIT="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/oc-audit-ship"
   [ -x "$AUDIT" ] || return 0
   "$AUDIT" --grace 120 >/dev/null 2>&1 || RC=$?
   if [ "$RC" -eq 1 ]; then
-    echo "oc-ledger: SHIP-AUDIT rc=1 - ORPHANED/failed deploy legs detected; run: tools/ship/oc-ship-audit --grace 120" >&2
+    echo "oc-ledger: SHIP-AUDIT rc=1 - ORPHANED/failed deploy legs detected; run: tools/ship/oc-audit-ship --grace 120" >&2
   fi
   return 0
 }
@@ -5687,7 +5687,7 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   # Read the RECENT tail of the ledger. HQ playbooks kept assuming this verb
   # (`oc-ledger tail`) while the usage line listed NO read verb for events —
   # the same phantom-verb family as `roster` (fixed the same day, lane d18ce16a)
-  # and the `oc-ledger show` the oc-ship-chain help used to name. The failure
+  # and the `oc-ledger show` the oc-ship help used to name. The failure
   # mode is what makes it worth a verb: a guess gets the usage branch (rc 2) or
   # an empty result, and an auditor reads that as "the ledger has no such
   # event" instead of "wrong verb". `tail` is an accepted ALIAS.

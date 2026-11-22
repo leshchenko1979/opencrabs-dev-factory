@@ -746,7 +746,7 @@ for file_path in task_files:
 def extract_run_info(cmd_text):
     if not cmd_text:
         return None, None
-    m_run = re.search(r'(?:--gated-run\s+(\d+)|\bgh\s+run\s+watch\s+(\d+)|runs/(\d+)|\boc-prchecks\b.*?(?:resume|wait|gate)?\s+(\d+))', cmd_text)
+    m_run = re.search(r'(?:--gated-run\s+(\d+)|\bgh\s+run\s+watch\s+(\d+)|runs/(\d+)|\boc-gate\b.*?(?:resume|wait|gate)?\s+(\d+))', cmd_text)
     run_id = None
     if m_run:
         for g in m_run.groups():
@@ -772,7 +772,7 @@ def query_gh_run(run_id, repo):
 
 # --- watcher-recovery contract helpers (c22 ACCEPT, verdict-table:72) -------
 # The notice exists to wake a lane whose watcher died mid-flight. A run that is
-# already TERMINAL cannot be resumed -- `oc-prchecks resume` on it is a no-op at
+# already TERMINAL cannot be resumed -- `oc-gate resume` on it is a no-op at
 # best -- so notifying about one wakes a lane to do work that cannot exist.
 _TERMINAL_NULLS = ("", "null", "none", "unknown")
 
@@ -987,7 +987,7 @@ if notify_orphans:
                 ident += f" (issue #{iss})"
             if age:
                 ident += f" -- run is {age} old"
-        msg = f"[WATCHER RECOVERED] Detached watcher was interrupted by daemon restart.\nTarget: {c['repo']} run {c['run_id']}{ident}\nRun status: {status}, conclusion: {conclusion}\nRun URL: {url}\nResume command: oc-prchecks resume {c['run_id']}"
+        msg = f"[WATCHER RECOVERED] Detached watcher was interrupted by daemon restart.\nTarget: {c['repo']} run {c['run_id']}{ident}\nRun status: {status}, conclusion: {conclusion}\nRun URL: {url}\nResume command: oc-gate resume {c['run_id']}"
         # Carry the emitted text on the record: the contract binds the NOTICE
         # (it must name branch + issue + age), and an assertion that cannot read
         # the payload measures the source constants instead of the artifact.

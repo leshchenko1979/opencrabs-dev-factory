@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-artifact-verify — the SWAP GATE. Verify a downloaded quick-build artifact
+# oc-verify-artifact — the SWAP GATE. Verify a downloaded quick-build artifact
 # before it may replace the live binary (tools/archive/compiler.md Step 3 items 2-3).
 #
 # Checks (each a hard gate):
@@ -31,7 +31,7 @@ _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r";
 if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
-if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-artifact-verify" "$@"; else oc_log_finish() { :; }; fi
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-verify-artifact" "$@"; else oc_log_finish() { :; }; fi
 _OC_EMBED="$OC_TOOLS_DIR/lib/oc-embed.sh"
 [ -f "$_OC_EMBED" ] && source "$_OC_EMBED"   # single embed decoder (E2 finding 3, v0.4.72)
 trap 'oc_log_finish $?' EXIT
@@ -45,17 +45,17 @@ EXPECT_VER=""  # optional strict --version comparison
 JSON_OUT=0
 VERBOSE=0
 
-fail() { echo "oc-artifact-verify: $2" >&2; exit "$1"; }
+fail() { echo "oc-verify-artifact: $2" >&2; exit "$1"; }
 say()  { [ "$VERBOSE" = 1 ] && echo "$*" >&2 || true; }
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's LEGACY rc 1 on STDERR
   # Deliberately does NOT exit: the callers choose the rc (this register's usage
   # error is 1, not the fleet's 2 -- RC-CONTRACT legacy row), so only the STREAM
   # is selected here. #748a: `--help` was rc=0 with the text on STDERR, so
-  # `oc-artifact-verify --help | grep` found nothing while the rc leg stayed green.
+  # `oc-verify-artifact --help | grep` found nothing while the rc leg stayed green.
   local fd=2
   [ "${1:-1}" = 0 ] && fd=1
-  echo "Usage: oc-artifact-verify <artifact-path> [--source <sha>] [--run-id <id>] [--markers m1,m2] [--expect-sha <sha256>] [--expect-version <v>] [--repo R] [--json] [--verbose] [--selftest]" >&$fd
+  echo "Usage: oc-verify-artifact <artifact-path> [--source <sha>] [--run-id <id>] [--markers m1,m2] [--expect-sha <sha256>] [--expect-version <v>] [--repo R] [--json] [--verbose] [--selftest]" >&$fd
   echo "Exit: 0 PASS | 1 invocation | 2 NOT-ELF/MISSING | 3 MARKER-MISSING | 4 SHA/PROVENANCE-MISMATCH | 5 VERSION-MISMATCH" >&$fd
 }
 

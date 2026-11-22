@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mutation guard for factory #39 — prove the --test-threads legs are LIVE.
 #
-# #39 (ASK from the lane "Telegram: Rich Text", 2026-10-15): oc-ship-chain had
+# #39 (ASK from the lane "Telegram: Rich Text", 2026-10-15): oc-ship had
 # no way to hand libtest's `--test-threads N` to the LEG1 gate it dispatches, so
 # the #1936 Stage-1 hang mitigation was UNREACHABLE through the chain — every
 # fresh LEG1 dispatch was a coin flip. Measured, same turn: carrier run
@@ -31,7 +31,7 @@
 # Each arm also asserts the legs INDEPENDENT of its mutation SURVIVE it, so a
 # mutant that simply broke the whole verb cannot be mistaken for a catch.
 #
-# ASSERTION SHAPE: oc-ship-chain's selftest defines
+# ASSERTION SHAPE: oc-ship's selftest defines
 #   bad() { FAIL=$((FAIL+1)); echo "FAIL $1"; }        # STDOUT — not stderr
 # (oc-ledger, guarded by negctl-38, writes its FAIL lines to STDERR; the two
 # guards are NOT interchangeable). Every failing leg therefore names itself on
@@ -62,7 +62,7 @@ SKILL_DIR="/root/.opencrabs/profiles/ops/skills/opencrabs-dev"
 #: tree (OC_NEGCTL_SRC=...) and shown to exit non-zero — i.e. shown to detect a
 #: real regression, not only to convict its own internal mutant.
 SRC="${OC_NEGCTL_SRC:-$SKILL_DIR/tools}"
-TOOL_REL="ship/oc-ship-chain"
+TOOL_REL="ship/oc-ship"
 #: a guard fixture must never append to the shared tools log.
 export OC_TOOLS_NOLOG=1
 
@@ -123,23 +123,23 @@ cp -a "$SRC" "$WORK/base" || { echo "copy failed"; exit 2; }
 rc_b="$(run_st "$WORK/base/$TOOL_REL" "$WORK/base.out")"
 n_b="$(passed_of "$WORK/base.out")"
 
-[ "$rc_b" = 0 ] && ok "baseline oc-ship-chain GREEN (rc=0, ${n_b:-?} passed)" \
-               || bad "baseline oc-ship-chain rc=$rc_b (expected 0)"
+[ "$rc_b" = 0 ] && ok "baseline oc-ship GREEN (rc=0, ${n_b:-?} passed)" \
+               || bad "baseline oc-ship rc=$rc_b (expected 0)"
 [ -n "$n_b" ] || bad "baseline did not print a pass-count marker (cannot measure the drop)"
 
 # The guard is vacuous unless the pristine tree carries the code AND the legs it
 # later requires to redden: a renamed or deleted leg would silently disarm it.
 grep -qF '[ -n "$TEST_THREADS" ] && PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")' "$SRC/$TOOL_REL" \
   && ok "baseline carries the #39 forwarding line" \
-  || bad "the #39 forwarding line is MISSING from oc-ship-chain — the guard would be vacuous"
+  || bad "the #39 forwarding line is MISSING from oc-ship — the guard would be vacuous"
 grep -qF 'OC_SHIPCHAIN_TEST_THREADS needs a non-negative integer' "$SRC/$TOOL_REL" \
   && ok "baseline carries the env shape gate" \
-  || bad "the env shape gate is MISSING from oc-ship-chain — the guard would be vacuous"
+  || bad "the env shape gate is MISSING from oc-ship — the guard would be vacuous"
 for leg in test-threads/forwarded test-threads/journal-resolved-argv test-threads/env \
            test-threads/absent test-threads/shape-usage test-threads/inert-carry-green; do
   grep -qF "$leg" "$SRC/$TOOL_REL" \
     && ok "baseline carries leg $leg" \
-    || bad "leg $leg is MISSING from oc-ship-chain — the guard would be vacuous"
+    || bad "leg $leg is MISSING from oc-ship — the guard would be vacuous"
 done
 
 # --- arms --------------------------------------------------------------------
