@@ -11,7 +11,7 @@
 # WHAT MOVED HERE, VERBATIM (byte-slices of oc-deploy@5f81c599):
 #   swap_in_bounce_cgroup, swap_ensure_detached   (source 269-311)
 #   the swap-execute banner comment               (source 1362-1365)
-#   swap_execute (+ its nested sidecar_sync and
+#   swap_execute (+ the hoisted sidecar_sync and
 #    post_verify)                                 (source 1498-1886)
 #   the `swap-execute)` dispatch arm              (source 2732-2752)
 # Nothing was rewritten and no rc was re-mapped. Config, journal, ledger stamp,
@@ -83,6 +83,100 @@ swap_ensure_detached() { # re-exec outside the bounce cgroup (argv from ORIG_ARG
 # ----------------------------------------------------------------------------
 # functions moved VERBATIM (source 1362-1365, 1498-1886): the swap body
 # ----------------------------------------------------------------------------
+# --------------------------------------------------- swap phase-B helpers --
+# Hoisted to file scope (plan task 5 criterion 4): these are callable as
+# top-level functions, not nested inside swap_execute. sidecar_sync takes the
+# drill flag as $2 because DRILL is a swap_execute local, not a global.
+# post_verify sets the globals PV_MATCH / PV_DETAIL, which its caller reads.
+
+sidecar_sync() { # $1 = deployed binary sha ; $2 = drill flag (0/1) ; GREEN path only
+  local EXP="$1" DRILL="${2:-0}" EN=0 U PID PSHA ACT RRC NPID NSHA
+  local RESTARTED=0 INSYNC=0 FAILED=0 DETAIL="[]"
+  # Ruling 1273 (HQ, 2026-09-03, canonical): an ops-profile swap
+  # restarts opencrabs-ops.service ONLY — sibling daemons legitimately keep
+  # the old binary + (deleted) exe. Sidecar sync is therefore OPT-IN
+  # (supersedes the 2026-08-31 auto-sync, whose default restart of family
+  # violated 1273 during the f3c03269 auto-swap): OC_SWAP_SIDECARS=1 opts in
+  # for a PROD target, =2 force-enables (selftest/sandbox), unset/0 = off.
+  [ "$DRILL" = "1" ] && EN=0
+  case "${OC_SWAP_SIDECARS:-0}" in
+    2) EN=1 ;;
+    1) [ "$SWAP_TARGET" = "/usr/local/bin/opencrabs" ] && EN=1 ;;
+  esac
+  if [ "$EN" != "1" ]; then
+    jline sidecar-sync 0 '{"skipped":"drill-or-sandbox-or-disabled"}'
+    return 0
+  fi
+  local LIST
+  LIST="$( { if [ -n "${OC_SWAP_SIDECAR_LISTER:-}" ]; then "$OC_SWAP_SIDECAR_LISTER"; else systemctl --user list-units --plain --no-legend --all 'opencrabs-*.service' 2>/dev/null | awk '{print $1}'; fi; } 2>/dev/null || true)"
+  while IFS= read -r U; do
+    [ -n "$U" ] || continue
+    [ "$U" = "${OC_SWAP_PRIMARY_UNIT:-opencrabs-ops.service}" ] && continue
+    ACT="$( { if [ -n "${OC_SWAP_SIDECAR_ACTIVE:-}" ]; then "$OC_SWAP_SIDECAR_ACTIVE" "$U"; else systemctl --user is-active "$U" 2>/dev/null; fi; } 2>/dev/null || echo unknown)"
+    if [ "$ACT" != "active" ]; then
+      DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --arg a "$ACT" '$d + [{unit:$u, action:"skip-inactive", active:$a}]')"
+      continue
+    fi
+    PID="$( { if [ -n "${OC_SWAP_SIDECAR_SHOW:-}" ]; then "$OC_SWAP_SIDECAR_SHOW" "$U"; else systemctl --user show -p MainPID --value "$U" 2>/dev/null; fi; } 2>/dev/null || echo 0)"
+    PSHA=""
+    if [ -n "$PID" ] && [ "$PID" != "0" ] && [ -r "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" ]; then
+      PSHA="$(sha256sum "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" 2>/dev/null | cut -d' ' -f1)"
+    fi
+    if [ -z "$PSHA" ]; then
+      DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --arg p "$PID" '$d + [{unit:$u, action:"skip-no-proc", mainpid:$p}]')"
+      continue
+    fi
+    if [ "$PSHA" = "$EXP" ]; then
+      INSYNC=$((INSYNC+1))
+      DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" '$d + [{unit:$u, action:"in-sync"}]')"
+      continue
+    fi
+    # stale sidecar: bounce + re-verify, journal both ways, never fatal
+    if [ -n "${OC_SWAP_SIDECAR_RESTART:-}" ]; then "$OC_SWAP_SIDECAR_RESTART" "$U" >/dev/null 2>&1; RRC=$?; else systemctl --user restart "$U" >/dev/null 2>&1; RRC=$?; fi
+    NSHA=""
+    sleep "${OC_SWAP_SETTLE:-5}"
+    NPID="$( { if [ -n "${OC_SWAP_SIDECAR_SHOW:-}" ]; then "$OC_SWAP_SIDECAR_SHOW" "$U"; else systemctl --user show -p MainPID --value "$U" 2>/dev/null; fi; } 2>/dev/null || echo 0)"
+    if [ -n "$NPID" ] && [ "$NPID" != "0" ] && [ -r "${OC_SWAP_PROC_PREFIX:-/proc}/$NPID/exe" ]; then
+      NSHA="$(sha256sum "${OC_SWAP_PROC_PREFIX:-/proc}/$NPID/exe" 2>/dev/null | cut -d' ' -f1)"
+    fi
+    if [ "$RRC" -eq 0 ] && [ -n "$NSHA" ] && [ "$NSHA" = "$EXP" ]; then
+      RESTARTED=$((RESTARTED+1))
+      DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --arg o "$PSHA" --arg n "$NSHA" '$d + [{unit:$u, action:"restarted", old_sha:$o, new_sha:$n}]')"
+      jline sidecar-unit 0 "$(jq -cn --arg u "$U" --arg o "$PSHA" --arg n "$NSHA" '{unit:$u, action:"restarted", old_sha256:$o, new_sha256:$n}')"
+    else
+      FAILED=$((FAILED+1))
+      DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --argjson e "$RRC" --arg n "$NSHA" '$d + [{unit:$u, action:"failed", restart_exit:$e, new_sha:$n}]')"
+      jline sidecar-unit 1 "$(jq -cn --arg u "$U" --argjson e "$RRC" --arg n "$NSHA" '{unit:$u, action:"failed", restart_exit:$e, new_sha256:$n}')"
+    fi
+  done <<< "$LIST"
+  jline sidecar-sync 0 "$(jq -cn --argjson d "$DETAIL" --argjson r "$RESTARTED" --argjson c "$INSYNC" --argjson f "$FAILED" '{restarted:$r, in_sync:$c, failed:$f, detail:$d}')"
+  echo "SIDECAR SYNC: restarted=$RESTARTED in_sync=$INSYNC failed=$FAILED"
+}
+
+# --- post-verify helper: active + disk + proc + markers ---
+post_verify() { # $1=expected_sha  $2=expected_marker_sha  $3=expect_meta(0/1) ; sets PV_MATCH/PV_DETAIL
+  local i ACTIVE DISK_SHA PID PROC_SHA MARK_MARKER MARK_META META_OK
+  PV_MATCH=0
+  sleep "${OC_SWAP_SETTLE:-5}"
+  for i in $(seq 1 "${OC_SWAP_TRIES:-30}"); do
+    ACTIVE="$($ACTIVE_CMD 2>/dev/null || echo unknown)"
+    DISK_SHA="$(sha256sum "$SWAP_TARGET" 2>/dev/null | cut -d' ' -f1)"
+    MARK_MARKER="$(cat "$DEPLOYED" 2>/dev/null || echo MISSING)"
+    MARK_META="absent"; [ -f "$DEPLOYED_META" ] && MARK_META="present"
+    META_OK=0; if [ "$3" = "1" ]; then [ "$MARK_META" = "present" ] && META_OK=1; else [ "$MARK_META" = "absent" ] && META_OK=1; fi
+    if [ "$ACTIVE" = "active" ] && [ "$DISK_SHA" = "$1" ] && [ "$MARK_MARKER" = "$2" ] && [ "$META_OK" = "1" ]; then
+      if [ "$SKIP_PROC" = "1" ]; then PV_MATCH=1; break; fi
+      PID="$($PID_CMD 2>/dev/null || echo 0)"
+      if [ -n "$PID" ] && [ "$PID" != "0" ] && [ -r "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" ]; then
+        PROC_SHA="$(sha256sum "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" 2>/dev/null | cut -d' ' -f1)"
+        [ "$PROC_SHA" = "$1" ] && { PV_MATCH=1; break; }
+      fi
+    fi
+    sleep 2
+  done
+  PV_DETAIL="$(jq -cn --arg a "$ACTIVE" --arg d "${DISK_SHA:-}" --arg e "$1" --arg mm "$MARK_MARKER" --arg mt "$MARK_META" --argjson x "$3" --argjson m "$PV_MATCH" '{is_active:$a, disk_sha256:$d, expected_sha256:$e, marker_sha:$mm, marker_meta:$mt, meta_expect:($x==1), match:($m==1)}')"
+}
+
 # ------------------------------------------------------------- swap-execute --
 # Phase B body (spec: s2-swap-journal-spec.md). Runs under a systemd transient
 # in prod; env overrides sandbox every side effect for selftest.
@@ -296,93 +390,6 @@ swap_execute() {
   #     1273 default; =1 opts a PROD target back in).
   #     Selftest shims: OC_SWAP_SIDECAR_LISTER/SHOW/ACTIVE/RESTART (command per
   #     unit) + OC_SWAP_PROC_PREFIX (fake /proc) + OC_SWAP_PRIMARY_UNIT.
-  sidecar_sync() { # $1 = deployed binary sha ; GREEN path only
-    local EXP="$1" EN=0 U PID PSHA ACT RRC NPID NSHA
-    local RESTARTED=0 INSYNC=0 FAILED=0 DETAIL="[]"
-    # Ruling 1273 (HQ, 2026-09-03, canonical): an ops-profile swap
-    # restarts opencrabs-ops.service ONLY — sibling daemons legitimately keep
-    # the old binary + (deleted) exe. Sidecar sync is therefore OPT-IN
-    # (supersedes the 2026-08-31 auto-sync, whose default restart of family
-    # violated 1273 during the f3c03269 auto-swap): OC_SWAP_SIDECARS=1 opts in
-    # for a PROD target, =2 force-enables (selftest/sandbox), unset/0 = off.
-    [ "$DRILL" = "1" ] && EN=0
-    case "${OC_SWAP_SIDECARS:-0}" in
-      2) EN=1 ;;
-      1) [ "$SWAP_TARGET" = "/usr/local/bin/opencrabs" ] && EN=1 ;;
-    esac
-    if [ "$EN" != "1" ]; then
-      jline sidecar-sync 0 '{"skipped":"drill-or-sandbox-or-disabled"}'
-      return 0
-    fi
-    local LIST
-    LIST="$( { if [ -n "${OC_SWAP_SIDECAR_LISTER:-}" ]; then "$OC_SWAP_SIDECAR_LISTER"; else systemctl --user list-units --plain --no-legend --all 'opencrabs-*.service' 2>/dev/null | awk '{print $1}'; fi; } 2>/dev/null || true)"
-    while IFS= read -r U; do
-      [ -n "$U" ] || continue
-      [ "$U" = "${OC_SWAP_PRIMARY_UNIT:-opencrabs-ops.service}" ] && continue
-      ACT="$( { if [ -n "${OC_SWAP_SIDECAR_ACTIVE:-}" ]; then "$OC_SWAP_SIDECAR_ACTIVE" "$U"; else systemctl --user is-active "$U" 2>/dev/null; fi; } 2>/dev/null || echo unknown)"
-      if [ "$ACT" != "active" ]; then
-        DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --arg a "$ACT" '$d + [{unit:$u, action:"skip-inactive", active:$a}]')"
-        continue
-      fi
-      PID="$( { if [ -n "${OC_SWAP_SIDECAR_SHOW:-}" ]; then "$OC_SWAP_SIDECAR_SHOW" "$U"; else systemctl --user show -p MainPID --value "$U" 2>/dev/null; fi; } 2>/dev/null || echo 0)"
-      PSHA=""
-      if [ -n "$PID" ] && [ "$PID" != "0" ] && [ -r "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" ]; then
-        PSHA="$(sha256sum "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" 2>/dev/null | cut -d' ' -f1)"
-      fi
-      if [ -z "$PSHA" ]; then
-        DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --arg p "$PID" '$d + [{unit:$u, action:"skip-no-proc", mainpid:$p}]')"
-        continue
-      fi
-      if [ "$PSHA" = "$EXP" ]; then
-        INSYNC=$((INSYNC+1))
-        DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" '$d + [{unit:$u, action:"in-sync"}]')"
-        continue
-      fi
-      # stale sidecar: bounce + re-verify, journal both ways, never fatal
-      if [ -n "${OC_SWAP_SIDECAR_RESTART:-}" ]; then "$OC_SWAP_SIDECAR_RESTART" "$U" >/dev/null 2>&1; RRC=$?; else systemctl --user restart "$U" >/dev/null 2>&1; RRC=$?; fi
-      NSHA=""
-      sleep "${OC_SWAP_SETTLE:-5}"
-      NPID="$( { if [ -n "${OC_SWAP_SIDECAR_SHOW:-}" ]; then "$OC_SWAP_SIDECAR_SHOW" "$U"; else systemctl --user show -p MainPID --value "$U" 2>/dev/null; fi; } 2>/dev/null || echo 0)"
-      if [ -n "$NPID" ] && [ "$NPID" != "0" ] && [ -r "${OC_SWAP_PROC_PREFIX:-/proc}/$NPID/exe" ]; then
-        NSHA="$(sha256sum "${OC_SWAP_PROC_PREFIX:-/proc}/$NPID/exe" 2>/dev/null | cut -d' ' -f1)"
-      fi
-      if [ "$RRC" -eq 0 ] && [ -n "$NSHA" ] && [ "$NSHA" = "$EXP" ]; then
-        RESTARTED=$((RESTARTED+1))
-        DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --arg o "$PSHA" --arg n "$NSHA" '$d + [{unit:$u, action:"restarted", old_sha:$o, new_sha:$n}]')"
-        jline sidecar-unit 0 "$(jq -cn --arg u "$U" --arg o "$PSHA" --arg n "$NSHA" '{unit:$u, action:"restarted", old_sha256:$o, new_sha256:$n}')"
-      else
-        FAILED=$((FAILED+1))
-        DETAIL="$(jq -cn --argjson d "$DETAIL" --arg u "$U" --argjson e "$RRC" --arg n "$NSHA" '$d + [{unit:$u, action:"failed", restart_exit:$e, new_sha:$n}]')"
-        jline sidecar-unit 1 "$(jq -cn --arg u "$U" --argjson e "$RRC" --arg n "$NSHA" '{unit:$u, action:"failed", restart_exit:$e, new_sha256:$n}')"
-      fi
-    done <<< "$LIST"
-    jline sidecar-sync 0 "$(jq -cn --argjson d "$DETAIL" --argjson r "$RESTARTED" --argjson c "$INSYNC" --argjson f "$FAILED" '{restarted:$r, in_sync:$c, failed:$f, detail:$d}')"
-    echo "SIDECAR SYNC: restarted=$RESTARTED in_sync=$INSYNC failed=$FAILED"
-  }
-
-  # --- post-verify helper: active + disk + proc + markers ---
-  post_verify() { # $1=expected_sha  $2=expected_marker_sha  $3=expect_meta(0/1) ; sets PV_MATCH/PV_DETAIL
-    local i ACTIVE DISK_SHA PID PROC_SHA MARK_MARKER MARK_META META_OK
-    PV_MATCH=0
-    sleep "${OC_SWAP_SETTLE:-5}"
-    for i in $(seq 1 "${OC_SWAP_TRIES:-30}"); do
-      ACTIVE="$($ACTIVE_CMD 2>/dev/null || echo unknown)"
-      DISK_SHA="$(sha256sum "$SWAP_TARGET" 2>/dev/null | cut -d' ' -f1)"
-      MARK_MARKER="$(cat "$DEPLOYED" 2>/dev/null || echo MISSING)"
-      MARK_META="absent"; [ -f "$DEPLOYED_META" ] && MARK_META="present"
-      META_OK=0; if [ "$3" = "1" ]; then [ "$MARK_META" = "present" ] && META_OK=1; else [ "$MARK_META" = "absent" ] && META_OK=1; fi
-      if [ "$ACTIVE" = "active" ] && [ "$DISK_SHA" = "$1" ] && [ "$MARK_MARKER" = "$2" ] && [ "$META_OK" = "1" ]; then
-        if [ "$SKIP_PROC" = "1" ]; then PV_MATCH=1; break; fi
-        PID="$($PID_CMD 2>/dev/null || echo 0)"
-        if [ -n "$PID" ] && [ "$PID" != "0" ] && [ -r "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" ]; then
-          PROC_SHA="$(sha256sum "${OC_SWAP_PROC_PREFIX:-/proc}/$PID/exe" 2>/dev/null | cut -d' ' -f1)"
-          [ "$PROC_SHA" = "$1" ] && { PV_MATCH=1; break; }
-        fi
-      fi
-      sleep 2
-    done
-    PV_DETAIL="$(jq -cn --arg a "$ACTIVE" --arg d "${DISK_SHA:-}" --arg e "$1" --arg mm "$MARK_MARKER" --arg mt "$MARK_META" --argjson x "$3" --argjson m "$PV_MATCH" '{is_active:$a, disk_sha256:$d, expected_sha256:$e, marker_sha:$mm, marker_meta:$mt, meta_expect:($x==1), match:($m==1)}')"
-  }
 
   # --- 9. post-verify ---
   post_verify "$EXPECTED" "$SHA" 1
@@ -399,7 +406,7 @@ swap_execute() {
       ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write; priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?}; journal=$JF backup=$BAK auth=auto-swap" "swap-result"
       die 2 "drill anomaly: post-verify matched a deliberately wrong expected sha"
     fi
-    sidecar_sync "$EXPECTED"
+    sidecar_sync "$EXPECTED" "$DRILL"
       A2A_RC=1; a2a_notify_retry "[oc-deploy PHASE B RECEIPT] DEPLOYED sha=$SHA run=$RUN_ID — post-verify match, markers written, backup $BAK. Journal: $JF" && A2A_RC=0
     jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" --argjson tp "$RECEIPT_TOPIC" --arg o "${A2A_OUTCOME:-none}" --arg w "${A2A_WHY:-}" '{topics:[$tp], a2a_accepted:($a==0), a2a_outcome:$o, a2a_why:$w, note:"stamp follows fanout (issue #24 wiring)"}')"
     # --- GREEN fan-out (issue #24 wiring): notify contributor sessions of the
