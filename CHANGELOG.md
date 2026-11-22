@@ -29,6 +29,17 @@ each** — 25 replays minting 25 sets of shas for 5 logical changes.
 `MISMATCH … SKILL.md=0.4.327` against a recorded `0.4.326` with a stale `law_digest` —
 the same UNBUMPED-LAW class this lane caught once before. The sync below stamps both.
 
+**Bundled at the sync — law that landed after this entry was written.** `0371b212`
+bumped `SKILL.md` at 23:34Z on 2026-11-21 and the ledger sync did not run until the
+following morning, so the intervening law work rides this tag. Named here because
+`sync` stages the full tree (v0.4.63): the tag covers these commits whether or not the
+entry does. The four-way tool split — `1e66f389` (`oc-deploy` → `oc-ship` / `oc-build`
+/ `oc-swap` / `oc-verify-artifact`), `74244b21` (replay), `a47f2c77` (rename 8 tool
+tokens across the law corpus), `d95cc88e` (the 11 stale refs), `5f81c599` / `c854f28e`
+(doc headers pointing at the registers) — plus the ship-chain and deploy fixes
+(`d76b3b7b`, `b353bc0c`, `b25da3b2`, `ef94e5f1`, `b19b810e`, `02adf48d`, `d607637a`)
+and `d322db19`, which widens the lint corpus to 18 files and adds a path-form leg.
+
 ## v0.4.327 — the law described a test leg that was deleted yesterday, and the cap-stall class lost its venue
 
 **Doc debt discharged (four sites, all HQ surface).** The blocking gate's test leg
