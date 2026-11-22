@@ -1,5 +1,42 @@
 # Changelog — opencrabs-dev
 
+## v0.4.329 — five dead pointers, and the tool that still speaks the retired words
+
+**What changed.** Five line-numbered cross-references in the live law files were repointed
+to section anchors. Every one was verified dead, or pointing at law unrelated to the
+sentence citing it, before it was replaced — none was renumbered, because renumbering a
+line reference is the defect repairing itself into a new shape.
+
+| site | cited | what that line actually said | now cites |
+|---|---|---|---|
+| `SKILL.md` §Hard rules | `fleet-directives.md:171` | the `active_skills` retention bullet, not the file enumeration the sentence is about | `fleet-directives.md` §Post-compaction skill reload & context manifest curation |
+| `fleet-directives.md` §Shape after the split | `CHANGELOG.md:73` | the STALLWATCH entry, ~1,200 lines from the ruling it claimed to quote | `CHANGELOG.md` v0.4.206 (2026-09-19) |
+| `fleet-directives.md` §prompt-vs-law | `triage.md:313` | "Normal progression: no action", in the claimed-issues list | `triage.md` §Duty T5 |
+| `reference-glossary.md` §cluster | `triage.md:236` | the same unrelated bullet; closure law is ten lines below it | `triage.md` §Autonomous closure |
+| `triage.md` §D3 table | `fleet-directives.md:357` | the A1b/A1c self-uuid clause | `fleet-directives.md` §Cross-lane message delivery discipline |
+
+**Measured state after.** Zero line-numbered cross-references remain in the live law files.
+The survivors are history on purpose: `CHANGELOG.md` (118), `reviews/**` and
+`tools/reports/**` are records of what was true when written, and rewriting them would
+falsify evidence rather than repair a pointer. Five remain in `tools/docs/` — the
+Toolsmith's surface, routed not patched.
+
+**Why the rewrite asserted instead of substituting.** The script counted occurrences per
+site and refused to write unless exactly one matched. A silent no-op here is
+indistinguishable from a fix: the file keeps the old text and the diff is empty either way.
+
+**Found while sweeping, routed not fixed.** `tools/harvest/oc-harvest-dispatch` still emits
+`Mode: DEGRADED` / `Mode: HIGH-TRUST` in its dispatch envelope, and its `read_harvest_mode()`
+recognises **neither** `FORK-STANDING` nor `UPSTREAM-ON-REQUEST` — the owner's 2026-11-12
+vocabulary is invisible to the tool that publishes the contract line to harvest lanes. The
+envelope is the most lane-facing text in the whole harvest flow, so it is the one place the
+retired framing reaches a worker as an instruction rather than as history.
+
+**Noted, not acted on.** Fourteen untracked `*.bak` pre-images sit in the skill tree. They
+are gitignored, so no commit carries them, but they win every `grep -rn` for a retired
+token, because a backup is a copy of the old text under the old name. Any vocabulary sweep
+must exclude `*.bak` explicitly or it reads history as live law.
+
 ## v0.4.328 — rebase once, at ship time: the churn had no rule stopping it
 
 **One rule, one home.** `editor-ship.md` §Rebase discipline states that a lane rebases

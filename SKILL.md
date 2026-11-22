@@ -15,7 +15,7 @@ globs:
   - ~/.opencrabs/profiles/*/skills/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/opencrabs-dev/**
   - ~/.opencrabs/profiles/*/projects/opencrabs-dev/**
-version: 0.4.328
+version: 0.4.329
 author: leshchenko1979
 metadata:
   tags: [opencrabs, rust, ci, quick-build, binary-swap, worktree, session-notify]
@@ -241,7 +241,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
   the previous closed form omitted `editor-ship.md`, `editor-smoke.md`, `reference-glossary.md` and
   `reference-tools.md` after the 2026-11-15 split (c29: 15 named, 18 on disk) and named
   `war-stories.md` as though it lived in the skill dir (v0.4.319 c29 I-2 fixed the identical stale
-  list at `fleet-directives.md:171`; this site was missed). **The enumeration below is a convenience
+  list at `fleet-directives.md` §Post-compaction skill reload & context manifest curation; this site was missed). **The enumeration below is a convenience
   INDEX, never the authority** — a file on disk is HQ-only whether or not it appears here.
 
   Index: `SKILL.md` · `editor.md` · `editor-ship.md` · `editor-smoke.md` · `harvest.md` · `hq.md` · `triage.md` · `toolsmith.md` ·

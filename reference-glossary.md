@@ -100,7 +100,7 @@
   **closed**. **THE TARGET IS EXCLUDED FROM ITS OWN READINESS SET** (HQ ruling
   2026-09-26, `n=11674`): the issue BEING harvested never gates itself; its **gh
   relatives** do. Including it was **circular** — closure is the harvest's OUTPUT
-  (`triage.md:236`), never its precondition. Residual (mutually-linked pair): `upstream-merge-runbook.md §Cluster readiness`.
+  (`triage.md §Autonomous closure`), never its precondition. Residual (mutually-linked pair): `upstream-merge-runbook.md §Cluster readiness`.
   Defined by `tools/harvest/oc-harvest-census clusters`, which derives it and emits
   every cluster (never pages silently); the soak gate keys on it and Triage surfaces
   by it. NOT "convergence cluster" (a Duty-4/6 group of rule proposals merged
