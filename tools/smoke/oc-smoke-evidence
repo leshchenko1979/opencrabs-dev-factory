@@ -34,6 +34,14 @@
 #   alias names the FLAG only: since #376 neither form invokes strings(1) --
 #   the scan is a byte-level grep -a -F against the file itself, so a box
 #   without binutils cannot degrade a present marker into a false MISSING.
+#   KNOWN BLIND SPOT (#144, measured 2026-11-22): rustc materialises some short
+#   literals as inline `movabs` immediates in REVERSE order, so a literal that
+#   IS in the binary has no contiguous byte run at all. A MISSING row therefore
+#   means "no contiguous run", never "not present". When the discriminator
+#   recognises that shape the row reads MISSING-CONTIGUOUS and names it a
+#   candidate -- verify it by hand; do NOT file it as "feature missing from the
+#   build". rc is unchanged in both cases: this is a deploy gate, and a
+#   heuristic is never allowed to answer FOUND.
 #   --late-entry (D-4, HQ d72bd52d, 2026-09-13): emits a HISTORICAL VERDICT ROW
 #   instead of the live identity block. The normal block reads the RUNNING
 #   daemon (MainPID -> /proc/PID/exe -> sha256) and therefore CANNOT describe a
@@ -101,6 +109,80 @@ marker_scan() { # byte-level feature-presence scan (#376). rc 0 = found, 1 =
                 # as "marker absent", or a broken host binary reads as a
                 # missing feature.
   grep -q -a -F -- "$2" "$1"
+}
+
+_immediate_candidate() { # $1=file $2=literal. rc 0 = the literal is PLAUSIBLY
+                # immediate-encoded, 1 = no candidate. (#144)
+                #
+                # WHY THIS EXISTS: rustc materialises some short string
+                # literals as inline `movabs` immediates, in REVERSE order,
+                # with the length as a third immediate -- so no contiguous
+                # byte run of the string exists anywhere in the file and the
+                # contiguous scan above reports a PRESENT feature as MISSING.
+                # Reproduced on the live 95MB binary (#144): "capture missing"
+                # = 0 contiguous hits, its three siblings = 1 each, and the
+                # bytes read
+                #   bf 0f 00 00 00                 mov edi, 15
+                #   48 b9 20 6d 69 73 73 69 6e 67  movabs rcx, " missing"
+                #   48 89 48 07                    mov [rax+7], rcx
+                #   48 b9 63 61 70 74 75 72 65 20  movabs rcx, "capture "
+                #   48 89 08                       mov [rax], rcx
+                #
+                # THIS IS A DISCRIMINATOR, NEVER A VERDICT. It can only
+                # ANNOTATE a MISSING row; it never changes rc. The contiguous
+                # scan can only ever produce a false MISSING (a false FOUND is
+                # impossible), and that asymmetry IS the deploy gate's safety
+                # property -- a heuristic allowed to answer FOUND would ship a
+                # broken build. So a false annotation costs a manual look; a
+                # false pass would cost a release.
+                #
+                # WHY THE `movabs` PAYLOAD TEST AND NOT A WINDOW PROBE: the
+                # obvious "both halves within N bytes, either order" probe is
+                # UNSOUND. Measured on the same binary, splitting at
+                # capture/" missing" and allowing 64B returns 8 hits -- the one
+                # real reversal (delta -14/-13) and SIX false positives at
+                # delta +37, all ASCII prose ("the verb is captured, not
+                # enumerated, so a\n# verb missing from ..."). Requiring each
+                # window to be an actual `movabs` imm64 PAYLOAD (opcode
+                # 48 b8..bf, i.e. REX.W + B8+rd) rejected all six and kept the
+                # real one: rodata prose never sits behind that opcode.
+                #
+                # Sound as a NECESSARY condition: rustc emits overlapping
+                # 8-byte windows in DESCENDING offset order, so a literal of
+                # len>=9 always has both its first and last 8-byte window
+                # present as a movabs payload. A len<=8 literal fits ONE imm64
+                # whose payload is contiguous in the file -- the contiguous
+                # scan already finds it, so there is no blind spot to annotate.
+  local f="$1" t="$2" len head tail reg pat h_ok=1 t_ok=1
+  [ -r "$f" ] || return 1
+  len="$(printf '%s' "$t" | wc -c | tr -d ' ')"
+  [ "$len" -ge 9 ] || return 1
+  head="$(printf '%s' "$t" | head -c 8)"
+  tail="$(printf '%s' "$t" | tail -c 8)"
+  for reg in $'\xb8' $'\xb9' $'\xba' $'\xbb' $'\xbc' $'\xbd' $'\xbe' $'\xbf'; do
+    pat=$'\x48'"$reg""$head"; LC_ALL=C grep -q -a -F -- "$pat" "$f" && h_ok=0
+    pat=$'\x48'"$reg""$tail"; LC_ALL=C grep -q -a -F -- "$pat" "$f" && t_ok=0
+  done
+  [ "$h_ok" -eq 0 ] && [ "$t_ok" -eq 0 ]
+}
+
+marker_verdict() { # $1=file $2=marker. PRINTS the row, RETURNS marker_scan's rc
+                # (0 found, 1 absent, >=2 scan error). Extracted from the
+                # --markers loop so the row VOCABULARY is testable: the whole
+                # point of #144 is that a bare "MISSING" asserts an absence the
+                # tool cannot actually see, so the wording has to be pinned by
+                # a leg rather than eyeballed in the loop.
+  local mrc
+  marker_scan "$1" "$2"; mrc=$?
+  case "$mrc" in
+    0) printf 'marker:%s\tFOUND\n' "$2" ;;
+    1) if _immediate_candidate "$1" "$2"; then
+         printf 'marker:%s\tMISSING-CONTIGUOUS (immediate-encoded candidate -- verify manually; NOT evidence of absence)\n' "$2"
+       else
+         printf 'marker:%s\tMISSING\n' "$2"
+       fi ;;
+  esac
+  return "$mrc"
 }
 
 append_log() { # newline-safe append (defect #13, J-5): predicate lives in
@@ -305,6 +387,53 @@ while [ $# -gt 0 ]; do
       [ "$arc" = 1 ] || { echo "selftest: absent marker returned rc=$arc, want 1" >&2; exit 1; }
       marker_scan "$d/does-not-exist" 'OC_MARKER_PAST_PIPEBUF' 2>/dev/null; brc=$?
       [ "$brc" -ge 2 ] || { echo "selftest: unreadable file returned rc=$brc, want >=2" >&2; exit 1; }
+      # #144: the immediate-encoded blind spot. rustc materialises some short
+      # literals as REVERSE-order `movabs` immediates, so a PRESENT feature has
+      # no contiguous byte run and the scan above reports it MISSING. The arms
+      # below are a SET and each one is load-bearing in a different direction:
+      #   (i)   reversal  -- a real immediate-encoded literal must be ANNOTATED;
+      #   (ii)  prose     -- halves present as ASCII prose must NOT be annotated
+      #                      (a tool that annotated everything would pass (i));
+      #   (iii) found     -- a contiguous literal must still read FOUND, and the
+      #                      annotation path must never swallow a real hit;
+      #   (iv)  rc        -- the annotation is NEVER a verdict: both MISSING
+      #                      shapes return 1, so a heuristic can never turn an
+      #                      absent feature into a passing deploy gate.
+      # The fixture is the byte sequence measured on the live binary (#144):
+      #   bf 0f 00 00 00              mov edi, 15
+      #   48 b9 " missing"            movabs rcx, tail
+      #   48 89 48 07                 mov [rax+7], rcx
+      #   48 b9 "capture "            movabs rcx, head
+      #   48 89 08                    mov [rax], rcx
+      { printf '\xbf\x0f\x00\x00\x00'; printf '\x48\xb9'; printf ' missing'
+        printf '\x48\x89\x48\x07';      printf '\x48\xb9'; printf 'capture '
+        printf '\x48\x89\x08'; } > "$d/imm-rev"
+      marker_scan "$d/imm-rev" 'capture missing'; rrc=$?
+      [ "$rrc" = 1 ] || { echo "selftest: reversal fixture is contiguous (rc=$rrc) -- fixture broken" >&2; exit 1; }
+      rrow="$(marker_verdict "$d/imm-rev" 'capture missing')"; rvrc=$?
+      [ "$rvrc" = 1 ] || { echo "selftest: annotated marker returned rc=$rvrc, want 1 (annotation must never be a verdict)" >&2; exit 1; }
+      case "$rrow" in
+        *MISSING-CONTIGUOUS*) : ;;
+        *) echo "selftest: immediate-encoded literal not annotated, got: $rrow" >&2; exit 1 ;;
+      esac
+      printf 'the value is capture d here and then a  missing thing follows\n' > "$d/imm-prose"
+      marker_scan "$d/imm-prose" 'capture missing'; prc=$?
+      [ "$prc" = 1 ] || { echo "selftest: prose fixture is contiguous (rc=$prc) -- fixture broken" >&2; exit 1; }
+      prow="$(marker_verdict "$d/imm-prose" 'capture missing')"; pvrc=$?
+      [ "$pvrc" = 1 ] || { echo "selftest: prose marker returned rc=$pvrc, want 1" >&2; exit 1; }
+      case "$prow" in
+        *MISSING-CONTIGUOUS*) echo "selftest: prose false-positive annotated as immediate-encoded: $prow" >&2; exit 1 ;;
+        *MISSING) : ;;
+        *) echo "selftest: prose arm produced no MISSING row: $prow" >&2; exit 1 ;;
+      esac
+      printf 'the literal capture missing is contiguous here\n' > "$d/imm-found"
+      frow="$(marker_verdict "$d/imm-found" 'capture missing')"; fvrc=$?
+      [ "$fvrc" = 0 ] || { echo "selftest: contiguous literal returned rc=$fvrc, want 0" >&2; exit 1; }
+      case "$frow" in
+        *MISSING*) echo "selftest: contiguous literal annotated MISSING: $frow" >&2; exit 1 ;;
+        *FOUND) : ;;
+        *) echo "selftest: contiguous literal row wrong: $frow" >&2; exit 1 ;;
+      esac
       # defect #13 (lane c10cd97b): newline-safe append. A log left WITHOUT a
       # trailing newline must not glue the next row onto its last line, and a
       # second probe keeps the same intact-line shape.
@@ -547,10 +676,10 @@ if [ -n "$MARKERS" ]; then
   # cannot occur: there is no longer a pipe to poison. Measured on the 90MB
   # live binary: 0.01-0.04s per scan.
   for m in "${MS[@]}"; do
-    marker_scan "$EXE" "$m"; mrc=$?
+    marker_verdict "$EXE" "$m"; mrc=$?
     case "$mrc" in
-      0) echo -e "marker:$m\tFOUND" ;;
-      1) echo -e "marker:$m\tMISSING"; rc=1 ;;
+      0) : ;;                       # row already printed by marker_verdict
+      1) rc=1 ;;                    # row already printed (MISSING[-CONTIGUOUS])
       *) die 3 "marker scan failed (rc=$mrc) reading $EXE -- an ABSENT marker is NOT distinguishable from a BROKEN scan (#376)" ;;
     esac
   done
