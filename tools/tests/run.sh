@@ -2638,6 +2638,78 @@ RC_NBAD="$(printf '%s\n' "$RC_LIVE" | grep -c '^BAD ' || true)"
 $(printf '%s\n' "$RC_LIVE" | grep '^BAD ' | head -5)"
 rm -rf "$RCG"
 
+# ---- 60c. RC-CONTRACT coverage: an unregistered tool must RED, not pass silent (#139)
+section "rc contract coverage: unregistered executables + phantom rows (#139)"
+# The verdict-rc leg above iterates only the tools LISTED in
+# OC_LOG_VERDICT_RCS_DEFAULT, so a tool with no register row is invisible to it
+# and to every other contract leg -- a new executable ships with no documented
+# exit codes and nothing reddens. Measured at 6532016c: five live executables
+# had no row (oc-build, oc-swap, oc-fanout, oc-status, oc-poll).
+#
+# This leg enumerates the filesystem and subtracts the register, in BOTH
+# directions: an executable with no row (RESIDUE) and a row with no executable
+# (PHANTOM) are each a contract claiming something false. Two rows are
+# legitimately library-resident (no executable of their own) and are allowlisted
+# BY NAME, so a third one cannot join them silently.
+RCX="$(mktemp -d)"
+cat > "$RCX/cov.py" <<'RCXEOF'
+import os, sys
+tools, reg = sys.argv[1], sys.argv[2]
+# Not fleet tools: shared library code, the test battery, retired tools.
+SKIP_DIR = {'lib', 'tests', 'archive', '__pycache__'}
+exes = set()
+for root, dirs, files in os.walk(tools):
+    dirs[:] = [d for d in dirs if d not in SKIP_DIR and not d.startswith('.')]
+    for f in files:
+        if not f.startswith('oc-'):
+            continue
+        if '.bak' in f or '.pre-' in f:   # a pre-image is not a shipped tool
+            continue
+        p = os.path.join(root, f)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            exes.add(f)
+rows = set()
+for ln in open(reg, encoding='utf-8'):
+    if ln.startswith('| oc-'):
+        rows.add(ln.split('|')[1].strip())
+print('EXES=%d ROWS=%d' % (len(exes), len(rows)))
+for x in sorted(exes - rows):
+    print('RESIDUE %s' % x)
+for x in sorted(rows - exes):
+    print('PHANTOM %s' % x)
+RCXEOF
+RCX_LIVE="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$TOOLS_DIR/docs/RC-CONTRACT.md")"
+# The scanner prints its two counts on ONE line ("EXES=n ROWS=m"), so each is
+# read by its own key rather than by an anchored match on the line start.
+RCX_E="$(printf '%s\n' "$RCX_LIVE" | sed -n 's/.*EXES=\([0-9]*\).*/\1/p' | head -1)"
+RCX_R="$(printf '%s\n' "$RCX_LIVE" | sed -n 's/.*ROWS=\([0-9]*\).*/\1/p' | head -1)"
+# FLOOR: a scanner that enumerated nothing reports a perfect score.
+[ "${RCX_E:-0}" -ge 45 ] && ok "rc contract: $RCX_E executable(s) enumerated (floor 45)" \
+  || bad "rc contract: only ${RCX_E:-0} executable(s) enumerated -- the sweep stopped covering tools/"
+[ "${RCX_R:-0}" -ge 45 ] && ok "rc contract: $RCX_R register row(s) parsed (floor 45)" \
+  || bad "rc contract: only ${RCX_R:-0} register row(s) parsed -- the table stopped parsing"
+RCX_RES="$(printf '%s\n' "$RCX_LIVE" | grep '^RESIDUE ' || true)"
+[ -z "$RCX_RES" ] && ok "rc contract: every executable has a register row (#139)" \
+  || bad "rc contract: $(printf '%s\n' "$RCX_RES" | wc -l | tr -d ' ') executable(s) have NO register row -- undocumented exit codes (#139):
+$RCX_RES"
+# The two library-resident rows are named explicitly: a new phantom must RED.
+RCX_PHA="$(printf '%s\n' "$RCX_LIVE" | grep '^PHANTOM ' | grep -v -e '^PHANTOM oc-base-red$' -e '^PHANTOM oc-mutate$' || true)"
+[ -z "$RCX_PHA" ] && ok "rc contract: no phantom row (allowlist: oc-base-red, oc-mutate)" \
+  || bad "rc contract: $(printf '%s\n' "$RCX_PHA" | wc -l | tr -d ' ') row(s) name a tool that does not exist (#139):
+$RCX_PHA"
+# POSITIVE control (residue): delete a real row from a COPY -> the same scanner
+# must report it. Without this the leg passes on a scanner that cannot fire.
+grep -v '^| oc-poll ' "$TOOLS_DIR/docs/RC-CONTRACT.md" > "$RCX/reg-drop.md"
+RCX_DROP="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$RCX/reg-drop.md")"
+case "$RCX_DROP" in *"RESIDUE oc-poll"*) ok "rc contract: a dropped row is SEEN as residue (positive control)" ;;
+  *) bad "rc contract: the coverage scanner cannot fire (dropped oc-poll row unseen)" ;; esac
+# POSITIVE control (phantom): a row for a nonexistent tool must be flagged.
+{ cat "$TOOLS_DIR/docs/RC-CONTRACT.md"; printf '| oc-ghost-tool | 0 | 2 | 0 |\n'; } > "$RCX/reg-ghost.md"
+RCX_GH="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$RCX/reg-ghost.md")"
+case "$RCX_GH" in *"PHANTOM oc-ghost-tool"*) ok "rc contract: a phantom row is SEEN (positive control)" ;;
+  *) bad "rc contract: the phantom scanner cannot fire (invented row unseen)" ;; esac
+rm -rf "$RCX"
+
 # ---- 61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)
 section "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"
 NF="$TOOLS_DIR/notify/oc-notify-fanout"
