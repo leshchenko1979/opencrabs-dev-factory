@@ -363,8 +363,39 @@ _chain_wake_arming_lane() { # $1 = exit code
     _dep="$(cat "${STATE_DIR:-}/deployed.sha" 2>/dev/null)" || _dep=""
   fi
   _dep="$(printf '%s' "$_dep" | tr -d ' \n')" || _dep=""
+  #
+  # #137/#138: the marker alone cannot answer the question the sentence asks.
+  # deployed.sha is a GLOBAL host marker, so `_dep = $SHA` is true for any chain
+  # handed a sha that was deployed BEFORE the chain started -- including one that
+  # dies at the first precondition and dispatches nothing. Measured 2026-11-22:
+  # a --dry-run against an already-deployed sha, with the fork checkout off main,
+  # woke with "the ship LANDED ... POST-SWAP step ... do NOT re-run the swap"
+  # while its own journal carried ZERO rows for that sha. The marker answered
+  # "is this sha deployed at all?", never "did THIS chain swap it?".
+  #
+  # The run-scoped receipt is SWAPPED, set to 1 in THIS process at the instant
+  # LEG5's poll confirms the host carries the sha. It is a variable rather than a
+  # journal read for two reasons: it cannot fail (an unguarded read in an EXIT
+  # trap replaces the chain's rc -- see ERR-EXIT SAFETY above), and it cannot be
+  # inherited from an earlier chain, which is precisely the defect. A genuine
+  # post-swap death (the #695 shape: swap confirmed, then a signal) still carries
+  # SWAPPED=1, so the positive control survives.
   if [ -n "${SHA:-}" ] && [ -n "$_dep" ] && [ "$_dep" = "$SHA" ]; then
-    _state="the ship LANDED for this sha -- deployed.sha carries it, so the failure is in a POST-SWAP step and the host is ALREADY swapped; do NOT re-run the swap"
+    if [ "${SWAPPED:-0}" = "1" ]; then
+      _state="the ship LANDED for this sha IN THIS CHAIN -- its own LEG5 poll confirmed the swap (SWAPPED=1) before the failure, so the failure is in a POST-SWAP step and the host is ALREADY swapped; do NOT re-run the swap"
+    else
+      case "$rc" in
+        2|3)
+          # Pre-flight: the rc legend places both BEFORE any gate ran. Here the
+          # "nothing was dispatched" half is READ, not assumed.
+          _state="PRE-FLIGHT refused (rc=$rc) -- nothing was dispatched and nothing was swapped. deployed.sha already carried this sha BEFORE this chain started (an earlier chain deployed it), so it is NOT a receipt for this run; fix the condition the die text names, then re-arm" ;;
+        *)
+          # Some other class, so "nothing dispatched" is NOT claimable (rc 6 can
+          # be a swap-poll failure after a real dispatch). Claim only what was
+          # read: this run recorded no swap.
+          _state="deployed.sha already carried this sha BEFORE this chain started -- an earlier chain deployed it, and THIS chain recorded NO swap, so the failure above is NOT a post-swap step. Do not re-run the swap for this sha, and do not read the marker as this run having landed it; the die text above names the real cause" ;;
+      esac
+    fi
   elif [ -n "$_dep" ]; then
     _state="the work may be landed but UNSHIPPED -- deployed.sha carries ${_dep}, NOT ${SHA:-?}"
   else
@@ -587,6 +618,14 @@ else
   SELFTEST_MODE=0
 fi
 
+# #137: DECLARED, not absent. This is the run-scoped swap receipt the wake reads
+# (see _chain_wake_arming_lane). A pre-flight death exits before LEG5 ever runs,
+# so the wake must see "this chain swapped nothing" -- and it must see that as a
+# DECLARATION, not as an unset variable that `${SWAPPED:-0}` happens to rescue.
+# An inherited env var (a wrapper that exports SWAPPED=1) would otherwise make a
+# chain that dispatched nothing claim the ship LANDED: the same defect class as
+# reading the global deployed.sha marker as a per-run receipt.
+SWAPPED=0
 PRCHECKS_BIN="${OC_PRCHECKS_BIN:-$TOOLS_DIR/harvest/oc-gate}"
 DEPLOY_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-deploy}"
 ISSUELOG_BIN="${OC_ISSUELOG_BIN:-$TOOLS_DIR/issue/oc-issue-log}"

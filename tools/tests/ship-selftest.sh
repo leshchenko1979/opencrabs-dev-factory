@@ -1404,22 +1404,71 @@ EOF
   case "$(cat "$T/wake.log" 2>/dev/null)" in *"EIGHT causes"*) ok "wake-falls-back-to-legend-without-a-die-text" ;;
     *) bad "wake-falls-back-to-legend-without-a-die-text: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
 
-  # 11d2. #695: the wake's STATE CLAIM must be READ, not asserted. rc is not the
-  # swap verdict -- the deployed.sha marker is. Measured 2026-09-28: a lane was
-  # woken with "STOPPED with rc=141 (not SWAPPED)" while the chain's own journal
-  # read "SWAPPED sha=3eb5adb9..." and deployed.sha carried that sha. Drive the
-  # wake function directly with STATE_DIR pointed at each of the two states.
+  # 11d2. #695 + #137/#138: the wake's STATE CLAIM must be READ, not asserted.
+  # rc is not the swap verdict, and the deployed.sha MARKER is not this run's
+  # receipt either -- it is a global host marker an EARLIER chain wrote. #137
+  # measured 2026-11-22: a --dry-run against an already-deployed sha, dying at a
+  # pre-flight guard with ZERO journal rows for that sha, woke claiming the ship
+  # had LANDED and the failure was POST-SWAP. Four arms; the POSITIVE CONTROL is
+  # what stops a "fix" that simply deletes the LANDED branch.
   mkdir -p "$T/state"
   printf '%s\n' "$FSHA" > "$T/state/deployed.sha"
+  # (a) POSITIVE CONTROL: THIS chain's own LEG5 poll confirmed the swap and then
+  # it died (the #695 shape: swap confirmed, rc 141 after). SWAPPED=1 is the
+  # run-scoped receipt, so the LANDED claim is EARNED here.
   rm -f "$T/wake.log"
-  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" \
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" SWAPPED=1 \
     OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
     OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
     CHAIN_INTENT=1 _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
-  case "$(cat "$T/wake.log" 2>/dev/null)" in *"the ship LANDED for this sha"*) ok "wake-reads-marker-post-swap" ;;
-    *) bad "wake-reads-marker-post-swap: [$(cat "$T/wake.log" 2>/dev/null)]" ;; esac
-  case "$(cat "$T/wake.log" 2>/dev/null)" in *"UNSHIPPED"*) bad "wake-post-swap-claims-unshipped" ;;
-    *) ok "wake-post-swap-claims-unshipped" ;; esac
+  _W_SWAPPED="$(cat "$T/wake.log" 2>/dev/null)"
+  case "$_W_SWAPPED" in *"LANDED for this sha IN THIS CHAIN"*) ok "wake-swapped-in-chain-claims-landed" ;;
+    *) bad "wake-swapped-in-chain-claims-landed: [$_W_SWAPPED]" ;; esac
+  case "$_W_SWAPPED" in *"UNSHIPPED"*) bad "wake-swapped-in-chain-claims-unshipped" ;;
+    *) ok "wake-swapped-in-chain-claims-unshipped" ;; esac
+  # (b) #137 NEGATIVE: the same marker, but THIS chain recorded no swap. The
+  # pre-fix code asserted LANDED/POST-SWAP here. BOTH strings must be absent --
+  # forbidding the pair is what catches a fix that renames the state but keeps
+  # the claim.
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-137" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    CHAIN_INTENT=1 _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+  _W_PREEXIST="$(cat "$T/wake.log" 2>/dev/null)"
+  case "$_W_PREEXIST" in *"POST-SWAP"*) bad "wake-preexisting-marker-must-not-claim-post-swap" ;;
+    *) ok "wake-preexisting-marker-must-not-claim-post-swap" ;; esac
+  case "$_W_PREEXIST" in *"ALREADY swapped"*) bad "wake-preexisting-marker-must-not-claim-already-swapped" ;;
+    *) ok "wake-preexisting-marker-must-not-claim-already-swapped" ;; esac
+  case "$_W_PREEXIST" in *"THIS chain recorded NO swap"*) ok "wake-preexisting-marker-names-the-real-state" ;;
+    *) bad "wake-preexisting-marker-names-the-real-state: [$_W_PREEXIST]" ;; esac
+  # (c) #138: rc 3 is PRE-FLIGHT (the legend's own class), so the message must
+  # carry the "nothing was dispatched" half AND must not be the post-swap text.
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-138" \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    CHAIN_INTENT=1 _chain_wake_arming_lane 3 ) >/dev/null 2>&1 || true
+  _W_PREFLIGHT="$(cat "$T/wake.log" 2>/dev/null)"
+  case "$_W_PREFLIGHT" in *"PRE-FLIGHT refused"*"nothing was dispatched"*) ok "wake-preflight-rc3-says-nothing-dispatched" ;;
+    *) bad "wake-preflight-rc3-says-nothing-dispatched: [$_W_PREFLIGHT]" ;; esac
+  case "$_W_PREFLIGHT" in *"POST-SWAP"*) bad "wake-preflight-rc3-must-not-claim-post-swap" ;;
+    *) ok "wake-preflight-rc3-must-not-claim-post-swap" ;; esac
+  # (d) SWAPPED=1 is a receipt about the sha THIS chain swapped, so it cannot
+  # license a LANDED claim when the marker carries a DIFFERENT sha. Without this
+  # arm the predicate could be `SWAPPED=1` alone and every arm above would pass.
+  printf '%s\n' "1111111111111111111111111111111111111111" > "$T/state/deployed.sha"
+  rm -f "$T/wake.log"
+  ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-137c" SWAPPED=1 \
+    OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+    OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+    CHAIN_INTENT=1 _chain_wake_arming_lane 141 ) >/dev/null 2>&1 || true
+  _W_OTHERSHA="$(cat "$T/wake.log" 2>/dev/null)"
+  case "$_W_OTHERSHA" in *"LANDED for this sha"*) bad "wake-swapped-other-sha-must-not-claim-landed" ;;
+    *) ok "wake-swapped-other-sha-must-not-claim-landed" ;; esac
+  case "$_W_OTHERSHA" in *"UNSHIPPED"*) ok "wake-swapped-other-sha-reads-the-marker" ;;
+    *) bad "wake-swapped-other-sha-reads-the-marker: [$_W_OTHERSHA]" ;; esac
+  printf '%s\n' "$FSHA" > "$T/state/deployed.sha"
   rm -f "$T/state/deployed.sha" "$T/wake.log"
   ( SHA="$FSHA" STATE_DIR="$T/state" CHAIN="c-695" \
     OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
@@ -1473,6 +1522,40 @@ EOF
   [ -s "$T/prchecks.log" ] && bad "preflight-checkout-gate-not-dispatched: [$(cat "$T/prchecks.log")]" \
     || ok "preflight-checkout-gate-not-dispatched"
   git -C "$T/clone" checkout -q main
+
+  # 11d4-bis. #137: the run-scoped swap receipt must be DECLARED, not merely
+  # absent. The arm above is the #137 shape end-to-end -- a REAL chain that dies
+  # rc 3 at a precondition having dispatched nothing -- and by the point it dies
+  # STATE_DIR is set (:1218) while deployed.sha carries $FSHA (an earlier chain
+  # deployed it), so the LANDED branch is REACHABLE. That reachability is what
+  # makes this leg non-vacuous; the freeze arm cannot serve here because it dies
+  # at :1017, BEFORE STATE_DIR exists, so `_dep` is empty and LANDED is
+  # unreachable however the wake is written.
+  # Inherit SWAPPED=1 from the environment. The declaration must overwrite it,
+  # or a chain that swapped nothing claims the ship LANDED on an inherited
+  # variable -- the same defect class as reading the global marker as a receipt.
+  printf '%s\n' "$FSHA" > "$T/state/deployed.sha"
+  git -C "$T/clone" checkout -q -b feat-envswapped
+  rm -f "$T/wake.log"
+  RC=0; OUT="$(SWAPPED=1 \
+      OC_SHIPCHAIN_IMPL=0 OC_PRCHECKS_BIN="$T/fake-prchecks" OC_DEPLOY_BIN="$T/fake-deploy" \
+      OC_ISSUELOG_BIN="$T/fake-issuelog" OC_FORK_REPO="$T/clone" OC_TOOLS_NOLOG=1 \
+      OC_SHIPCHAIN_LEDGER="$T/journal.log" OC_SHIPCHAIN_FREEZE_OVERRIDE=1 \
+      OC_DEPLOY_STATE_DIR="$T/state" OC_SWAP_TARGET="$T/fake-swapped" \
+      OC_SHIPCHAIN_IN_UNIT_CGROUP=0 OC_SHIPCHAIN_NO_ISSUE_PROBE=1 \
+      OPENCRABS_SESSION_ID="$LEG_UUID" OC_SHIPCHAIN_WAKE_ALLOW_SELFTEST=1 \
+      OC_NOTIFY_BIN="$T/bin/opencrabs" WAKELOG="$T/wake.log" \
+      bash "$SELF" --sha "$FSHA" --branch feat --wait 5 2>&1)" || RC=$?
+  check_rc "preflight-env-swapped-rc3" "$RC" 3
+  _W_ENVSW="$(cat "$T/wake.log" 2>/dev/null)"
+  # POSITIVE CONTROL: the wake must have FIRED. Without this, a chain that never
+  # reached the wake would satisfy the refusal assertion below for the wrong
+  # reason -- the exact vacuity this leg exists to avoid.
+  [ -s "$T/wake.log" ] && ok "wake-env-swapped-fired" || bad "wake-env-swapped-fired: no wake log"
+  case "$_W_ENVSW" in *"LANDED for this sha"*) bad "wake-env-inherited-swapped-must-not-claim-landed: [$_W_ENVSW]" ;;
+    *) ok "wake-env-inherited-swapped-must-not-claim-landed" ;; esac
+  git -C "$T/clone" checkout -q main
+  rm -f "$T/state/deployed.sha"
 
   # 11e. SWAPPED (rc 0) must NOT wake -- the lane already sees the verdict, and a
   # wake on every success would be the noise this tool's own fan-out was filed for.
