@@ -149,7 +149,7 @@ watch_run() { # explicit `oc-deploy watch [--with-delta]` ; exit 0 clean | 2 str
     echo "report-only: attribute via Session-Id trailers; oc-deploy NEVER builds autonomously"
   fi
   if [ "$WITH_DELTA" = "1" ]; then
-    DELTA_TOOL="${OC_DEPLOY_DELTA_TOOL:-$TOOLS_DIR/harvest/oc-upstream-delta}"
+    DELTA_TOOL="${OC_DEPLOY_DELTA_TOOL:-$OC_TOOLS_DIR/harvest/oc-upstream-delta}"
     if [ -x "$DELTA_TOOL" ]; then
       DELTA_OUT="$("$DELTA_TOOL" 2>&1)"; DELTA_RC=$?
       printf '%s\n' "$DELTA_OUT" | sed 's/^/DELTA: /'

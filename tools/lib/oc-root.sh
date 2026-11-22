@@ -27,13 +27,22 @@
 #   common ancestor, while an unreadlink'd shim converges there too. So a shim
 #   at tools/oc-x pointing into tools/state/oc-x yields tools/ in both cases.
 #
-# USAGE — the bootstrap is the same 4 lines in every tool, because the resolver
-# cannot be found without first finding the tools dir:
+# USAGE — the bootstrap is the same 3 LOGIC lines in every tool, because the
+# resolver cannot be found without first finding the tools dir:
 #
 #   _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
 #   if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 #   if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
-#   TOOLS_DIR="$OC_TOOLS_DIR"
+#
+# The three lines above are the WHOLE bootstrap. `OC_TOOLS_DIR` is the only name
+# the resolver exports; the historical `TOOLS_DIR` alias below is OPTIONAL
+# convenience for the handful of tools that want the short name, and 45 of the
+# 49 bootstrap-carrying tools do NOT carry it (#68-plan T5-bis, measured
+# 2026-11-16). Do not add it to the documented form: a tool that never reads the
+# bare name has no reason to assign it, and this block previously claimed the
+# 4-line form was universal, which was false.
+#
+#   TOOLS_DIR="$OC_TOOLS_DIR"     # optional; assign it iff you read the bare name
 #
 # WHY THIS BLOCK WAS DOCUMENTED WRONG (F-L2, measured 2026-09-25). 40 of the 42
 # files carrying a bootstrap ran the 4-line form above; this file described a

@@ -3507,9 +3507,71 @@ if [ -s "$DOC" ] && cmp -s "$DOC" "$CALLER"; then
 else
   bad "oc-root: doc block and caller bootstrap DIVERGE ($(wc -l < "$DOC" | tr -d ' ') doc vs $(wc -l < "$CALLER" | tr -d ' ') caller logic lines)"
 fi
-grep -q '^TOOLS_DIR="\$OC_TOOLS_DIR"' "$TOOLS_DIR/ship/oc-deploy" \
-  && ok "oc-root: caller carries the TOOLS_DIR assignment the doc block shows" \
-  || bad "oc-root: doc block shows a TOOLS_DIR assignment the caller does not carry"
+# F-L1 POPULATION arm (#68-plan T5-bis). The resolver exports OC_TOOLS_DIR and
+# NOT TOOLS_DIR, so a tool that READS the bare name without assigning it dies
+# `rc 127` under `set -u` — silently if the read precedes `set -u`, fatally
+# after. The 4-way split rewrote oc-deploy's reaches to $OC_TOOLS_DIR and
+# dropped the alias, which is what reddened the old assertion.
+#
+# Asserting on ONE reference caller was the defect, not the assertion: a lane
+# copying the documented form inherited an unset variable, and this leg could
+# not see it because it only ever looked at the single file it was pointed at.
+# The sweep below covers the POPULATION, so a newly-added tool with the same
+# reach reddens here instead of at rc 127 in production.
+#
+# The `carriers` floor is a POSITIVE CONTROL: a sweep that matched no files
+# would report zero violations and pass vacuously. 49 tools carry the bootstrap
+# as measured on 2026-11-16; the floor sits below that so ordinary churn does
+# not redden, while a broken enumerator does.
+pop_out="$(python3 - "$TOOLS_DIR" <<'PY'
+import os, re, sys
+root = sys.argv[1]
+boot = re.compile(r'^_oc_r="\$\(cd', re.M)
+bare = re.compile(r'(?<![_A-Za-z])TOOLS_DIR')
+assign = re.compile(r'^[ \t]*(?:export[ \t]+)?TOOLS_DIR=')
+skip = ('.py', '.mjs', '.json', '.md', '.log', '.bak', '.pyc')
+carriers = 0
+bad = []
+for dp, dns, fns in os.walk(root):
+    dns[:] = [d for d in dns if d not in ('.git', '__pycache__')]
+    for fn in fns:
+        if fn.endswith(skip):
+            continue
+        p = os.path.join(dp, fn)
+        try:
+            txt = open(p, encoding='utf-8', errors='replace').read()
+        except OSError:
+            continue
+        if not boot.search(txt):
+            continue
+        carriers += 1
+        # ORDER MATTERS: an assignment below the first bare read still crashes.
+        lines = txt.splitlines()
+        first_assign = next((i for i, l in enumerate(lines) if assign.match(l)), None)
+        early = 0
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith('#'):
+                continue
+            if not bare.findall(line.replace('OC_TOOLS_DIR', '')):
+                continue
+            if first_assign is None or i < first_assign:
+                early += 1
+        if early:
+            why = 'no assignment' if first_assign is None else 'read before assignment'
+            bad.append('%s (%d bare read(s), %s)' % (os.path.relpath(p, root), early, why))
+print('carriers=%d' % carriers)
+for b in bad:
+    print('UNSET ' + b)
+PY
+)"
+pop_carriers="$(printf '%s\n' "$pop_out" | sed -n 's/^carriers=//p')"
+pop_bad="$(printf '%s\n' "$pop_out" | grep -c '^UNSET ' || true)"
+if [ "${pop_carriers:-0}" -ge 40 ] && [ "$pop_bad" -eq 0 ]; then
+  ok "oc-root: no bootstrap carrier reads bare \$TOOLS_DIR unassigned ($pop_carriers swept)"
+else
+  bad "oc-root: $pop_bad carrier(s) read bare \$TOOLS_DIR with no assignment (swept $pop_carriers, floor 40)"
+  printf '%s\n' "$pop_out" | grep '^UNSET ' | sed 's/^/    /'
+fi
 
 # F-L1 arm A — control: a REAL lib/ must still resolve, or the guard broke the
 # normal path and every sibling reach with it.

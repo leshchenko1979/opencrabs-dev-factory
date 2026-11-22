@@ -245,7 +245,7 @@ case "$MODE" in
         die 5 "OC_DEPLOY_GATE=rebase-conflict: manual conflict resolution required"
       fi
       NEW_SHA="$(git rev-parse HEAD)"
-      REBASE_SAFETY="${OC_DEPLOY_REBASE_SAFETY:-$TOOLS_DIR/git/oc-rebase-safety}"
+      REBASE_SAFETY="${OC_DEPLOY_REBASE_SAFETY:-$OC_TOOLS_DIR/git/oc-rebase-safety}"
       set +e
       AUDIT_OUT="$("$REBASE_SAFETY" audit --old-tip "$SHA" --new-tip "$NEW_SHA" 2>&1)"
       AUDIT_RC=$?
@@ -326,7 +326,7 @@ case "$MODE" in
               die 5 "OC_DEPLOY_GATE=rebase-conflict: manual conflict resolution required"
             fi
             NEW_SHA="$(git rev-parse HEAD)"
-            REBASE_SAFETY="${OC_DEPLOY_REBASE_SAFETY:-$TOOLS_DIR/git/oc-rebase-safety}"
+            REBASE_SAFETY="${OC_DEPLOY_REBASE_SAFETY:-$OC_TOOLS_DIR/git/oc-rebase-safety}"
             set +e
             AUDIT_OUT="$("$REBASE_SAFETY" audit --old-tip "$SHA" --new-tip "$NEW_SHA" 2>&1)"
             AUDIT_RC=$?
