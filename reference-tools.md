@@ -7,15 +7,15 @@
 
 | Tool | Slot |
 |---|---|
-| `./tools/ship/oc-order-validate <sha>` | ORDER gates inside `oc-deploy ship` |
-| `./tools/ship/oc-job-verify <run-id> <source-ref> [--features] [--identity-only]` | standalone run-identity gate (provenance of RED runs) |
-| `./tools/ship/oc-artifact-verify <artifact-path> [--source <sha>] [--run-id <id>] [--markers m1,m2] [--expect-sha <sha256>] [--expect-version <v>] [--repo R] [--json]` | EXECUTION SANITY SIGNAL + FEATURE-PRESENCE CHECK |
-| `./tools/ship/oc-seal-state [--sha S] [...]` | baseline/orders seal (flag-based interface — no positional `<sha>`) |
+| `./tools/ship/oc-verify-order <40-hex-sha>` | ORDER gates inside `oc-deploy ship` |
+| `./tools/ship/oc-verify-job <run-id> <source-ref-40hex> [--features] [--identity-only]` | standalone run-identity gate (provenance of RED runs) |
+| `./tools/ship/oc-verify-artifact <artifact-path> [--source <sha>] [--run-id <id>] [--markers m1,m2] [--expect-sha <sha256>] [--expect-version <v>] [--repo R] [--json]` | EXECUTION SANITY SIGNAL + FEATURE-PRESENCE CHECK |
+| `./tools/ship/oc-seal [--sha S] [...]` | baseline/orders seal (flag-based interface — no positional `<sha>`) |
 | `./tools/state/oc-attrib --repo <path> (--range <A..B> or --deployed) [--ledger <f>] [--contributors] [--novel\|--no-novel]` | commit-range → worker-lane attribution; `--contributors` projects the 3-col TSV (SINGLE SHAPE); `--deployed` composes the range from `deployed.sha` + `prev_sha` (fan-out compute backend for [issue #24](https://github.com/leshchenko1979/opencrabs/issues/24)) and IMPLIES `--novel` (#407: drops re-sha'd + empty commits; `--no-novel` restores the raw range) |
 | `./tools/ship/oc-deploy <mode>` | the ship path itself (mode list, verdict codes + wait semantics: `tools/docs/RC-CONTRACT.md`; Editor S3 path: `editor-ship.md`). |
 | `./tools/ship/oc-deploy fanout --run <id> [--dry-run]` | mechanical notify fan-out for one carrier run ([#24](https://github.com/leshchenko1979/opencrabs/issues/24)); auto-fired at `swap_execute` tail + on `poll` RED-scan; `OC_DEPLOY_NOFANOUT=1` suppresses — mechanics + journal vocabulary in `s2-swap-journal-spec.md` §Fan-out legs |
 | `./tools/ship/oc-deploy features [--repo <path>] [--ref <branch>] [--no-fetch]` | **the** documented entry for the carrier-yml `features` default at `origin/<ref>` — prints the same value the ship path resolves; a carrier read failure aborts loudly, never a silent fallback set |
-| `./tools/ship/oc-carrier-features [--fetch] [--repo <path>] [--ref <branch>]` | **INTERNAL helper** behind `oc-deploy features` — reads the carrier-yml `features` default at `origin/<ref>`; `oc-deploy ship/poll` resolves EMPTY `--features` through it. NOT a lane entry point: ask `oc-deploy features` |
+| `./tools/ship/oc-features [--fetch] [--repo <path>] [--ref <branch>]` | **INTERNAL helper** behind `oc-deploy features` — reads the carrier-yml `features` default at `origin/<ref>`; `oc-deploy ship/poll` resolves EMPTY `--features` through it. NOT a lane entry point: ask `oc-deploy features` |
 | `./tools/issue/oc-issue-sweep '<query>' [--fork R] [--upstream R] [--limit N]` | closed-issue hygiene sweep (HQ duty) |
 | `./tools/state/oc-skew-scan [--ledger f] [--current v]` | ledger worker-version skew vs current skill version (HQ roster review) |
 | `./tools/state/oc-closure-sweep [--repo <owner/repo>]… [--log <f>] [--ledger <f>] [--apply] [--json] [--selftest]` | **the class (d) CATCH-UP path** — closes issues that already carry BOTH receipts (newest sanctioned PASS smoke row + a `done` ledger row) but stayed OPEN because `oc-smoke --close` did not exist when the PASS landed. DRY RUN IS THE DEFAULT; `--apply` closes through `tools/lib/oc-gh-close.sh`, the same function the live path uses. Default `--repo` = both live trackers. rc + token rules: `tools/docs/RC-CONTRACT.md` |
@@ -27,7 +27,7 @@
 | `./tools/smoke/oc-smoke-evidence [--unit U] [--markers m1,m2] [--negative-control <bin>] [--append-log [<path>]]` | mechanical identity + presence evidence for a Phase 6 smoke verdict (behavioral judgment stays human); `--append-log` is the SANCTIONED writer of the IDENTITY EVIDENCE BLOCK in `smoke-verdicts.log` — VERDICT ROWS are LANE-AUTHORED (`upstream-merge-runbook.md` §Upstream-merge cadence · HARVEST LAW · NO-HOLD). Register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/issue/oc-issue-log <issue-n> <sha> [--state <text>] [--repo <slug>] [--dry-run]` | per-commit implementation comment via gh `--body-file` ONLY |
 | `./tools/git/oc-commit -m <msg> [--issue N] [--no-comment] [--state <text>] [--repo <path>]` | gated commit wrapper: derives `Issue-Ref` from the actor's latest ledger claim, adds Session-Id + Issue-Ref trailers, folds in the post-commit comment |
-| `./tools/ship/oc-ship-audit [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
+| `./tools/ship/oc-audit-ship [--hours N] [--log f] [--journal-dir d] [--grace min]` | dispatch-WITHOUT-swap alarm |
 | `./tools/audit/oc-tg-audit <uuid> [--date D] [--days N] [--log-dir P]` | Telegram surface-law evidence scan |
 | `./tools/state/oc-ledger sync` CHANGELOG gate | the sync refuses a bump whose CHANGELOG entry is missing (die 6) and WARNS on bundled commits the entry does not name. Full register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/harvest/oc-harvest-census <scan\|check\|record\|sync\|walk\|purge\|clusters>` | pre-flight census & lifecycle registry for upstream PR harvests; use `check`/`scan` (they derive IN_FLIGHT from the live scan). Mechanics, rc: `tools/docs/RC-CONTRACT.md` |
@@ -42,7 +42,7 @@
 | `./tools/state/oc-questions <verb>` | the Open Questions register — the sanctioned blocked-on-you channel. Verbs, rc and the ask/answer contract: `tools/docs/RC-CONTRACT.md` row `oc-questions` · canon: `docs/instruments/open-questions.md` **in the meta-factory repo (`/root/agent-factories/`) — NOT resolvable from this skill tree** |
 | `./tools/audit/oc-lint-laws [--strict]` | mechanical syntax & tool-existence lint of skill markdown. Read findings from the tool itself, never from this row. Register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/audit/oc-claims-single-source [--scan DIR] [--selftest]` | battery guard: the claim-closure predicate has exactly ONE home (`tools/lib/oc_claims.py`) — fails on a re-added private copy under `tools/`, keyed on SHAPE not name, including embedded `python3 -c`/heredoc blobs. Register: `tools/docs/RC-CONTRACT.md` |
-| `./tools/harvest/oc-prchecks <branch-or-sha> [--wait N]` · `resume <run-id>` | one-command CI gate on a PR-lane branch; `resume` re-attaches to a run this lane witnessed. Register: `tools/docs/RC-CONTRACT.md` |
+| `./tools/harvest/oc-gate [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N]` | one-command CI gate on a PR-lane branch; `resume` re-attaches to a run this lane witnessed. Register: `tools/docs/RC-CONTRACT.md` |
 | `./tools/harvest/oc-upstream-delta [--repo P] [--fork-origin R] [--upstream R]` | watch-cycle arithmetic; READ-ONLY — PROPOSE/WAIT judgment stays human |
 | `./tools/git/oc-wt add\|remove\|list` (`--force` is a flag on add/remove) | editor worktree manager (`--force` journals before removal) |
 | `./tools/state/oc-drift-check <uuid> [--ack]` (omit-arg canonical; legacy `<uuid> <claimed-ver>` accepted) | editor §Mid-cycle skill drift step 1-2, mechanical |
@@ -50,10 +50,10 @@
 | `./tools/issue/oc-census` | READ-ONLY pending-branch census (sync runbook Step 7 step 0); splits each branch's `git cherry` `+` set into own/untrailered/foreign arms and ENFORCES the partition identity; prints counts, never a cut sha. Mechanics, rc: `tools/docs/RC-CONTRACT.md` |
 | `./tools/harvest/oc-pr-fault-scope <pr#> --run <id>` | failing-files ∩ PR-files = IN-SCOPE/BASE-FAULT |
 | `./tools/state/oc-ledger confirm <uuid>` | verifies the worker's latest claim then flips workers[].confirmed=true |
-| `gh workflow run pr-checks.yml --ref ci/quick-build-linux -f ref=<branch-or-sha>` | **manual fallback — prefer `./tools/harvest/oc-prchecks`** (row above). PR-lane CI gates before an upstream PR; yml lives only on the carrier branch |
+| `gh workflow run pr-checks.yml --ref ci/quick-build-linux -f ref=<branch-or-sha>` | **manual fallback — prefer `./tools/harvest/oc-gate`** (row above). PR-lane CI gates before an upstream PR; yml lives only on the carrier branch |
 | `./tools/audit/oc-log-search <pattern> [--log-dir <P>] [--date YYYY-MM-DD] [--since <ts>] [--module <re>] [--tail N]` | telemetry-only daemon-log search; HARD FENCE: `brain::provider` lines never match |
 | `./tools/tests/oc-mutate <tool> <sed-expr> --leg <leg-name> [--selftest-arg A] [--timeout SEC] [--tools-src DIR] [--no-stamp] [--keep]` · `./tools/tests/oc-mutate --selftest` | proves a selftest leg can REDDEN: mutates a COPY of the tools tree, runs the tool's own suite, requires the aimed leg to be the thing that goes red (rc ladder: `tools/docs/RC-CONTRACT.md`). Standalone by design (`run.sh` excludes `*/tests/*`) — run it deliberately whenever the legs it guards change |
-| `./tools/ship/oc-ship-chain --sha S --branch B` | CI gate → issue-log → ff-merge → ship → swap in ONE invocation; no-self-ping |
+| `./tools/ship/oc-ship --sha S --branch B` | CI gate → issue-log → ff-merge → ship → swap in ONE invocation; no-self-ping |
 | `./tools/notify/oc-notify-fanout --title T` | per-lane skill-change brief generator; DB-validated forum-scoped targets, receipts + ledger stamp |
 | `./tools/git/oc-rebase-safety overlap\|audit` | re-gate split rule arithmetic |
 | `./tools/state/oc-roster <live|forum|claims|work|classify>` | the DERIVED in-progress roster; stores nothing; `--role <role>` delegates to `oc-ledger roster`. |

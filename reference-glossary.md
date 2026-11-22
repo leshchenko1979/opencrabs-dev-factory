@@ -40,7 +40,7 @@
   `STATE_TRACKED_PATHS` — naming it here without adding it there leaves it
   accumulating while the law reads as covered.
 - **single-flight** — the one dispatch/adoption lock serializing concurrent
-  oc-prchecks invocations; under it, the newest carrier dispatch is this
+  oc-gate invocations; under it, the newest carrier dispatch is this
   lane's own run.
 - **CI gate** — the `pr-checks.yml` dispatch on a worktree/PR head branch:
   fmt (soft-fail) + clippy + all-features test. The ONLY code-test locus.
