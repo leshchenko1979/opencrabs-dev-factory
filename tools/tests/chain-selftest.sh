@@ -588,23 +588,95 @@ FGHEOF
   MA="$(git -C "$T/clone" rev-parse main)"
   [ "$MB" = "$MA" ] && ok "leg3-unsigned-main-not-advanced" || bad "leg3-unsigned-main-not-advanced (main moved $MB -> $MA)"
 
-  # 4. NON-FF: create divergent main, branch can't ff
+  # 4. STALE-BASE RECOVERY (T10, plan #68) -- POSITIVE CONTROL for the new arm.
+  #    The leg here used to be `non-ff` and asserted ONLY rc 5, a code EIGHT
+  #    causes share; worse, its fixture never reached NON-FF at all. J-1
+  #    converts a non-descendant tip into STALE-BASE before the ff-merge runs,
+  #    and nothing between J-1 and that merge touches the network, so ancestry
+  #    cannot change in between -- NON-FF (oc-ship-chain, residual arm) is
+  #    unreachable within one run and has NO leg, deliberately: a leg for a
+  #    state the fixture cannot build would be decoration (CODE.md item 3).
+  #    This fixture -- divergent but NON-CONFLICTING -- is exactly the state
+  #    the recovery exists for: the work is sound, only the parent is stale.
   rm -f "$T/journal.log"
   git -C "$T/clone" reset -q --hard origin/main
   git -C "$T/clone" checkout -qb diverge
   echo diverge > "$T/clone/diverge.txt"
   git -C "$T/clone" add -A && git -C "$T/clone" commit -qm diverge
   git -C "$T/clone" push -q origin diverge:main   # origin main now has diverge
+  DIV="$(git -C "$T/clone" rev-parse origin/main)"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   git -C "$T/clone" checkout -q feat
   echo more > "$T/clone/more.txt"
-  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm more
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm more --trailer "Session-Id: $FIXTURE_SESSION"
   FSHA2="$(git -C "$T/clone" rev-parse HEAD)"
   git -C "$T/clone" checkout -q main
-  git -C "$T/clone" reset -q --hard origin/main   # main = diverged tip; feat diverged from it → ff impossible
+  git -C "$T/clone" reset -q --hard origin/main   # main = diverged tip; feat diverged from it
   RC=0; OUT="$(run_chain --sha "$FSHA2" --branch feat 2>&1)" || RC=$?
-  check_rc "non-ff" "$RC" 5
+  check_rc "stale-base-recovered" "$RC" 0
+  case "$OUT" in *"STALE-BASE recovered"*) ok "stale-base-recovered-names-cause" ;; *) bad "stale-base-recovered-names-cause: $OUT" ;; esac
+  grep -q "LEG3 STALE-BASE RECOVERED" "$T/journal.log" && ok "journal-stale-base-recovered" || bad "journal-stale-base-recovered"
+  grep -q "patch-ids SAME" "$T/journal.log" && ok "journal-recovery-carried-gate" || bad "journal-recovery-carried-gate"
+  LANDED="$(git -C "$T/clone" rev-parse main)"
+  # the landing is a ff-merge of the REBASED tip: no merge commit, ever
+  [ "$(git -C "$T/clone" rev-list --count --merges "$DIV..$LANDED")" = "0" ] && ok "stale-base-recovered-no-merge-commit" || bad "stale-base-recovered-no-merge-commit"
+  # the rebased history sits ON TOP of the new main, and holds exactly the two
+  # commits the branch carried -- nothing lost, nothing invented
+  git -C "$T/clone" merge-base --is-ancestor "$DIV" "$LANDED" && ok "stale-base-recovered-parented-on-new-main" || bad "stale-base-recovered-parented-on-new-main"
+  [ "$(git -C "$T/clone" rev-list --count "$DIV..$LANDED")" = "2" ] && ok "stale-base-recovered-commit-count" || bad "stale-base-recovered-commit-count (want 2 got $(git -C "$T/clone" rev-list --count "$DIV..$LANDED"))"
+  # the work survived, and the rebase brought the new main's file with it
+  for f in diverge.txt feat.txt more.txt; do
+    git -C "$T/clone" cat-file -e "$LANDED:$f" 2>/dev/null && ok "stale-base-recovered-kept-$f" || bad "stale-base-recovered-kept-$f"
+  done
+  # the recovery pin is dropped once the landing is done (no ref litter)
+  [ -z "$(git -C "$T/clone" for-each-ref --format='%(refname)' refs/oc-chain-recovery/)" ] && ok "stale-base-recovered-pin-dropped" || bad "stale-base-recovered-pin-dropped"
+  # origin/main is advanced only by oc-deploy (faked here): the chain lands
+  # LOCAL main and must not push
+  [ "$(git -C "$T/clone" rev-parse origin/main)" = "$DIV" ] && ok "stale-base-recovered-did-not-push" || bad "stale-base-recovered-did-not-push"
+
+  # 4b. STALE-BASE REFUSED when the gate cannot carry -- T10 NEGATIVE CONTROL.
+  #     A rebase that CONFLICTS is the cleanest proof: the tip cannot be moved
+  #     onto the new main, so the gate validated text that will never land.
+  #     The fixture is reused by 4c, so the two messages discriminate on
+  #     IDENTICAL state -- "conflicted" vs "disabled" is the whole difference.
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  git -C "$T/clone" checkout -qb cfeat
+  echo theirs > "$T/clone/diverge.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm cfeat --trailer "Session-Id: $FIXTURE_SESSION"
+  CSHA="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" push -q origin cfeat   # the branch pre-flight needs it on the fork remote
+  git -C "$T/clone" checkout -q main
+  echo ours > "$T/clone/diverge.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm cmain
+  git -C "$T/clone" push -q origin main
+  git -C "$T/clone" reset -q --hard origin/main
+  MAINBEFORE="$(git -C "$T/clone" rev-parse main)"
+  RC=0; OUT="$(run_chain --sha "$CSHA" --branch cfeat 2>&1)" || RC=$?
+  check_rc "stale-base-conflict-refused" "$RC" 5
+  case "$OUT" in *"AUTOMATIC RECOVERY DID NOT CARRY THE GATE"*) ok "stale-base-conflict-names-void-gate" ;; *) bad "stale-base-conflict-names-void-gate: $OUT" ;; esac
+  case "$OUT" in *"conflicted"*) ok "stale-base-conflict-names-cause" ;; *) bad "stale-base-conflict-names-cause: $OUT" ;; esac
+  [ "$(git -C "$T/clone" rev-parse main)" = "$MAINBEFORE" ] && ok "stale-base-conflict-main-untouched" || bad "stale-base-conflict-main-untouched"
+  [ -z "$(git -C "$T/clone" for-each-ref --format='%(refname)' refs/oc-chain-recovery/)" ] && ok "stale-base-conflict-no-pin-litter" || bad "stale-base-conflict-no-pin-litter"
+
+  # 4c. the escape hatch, on the SAME conflicting state. The message must say
+  #     DISABLED rather than CONFLICTED: that is what proves the knob
+  #     suppressed the attempt instead of the attempt merely failing.
+  export OC_CHAIN_NO_STALE_RECOVER=1
+  RC=0; OUT="$(run_chain --sha "$CSHA" --branch cfeat 2>&1)" || RC=$?
+  unset OC_CHAIN_NO_STALE_RECOVER
+  check_rc "stale-base-killswitch" "$RC" 5
+  case "$OUT" in *"disabled by OC_CHAIN_NO_STALE_RECOVER=1"*) ok "stale-base-killswitch-names-knob" ;; *) bad "stale-base-killswitch-names-knob: $OUT" ;; esac
+  case "$OUT" in *"conflicted"*) bad "stale-base-killswitch-did-not-rebase" ;; *) ok "stale-base-killswitch-did-not-rebase" ;; esac
+
+  # RESTORE: origin/main and main back to the diverge tip, feat back to FSHA.
+  # 4b advanced origin/main past DIV, and FSHA is not an ancestor of it, so the
+  # later legs (`--sha $FSHA --branch feat`) would read as stale otherwise.
+  git -C "$T/clone" push -q -f origin "$DIV":main
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  git -C "$T/clone" branch -f feat "$FSHA"
 
   # RESTORE the fixture precondition: tests 5..19 ship `--sha $FSHA --branch
   # feat`, and LEG3 now REQUIRES the branch tip to EQUAL the gated sha (a tip
@@ -747,11 +819,13 @@ FGHEOF
   git -C "$T/clone" reset -q --hard origin/main
   git -C "$T/clone" checkout -qb preanc-feat origin/main
   echo preanc > "$T/clone/preanc.txt"
-  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "preanc-feat on a base that will be superseded"
+  echo preanc-side > "$T/clone/base.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "preanc-feat on a base that will be superseded" --trailer "Session-Id: $FIXTURE_SESSION"
   git -C "$T/clone" push -q origin preanc-feat
   PREANC_TIP="$(git -C "$T/clone" rev-parse HEAD)"
   git -C "$T/clone" checkout -q main
   echo later > "$T/clone/later.txt"
+  echo main-side > "$T/clone/base.txt"
   git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "main advances past preanc-feat's base"
   git -C "$T/clone" push -q origin main
   RC=0; OUT="$(run_chain --sha "$PREANC_TIP" --branch preanc-feat 2>&1)" || RC=$?

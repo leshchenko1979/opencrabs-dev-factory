@@ -592,6 +592,9 @@ DEPLOY_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-deploy}"
 ISSUELOG_BIN="${OC_ISSUELOG_BIN:-$TOOLS_DIR/issue/oc-issue-log}"
 FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_GH:-gh}"
+# T10 (plan #68): the post-4-way-split home of the rebase auditor. Named here
+# so the STALE-BASE recovery below never hunts a tool in the wrong shard.
+REBASE_SAFETY_BIN="${OC_REBASE_SAFETY_BIN:-$OC_TOOLS_DIR/git/oc-rebase-safety}"
 
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$SELF" || :; exit 0; }
 # #55: the message is RECORDED before exiting so the EXIT-trap wake can carry
@@ -1796,7 +1799,58 @@ if ! git -C "$FORK_REPO" merge-base --is-ancestor origin/main "$TIP" 2>/dev/null
     die "ALREADY-LANDED (rc 5): $BRANCH ($TIP) is already contained in origin/main -- another lane landed this work. Nothing to rebase and nothing to ship; verify the issue's state and close it. Do NOT re-gate." 5
   fi
   journal "LEG3 PRE-ANCESTRY MISS origin-main=$(git -C "$FORK_REPO" rev-parse --short origin/main 2>/dev/null || echo '?') tip=$(printf '%s' "$TIP" | cut -c1-8) — origin/main moved while this chain waited on the lock"
-  die "STALE-BASE (rc 5, caught BEFORE the merge attempt): origin/main advanced while this chain waited for the landing lock, so $BRANCH is no longer based on it. The gate validated $SHA, but the range is now based on a superseded main. Rebase onto the current main and re-run: oc-rebase-safety (then) oc-ship-chain --sha <rebased-tip> --branch $BRANCH. NOTE: if the rebase changes NOTHING but the parent -- i.e. the same patch-id -- oc-ship-chain --gated-run carries the existing GREEN forward instead of burning a fresh ~25-min gate (Duty-4 n=2520)." 5
+
+  # ---- T10 (plan #68): STALE-BASE mechanical recovery ---------------------
+  # This arm is the one that actually costs gates: the tip is correctly based
+  # on a main that has since moved, so the work is fine and only the parent is
+  # stale. The old text sent the lane off to rebase BY HAND and re-run, which
+  # spends a fresh ~25-minute gate for a rebase that usually changes nothing
+  # but the parent (finding 127429e6: one patch, three shas, three gates, two
+  # already void). Recover IN PLACE instead: rebase a detached copy onto
+  # origin/main, then audit the per-file patch-ids. A content-identical rebase
+  # (SAME on every file) carries the existing GREEN forward under the
+  # fleet-directives v0.4.125 / Duty-4 n=2520 rule; ANY CHANGED or DROPPED
+  # patch-id voids the gate, because the gate validated the OLD text and this
+  # chain cannot prove the new text was ever gated. No merge commit is created
+  # either way: the landing stays a `merge --ff-only`.
+  _rb_ok=0; _rb_new=""; _rb_base=""; _rb_ref=""
+  _rb_why="not attempted"
+  if [ "${OC_CHAIN_NO_STALE_RECOVER:-0}" = "1" ]; then
+    _rb_why="automatic recovery disabled by OC_CHAIN_NO_STALE_RECOVER=1"
+  else
+    _rb_base="$(git -C "$FORK_REPO" merge-base "$TIP" origin/main 2>/dev/null || true)"
+    if [ -z "$_rb_base" ]; then
+      _rb_why="no merge-base between $TIP and origin/main"
+    elif ! git -C "$FORK_REPO" checkout -q --detach "$TIP" 2>/dev/null; then
+      _rb_why="could not check out $TIP in $FORK_REPO (tree not clean?)"
+    else
+      if git -C "$FORK_REPO" rebase --quiet origin/main >/dev/null 2>&1; then
+        _rb_new="$(git -C "$FORK_REPO" rev-parse HEAD 2>/dev/null || true)"
+      else
+        git -C "$FORK_REPO" rebase --abort >/dev/null 2>&1 || true
+        _rb_why="rebase of $TIP onto origin/main conflicted"
+      fi
+      git -C "$FORK_REPO" checkout -q main >/dev/null 2>&1 || true
+    fi
+    if [ -n "$_rb_new" ]; then
+      # Checking main out again leaves the rebased commit unreachable except
+      # through the reflog, and the ff-merge below still has to name it -- pin
+      # it, and drop the pin once the landing is done.
+      _rb_ref="refs/oc-chain-recovery/$(printf '%s' "$_rb_new" | cut -c1-12)"
+      git -C "$FORK_REPO" update-ref "$_rb_ref" "$_rb_new" 2>/dev/null || true
+      if "$REBASE_SAFETY_BIN" audit --repo "$FORK_REPO" --old-tip "$TIP" --new-tip "$_rb_new" --base "$_rb_base" >/dev/null 2>&1; then
+        journal "LEG3 STALE-BASE RECOVERED from=$(printf '%s' "$TIP" | cut -c1-8) to=$(printf '%s' "$_rb_new" | cut -c1-12) — per-file patch-ids SAME, gate on $SHA carries forward"
+        printf '%s\n' "oc-ship-chain: STALE-BASE recovered — rebased $(printf '%s' "$TIP" | cut -c1-8) onto origin/main with NO content change (per-file patch-ids SAME). The gate on $SHA carries forward (Duty-4 n=2520); landing $(printf '%s' "$_rb_new" | cut -c1-12)." >&2
+        TIP="$_rb_new"; SHA="$_rb_new"; _rb_ok=1
+      else
+        _rb_why="rebased to $(printf '%s' "$_rb_new" | cut -c1-12) but oc-rebase-safety found a CHANGED or DROPPED patch, so the gate on $SHA is VOID for the new text"
+      fi
+    fi
+  fi
+  if [ "$_rb_ok" != "1" ]; then
+    [ -n "$_rb_ref" ] && { git -C "$FORK_REPO" update-ref -d "$_rb_ref" 2>/dev/null || true; }
+    die "STALE-BASE (rc 5, caught BEFORE the merge attempt): origin/main advanced while this chain waited for the landing lock, so $BRANCH is no longer based on it. The gate validated $SHA. AUTOMATIC RECOVERY DID NOT CARRY THE GATE: $_rb_why. Recover BY HAND: rebase $BRANCH onto the current main, then re-run: oc-ship-chain --sha <rebased-tip> --branch $BRANCH. PROVE the rebase moved nothing but the parent before you claim a carry-forward: oc-rebase-safety audit --repo "$FORK_REPO" --old-tip $TIP --new-tip <rebased-tip> --base <merge-base> must report per-file patch-ids SAME. NOTE: if the rebase changes NOTHING but the parent -- i.e. the same patch-id -- oc-ship-chain --gated-run carries the existing GREEN forward instead of burning a fresh ~25-min gate (Duty-4 n=2520)." 5
+  fi
 fi
 
 # ---- #755: SIGNATURE pre-check (pure git, BEFORE the ff-merge) -------------
@@ -1895,6 +1949,9 @@ if [ "$FF_RC" != "0" ]; then
   die "NON-FF: rebase $BRANCH onto fork main (oc-rebase-safety) and re-run: oc-ship-chain --sha $SHA --branch $BRANCH" 5
 fi
 MERGED="$(git -C "$FORK_REPO" rev-parse --short HEAD)"
+# T10: the STALE-BASE recovery pin has served its purpose once the landing
+# is done -- leaving it behind litters the fork with one ref per recovery.
+[ -n "${_rb_ref:-}" ] && { git -C "$FORK_REPO" update-ref -d "$_rb_ref" 2>/dev/null || true; }
 journal "LEG3 ff-merge ok fork-main=$MERGED"
 
 # ---- no-self-ping guard ----------------------------------------------------
