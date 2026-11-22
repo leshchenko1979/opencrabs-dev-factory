@@ -916,6 +916,71 @@ NSTUB2
   [ "$(ls -1 "$SD7/backups" | grep -cE '^opencrabs-[0-9]{8}-[0-9]{6}-pre-')" = "2" ] \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: a non-numeric BAK_KEEP pruned anyway"; }
 
+  # 11d. #143 SKILLS SIDECAR — POSITIVE CONTROL. An artifact carrying
+  #      `skills/<name>/SKILL.md` must be INSTALLED on the target's skills dir
+  #      (resolved from SWAP_TARGET, never a compiled path) and then RESTORED by
+  #      the rollback. The assertions are deliberately two-sided: "restored to
+  #      the pre-swap hash" passes vacuously on a tool whose install block is
+  #      dead, so the arm also demands the artifact's OWN file was gone after the
+  #      rollback — only an install that really happened can be undone.
+  rm -rf "$T/bin/skills" "$T/art143" "$T/art143b"
+  mkdir -p "$T/bin/skills/old-skill" "$T/art143/skills/new-skill"
+  printf 'old-skill-v1\n' > "$T/bin/skills/old-skill/SKILL.md"
+  printf 'new-skill-v1\n' > "$T/art143/skills/new-skill/SKILL.md"
+  local _sk_pre; _sk_pre="$(skills_tree_hash "$T/bin/skills")"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD/workers-ledger.json"
+  echo prev > "$SD/deployed.sha"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_TARGET="$T/bin/oc-fake" \
+    OC_SWAP_BACKUP_DIR="$SD/backups" OC_SWAP_RESTART_CMD=true \
+    OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_A2A_URL="" \
+    OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 OC_DEPLOY_NOTIFY="$SD/notify" \
+    "$SELF_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --run 143 --features telegram --drill --artifact-dir "$T/art143" 2>&1)"; rc=$?
+  check_rc "skills-drill-rc" $rc 0
+  local JL143; JL143="$(ls -t "$SD/oc-deploy/journal/"swap-* | head -1)"
+  grep -q '"step":"skills-backup","exit":0' "$JL143" && grep -q '"present":true' "$JL143" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 no skills-backup journal row with present:true"; }
+  grep -q '"step":"skills-install","exit":0' "$JL143" && grep -q 'cp-a+rename' "$JL143" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 the artifact's skills tree was NEVER installed"; }
+  [ -f "$T/bin/skills/old-skill/SKILL.md" ] && [ ! -e "$T/bin/skills/new-skill/SKILL.md" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 rollback left the NEW skills tree in place (half-rollback)"; }
+  [ "$(skills_tree_hash "$T/bin/skills")" = "$_sk_pre" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 restored skills tree != pre-swap content hash"; }
+  # 11e. #143 req 2 — an artifact with NO skills tree is SKIP+WARN, never a
+  #      failure and never a deletion. HQ ruling, recorded on the issue.
+  printf 'old-skill-v1\n' > "$T/bin/skills/old-skill/SKILL.md"
+  local _sk_pre2; _sk_pre2="$(skills_tree_hash "$T/bin/skills")"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD/workers-ledger.json"
+  echo prev > "$SD/deployed.sha"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_TARGET="$T/bin/oc-fake" \
+    OC_SWAP_BACKUP_DIR="$SD/backups" OC_SWAP_RESTART_CMD=true \
+    OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_A2A_URL="" \
+    OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 OC_DEPLOY_NOTIFY="$SD/notify" \
+    "$SELF_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --run 144 --features telegram --drill --artifact-dir "$T/art143b" 2>&1)"; rc=$?
+  check_rc "skills-absent-rc" $rc 0
+  check_has "skills-absent-warn" "$out" "artifact carries no skills/ tree"
+  local JL143b; JL143b="$(ls -t "$SD/oc-deploy/journal/"swap-* | head -1)"
+  grep -q 'artifact-carries-no-skills' "$JL143b" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 absent tree not journaled as skipped"; }
+  [ "$(skills_tree_hash "$T/bin/skills")" = "$_sk_pre2" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 absent-tree swap TOUCHED the existing skills dir"; }
+  # 11f. #143 — no prior tree + artifact carries one: rollback must return the
+  #      dir to ABSENT, not to an empty dir that later reads as "installed".
+  rm -rf "$T/bin/skills"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD/workers-ledger.json"
+  echo prev > "$SD/deployed.sha"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_TARGET="$T/bin/oc-fake" \
+    OC_SWAP_BACKUP_DIR="$SD/backups" OC_SWAP_RESTART_CMD=true \
+    OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_A2A_URL="" \
+    OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 OC_DEPLOY_NOTIFY="$SD/notify" \
+    "$SELF_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --run 145 --features telegram --drill --artifact-dir "$T/art143" 2>&1)"; rc=$?
+  check_rc "skills-fresh-rc" $rc 0
+  [ ! -d "$T/bin/skills" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #143 rollback over a previously-ABSENT tree left a directory behind"; }
+  rm -rf "$T/art143" "$T/art143b"
+
   # 13. swap-execute below S2 -> exit 4 (stage gate)
   printf '{"meta":{"oc_deploy_stage":"S1"}}' > "$SD/workers-ledger.json"
   OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_TARGET="$T/bin/oc-fake" \

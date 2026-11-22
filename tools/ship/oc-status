@@ -348,6 +348,15 @@ esac
 oc_deploy_parse_args "$@"
 oc_priority_apply "$PRIORITY"
 oc_priority_report
+# THE KILL BRAKE MUST PRECEDE CARRIER RESOLUTION. For poll/watch,
+# oc_features_resolve reads the carrier feature set over the NETWORK, so with
+# the carrier unreachable the brake below it could never fire: the tool died 2
+# on a carrier read instead of aborting 9 on the kill file. A brake that needs
+# the network to engage is not a brake — measured 2026-11-22, the kill-file
+# selftest arm went red (rc=2 want=9) purely because the carrier read failed.
+# Kept to the two modes that own a brake: `status` never had one, and --help /
+# usage still resolve ABOVE this point, so their rc 0 / rc 1 stand.
+case "$MODE" in poll|watch) kill_brake ;; esac
 oc_features_resolve
 
 case "$MODE" in

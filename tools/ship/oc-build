@@ -148,6 +148,9 @@ esac
 oc_deploy_parse_args "$@"
 oc_priority_apply "$PRIORITY"
 oc_priority_report
+# THE KILL BRAKE MUST PRECEDE CARRIER RESOLUTION (see oc-status's note, #143-bis):
+# a carrier read that fails dies 2, masking the documented rc 9 the brake owns.
+case "$MODE" in ship) kill_brake ;; esac
 oc_features_resolve
 
 case "$MODE" in
