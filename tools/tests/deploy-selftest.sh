@@ -592,6 +592,15 @@ FSTUB
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: launch stub not called with swap-execute"; }
   grep -q -- "--features telegram" "$T/launch.log" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: carrier-resolved features not handed to swap"; }
+  # 10-bin. factory#145: the handoff must launch the RECEIVER, not $SELF. The stub
+  #     records its whole argv (`launch $*`), so the collected path was always
+  #     right there in the log -- and until this arm existed NOTHING asserted it.
+  #     `oc-deploy` execs into oc-status, the lib's SELF resolves to oc-status, so
+  #     12 units were launched as `oc-status swap-execute` (dying on oc-status's own
+  #     `unknown arg` arm) and this selftest stayed green because it grepped the
+  #     ARGS and never the binary.
+  grep -qE -- '--collect [^ ]*/oc-swap swap-execute' "$T/launch.log" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: handoff launched the WRONG binary (want .../ship/oc-swap, got: $(grep -o -- '--collect [^ ]*' "$T/launch.log" 2>/dev/null | head -1))"; }
   grep -q "handed-off" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no handed-off shadow row"; }
   # 10a. #729: in-flight guard — a LIVE oc-swap unit for THIS sha must stop a
   #      duplicate handoff (LEG5 loops faster than deployed.sha flips; the

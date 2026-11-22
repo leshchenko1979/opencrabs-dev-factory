@@ -500,7 +500,19 @@ case "$MODE" in
           fi
         fi
         UNIT="oc-swap-${B_SHA:0:8}-$(date +%s)"
-        OC_SWAP_DETACHED=1 $LAUNCH --unit="$UNIT" --collect "$SELF" swap-execute --sha "$B_SHA" --run "$RUN_ID" --features "$FEATURES" \
+        # factory#145: the handoff must name the RECEIVER, never $SELF. `oc-deploy`
+        # `exec`s into this tool (tools/ship/oc-deploy:176), so the shared
+        # lib's SELF="$(readlink -f "$0")" (tools/lib/oc-deploy-lib.sh:81) resolves
+        # to oc-status -- and the unit was launched as `oc-status swap-execute`,
+        # which dies on THIS file's own `*) die 1 "unknown arg: $1"` arm (:346)
+        # before oc-swap is ever reached. The lib's die() prefix is `oc-deploy:`,
+        # so the death read as an oc-deploy/infra fault while deployed.sha never
+        # moved. Measured 2026-11-22: 12 `handed-off` shadow rows spanning
+        # 13:58:25-14:01:25, `systemctl --user list-units 'oc-swap-*' --all` = 0
+        # loaded units, deployed.sha still 30317398a. Latent since the four-way
+        # split (commit 1e66f389, 03:59:51Z); the selftest grepped the stub's
+        # ARGS and never its binary, which is why 12 bad handoffs passed CI.
+        OC_SWAP_DETACHED=1 $LAUNCH --unit="$UNIT" --collect "$OC_TOOLS_DIR/ship/oc-swap" swap-execute --sha "$B_SHA" --run "$RUN_ID" --features "$FEATURES" \
           || { shadow_log swap "$B_SHA" "$FEATURES" "launch-fail"; die 4 "systemd-run handoff failed — nothing touched"; }
         shadow_log swap "$B_SHA" "$FEATURES" "handed-off:$UNIT"
         echo "HANDOFF: Phase B transient unit $UNIT owns the swap (sha=$B_SHA run=$RUN_ID) — poll (Phase A) exits pre-bounce by design"
