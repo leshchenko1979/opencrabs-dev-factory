@@ -2,10 +2,16 @@
 # =============================================================================
 # deploy-selftest.sh — the BODY of `oc-deploy selftest`, moved VERBATIM.
 #
-# SOURCED, never executed: `selftest()` in tools/ship/oc-deploy is a thin wrapper
-# that `.`-sources this file. It must stay SOURCED because the body declares
-# `local T pass=0 fail=0` and defines check_rc/check_has as NESTED functions that
-# close over those locals — an exec or a subprocess would break both.
+# SOURCED, never executed: `selftest()` (tools/lib/oc-deploy-lib.sh) is a thin
+# wrapper that `.`-sources this file. It must stay SOURCED because the body
+# declares `local T pass=0 fail=0` and defines check_rc/check_has as NESTED
+# functions that close over those locals — an exec or a subprocess breaks both.
+#
+# T5-bis (four-way split): the suite is ONE suite and it still covers all four
+# stages, so `selftest()` first loads the four tools' functions into this shell
+# (oc_deploy_load_funcs) and every child below goes through the DISPATCHER,
+# tools/ship/oc-deploy. Nothing about the CHECKS changed — only the paths that
+# pin SOURCE SHAPE (SRC_*) and the sandbox tree in 10f-ter.
 #
 # WHY IT LIVES HERE: the tool was 5,011 lines, 2,186 of them selftest fixture.
 # Extraction is verifiable by PASS COUNT: the battery's deploy-selftest section
@@ -33,8 +39,16 @@
   export OC_SWAP_IN_UNIT_CGROUP=0
   local SD="$T/state"
   mkdir -p "$SD/tools" "$SD/backups" "$T/bin"
-  local SELF_BIN="${1:-$SELF}"   # v0.4.38: $SELF is readlink -f'd at top; bare $0 died rc 127 when --selftest was invoked via relative path (re-exec after cd into tmp could not resolve it)
+  # T5-bis: the children below must go through the DISPATCHER whatever arm ran
+  # this suite (the suite is one suite and every arm can run it), so the entry
+  # point is RESOLVED here, never inherited from $0.
+  local SELF_BIN="${1:-$OC_TOOLS_DIR/ship/oc-deploy}"   # v0.4.38: absolute, so a re-exec after cd into tmp can still resolve it
   local SELF_DIR; SELF_DIR="$(dirname "$SELF_BIN")"
+  # T5-bis: the split moved code out of the one file the source-shape guards
+  # below used to grep. Each such guard reads the file that OWNS what it pins.
+  local SRC_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh" SRC_BUILD="$OC_TOOLS_DIR/ship/oc-build"
+  local SRC_SWAP="$OC_TOOLS_DIR/ship/oc-swap" SRC_FANOUT="$OC_TOOLS_DIR/ship/oc-fanout"
+  local SRC_STATUS="$OC_TOOLS_DIR/ship/oc-status"
   check_rc() { if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: $1 rc=$2 want=$3"; fi; }
   check_has() { case "$2" in *"$3"*) pass=$((pass+1)) ;; *) fail=$((fail+1)); echo "SELFTEST FAIL: $1 missing: $3" ;; esac; }
   # stubs
@@ -726,6 +740,13 @@ NSTUB2
   local ND="$T/noembed"
   mkdir -p "$ND/tools/lib" "$ND/tools/ship"
   cp "$SELF_BIN" "$ND/tools/ship/oc-deploy"
+  # T5-bis: oc-deploy is a DISPATCHER now, so the sandbox tree needs the four
+  # stage tools and the shared body too — otherwise the child dies on a missing
+  # file and this arm stops being about the missing DECODER. oc-embed.sh is the
+  # ONE library deliberately left out of this tree.
+  cp "$OC_TOOLS_DIR"/ship/oc-build "$OC_TOOLS_DIR"/ship/oc-swap \
+     "$OC_TOOLS_DIR"/ship/oc-fanout "$OC_TOOLS_DIR"/ship/oc-status "$ND/tools/ship/"
+  cp "$OC_TOOLS_DIR/lib/oc-deploy-lib.sh" "$ND/tools/lib/" 2>/dev/null || true
   cp "$OC_TOOLS_DIR/lib/oc-log.sh" "$ND/tools/lib/" 2>/dev/null || true
   cp "$OC_TOOLS_DIR/lib/oc-notify.sh" "$ND/tools/lib/" 2>/dev/null || true
   # The GH_LOG assertion below is what pins the ORDERING: the guard must answer
@@ -783,7 +804,7 @@ NSTUB2
     *) pass=$((pass+1));;
   esac
   # the retry loop must not run for this cause: assert the budget gate names it
-  grep -q '_OC_NOTIFY_MISSING:-0}" != 1' "$SELF_BIN" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #932 notify_one can still burn the retry budget on a missing library"; }
+  grep -q '_OC_NOTIFY_MISSING:-0}" != 1' "$SRC_FANOUT" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #932 notify_one can still burn the retry budget on a missing library"; }
   # 10g. #72: gates-FIRST job ordering with the bare-sha gates name
   #      (`ORDER gates (<40-hex>)`, no comma) at jobs[0] and the build job at
   #      jobs[1] — the GREEN run is FOUND (built sha decoded), never skipped
@@ -1976,7 +1997,7 @@ EOS
   #     run id, so the state repo's only rule (`*.lock`) CANNOT match it and 12
   #     such locks ended up TRACKED. Every other lock here ends in .lock
   #     (LEDGER.lock, host-swap.lock, run/wave-*.lock) - this one was the outlier.
-  LOCKLINE="$(grep -m1 '^  local lockfile=' "$SELF_BIN" 2>/dev/null)"
+  LOCKLINE="$(grep -m1 '^  local lockfile=' "$SRC_FANOUT" 2>/dev/null)"
   case "$LOCKLINE" in
     *'"$STATE_DIR/fanout.'*'.lock"'*) pass=$((pass+1)) ;;
     *) fail=$((fail+1)); echo "SELFTEST FAIL: fanout lockfile does not END in .lock (ignorable-name invariant): ${LOCKLINE:-<line not found>}" ;;
@@ -2096,8 +2117,11 @@ OCPY
   #     site is a second reader, and two readers are the defect this verb
   #     exists to remove.
   # the [c] bracket keeps the guard's OWN pattern from matching itself
-  n_direct="$(grep -c -- '"\$CARRIER_TOOL" --fetc[h]' "$SELF_BIN" || true)"
-  n_reader="$(grep -c -- 'carrier_features --fetc[h]' "$SELF_BIN" || true)"
+  # T5-bis: "this file" is now the SPLIT (lib + four tools), so the guard counts
+  # over all five — a second reader anywhere in the split is still a second reader.
+  _SPLIT_FILES="$SRC_LIB $SRC_BUILD $SRC_SWAP $SRC_FANOUT $SRC_STATUS"
+  n_direct="$(grep -hc -- '"\$CARRIER_TOOL" --fetc[h]' $_SPLIT_FILES 2>/dev/null | awk '{s+=$1} END{print s+0}')"
+  n_reader="$(grep -hc -- 'carrier_features --fetc[h]' $_SPLIT_FILES 2>/dev/null | awk '{s+=$1} END{print s+0}')"
   if [ "$n_direct" -eq 0 ] && [ "$n_reader" -eq 1 ]; then
     pass=$((pass+1))
   else

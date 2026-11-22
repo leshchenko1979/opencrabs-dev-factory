@@ -1,0 +1,444 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-build — the BUILD/land leg of the four-way oc-deploy split.
+#
+# Owns the `ship` verb (and the `features` reader it depends on): carrier
+# feature resolution, the #355 gate-before-land guard, the rebase-if-needed
+# leg, the push, the carrier workflow dispatch, and the F-1 fusion --wait.
+#
+# WHY THIS FILE EXISTS: tools/ship/oc-deploy had grown to 2,768 lines doing
+# four unrelated jobs (dispatch a build, install a binary on the host, notify
+# contributors, report state). Owner order (plan task T5-bis) split it four
+# ways so a change to one stage stops dragging the other three through review.
+# oc-deploy is now a DISPATCHER: it routes the verb and execs the tool below.
+#
+# WHAT MOVED HERE, VERBATIM (byte-slices of oc-deploy@5f81c599):
+#   gate_verdict_for_run, oc_deploy_same_patch          (source 110-151)
+#   the `ship)` dispatch arm                            (source 2287-2576)
+# Nothing was rewritten and no rc was re-mapped. The config surface, the
+# carrier reader, the argv loop, the priority apply and the features
+# resolution are SHARED and live in tools/lib/oc-deploy-lib.sh.
+#
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-build row).
+# =============================================================================
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+# --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
+_OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
+if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
+
+# ----------------------------------------------------------------------------
+# functions moved VERBATIM (source 110-151): the #355 gate-before-land helpers
+# ----------------------------------------------------------------------------
+# ---- #355 GATE-BEFORE-LAND helpers ----------------------------------------
+# `ship`'s push leg LANDS a sha on fork main. Until #355 it did so with NO gate
+# consult, and a sha whose PR-lane gate was still IN FLIGHT reached the tip
+# (2026-09-18, ee4f6797a): fork main went clippy-RED and every lane inherited a
+# BASE-FAULT it did not own. These two helpers implement the guard, reusing
+# oc-ship-chain's --gated-run / --gated-sha vocabulary (DRY — one gate
+# vocabulary in the fleet, never a second) and the tool's OWN patch-id idiom
+# (line ~238's lineage twin) for the content-identical-rebase carry.
+#
+# gate_verdict_for_run prints, to stdout, exactly one of:
+#   green    the named run concluded success
+#   red      the named run reached a terminal non-success conclusion
+#   inflight the named run has not reached a terminal state
+#   unknown  the run could not be read (API failure, absent id)
+gate_verdict_for_run() {
+  local rid="${1:-}" json st cl
+  [ -n "$rid" ] || { printf 'unknown'; return 0; }
+  json="$("$GH" api "repos/$FORK/actions/runs/$rid" 2>/dev/null || true)"
+  [ -n "$json" ] || { printf 'unknown'; return 0; }
+  st="$(printf '%s' "$json" | jq -r '.status // empty' 2>/dev/null)"
+  cl="$(printf '%s' "$json" | jq -r '.conclusion // empty' 2>/dev/null)"
+  case "$st" in
+    completed)
+      case "$cl" in
+        success) printf 'green' ;;
+        *)       printf 'red' ;;
+      esac ;;
+    queued|in_progress|waiting|pending|requested) printf 'inflight' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# oc_deploy_same_patch: content-identity, the same test the chain applies when
+# it carries a gate forward across a rebase (Duty-4 n=2520).
+oc_deploy_same_patch() {
+  local a="${1:-}" b="${2:-}" pa pb repo
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  repo="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+  pa="$(git -C "$repo" show "$a" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+  pb="$(git -C "$repo" show "$b" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+  [ -n "$pa" ] && [ "$pa" = "$pb" ]
+}
+
+# ============================================================================
+# main — everything ABOVE defined functions; everything BELOW runs.
+# ============================================================================
+# SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
+# `OC_DEPLOY_FUNCS_ONLY=1 . oc-build` defines the functions above and RETURNS
+# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# ONE shell without re-running a prologue: no second tools-log row, no second
+# mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
+# invocation never sets the variable, so the test is false and `return` never
+# runs — this line is inert at runtime.
+[ "${OC_DEPLOY_FUNCS_ONLY:-0}" = 1 ] && return 0
+
+set -uo pipefail
+_OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-build" "$@"; else oc_log_finish() { :; }; fi
+# The shared deploy body: the config surface (state dir, ledger, markers, kill
+# files, swap targets) plus every helper more than one stage uses. ONE copy, so
+# the four tools cannot drift apart (see the file's own header).
+_OC_DEPLOY_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
+if [ -f "$_OC_DEPLOY_LIB" ]; then
+  . "$_OC_DEPLOY_LIB"
+else
+  printf 'oc-build: %s missing (broken LOCAL TOOL TREE, not a test result)\n' "$_OC_DEPLOY_LIB" >&2
+  exit 2   # (#932 discipline) a box fault, never a silent 0 or a bare 127
+fi
+trap 'oc_log_finish $?' EXIT
+# (#68-plan T5-bis) CROSS-STAGE FUNCTIONS. The split moved bodies out of this
+# file, so calls that used to be intra-file are now cross-tool: this stage calls
+# run_built_sha/decode_job_sha_any (defined in oc-fanout) and watch_precheck/
+# watch_covered (defined in oc-status). Without the load the shell answered rc 127
+# for each, and rc 127 must NEVER be read as a negative answer (#932) — the whole
+# poll half of the battery died on it. Placed AFTER the trap so a broken peer
+# still writes its log row before die 2 exits.
+oc_deploy_load_funcs oc-fanout oc-status
+
+
+# The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
+# and it is reachable from every arm: selftest() loads the other tools' functions
+# through the hook above. `oc-deploy --selftest` is the documented spelling.
+
+usage() {
+  cat <<'USAGE'
+usage: oc-build ship [--sha S] [--features F] [--execute] [--gated-run ID]
+                     [--gated-sha SHA] [--allow-ungated-push "<justification>"]
+                     [--allow-features-drop] [--priority low|normal]
+                     [--resolve-priority]
+       oc-build features [--repo P] [--ref B] [--no-fetch]
+       oc-build --selftest
+       oc-build --help
+
+Build/land leg of the four-way oc-deploy split: resolve the carrier feature set,
+refuse an ungated landing (#355), rebase-if-needed, push, dispatch the carrier
+workflow, and optionally bounded-poll the run it just dispatched (--wait N).
+Everything else lives in a sibling tool — `oc-deploy --help` lists all verbs.
+
+Exit codes: 0 ok/plan | 1 usage | 2 rebase/gate/push/features fail | 5 --wait
+timeout | 9 kill file.  Full contract: tools/docs/RC-CONTRACT.md
+USAGE
+}
+
+MODE="ship"
+case "${1:-}" in
+  ship)       shift ;;
+  features)   shift; features_run "$@"; exit $? ;;
+  --selftest) selftest "$@"; exit $? ;;
+  -h|--help)  usage; exit 0 ;;
+  '')         : ;;   # no flags: the ship arm's own validation answers (rc 2)
+  -*)         : ;;   # flag-first spelling: `oc-build --sha S`
+  *)          die 1 "unknown arg: $1" ;;
+esac
+oc_deploy_parse_args "$@"
+oc_priority_apply "$PRIORITY"
+oc_priority_report
+oc_features_resolve
+
+case "$MODE" in
+  # ------------------------------------------------------------------ ship --
+  ship)
+    kill_brake
+    # F-1 fusion (v0.4.97, editor.md Phase 6a lens E promise): --wait N on an
+    # EXECUTE ship is now honoured — after a successful dispatch the SAME
+    # process bounded-polls the carrier run (N seconds) and exits on GREEN /
+    # terminal-RED / timeout. Plan mode still refuses: a poll needs a dispatch
+    # to watch. --notify-session stays poll-only (ship-wait is fire-and-see).
+    if [ "$WAIT_SECS" != 0 ]; then
+      case "$WAIT_SECS" in ''|*[!0-9]*) die 1 "--wait needs an integer (seconds)" ;; esac
+      if [ "$EXECUTE" != 1 ]; then
+        die 2 "OC_DEPLOY_GATE=wait-plan-mode: --wait on ship requires --execute (plan mode has nothing to poll — chain poll --wait N explicitly)"
+      fi
+    fi
+    [ -z "$NOTIFY_SESSION" ] || die 2 "OC_DEPLOY_GATE=notify-poll-only: --notify-session is poll-mode only; ship does not poll (chain the poll leg explicitly)"
+    # Duty-6 lens F task 3: ship must NEVER silently adopt CWD HEAD — an
+    # operator shipping from the wrong directory pushes an unintended sha.
+    # --sha is mandatory; the sha must also be contained in the fork main
+    # lineage (the push target), not just present as an unrelated object.
+    [ -n "$SHA" ] || die 2 "OC_DEPLOY_GATE=missing-sha: ship requires --sha <40-hex> (no implicit CWD-HEAD adoption)"
+    echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || die 1 "sha not 40-hex: $SHA"
+    # n=1878 hard guard: format-valid does not mean real — refuse phantom
+    # shas BEFORE any plan/rebase logic (fabricated sha incident: lane-planned
+    # ship sha=4c0115ba…, bad object, misleading 'rebase needed' downstream).
+    # #73: this probe is CWD-scoped BY CONSTRUCTION, not by accident. The push
+    # that follows sends objects OUT of the CWD repo and the rebase legs act on
+    # the branch checked out HERE, so scoping the probe onto $OC_DEPLOY_REPO
+    # does not repair a refusal — it converts one into a ship that runs from a
+    # foreign checkout and writes refs/oc-deploy/main into it (measured: the
+    # plan then reads "FF ok" against the ref its own fetch had just created
+    # there). The refusal was right; what it owed the operator was the CAUSE, so
+    # a sha that lives in the fork checkout is now named as a wrong directory
+    # instead of as a phantom.
+    if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+      CWD_TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+      FORK_DIR="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+      if [ -z "$CWD_TOP" ]; then
+        die 2 "OC_DEPLOY_GATE=wrong-checkout: not inside a git repository (cwd=$PWD) — ship pushes objects from the CWD repo, so run it from the fork checkout: cd $FORK_DIR"
+      fi
+      if [ -d "$FORK_DIR" ] && git -C "$FORK_DIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
+        die 2 "OC_DEPLOY_GATE=wrong-checkout: $SHA is not an object in the CWD repo ($CWD_TOP) but IS present in $FORK_DIR — ship pushes objects out of the CWD repo, so this is the wrong directory, not a phantom sha. Re-run: cd $FORK_DIR && oc-deploy ship --sha $SHA"
+      fi
+      die 1 "sha not found in this repo (phantom?): $SHA — pass --sha <real commit sha>"
+    fi
+    plan "ship sha=$SHA features=$FEATURES stage=$(stage) execute=$EXECUTE"
+    # #704: the tip is resolved from refs/oc-deploy/main — the DEDICATED ref
+    # THIS fetch writes — never from FETCH_HEAD first (a shared mutable file any
+    # concurrent fetch in this repo rewrites; see resolve_main_tip). OC_DEPLOY_FETCH
+    # exists so the selftest can freeze the post-fetch/pre-read state: the race is
+    # between these two lines and no live test can win it deterministically.
+    FETCH_BIN="${OC_DEPLOY_FETCH:-git}"
+    "$FETCH_BIN" fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
+      || "$FETCH_BIN" fetch -q "$REMOTE" main \
+      || { shadow_log ship "$SHA" "$FEATURES" "fetch-fail"; die 2 "OC_DEPLOY_GATE=fetch-fail: cannot fetch fork main from $REMOTE"; }
+    MAIN_TIP="$(resolve_main_tip)" \
+      || die 2 "cannot resolve fork main tip"
+    plan "fork main tip = $MAIN_TIP"
+    # #704 containment: a tip that is not fork main is a RESOLUTION failure, not a
+    # conflict to resolve — refuse here, before the FF test and before any rebase.
+    # The expectation is the REMOTE's own declaration (an independent declaration,
+    # never the local ref we just wrote). The `watch` ALERT stays report-only: a
+    # correct-but-not-yet-deployed tip is the NORMAL state at ship time, so gating
+    # on coverage would refuse every legitimate ship.
+    tip_is_fork_main "$MAIN_TIP" "$REMOTE" \
+      || { shadow_log ship "$SHA" "$FEATURES" "tip-not-fork-main"; die 2 "OC_DEPLOY_GATE=tip-not-fork-main: resolved tip $MAIN_TIP != $REMOTE refs/heads/main ($(remote_main_tip "$REMOTE" || echo unreadable)) — refusing to ship onto a foreign tip (concurrent-fetch race, #704)"; }
+    watch_precheck "$MAIN_TIP"
+    if git merge-base --is-ancestor "$MAIN_TIP" "$SHA" 2>/dev/null; then
+      plan "FF ok: main is ancestor of sha — push would fast-forward"
+    else
+      if [ "$EXECUTE" != 1 ]; then
+        shadow_log ship "$SHA" "$FEATURES" "rebase-needed"
+        die 2 "OC_DEPLOY_GATE=rebase-needed: $SHA does not fast-forward main ($MAIN_TIP)"
+      fi
+      # In-tool auto-rebase on non-FF (v0.4.145)
+      echo "oc-deploy: non-fast-forward detected (main=$MAIN_TIP, sha=$SHA) — attempting in-tool auto-rebase..." >&2
+      PRE_REBASE_REF="$(git symbolic-ref --short -q HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null)"
+      set +e
+      REBASE_OUT="$(git rebase "$MAIN_TIP" "$SHA" 2>&1)"
+      REBASE_RC=$?
+      set -e
+      if [ "$REBASE_RC" -ne 0 ]; then
+        CONFLICTS="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
+        git rebase --abort >/dev/null 2>&1 || true
+        [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
+        shadow_log ship "$SHA" "$FEATURES" "rebase-conflict"
+        echo "oc-deploy: REBASE_CONFLICT — automatic rebase failed with merge conflicts:" >&2
+        if [ -n "$CONFLICTS" ]; then
+          printf '  %s\n' $CONFLICTS >&2
+        else
+          printf '%s\n' "$REBASE_OUT" >&2
+        fi
+        die 5 "OC_DEPLOY_GATE=rebase-conflict: manual conflict resolution required"
+      fi
+      NEW_SHA="$(git rev-parse HEAD)"
+      REBASE_SAFETY="${OC_DEPLOY_REBASE_SAFETY:-$TOOLS_DIR/git/oc-rebase-safety}"
+      set +e
+      AUDIT_OUT="$("$REBASE_SAFETY" audit --old-tip "$SHA" --new-tip "$NEW_SHA" 2>&1)"
+      AUDIT_RC=$?
+      set -e
+      if [ "$AUDIT_RC" -ne 0 ]; then
+        [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
+        shadow_log ship "$SHA" "$FEATURES" "rebase-audit-failed"
+        echo "oc-deploy: REBASE_AUDIT_FAILED — oc-rebase-safety audit found dropped/changed hunks:" >&2
+        printf '%s\n' "$AUDIT_OUT" >&2
+        die 5 "OC_DEPLOY_GATE=rebase-audit-failed: auto-rebase lost edits, manual re-gate required"
+      fi
+      echo "oc-deploy: REBASE_CLEAN — auto-rebased $SHA -> $NEW_SHA (zero lost edits verified by oc-rebase-safety audit)" >&2
+      shadow_log ship "$SHA" "$FEATURES" "auto-rebased:$NEW_SHA"
+      SHA="$NEW_SHA"
+    fi
+    if [ "$EXECUTE" = 1 ]; then
+      # ---- #355 GATE-BEFORE-LAND ------------------------------------------
+      # The push below LANDS $SHA on fork main. Refuse it unless this
+      # invocation carries a GREEN gate for that sha, or an audited override.
+      # Fail CLOSED: an absent gate is a refusal, never a silent pass.
+      GATE_STATE=""; GATE_SRC=""
+      if [ -n "$GATED_RUN" ]; then
+        GATE_SRC="run:$GATED_RUN"
+        GATE_STATE="$(gate_verdict_for_run "$GATED_RUN")"
+      elif [ -n "$GATED_SHA" ]; then
+        GATE_SRC="sha:$GATED_SHA"
+        if [ "$GATED_SHA" = "$SHA" ]; then
+          GATE_STATE="green"
+        elif oc_deploy_same_patch "$GATED_SHA" "$SHA"; then
+          GATE_STATE="green"   # content-identical rebase: the chain's Duty-4 n=2520 carry
+        else
+          GATE_STATE="mismatch"
+        fi
+      else
+        GATE_SRC="(none)"
+        GATE_STATE="missing"
+      fi
+      case "$GATE_STATE" in
+        green) : ;;
+        *)
+          if [ "$ALLOW_UNGATED" = 1 ]; then
+            shadow_log ship "$SHA" "$FEATURES" "ungated-push-override:$GATE_STATE"
+            echo "oc-deploy: UNGATED PUSH OVERRIDE ($GATE_STATE, gate=$GATE_SRC) — allowed by --allow-ungated-push: $UNGATED_JUSTIFY (actor ${RW_ACTOR})" >&2
+          else
+            shadow_log ship "$SHA" "$FEATURES" "gate-blocked:$GATE_STATE"
+            die 2 "OC_DEPLOY_GATE=gate-$GATE_STATE: refusing to push $SHA to refs/heads/main — gate=$GATE_SRC, verdict=$GATE_STATE. Land only a GREEN-gated sha (--gated-run <id> / --gated-sha <sha>, the oc-ship-chain contract). If the landing is genuinely justified, override explicitly and audibly: --allow-ungated-push \"<justification>\"."
+          fi ;;
+      esac
+      PUSH_OK=0
+      for PUSH_ATTEMPT in 1 2; do
+        if git push -q "$REMOTE" "$SHA:refs/heads/main" 2>/dev/null; then
+          PUSH_OK=1; break
+        fi
+        if [ "$PUSH_ATTEMPT" -eq 1 ]; then
+          echo "oc-deploy: push failed (concurrent update) — fetching latest main and retrying auto-rebase in 3s..." >&2
+          sleep 3
+          FETCH_BIN="${OC_DEPLOY_FETCH:-git}"
+          "$FETCH_BIN" fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
+            || "$FETCH_BIN" fetch -q "$REMOTE" main 2>/dev/null || true
+          MAIN_TIP="$(resolve_main_tip)" || break
+          # #704: same containment as the primary path — never rebase onto a tip
+          # that is not fork main (the remote's own declaration, not our local ref).
+          tip_is_fork_main "$MAIN_TIP" "$REMOTE" \
+            || { shadow_log ship "$SHA" "$FEATURES" "tip-not-fork-main"; die 2 "OC_DEPLOY_GATE=tip-not-fork-main: retry resolved tip $MAIN_TIP != $REMOTE refs/heads/main ($(remote_main_tip "$REMOTE" || echo unreadable)) — refusing to rebase onto a foreign tip (concurrent-fetch race, #704)"; }
+          if ! git merge-base --is-ancestor "$MAIN_TIP" "$SHA" 2>/dev/null; then
+            PRE_REBASE_REF="$(git symbolic-ref --short -q HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null)"
+            set +e
+            REBASE_OUT="$(git rebase "$MAIN_TIP" "$SHA" 2>&1)"
+            REBASE_RC=$?
+            set -e
+            if [ "$REBASE_RC" -ne 0 ]; then
+              CONFLICTS="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
+              git rebase --abort >/dev/null 2>&1 || true
+              [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
+              shadow_log ship "$SHA" "$FEATURES" "rebase-conflict"
+              echo "oc-deploy: REBASE_CONFLICT — automatic rebase failed with merge conflicts:" >&2
+              [ -n "$CONFLICTS" ] && printf '  %s\n' $CONFLICTS >&2
+              die 5 "OC_DEPLOY_GATE=rebase-conflict: manual conflict resolution required"
+            fi
+            NEW_SHA="$(git rev-parse HEAD)"
+            REBASE_SAFETY="${OC_DEPLOY_REBASE_SAFETY:-$TOOLS_DIR/git/oc-rebase-safety}"
+            set +e
+            AUDIT_OUT="$("$REBASE_SAFETY" audit --old-tip "$SHA" --new-tip "$NEW_SHA" 2>&1)"
+            AUDIT_RC=$?
+            set -e
+            if [ "$AUDIT_RC" -ne 0 ]; then
+              [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
+              shadow_log ship "$SHA" "$FEATURES" "rebase-audit-failed"
+              die 5 "OC_DEPLOY_GATE=rebase-audit-failed: auto-rebase lost edits, manual re-gate required"
+            fi
+            echo "oc-deploy: REBASE_CLEAN — auto-rebased $SHA -> $NEW_SHA" >&2
+            shadow_log ship "$SHA" "$FEATURES" "auto-rebased:$NEW_SHA"
+            SHA="$NEW_SHA"
+          fi
+        fi
+      done
+      if [ "$PUSH_OK" -ne 1 ]; then
+        shadow_log ship "$SHA" "$FEATURES" "push-fail"
+        die 2 "push to fork main failed"
+      fi
+      shadow_log ship "$SHA" "$FEATURES" "pushed"   # F-M2: remote mutation journaled before the next step can fail
+      echo "pushed $SHA -> fork main"
+      OC_REPO="$FORK" OC_LEDGER="$LEDGER" "$VALIDATE" --repo "$FORK" --ledger "$LEDGER" "$SHA" \
+        || { shadow_log ship "$SHA" "$FEATURES" "gate-fail"; die 2 "OC_DEPLOY_GATE=order-gate-failed: ORDER gates failed post-push (see validator exit code)"; }
+      echo "ORDER gates 4/4 PASS ($SHA)"
+      # #72: inject the fork release identity so the built binary reports the SAME
+      # string its release is named — evolve compares the two, and a divergence
+      # re-downloads forever. Gated on the carrier's OWN declaration: an undeclared
+      # dispatch input is a hard 422 from the API and would break EVERY ship, so a
+      # carrier that has not shipped the input yet gets the old form plus a NOTE.
+      FV_ARGS=()
+      # `set -e` is ACTIVE here: a bare `cmd; X=$?` would abort the shell on a
+      # non-zero probe instead of capturing it. Capture with `|| X=$?`.
+      FV_PROBE=0
+      _carrier_declares_input fork_version || FV_PROBE=$?
+      case "$FV_PROBE" in
+        0) FORK_VERSION="$(_fork_release_name "$SHA")"
+           FV_ARGS=(-f "fork_version=$FORK_VERSION")
+           echo "carrier fork_version=$FORK_VERSION" ;;
+        1) echo "oc-deploy: NOTE — carrier $WF@$CARRIER_REF declares no fork_version input; dispatching without it (the binary reports the bare upstream version until the carrier ships the input, #72)" >&2 ;;
+        *) # An unreadable contract is NOT a negative answer: the two ways of
+           # guessing are a hard 422 on every ship (passing an undeclared input)
+           # and a silent re-download loop (omitting a declared one). Refuse.
+           die 2 "cannot read the carrier contract for $WF@$CARRIER_REF (gh api read failed) — refusing to dispatch blind: an undeclared -f fork_version is a 422 on every ship, and omitting a declared one ships a binary whose version never matches its release name (#72). Re-run once the API is reachable." ;;
+      esac
+      "$GH" workflow run "$WF" --repo "$FORK" --ref "$CARRIER_REF" \
+        -f source_repository="$FORK" -f source_ref="$SHA" -f features="$FEATURES" \
+        ${FV_ARGS[@]+"${FV_ARGS[@]}"} \
+        || { shadow_log ship "$SHA" "$FEATURES" "dispatch-fail"; die 2 "carrier dispatch failed"; }
+      echo "dispatched carrier run for $SHA (features=$FEATURES)"
+      shadow_log ship "$SHA" "$FEATURES" "dispatched"
+      # F-1 fusion (v0.4.97): bounded in-process poll of the run we just
+      # dispatched — editor.md Phase 6a lens E F-1 promise. GREEN (or any
+      # terminal state, success|failure) ends the poll; rc 6 = RED, rc 5 =
+      # timeout. No --wait (or 0): classic fire-and-forget, poll leg chained
+      # explicitly by the operator.
+      if [ "$WAIT_SECS" != 0 ]; then
+        POLL_INTERVAL="${OC_DEPLOY_POLL_INTERVAL:-15}"
+        SW_DEADLINE=$(( $(date +%s) + WAIT_SECS ))
+        while :; do
+          RID=""
+          for CANDID in $(RUNS_JSON="$("$GH" api "repos/$FORK/actions/workflows/$WF/runs?per_page=5" 2>/dev/null)" \
+            && printf '%s' "$RUNS_JSON" | jq -r '.workflow_runs[].id // empty' 2>/dev/null); do
+            # Carrier runs (workflow_dispatch on ci/quick-build-linux) have head_sha == carrier tip,
+            # so decode target sha from the job names (or fallback to head_sha for test stubs).
+            CAND_SHA="$(run_built_sha "$CANDID" 2>/dev/null || true)"
+            if [ -z "$CAND_SHA" ]; then
+              CAND_SHA="$("$GH" api "repos/$FORK/actions/runs/$CANDID" 2>/dev/null | jq -r '.head_sha // empty' 2>/dev/null)"
+            fi
+            # Ancestry-aware candidate matching (v0.4.148): accept if the run builds our exact SHA
+            # OR a descendant commit containing our SHA (coalesced carrier run).
+            if [ "$CAND_SHA" = "$SHA" ]; then
+              : # exact match
+            elif [ -n "$CAND_SHA" ] && git -C "${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}" merge-base --is-ancestor "$SHA" "$CAND_SHA" 2>/dev/null; then
+              echo "oc-deploy ship-wait: candidate run $CANDID built descendant $CAND_SHA (contains our sha $SHA — coalesced run)" >&2
+            else
+              continue
+            fi
+            RID="$CANDID"; break
+          done
+          if [ -n "$RID" ]; then
+            CONCL="$("$GH" api "repos/$FORK/actions/runs/$RID" 2>/dev/null | jq -r '.status // empty' 2>/dev/null)"
+            case "$CONCL" in
+              completed)
+                CONCL="$("$GH" api "repos/$FORK/actions/runs/$RID" 2>/dev/null | jq -r '.conclusion // empty' 2>/dev/null)"
+                if [ "$CONCL" = success ]; then
+                  B_SHA="$(run_built_sha "$RID" || true)"
+                  shadow_log ship "$SHA" "$FEATURES" "ship-wait-green:$RID"
+                  echo "SHIP-WAIT: run $RID GREEN (sha=${B_SHA:-unknown}) within --wait ${WAIT_SECS}s — swap chain ready: poll --execute"
+                  exit 0
+                fi
+                shadow_log ship "$SHA" "$FEATURES" "ship-wait-red:$RID:$CONCL"
+                die 6 "SHIP-WAIT: run $RID terminal-$CONCL within --wait ${WAIT_SECS}s — RED, no swap leg"
+                ;;
+              queued|in_progress|waiting|pending) : ;;   # keep polling
+              *) echo "oc-deploy ship-wait: odd run status '$CONCL' — keep polling until deadline" >&2 ;;
+            esac
+          fi
+          [ "$(date +%s)" -lt "$SW_DEADLINE" ] || {
+            shadow_log ship "$SHA" "$FEATURES" "ship-wait-timeout"
+            die 5 "ship --wait ${WAIT_SECS}s timed out: run ${RID:-?} never reached a terminal state (still building or not found)"
+          }
+          sleep "$POLL_INTERVAL"
+        done
+      fi
+      echo "NEXT: fanout auto-notifies contributors on swap; poll --execute drives the swap chain"
+    else
+      plan "would: git push $REMOTE $SHA:refs/heads/main"
+      plan "would: $VALIDATE --repo $FORK --ledger <ledger> $SHA   # 4 ORDER gates vs live remote"
+      plan "would: $GH workflow run $WF --repo $FORK --ref $CARRIER_REF -f source_ref=$SHA -f features=$FEATURES -f fork_version=$(_fork_release_name "$SHA") (only if the carrier declares the input, #72)"
+      plan "would: shadow journal appended; fanout notifies contributors on swap"
+      shadow_log ship-plan "$SHA" "$FEATURES" "planned"
+      echo "plan complete — nothing executed (pass --execute to ship)"
+    fi
+    ;;
+esac

@@ -1,0 +1,605 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-fanout — the NOTIFY leg of the four-way oc-deploy split (issue #24).
+#
+# Owns the `fanout` verb: mechanical post-CI notification, zero LLM. GREEN leg
+# = one notify per contributing session once a swap lands; RED leg = blame
+# attribution plus a cc to the suspects. Idempotent via $FANOUT_STATE, single
+# flight per run (#42), bounded re-send for a TRANSIENT failure (#623), and it
+# never resurrects a dead uuid (#17 class).
+#
+# WHAT MOVED HERE, VERBATIM (byte-slice of oc-deploy@5f81c599: 881-1360, plus
+# the `fanout)` dispatch arm at 2753-2757): the whole #24 fan-out section —
+# the constants, fanout_journal_init, notify_session, fanout_mark_done,
+# decode_job_sha_any, run_built_sha, decode_built_sha, _notify_reason,
+# _notify_retryable, notify_one, attrib_at, green_leg, red_leg, fanout_run.
+# Nothing was rewritten and no rc was re-mapped. The A2A receipt helper, the
+# journal, the ledger stamp and the argv loop are SHARED (tools/lib/).
+#
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-fanout row).
+# =============================================================================
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+# --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
+_OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
+if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
+
+# ----------------------------------------------------------------------------
+# functions moved VERBATIM (source 881-1360): the whole #24 fan-out section
+# ----------------------------------------------------------------------------
+# ------------------------------------------------------------- fan-out (#24) --
+# issue #24: mechanical post-CI notifications, zero LLM. GREEN leg: one notify
+# per contributing session post-swap (oc-attrib --deployed is the compute).
+# RED leg: blame attribution + suspect cc (plan task 4). Idempotent via
+# $FANOUT_STATE (re-run = no-op); standalone re-runnable. Verb rc != 0 (dead
+# uuid) journals skip and moves on — never resurrects, never reaps (#17 class).
+# Journal vocabulary fixed in the issue body. Exit: 0 done/noop | 2 usage
+# | 3 gh/attrib fetch fail | 4 run not terminal. issue #42: single-flight
+# flock per run (acquired BEFORE the idempotence guard, held through the
+# mark) — a concurrent sweep exits 0 reason=inflight, never re-notifies.
+# Lock files are never unlinked: unlink-while-held splits the lock.
+# (#68-plan T5-bis) LAZY, and it must stay lazy. This function block sits ABOVE
+# the prologue that sources lib/oc-deploy-lib.sh, and STATE_DIR is defined THERE.
+# An eager `FANOUT_STATE="$STATE_DIR/fanout.state"` at this line therefore
+# evaluates BEFORE STATE_DIR exists and collapses to "/fanout.state" — root-
+# writable, so it silently ACCUMULATED every fixture run id and made each fan-out
+# arm read as already-done (measured: /fanout.state held 222, 666, 998, ... i.e.
+# exactly the selftest's own run ids, and the suite went 49 FAIL). Resolving at
+# USE time is the only form that works in all three call paths: a normal run, a
+# `OC_DEPLOY_FUNCS_ONLY=1` source (prologue skipped, STATE_DIR unset), and a
+# child re-exec.
+fanout_state_file() {
+  # Loud, never silent: an empty STATE_DIR would print "/fanout.state", which is
+  # the exact path the eager form collapsed to. A caller that skipped the lib
+  # gets a named fault, not a root-writable state file.
+  if [ -z "${STATE_DIR:-}" ]; then
+    printf 'fanout: STATE_DIR is unset — lib/oc-deploy-lib.sh was not sourced\n' >&2
+    return 2
+  fi
+  printf '%s/fanout.state' "$STATE_DIR"
+}
+# (#623) Bounded re-send for a TRANSIENT notify failure. The dominant case is
+# structural, not a fault: this fan-out fires at the swap tail while the daemon
+# is still opening its DB, so the A2A gateway is not bound yet. Measured
+# 2026-09-27: 18/18 transport errors fell 1-169 s BEFORE a gateway bind, and the
+# gateway binds ~7 s after the integrity line -- which itself takes ~2 min on
+# the ops DB. `oc_notify_session`'s own retry is ~31.5 s worst case, 3-5x too
+# short for that window, so 13.5% of attributed wakes were lost (fanout.state,
+# 276 runs: notified=372 skipped=58).
+# COST, stated because this fan-out runs INLINE in the swap chain: a transient
+# failure now delays the swap-result stamp by up to this budget. The swap itself
+# is already complete (binary swapped, markers written) before the fan-out runs,
+# so the delay costs chain latency, never correctness. Set to 0 to disable.
+# (#623 residual) 180, not 120: the budget must EXCEED the window it covers or
+# the tail is uncovered by construction. Measured by an editor lane on its own
+# swap -- the 120 s budget was consumed IN FULL and the send still failed
+# (+127 s) -- while the window this file's own comment cites runs to 169 s.
+NOTIFY_RETRY_BUDGET="${OC_DEPLOY_NOTIFY_RETRY_BUDGET:-180}"
+NOTIFY_RETRY_INTERVAL="${OC_DEPLOY_NOTIFY_RETRY_INTERVAL:-15}"
+NOTIFY_CMD="${OC_DEPLOY_NOTIFY:-opencrabs}"
+NOTIFY_PROFILE="${OC_DEPLOY_PROFILE:-ops}"
+REPO_DIR="${OC_DEPLOY_REPO:-$HOME/opencrabs}"
+
+fanout_journal_init() { # $1 = run id
+  mkdir -p "$JOURNAL_DIR"
+  JF="$JOURNAL_DIR/fanout-$1-$(date +%s)-$$.jsonl"
+  : > "$JF"; SEQ=0
+}
+
+notify_session() { # $1=uuid $2=title $3=text -> verb rc (0 delivered)
+  # E-F4 (v0.4.97): wake logic delegated to lib/oc-notify.sh — single owner of
+  # the session-notify exit-code contract + refused_in_flight interrupt retry.
+  if [ "${DRYRUN:-0}" = 1 ]; then return 0; fi
+  # (#932 criterion 3) rc 4 = `transport` in the session-notify vocabulary: the wake
+  # could not be ATTEMPTED, which is a delivery failure, NOT `2`/no_route -- that
+  # token means the LANE IS GONE (permanent, #623), and a missing library on this box
+  # says nothing about the lane. Never 127: that is an undeclared code.
+  if [ "${_OC_NOTIFY_MISSING:-0}" = 1 ] || ! command -v oc_notify_session >/dev/null 2>&1; then
+    printf 'notify unavailable: %s missing or does not define oc_notify_session — cannot wake any lane (#932)\n' \
+      "${_OC_NOTIFY_LIB:-lib/oc-notify.sh}" >&2
+    return 4
+  fi
+  oc_notify_session "$NOTIFY_CMD" "$NOTIFY_PROFILE" "oc-deploy fan-out" "$1" "$2" "$3"
+}
+
+fanout_mark_done() { # $1=run $2=verdict $3=notified $4=skipped $5=unowned
+  local tmp fs
+  fs="$(fanout_state_file)"
+  tmp="$(mktemp)" || return 1
+  if [ -f "$fs" ]; then
+    jq --arg id "$1" --arg v "$2" --arg at "$(date -u +%FT%TZ)" \
+       --argjson n "$3" --argjson s "$4" --argjson u "$5" \
+       '.runs[$id] = {verdict:$v, at:$at, notified:$n, skipped:$s, unowned:$u}' \
+       "$fs" > "$tmp" && mv "$tmp" "$fs"
+  else
+    jq -cn --arg id "$1" --arg v "$2" --arg at "$(date -u +%FT%TZ)" \
+       --argjson n "$3" --argjson s "$4" --argjson u "$5" \
+       '{runs:{($id):{verdict:$v, at:$at, notified:$n, skipped:$s, unowned:$u}}}' \
+       > "$tmp" && mv "$tmp" "$fs"
+  fi
+}
+
+decode_job_sha_any() { # $1=job name -> 40-hex sha from EITHER name shape (#72): the build-job embed "(<sha>, <features>)" or the gates-job bare form "(<sha>)"; empty if none. DELEGATES to the shared decoder (lib/oc-embed.sh) — the predicate has ONE home (factory #34); this wrapper keeps the #72 call-site name.
+  # (#932) A MISSING decoder is NOT a negative answer. Without this pre-check the
+  # shell answers rc 127 for an undefined command, which every caller reads as
+  # "this name carries no sha" — see the _OC_EMBED_MISSING note at the source site.
+  # rc 2, NOT the rc-5 transient arm: #84's 5 means "the jobs list could not be
+  # READ" (a gh blip, worth retrying), while this is "the decoder is not on this
+  # checkout" — a fault of the LOCAL TOOL TREE that no retry can fix and that says
+  # nothing whatsoever about the run. Collapsing the two is what let a partial
+  # checkout keep reporting itself as an unattributable range (#932's symptom).
+  if [ "${_OC_EMBED_MISSING:-0}" = 1 ] || ! command -v oc_decode_job_sha_any >/dev/null 2>&1; then
+    printf 'decode unavailable: %s missing or does not define oc_decode_job_sha_any — this checkout cannot evaluate ANY job name; restore the library (a broken tools tree, not a fact about the run) (#932)\n' \
+      "${_OC_EMBED:-lib/oc-embed.sh}" >&2
+    return 2
+  fi
+  oc_decode_job_sha_any "${1:-}"
+}
+
+run_built_sha() { # $1=run id -> echo sha from the FIRST job name that decodes (ANY shape, ALL jobs scanned — #72); rc 0/2/3/5
+  # (#84) rc 3 and rc 5 are DIFFERENT FACTS and conflating them cost two fan-outs
+  # their attribution permanently. rc 3 = the jobs list was READ and no job name
+  # decodes: a statement about the RUN, permanent. rc 5 = the jobs list could not
+  # be READ: a statement about gh or this box, transient.
+  #
+  # Both used to be rc 3, because `gh api`'s stderr was discarded into a pipe: a
+  # failed read produced empty input, the loop body never ran, and the function
+  # fell out as if the run carried no decodable job. An unreadable predicate was
+  # read as a negative answer. Measured: runs 33563606624 (2026-09-01) and
+  # 44420005606 (2026-11-18) both recorded decode-error with notified=0 while a
+  # plain re-run decoded the same run seconds later.
+  #
+  # rc 2 is the third fact and the one #932 was filed for: the EMBED DECODER IS
+  # NOT ON THIS CHECKOUT. It is not a statement about the run at all — no job name
+  # can even be evaluated — so it is neither permanent (rc 3) nor worth a blind
+  # retry (rc 5): it is a broken local tools tree, and the caller must say so
+  # rather than report the run as unattributable.
+  #
+  # (#932) This DOES reach the user: `fanout` branches on rc 2 and dies 2 naming
+  # the missing library. An earlier version of this comment claimed "internal code
+  # only — no user-facing rc changes"; that stopped being true the moment a
+  # missing decoder got its own code, because the whole point is that the operator
+  # sees "restore tools/lib/oc-embed.sh" instead of "run has no decodable job".
+  # The three other callers (ship --wait candidate scans, poll) still treat empty
+  # output as "skip this candidate" and never branch on this rc, so they are
+  # unaffected.
+  local jn s jobs jobs_rc names dec_rc
+  # (#932) Check the LOCAL defect BEFORE the network call. A missing decoder is
+  # both the more actionable fact and the one no retry can fix, so it must never
+  # be masked by a gh blip: with the check below, a broken checkout reports rc 2
+  # deterministically and makes no API call at all.
+  if [ "${_OC_EMBED_MISSING:-0}" = 1 ] || ! command -v oc_decode_job_sha_any >/dev/null 2>&1; then
+    printf 'decode unavailable: %s missing or does not define oc_decode_job_sha_any — this checkout cannot evaluate ANY job name; restore the library (a broken tools tree, not a fact about the run) (#932)\n' \
+      "${_OC_EMBED:-lib/oc-embed.sh}" >&2
+    return 2
+  fi
+  jobs="$("$GH" api "repos/$FORK/actions/runs/$1/jobs" 2>&1)"; jobs_rc=$?
+  if [ "$jobs_rc" != 0 ]; then
+    printf 'gh api jobs rc=%s: %s' "$jobs_rc" \
+      "$(printf '%s' "$jobs" | head -c 200 | tr '\n\r\t' '   ' | tr -d '"\\')" >&2
+    return 5
+  fi
+  names="$(printf '%s' "$jobs" | jq -r '.jobs[].name // empty' 2>/dev/null)"; jobs_rc=$?
+  if [ "$jobs_rc" != 0 ]; then
+    printf 'jobs payload unparseable (jq rc=%s) — read failed, not an absent sha' "$jobs_rc" >&2
+    return 5
+  fi
+  while IFS= read -r jn; do
+    [ -n "$jn" ] || continue
+    s="$(decode_job_sha_any "$jn")"; dec_rc=$?
+    # (#932) `|| continue` was the swallow point: it turned EVERY non-zero decode
+    # rc into "this name carries no sha". Propagate BOTH non-negative causes
+    # instead — 2 = this checkout has no decoder (fix it and re-run), 5 = the jobs
+    # list could not be read (retry) — so neither ever becomes a permanent verdict
+    # on the run.
+    [ "$dec_rc" = 2 ] && return 2
+    [ "$dec_rc" = 5 ] && return 5
+    [ -n "$s" ] && { printf '%s' "$s"; return 0; }
+  done <<< "$names"
+  return 3
+}
+
+decode_built_sha() { # $1=run id -> echoes 40-hex sha from first decodable job name (any shape — #72); rc 0/2/3/5 (rc 2 = decoder lib missing from THIS checkout, #932)
+  run_built_sha "$1"
+}
+
+# (#623) verb rc -> journal reason. ONE home, so the journal and the doc cannot
+# drift. `dead` is RESERVED for rc 2 (no_route), the only PERMANENT outcome --
+# before this, a transport failure and a timeout both journalled as "dead", so
+# the durable record asserted an absent lane when the daemon was merely booting.
+# Contract: tools/lib/oc-notify.sh:12-15. rc 124 is `timeout`'s own code, NOT in
+# that contract: it is reached when the CLI hung AND the A2A fallback also
+# failed, which is a distinct and worse condition than a plain transport error.
+_notify_reason() { # $1 = verb rc -> reason token
+  case "${1:-}" in
+    2)   printf 'dead' ;;                 # no_route -- the lane is gone (PERMANENT)
+    3)   printf 'refused_in_flight' ;;
+    4)   printf 'transport' ;;
+    124) printf 'timeout' ;;
+    *)   printf 'unknown' ;;
+  esac
+}
+
+# (#623) rc 2 is PERMANENT: re-sending to a dead uuid cannot help. Everything
+# else is transient by construction. rc 0 is not a failure, so it is excluded.
+_notify_retryable() { # $1 = verb rc -> rc 0 when a re-send is worth attempting
+  case "${1:-}" in
+    0|2) return 1 ;;
+    *)   return 0 ;;
+  esac
+}
+
+notify_one() { # $1=uuid $2=role $3=title $4=text $5=run -> journals notified|skip
+  local nrc RETRIES=0
+  if [ "${DRYRUN:-0}" = 1 ]; then
+    jline notified 0 "{\"uuid\":\"$1\",\"run\":\"$5\",\"role\":\"$2\",\"dry_run\":true}"
+    NOTIFIED=$((NOTIFIED+1)); return 0
+  fi
+  notify_session "$1" "$3" "$4"; nrc=$?
+  # (#623) Bounded re-send, TRANSIENT codes only. A recovered wake journals the
+  # attempt count so a recovery is VISIBLE rather than inferred from silence.
+  # (#932 criterion 3) A MISSING LIBRARY is not a transient transport condition: the
+  # re-send loop would spend the entire budget (180 s default) re-attempting a file
+  # that cannot appear mid-run. Retry only a wake that was actually ATTEMPTED.
+  if [ "$nrc" != 0 ] && [ "${_OC_NOTIFY_MISSING:-0}" != 1 ] && _notify_retryable "$nrc" && [ "${NOTIFY_RETRY_BUDGET:-0}" -gt 0 ] 2>/dev/null; then
+    local _dl; _dl=$(( $(date +%s) + NOTIFY_RETRY_BUDGET ))
+    while [ "$(date +%s)" -lt "$_dl" ]; do
+      sleep "${NOTIFY_RETRY_INTERVAL:-15}"
+      RETRIES=$((RETRIES+1))
+      notify_session "$1" "$3" "$4"; nrc=$?
+      [ "$nrc" = 0 ] && break
+      _notify_retryable "$nrc" || break
+    done
+    # Distinguish "still failing after every retry the budget allowed" from
+    # "failed once". The first is RECOVERABLE (the gateway may bind later; a
+    # sweep can re-drive), the second says the destination is unreachable.
+    [ "$nrc" != 0 ] && [ "$(date +%s)" -ge "$_dl" ] && BUDGET_EXHAUSTED=1
+  fi
+  if [ "$nrc" = 0 ]; then
+    if [ "$RETRIES" -gt 0 ]; then
+      jline notified 0 "{\"uuid\":\"$1\",\"run\":\"$5\",\"role\":\"$2\",\"retried\":$RETRIES}"
+    else
+      jline notified 0 "{\"uuid\":\"$1\",\"run\":\"$5\",\"role\":\"$2\"}"
+    fi
+    NOTIFIED=$((NOTIFIED+1))
+  else
+    if [ "${BUDGET_EXHAUSTED:-0}" = 1 ]; then
+      jline skip 0 "{\"uuid\":\"$1\",\"reason\":\"$(_notify_reason "$nrc")\",\"verb_rc\":$nrc,\"retries\":$RETRIES,\"budget_exhausted\":true,\"budget_secs\":$NOTIFY_RETRY_BUDGET}"
+      BUDGET_EXHAUSTED=0
+    else
+      jline skip 0 "{\"uuid\":\"$1\",\"reason\":\"$(_notify_reason "$nrc")\",\"verb_rc\":$nrc,\"retries\":$RETRIES}"
+    fi
+    SKIPPED=$((SKIPPED+1))
+  fi
+}
+
+attrib_at() { # $1=repo $2=sha $3=file $4=line -> culprit sha (empty if unowned)
+  local out
+  out="$(git -C "$1" blame -L "$4,$4" --porcelain "$2" -- "$3" 2>/dev/null | head -1 | cut -d' ' -f1)" || return 0
+  case "$out" in
+    *[!0-9a-f]*|"") return 0 ;;
+    *) printf '%s' "$out" ;;
+  esac
+}
+
+green_leg() { # $1=run id $2=built sha — one notify per contributing session
+  local run="$1" bsha="$2" prev feat range rows sessions uuid title text nrc
+  prev="$(jq -r '.prev_sha // empty' "$DEPLOYED_META" 2>/dev/null)"
+  feat="$(jq -r '.features // "-"' "$DEPLOYED_META" 2>/dev/null)"
+  range="${prev:-?}..${bsha}"
+  local ATTRIB_RC=0 ATTRIB_OUT="" ATTRIB_ERR ATTRIB_SUM
+  # E-F3 (v0.4.96, lens E): single projection shape — call oc-attrib --contributors directly,
+  # no private awk copy of the TSV projection (column drift in oc-attrib used to re-break fanout).
+  # Duty-4 P-01 (v0.4.133): pass --first-parent so upstream merge ancestry is NOT traversed into
+  # historical foreign trailers (prevents falsely waking completed lanes on merge syncs).
+  # #407: oc-attrib's stderr carries the novelty-filter accounting (raw/replayed/empty/
+  # contributing); it is captured rather than discarded so the journal records WHY a range
+  # produced no rows. oc-attrib never exits 0 with rows on stdout when it failed.
+  ATTRIB_ERR="$(mktemp)" || die 3 "fanout: cannot create stderr capture for oc-attrib"
+  ATTRIB_OUT="$("$ATTRIB" --repo "$REPO_DIR" --deployed --ledger "$LEDGER" --contributors --first-parent 2>"$ATTRIB_ERR")" || ATTRIB_RC=$?
+  rows="$ATTRIB_OUT"
+  ATTRIB_SUM="$(tr '\n' ' ' < "$ATTRIB_ERR" 2>/dev/null | sed 's/[[:space:]]*$//')"
+  rm -f "$ATTRIB_ERR"
+  if [ "$ATTRIB_RC" -ne 0 ]; then
+    jline contributors 3 "{\"range\":\"$range\",\"rc\":$ATTRIB_RC,\"stderr\":$(printf '%s' "$ATTRIB_SUM" | jq -Rs .)}"
+    die 3 "fanout: oc-attrib failed (rc=$ATTRIB_RC) for deployed range $range"
+  fi
+  # #407: rc 0 with ZERO rows is a legitimate green outcome, not a failure — after the
+  # novelty filter an all-replayed / all-empty ship leaves nothing to attribute. The
+  # filter summary goes to the journal so "no rows" is auditable as "nothing novel"
+  # rather than indistinguishable from a silent attrib breakdown.
+  if [ -z "$rows" ]; then
+    jline contributors 0 "{\"range\":\"$range\",\"novel\":0,\"stderr\":$(printf '%s' "$ATTRIB_SUM" | jq -Rs .)}"
+    echo "fanout green: no novel commits in range $range — nothing to notify"
+    return 0
+  fi
+  sessions="$(printf '%s\n' "$rows" | awk -F'\t' '$1 ~ /^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}$/ {print $1}' | LC_ALL=C sort -u)"
+  jline contributors 0 "{\"range\":\"$range\",\"sessions\":[$(printf '%s\n' "$sessions" | sed '/^$/d' | sed 's/.*/"&"/' | paste -sd, -)]}"
+  if [ -z "$sessions" ]; then
+    echo "fanout green: no session-attributed commits in $range — nothing to notify"
+    return 0
+  fi
+  title="post-swap: ${bsha:0:8} live"
+  while IFS= read -r uuid; do
+    [ -n "$uuid" ] || continue
+    text="oc-deploy fan-out: run $run built ${bsha:0:8} is DEPLOYED (features=$feat, range $range). Your commits landed in this ship — please smoke-test your part on the live box. (issue #24 mechanical notify)"
+    notify_one "$uuid" contributor "$title" "$text" "$run"
+  done <<< "$sessions"
+}
+
+red_leg() { # $1=run id $2=run json — RED blame attribution + suspect cc (issue #24)
+  local run="$1" runjson="$2"
+  local head sha range sites site f l cs culprit cu uuid s title text
+  local blamed_json suspect_json suspects cap tot
+  head="$(printf '%s' "$runjson" | jq -r '.head_sha // empty')"
+  echo "$head" | grep -Eq '^[0-9a-f]{40}$' || die 3 "fanout red: no usable head_sha for run $run"
+  git -C "$REPO_DIR" fetch -q "$REMOTE" main 2>/dev/null || true
+  git -C "$REPO_DIR" fetch -q "$REMOTE" "$head" 2>/dev/null || true   # PR head shas live off-main
+  range="$(git -C "$REPO_DIR" rev-list --first-parent -n 21 "$head" 2>/dev/null | tail -1)" || true
+  [ -n "$range" ] || die 3 "fanout red: cannot resolve commit range for $head"
+  range="${range}..${head}"
+  # sites from check-run annotations (file:line pairs)
+  sites="$("$GH" api "repos/$FORK/actions/runs/$run/jobs" 2>/dev/null \
+    | jq -r '.jobs[] | select(.conclusion=="failure") | .check_run_url' \
+    | while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        "$GH" api "${u#https://api.github.com/}/annotations" 2>/dev/null || printf '[]'
+      done \
+    | jq -r '.[]? | "\(.path):\(.start_line)"' 2>/dev/null | LC_ALL=C sort -u)" || true
+  if [ -z "$sites" ]; then
+    # zero-site fallback: every session in the run range + HUMAN-FLAG
+    jline attributed 0 "{\"run\":\"$run\",\"owner\":\"-\",\"blamed\":[],\"suspect\":[],\"fallback\":\"no-sites\"}"
+    title="CI RED: run $run — human review needed"
+    text="oc-deploy fan-out: run $run FAILED with no parseable file:line annotations (HUMAN-FLAG). Sessions active in range ${range:0:19}…: $(git -C "$REPO_DIR" log --format='%b' "$range" 2>/dev/null | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | LC_ALL=C sort -u | paste -sd' ' -). Blame attribution impossible from annotations — inspect the run manually. (issue #24 mechanical notify)"
+    while IFS= read -r uuid; do
+      [ -n "$uuid" ] || continue
+      notify_one "$uuid" contributor "$title" "$text" "$run"
+    done <<< "$(git -C "$REPO_DIR" log --format='%H' "$range" 2>/dev/null | while IFS= read -r cs; do oc_session_trailer "$(git -C "$REPO_DIR" log -1 --format='%B' "$cs" 2>/dev/null)"; done | sed '/^$/d' | LC_ALL=C sort -u)"
+    return 0
+  fi
+  # blame each site at head_sha -> culprit sha -> Session-Id trailer
+  blamed_json="{}"; UNOWNED_JSON="[]"
+  while IFS= read -r site; do
+    [ -n "$site" ] || continue
+    f="${site%:*}"; l="${site##*:}"
+    culprit="$(attrib_at "$REPO_DIR" "$head" "$f" "$l")"
+    if [ -z "$culprit" ]; then
+      jline unowned 0 "{\"site\":\"$site\",\"run\":\"$run\"}"
+      UNOWNED=$((UNOWNED+1)); continue
+    fi
+    cu="$(oc_session_trailer "$(git -C "$REPO_DIR" log -1 --format='%B' "$culprit" 2>/dev/null)")"
+    if [ -z "$cu" ]; then
+      jline unowned 0 "{\"site\":\"$site\",\"run\":\"$run\",\"commit\":\"$culprit\"}"
+      UNOWNED=$((UNOWNED+1)); continue
+    fi
+    blamed_json="$(jq -c --arg u "$cu" --arg s "$site" --arg c "${culprit:0:8}" \
+      '.[$u] = ((.[$u] // {sites:[],commits:[]}) | .sites += [$s] | .commits += [$c])' <<< "$blamed_json")"
+  done <<< "$sites"
+  # suspect cc ON: sessions with OTHER commits touching any blamed file in the run range
+  suspect_json="{}"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    suspects="$(git -C "$REPO_DIR" log --format='%H' "$range" -- "$f" 2>/dev/null | while IFS= read -r cs; do
+      oc_session_trailer "$(git -C "$REPO_DIR" log -1 --format='%B' "$cs" 2>/dev/null)"
+    done | sed '/^$/d' | LC_ALL=C sort -u)"
+    while IFS= read -r s; do
+      [ -n "$s" ] || continue
+      suspect_json="$(jq -c --arg u "$s" --arg f "$f" '.[$u] = ((.[$u] // []) + [$f])' <<< "$suspect_json")"
+    done <<< "$suspects"
+  done <<< "$(jq -r 'keys[] as $k | (.[$k].sites[] | split(":")[0])' <<< "$blamed_json" 2>/dev/null | LC_ALL=C sort -u)"
+  suspect_json="$(jq -c --argjson b "$blamed_json" 'with_entries(.key as $k | select($b | has($k) | not))' <<< "$suspect_json")"
+  jline attributed 0 "{\"run\":\"$run\",\"owner\":\"-\",\"blamed\":[$(jq -r 'keys[]' <<< "$blamed_json" | sed 's/.*/"&"/' | paste -sd, -)],\"suspect\":[$(jq -r 'keys[]' <<< "$suspect_json" | sed 's/.*/"&"/' | paste -sd, -)],\"detail\":$blamed_json,\"suspect_files\":$suspect_json}"
+  # notify culprits (sites capped at 10 in the message; full list is in the journal)
+  while IFS= read -r uuid; do
+    [ -n "$uuid" ] || continue
+    cap="$(jq -r --arg u "$uuid" '.[$u].sites[:10] | join(", ")' <<< "$blamed_json")"
+    tot="$(jq -r --arg u "$uuid" '.[$u].sites | length' <<< "$blamed_json")"
+    if [ "${tot:-0}" -gt 10 ] 2>/dev/null; then cap="$cap (+$((tot-10)) more — full list in journal)"; fi
+    cs="$(jq -r --arg u "$uuid" '.[$u].commits | unique | join(", ")' <<< "$blamed_json")"
+    title="CI RED: run $run — your commits are blamed"
+    text="oc-deploy fan-out: run $run FAILED. git blame at head points at your commit(s) $cs for: $cap. Fix-forward or respond in your lane. (issue #24 mechanical notify)"
+    notify_one "$uuid" blamed "$title" "$text" "$run"
+  done <<< "$(jq -r 'keys[]' <<< "$blamed_json")"
+  while IFS= read -r uuid; do
+    [ -n "$uuid" ] || continue
+    fs="$(jq -r --arg u "$uuid" '.[$u] | unique | join(", ")' <<< "$suspect_json")"
+    title="CI RED: run $run — suspect cc"
+    text="oc-deploy fan-out: run $run FAILED. Blame points elsewhere, but your commits touched the blamed file(s): $fs. cc only — no action needed unless the culprit is unreachable. (issue #24 mechanical notify)"
+    notify_one "$uuid" suspect "$title" "$text" "$run"
+  done <<< "$(jq -r 'keys[]' <<< "$suspect_json")"
+  return 0
+}
+
+fanout_run() { # $1=run id $2=dry-run(0/1)
+  local run="${1:-}" runjson status conclusion bsha dep suffix=""
+  DRYRUN="${2:-0}"
+  [ -n "$run" ] || die 2 "fanout: needs --run <id>"
+  echo "$run" | grep -Eq '^[0-9]+$' || die 2 "fanout: run id not numeric: $run"
+  fanout_journal_init "$run"
+  # issue #42: single-flight flock per run. Advisory lock acquired BEFORE the
+  # idempotence guard so guard+deliver+mark are atomic vs. other sweep
+  # invocations — a mid-sweep re-run used to pass the guard and re-notify
+  # everyone (13:21Z TOCTOU, 12 sessions double-carded). Held on fd 9 through
+  # fanout_mark_done; released on process exit on every path (crash-safe,
+  # no stale marker, no reaper). exec 9<> = no-truncate open so the holder
+  # record survives; flock -n -E 4 = non-blocking, EWOULDBLOCK -> rc 4.
+  # Name ENDS in .lock so the state repo's `*.lock` ignore rule matches it.
+  # `fanout.lock.$run` ended in the run id and was UN-IGNORABLE by
+  # construction: 12 such locks ended up tracked. Every other lock here
+  # (LEDGER.lock, host-swap.lock, run/wave-*.lock) ends in .lock.
+  local lockfile="$STATE_DIR/fanout.$run.lock"
+  # stale-lock reaper (lens D 2026-08-31): holder records pid=; a dead pid +
+  # existing file = leftover from a finished fan-out (exit releases flock but
+  # intentionally never unlinks — unlink-after-release would let a second
+  # process flock a fresh inode and break single-flight). Reap on entry only.
+  if [ -f "$lockfile" ]; then
+    local stale_pid
+    stale_pid="$(grep -o 'pid=[0-9]*' "$lockfile" 2>/dev/null | head -1 | cut -d= -f2)"
+    if [ -n "$stale_pid" ] && ! kill -0 "$stale_pid" 2>/dev/null; then
+      rm -f "$lockfile"
+      jline lock-reaped 0 "{\"run\":\"$run\",\"stale-pid\":\"$stale_pid\"}"
+    fi
+  fi
+  exec 9<>"$lockfile" || die 3 "fanout: cannot open lock $lockfile"
+  if ! flock -n -E 4 9; then
+    local holder
+    holder="$(cat "$lockfile" 2>/dev/null || echo unknown)"
+    jline lock-busy 0 "{\"run\":\"$run\",\"holder\":\"$holder\"}"
+    echo "fanout-skip run=$run reason=inflight (lock held by $holder)"
+    exit 0
+  fi
+  printf 'pid=%s ts=%s run=%s\n' "$$" "$(date -u +%FT%TZ)" "$run" > "$lockfile"
+  jline lock-acquired 0 "{\"run\":\"$run\",\"pid\":$$}"
+  # idempotence: a completed fan-out for this run is a no-op
+  FANOUT_STATE="$(fanout_state_file)"
+  if [ -f "$FANOUT_STATE" ] && jq -e --arg id "$run" '.runs[$id]' "$FANOUT_STATE" >/dev/null 2>&1; then
+    jline skip 0 "{\"run\":\"$run\",\"reason\":\"done\"}"
+    echo "fanout-skip run=$run reason=done (idempotent)"
+    exit 0
+  fi
+  # (#932) THE CHECKOUT GUARD, AT THE ENTRY — before the network call, because a
+  # missing decoder library makes EVERY job name of EVERY run unevaluable, and no
+  # retry can fix it. Placed after the idempotence skip (a finished run stays a
+  # no-op even on a broken tree) and before `gh api`, so a network blip can never
+  # be reported as the cause while the real fault — a broken LOCAL TOOL TREE —
+  # goes unnamed. The `success)`-arm backstop below stays as defence in depth.
+  if [ "${_OC_EMBED_MISSING:-0}" = 1 ] || ! command -v oc_decode_job_sha_any >/dev/null 2>&1; then
+    # (#932) LOUD at entry, FATAL on the success arm. Both halves matter.
+    # Loud here: the broken checkout is named on every invocation, before any
+    # network call, so a gh blip can never be read as the cause.
+    # NOT fatal here: red_leg needs no decoder at all (it reads the jobs list and
+    # git blame), so dying at entry would refuse a path that works -- a fix for
+    # one arm must not narrow another. The fatal refusal is the success arm below,
+    # which is the first point that genuinely needs oc_decode_job_sha_any.
+    jline fanout-start 2 "{\"run\":\"$run\",\"warning\":\"built-sha-no-embed-lib\"}"
+    printf '%s\n' "oc-deploy: WARNING — the embed decoder library is MISSING from this checkout (restore tools/lib/oc-embed.sh). A SUCCESS run will be REFUSED with rc 2 before any job name is evaluated; a RED run still attributes normally (#932)" >&2
+  fi
+  runjson="$("$GH" api "repos/$FORK/actions/runs/$run" 2>/dev/null)" \
+    || { jline fanout-start 3 "{\"run\":\"$run\",\"error\":\"gh-api-fail\"}"; die 3 "fanout: gh api run fetch failed for $run"; }
+  status="$(printf '%s' "$runjson" | jq -r '.status // empty')"
+  conclusion="$(printf '%s' "$runjson" | jq -r '.conclusion // empty')"
+  [ "$status" = completed ] || { jline fanout-start 4 "{\"run\":\"$run\",\"status\":\"$status\"}"; die 4 "fanout: run $run not terminal (status=$status)"; }
+  jline fanout-start 0 "{\"run\":\"$run\",\"conclusion\":\"$conclusion\"}"
+  NOTIFIED=0; SKIPPED=0; UNOWNED=0
+  case "$conclusion" in
+    success)
+      bsha="$(decode_built_sha "$run")"; dec_rc=$?
+      if [ -z "$bsha" ] && [ "$dec_rc" = 2 ]; then
+        # (#932) A BROKEN CHECKOUT, not a run fact: the decoder library is not on
+        # this tree, so NO job name could be evaluated at all. rc 2 is the
+        # "this invocation cannot proceed — fix your side" code, and the run is NOT
+        # marked done, so restoring the library and re-running attributes the range.
+        # Contrast the two arms below, which are both genuine statements about the
+        # run's attribution: rc 5 = the jobs list could not be READ (transient,
+        # unmarked, #84) and rc 3 = read and genuinely carries no sha (permanent,
+        # marked, #63).
+        jline fanout-end 2 "{\"run\":\"$run\",\"error\":\"built-sha-no-embed-lib\"}"
+        die 2 "fanout: cannot evaluate ANY job name for run $run — the embed decoder library is missing from this checkout (restore tools/lib/oc-embed.sh; OC_DEPLOY_ENV=missing-embed-lib). This is a broken LOCAL TOOL TREE, not a fact about the run — NOT marked done (#932)"
+      fi
+      if [ -z "$bsha" ] && [ "$dec_rc" = 5 ]; then
+        # (#84) TRANSIENT: the jobs list could not be READ. Marking this done
+        # would convert a gh blip into a permanent, silent loss of attribution —
+        # the state row satisfies the idempotence guard forever, so the range is
+        # never notified and every later RED scan reads it as complete. NOT
+        # marked: the next scan retries. Contrast the rc-3 arm below, which IS
+        # marked, because "the jobs list was read and carries no sha" is a fact
+        # about the run and must not be re-struck forever (#63).
+        jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-unreadable\"}"
+        die 3 "fanout: cannot READ the jobs list for run $run — NOT marked done, the next scan retries (#84)"
+      fi
+      [ -n "$bsha" ] || { jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-decode-fail\",\"cause\":\"undecodable\"}"; fanout_mark_done "$run" "decode-error" 0 0 0; die 3 "fanout: no job name decodes a built sha for run $run (marked decode-error — the run itself carries no sha)"; }   # #63 family (v0.4.79): mark, don't re-strike forever
+      dep="$(head -1 "$DEPLOYED" 2>/dev/null || echo none)"
+      if [ "$bsha" != "$dep" ]; then
+        jline fanout-end 0 "{\"run\":\"$run\",\"reason\":\"not-deployed-yet\",\"built\":\"$bsha\",\"deployed\":\"$dep\"}"
+        echo "fanout noop: run $run built ${bsha:0:8} not deployed yet (deployed=${dep:0:8}) — re-run after swap (not marked done)"
+        exit 0
+      fi
+      green_leg "$run" "$bsha"
+      ;;
+    failure) red_leg "$run" "$runjson" ;;
+    *)
+      jline fanout-end 0 "{\"run\":\"$run\",\"conclusion\":\"$conclusion\",\"reason\":\"non-build-conclusion\"}"
+      echo "fanout noop: run $run conclusion=$conclusion (not success/failure)"
+      exit 0
+      ;;
+  esac
+  jline fanout-end 0 "{\"run\":\"$run\",\"notified\":$NOTIFIED,\"skipped\":$SKIPPED,\"unowned\":$UNOWNED}"
+  [ "$DRYRUN" = 1 ] || fanout_mark_done "$run" "$conclusion" "$NOTIFIED" "$SKIPPED" "$UNOWNED"
+  [ "$DRYRUN" = 1 ] && suffix=" (dry-run: not marked done)"
+  echo "fanout-end run=$run verdict=$conclusion notified=$NOTIFIED skipped=$SKIPPED unowned=$UNOWNED$suffix"
+}
+
+# ============================================================================
+# main — everything ABOVE defined functions; everything BELOW runs.
+# ============================================================================
+# SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
+# `OC_DEPLOY_FUNCS_ONLY=1 . oc-fanout` defines the functions above and RETURNS
+# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# ONE shell without re-running a prologue: no second tools-log row, no second
+# mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
+# invocation never sets the variable, so the test is false and `return` never
+# runs — this line is inert at runtime.
+[ "${OC_DEPLOY_FUNCS_ONLY:-0}" = 1 ] && return 0
+
+set -uo pipefail
+_OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-fanout" "$@"; else oc_log_finish() { :; }; fi
+# The shared deploy body: the config surface (state dir, ledger, markers, kill
+# files, swap targets) plus every helper more than one stage uses. ONE copy, so
+# the four tools cannot drift apart (see the file's own header).
+_OC_DEPLOY_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
+if [ -f "$_OC_DEPLOY_LIB" ]; then
+  . "$_OC_DEPLOY_LIB"
+else
+  printf 'oc-fanout: %s missing (broken LOCAL TOOL TREE, not a test result)\n' "$_OC_DEPLOY_LIB" >&2
+  exit 2   # (#932 discipline) a box fault, never a silent 0 or a bare 127
+fi
+trap 'oc_log_finish $?' EXIT
+
+
+# The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
+# and it is reachable from every arm: selftest() loads the other tools' functions
+# through the hook above. `oc-deploy --selftest` is the documented spelling.
+
+usage() {
+  cat <<'USAGE'
+usage: oc-fanout fanout --run R [--dry-run] [--priority low|normal]
+                        [--resolve-priority]
+       oc-fanout --selftest
+       oc-fanout --help
+
+Notify leg of the four-way oc-deploy split (issue #24): mechanical post-CI
+notifications, zero LLM. GREEN leg = one notify per contributing session after
+a swap; RED leg = blame attribution + suspect cc. Idempotent via fanout.state
+(re-run = no-op), single-flight per run (#42), bounded re-send for a TRANSIENT
+notify failure (#623). Never resurrects and never reaps a dead uuid (#17).
+
+Exit codes: 0 done/noop | 1 usage | 2 missing decoder library / usage | 3 gh or
+attrib fetch fail | 4 run not terminal | 5 jobs list unreadable (transient).
+Full contract: tools/docs/RC-CONTRACT.md
+USAGE
+}
+
+MODE="fanout"
+case "${1:-}" in
+  fanout)     shift ;;
+  --selftest) selftest "$@"; exit $? ;;
+  -h|--help)  usage; exit 0 ;;
+  '')         : ;;   # no flags: the arm's own validation answers (rc 2)
+  -*)         : ;;   # flag-first spelling: `oc-fanout --run R`
+  *)          die 1 "unknown arg: $1" ;;
+esac
+oc_deploy_parse_args "$@"
+oc_priority_apply "$PRIORITY"
+oc_priority_report
+oc_features_resolve
+
+case "$MODE" in
+  # ---------------------------------------------------------------- fanout --
+  fanout)
+    kill_brake
+    fanout_run "$RUN_ID" "${DRYRUN:-0}"
+    ;;
+esac

@@ -1,0 +1,514 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-status — the READ + HANDOFF leg of the four-way oc-deploy split.
+#
+# Owns three verbs:
+#   status  read-only report (deployed sha, daemon, ledger, drift) — mutates
+#           nothing, and its rc 1 names an OBSERVED inconsistency (#746)
+#   poll    find the newest GREEN carrier run, decode its built sha, and at
+#           stage S2 with --execute hand off to the swap unit. #729 in-flight
+#           guard: a live oc-swap-<sha8> unit for the SAME sha stops a second
+#           arm; #85 poll_host_state puts LOCAL evidence in every failure line.
+#   watch   report-only tripwire: a fork-main tip that no ship/swap/deployed
+#           marker covers. Never blocks, never builds.
+#
+# WHAT MOVED HERE, VERBATIM (byte-slices of oc-deploy@5f81c599):
+#   poll_host_state, swap_inflight_units (#729)      (source 592-645)
+#   watch_covered, watch_precheck, watch_run        (source 1888-1961)
+#   status_run                                      (source 1963-2069)
+#   the `poll)` / `watch)` dispatch arms            (source 2577-2731, 2758-2762)
+# Nothing was rewritten and no rc was re-mapped. The config surface, stage
+# reader, shadow log, tip read and argv loop are SHARED (tools/lib/).
+#
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-status row).
+# =============================================================================
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+# --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
+_OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
+if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
+
+# ----------------------------------------------------------------------------
+# functions moved VERBATIM (source 592-645): #729 in-flight guard + #85 host state
+# ----------------------------------------------------------------------------
+# ---------------------------------------------- #729 swap in-flight guard ---
+# The poll handoff (below) had NO in-flight guard: whenever the newest GREEN
+# run's built sha differed from `deployed.sha` it unconditionally armed a NEW
+# `oc-swap-<sha8>-<epoch>` unit. A caller that loops faster than the marker
+# flips — `oc-ship-chain` LEG5 polls 12x at 10 s, and `deployed.sha` does not
+# move until the swap unit has downloaded, verified, backed up, installed and
+# bounced (minutes) — therefore armed a DUPLICATE unit on every pass. Measured
+# 2026-10-01 (run 36799172575, sha e1525d27): THREE units ~19 s apart, all real,
+# and the only thing that stopped a double swap was `swap-execute`'s own
+# post-download "ALREADY the deployed sha" refusal — after each duplicate had
+# already downloaded the artifact and pruned backups. Same class as the closed
+# #42 fanout double-notify (missing in-flight guard, sibling path).
+#
+# poll_host_state: one line of LOCAL evidence about what is actually installed
+# (#85). A poll failure used to say only "gh api runs query failed", and a
+# reader holding that plus rc 6 concluded the SHIP failed — while the host was
+# already running the verified good binary. Every read here is local (marker
+# files + sha256 of the installed binary), so it stays available exactly when
+# the API is what broke.
+poll_host_state() {
+  local dep bin hash art verdict
+  dep="$(cat "$DEPLOYED" 2>/dev/null || true)"
+  bin="$SWAP_TARGET"
+  hash="$(sha256sum "$bin" 2>/dev/null | awk '{print $1}')"
+  art="$(jq -r '.artifact_sha256 // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+  if [ -n "$art" ] && [ -n "$hash" ]; then
+    if [ "$art" = "$hash" ]; then verdict="matches deployed.meta artifact_sha256"
+    else verdict="MISMATCH vs deployed.meta artifact_sha256=$art"; fi
+  elif [ -n "$hash" ]; then
+    verdict="no deployed.meta to compare"
+  else
+    verdict="binary unreadable at $bin"
+  fi
+  printf 'host: deployed.sha=%s binary=%s sha256=%s (%s)' \
+    "${dep:-<absent>}" "$bin" "${hash:-<unreadable>}" "$verdict"
+}
+
+# swap_inflight_units prints the live swap units for a sha8. "In flight" is
+# systemd's own ACTIVE/ACTIVATING state, NOT `--all`: a FAILED unit must not
+# block its own legitimate retry, and a finished transient unit is GC'd by
+# systemd and never listed (measured live, systemd 255: a stopped transient
+# unit is absent even from `--all`; a failed one lingers in `--all` only).
+# OC_SWAP_INFLIGHT_LISTER is the hermetic selftest shim, mirroring the proven
+# OC_SWAP_SIDECAR_LISTER idiom.
+swap_inflight_units() { # $1 = sha8 ; one live `oc-swap-<sha8>-*.service` name per line
+  local SHA8="$1" LIST=""
+  if [ -n "${OC_SWAP_INFLIGHT_LISTER:-}" ]; then
+    LIST="$("$OC_SWAP_INFLIGHT_LISTER" 2>/dev/null || true)"
+  else
+    LIST="$(systemctl --user list-units --plain --no-legend \
+      --state=active,activating 'oc-swap-*.service' 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  printf '%s\n' "$LIST" | grep -E "^oc-swap-${SHA8}-" || true
+}
+
+# ----------------------------------------------------------------------------
+# functions moved VERBATIM (source 1888-1961, 1963-2069): watchdog + status
+# ----------------------------------------------------------------------------
+# ------------------------------------------------------------------ watchdog --
+# S3 replacement for the archived tools/archive/compiler.md Step 1 WATCHDOG duty (owner
+# directive 2026-08-28 16:26Z: NO cron — oc-deploy fires often enough, so the
+# check piggybacks every ship/poll invocation; explicit run = `oc-deploy watch`).
+# Tripwire semantics: fork main tip must be covered by deployed.sha OR a
+# ship/swap event in this tool's own shadow log / ledger. Uncovered tip =
+# stray commits on the branch production is built from. REPORT-ONLY: the watch
+# never blocks the host invocation and NEVER builds autonomously.
+watch_covered() { # $1=sha ; echoes reason, rc 0 covered / 1 uncovered
+  local S="$1" DEP
+  DEP="$(cat "$DEPLOYED" 2>/dev/null || true)"
+  [ -n "$DEP" ] || DEP="$(jq -r '.sha // empty' "$(dirname "$LEDGER")/baseline.json" 2>/dev/null || true)"
+  if [ -n "$DEP" ] && [ "$S" = "$DEP" ]; then echo "deployed-sha"; return 0; fi
+  if [ -f "$SHADOW" ] && grep -F "$S" "$SHADOW" 2>/dev/null | grep -Eq '(dispatched|deployed|handed-off)'; then
+    echo "ship-event"; return 0
+  fi
+  if jq -e --arg s "$S" '[ (.events // [])[] | select(.kind != null and ((.kind|tostring) | test("ship|swap")) and (((.what // "")|tostring) | contains($s))) ] | length > 0' "$LEDGER" >/dev/null 2>&1; then
+    echo "ledger-event"; return 0
+  fi
+  return 1
+}
+
+watch_precheck() { # $1=tip-sha ; piggyback, report-only, never fails the host
+  [ "${OC_DEPLOY_NO_WATCH:-0}" = "1" ] && return 0
+  local REASON
+  if REASON="$(watch_covered "$1")"; then
+    shadow_log watch "$1" "-" "clean:$REASON"
+    echo "WATCH-CLEAN: fork main ${1:0:8} covered ($REASON)"
+  else
+    shadow_log watch "$1" "-" "ALERT:stray"
+    echo "WATCH-ALERT: fork main ${1:0:8} NOT covered (deployed=$(cut -c1-8 "$DEPLOYED" 2>/dev/null || echo none)) — run 'oc-deploy watch' for the stray list"
+  fi
+  return 0
+}
+
+watch_run() { # explicit `oc-deploy watch [--with-delta]` ; exit 0 clean | 2 stray (report-only)
+  # $1 = WITH_DELTA. Merge B (v0.4.48): upstream arithmetic rides the same
+  # duty call. The delta leg is READ-ONLY; its rc 1 = verdict (delta present),
+  # NOT a failure — tripwire severity wins for the combined exit code.
+  local WITH_DELTA="${1:-0}" TIP DEP REASON TRIP_RC=0 DELTA_TOOL DELTA_OUT DELTA_RC
+  TIP="$(git ls-remote "$REMOTE" refs/heads/main 2>/dev/null | awk '{print $1}')"
+  [ -n "$TIP" ] || die 2 "watch: cannot read fork main tip from $REMOTE"
+  DEP="$(cat "$DEPLOYED" 2>/dev/null || echo none)"
+  if REASON="$(watch_covered "$TIP")"; then
+    shadow_log watch "$TIP" "-" "clean:$REASON"
+    echo "WATCH-CLEAN: fork main ${TIP:0:8} covered ($REASON); deployed=${DEP:0:8}"
+  else
+    TRIP_RC=2
+    shadow_log watch "$TIP" "-" "ALERT:stray"
+    echo "WATCH-ALERT: fork main ${TIP:0:8} NOT covered by deployed sha (${DEP:0:8}) nor any ship/swap event"
+    if [ "$DEP" != "none" ]; then
+      "$GH" api "repos/$FORK/compare/$DEP...$TIP" 2>/dev/null \
+        | jq -r '.commits[]? | "  \(.sha[0:8]) \(.commit.author.date) \(.commit.author.name): \(.commit.message | split("\n")[0])"' 2>/dev/null \
+        || true
+    fi
+    echo "report-only: attribute via Session-Id trailers; oc-deploy NEVER builds autonomously"
+  fi
+  if [ "$WITH_DELTA" = "1" ]; then
+    DELTA_TOOL="${OC_DEPLOY_DELTA_TOOL:-$TOOLS_DIR/harvest/oc-upstream-delta}"
+    if [ -x "$DELTA_TOOL" ]; then
+      DELTA_OUT="$("$DELTA_TOOL" 2>&1)"; DELTA_RC=$?
+      printf '%s\n' "$DELTA_OUT" | sed 's/^/DELTA: /'
+      case "$DELTA_RC" in
+        0) shadow_log watch "$TIP" "-" "delta:clean" ;;
+        1) shadow_log watch "$TIP" "-" "delta:present" ;;
+        *) shadow_log watch "$TIP" "-" "delta:fail-rc$DELTA_RC"
+           echo "WARN: oc-upstream-delta rc=$DELTA_RC (tripwire verdict stands)" >&2 ;;
+      esac
+    else
+      echo "WARN: oc-upstream-delta not found at $DELTA_TOOL — delta leg skipped" >&2
+    fi
+  fi
+  exit "$TRIP_RC"
+}
+
+# ----------------------------------------------------------------- status --
+status_run() {
+  local json_out=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json_out=1 ;;
+      -h|--help) echo "usage: oc-deploy status [--json]"; exit 0 ;;
+      *) die 2 "status: unknown arg: $1" ;;
+    esac
+    shift || true
+  done
+
+  local dep_sha="" dep_ts="" dep_stage="" dep_features="" dep_run="" dep_target=""
+  if [ -f "$DEPLOYED_META" ]; then
+    dep_sha="$(jq -r '.sha // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+    dep_ts="$(jq -r '.ts // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+    dep_stage="$(jq -r '.stage // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+    dep_features="$(jq -r '.features // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+    dep_run="$(jq -r '.run_id // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+    dep_target="$(jq -r '.target_host // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+  fi
+  if [ -z "$dep_sha" ] && [ -f "$DEPLOYED" ]; then
+    dep_sha="$(cat "$DEPLOYED" 2>/dev/null | tr -d ' \n\r\t' || true)"
+  fi
+
+  local daemon_pid="" daemon_uptime="" daemon_status="stopped"
+  # #470: the ops unit's MainPID is the ONLY correct source for this daemon.
+  # `pgrep -f opencrabs.*daemon | head -1` grabs whichever daemon sorts first —
+  # three share this box — so `status` reported the DEFAULT profile's PID and
+  # uptime, and uptime is the field a lane reads to tell whether a post-swap
+  # restart actually happened. PID_CMD is the source the swap path already uses.
+  daemon_pid="$($PID_CMD 2>/dev/null || echo 0)"
+  # `kill -0 0` SUCCEEDS (it targets the caller's process group), so an
+  # inactive unit reporting MainPID=0 would read as "running" unguarded.
+  case "$daemon_pid" in ''|0|*[!0-9]*) daemon_pid="" ;; esac
+  if [ -n "$daemon_pid" ] && kill -0 "$daemon_pid" 2>/dev/null; then
+    daemon_status="running"
+    daemon_uptime="$(ps -p "$daemon_pid" -o etime= 2>/dev/null | tr -d ' ' || true)"
+  fi
+
+  local current_stage="$(stage)"
+
+  local last_journal="" last_journal_step="" last_journal_verdict=""
+  if [ -d "$STATE_DIR/oc-deploy/journal" ]; then
+    last_journal="$(ls -t "$STATE_DIR/oc-deploy/journal"/swap-*.jsonl 2>/dev/null | head -1 || true)"
+    if [ -n "$last_journal" ] && [ -f "$last_journal" ]; then
+      last_journal_step="$(tail -1 "$last_journal" | jq -r '.step // empty' 2>/dev/null || true)"
+      last_journal_verdict="$(tail -1 "$last_journal" | jq -r '.status // empty' 2>/dev/null || true)"
+    fi
+  fi
+
+  if [ "$json_out" = 1 ]; then
+    jq -n \
+      --arg sha "${dep_sha:-unknown}" \
+      --arg ts "${dep_ts:-unknown}" \
+      --arg stage "${current_stage:-unknown}" \
+      --arg features "${dep_features:-unknown}" \
+      --arg run "${dep_run:-unknown}" \
+      --arg target "${dep_target:-unknown}" \
+      --arg daemon_status "$daemon_status" \
+      --arg daemon_pid "${daemon_pid:-}" \
+      --arg daemon_uptime "${daemon_uptime:-}" \
+      --arg last_swap_journal "${last_journal:-}" \
+      --arg last_swap_step "${last_journal_step:-}" \
+      --arg last_swap_verdict "${last_journal_verdict:-}" \
+      '{deployed:{sha:$sha, ts:$ts, stage:$stage, features:$features, run_id:$run, target_host:$target}, daemon:{status:$daemon_status, pid:(if $daemon_pid == "" then null else ($daemon_pid|tonumber) end), uptime:$daemon_uptime}, last_swap:{journal:$last_swap_journal, step:$last_swap_step, verdict:$last_swap_verdict}}'
+  else
+    echo "DEPLOYMENT STATUS"
+    echo "  Deployed SHA:    ${dep_sha:-unknown}"
+    echo "  Timestamp:       ${dep_ts:-unknown}"
+    echo "  Current Stage:   ${current_stage:-unknown}"
+    echo "  Features:        ${dep_features:-unknown}"
+    echo "  Carrier Run:     ${dep_run:-unknown}"
+    echo "  Target Host:     ${dep_target:-unknown}"
+    echo "DAEMON"
+    echo "  Status:          $daemon_status"
+    if [ "$daemon_status" = "running" ]; then
+      echo "  PID:             $daemon_pid"
+      echo "  Uptime:          $daemon_uptime"
+    fi
+    if [ -n "$last_journal" ]; then
+      echo "LAST SWAP"
+      echo "  Journal:         $last_journal"
+      echo "  Step/Verdict:    ${last_journal_step:-unknown} / ${last_journal_verdict:-unknown}"
+    fi
+  fi
+  # rc 1 = mismatch-or-unswapped (the documented contract, RC-CONTRACT row
+  # `oc-deploy`): the marker the pipeline treats as the RUNNING deployment and
+  # the on-disk last-swap record must name the same sha. They disagree when a
+  # swap half-wrote (meta updated, marker stale — or the reverse), and a record
+  # that exists ALONE is a deployment no swap ever completed. Both absent means
+  # nothing is deployed and there is nothing to contradict, so rc 0.
+  local meta_sha="" marker_sha=""
+  if [ -f "$DEPLOYED_META" ]; then
+    meta_sha="$(jq -r '.sha // empty' "$DEPLOYED_META" 2>/dev/null || true)"
+  fi
+  if [ -f "$DEPLOYED" ]; then
+    marker_sha="$(tr -d ' \n\r\t' < "$DEPLOYED" 2>/dev/null || true)"
+  fi
+  local status_rc=0
+  if [ -n "$meta_sha" ] && [ -n "$marker_sha" ]; then
+    [ "$meta_sha" = "$marker_sha" ] || status_rc=1
+  elif [ -n "$meta_sha" ] || [ -n "$marker_sha" ]; then
+    status_rc=1
+  fi
+  return "$status_rc"
+}
+
+# ============================================================================
+# main — everything ABOVE defined functions; everything BELOW runs.
+# ============================================================================
+# SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
+# `OC_DEPLOY_FUNCS_ONLY=1 . oc-status` defines the functions above and RETURNS
+# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# ONE shell without re-running a prologue: no second tools-log row, no second
+# mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
+# invocation never sets the variable, so the test is false and `return` never
+# runs — this line is inert at runtime.
+[ "${OC_DEPLOY_FUNCS_ONLY:-0}" = 1 ] && return 0
+
+set -uo pipefail
+_OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-status" "$@"; else oc_log_finish() { :; }; fi
+# The shared deploy body: the config surface (state dir, ledger, markers, kill
+# files, swap targets) plus every helper more than one stage uses. ONE copy, so
+# the four tools cannot drift apart (see the file's own header).
+_OC_DEPLOY_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
+if [ -f "$_OC_DEPLOY_LIB" ]; then
+  . "$_OC_DEPLOY_LIB"
+else
+  printf 'oc-status: %s missing (broken LOCAL TOOL TREE, not a test result)\n' "$_OC_DEPLOY_LIB" >&2
+  exit 2   # (#932 discipline) a box fault, never a silent 0 or a bare 127
+fi
+trap 'oc_log_finish $?' EXIT
+# (#68-plan T5-bis) CROSS-STAGE FUNCTIONS. The poll path drives fanout_run (and
+# its whole closure: notify_session, green_leg/red_leg, run_built_sha, ...), all
+# of which live in oc-fanout since the split. Without the load the shell answered
+# rc 127 -- measured: `oc-status: line 366: fanout_run: command not found` and
+# `line 412: run_built_sha: command not found` -- and every arm downstream read
+# that as a negative answer (#932).
+oc_deploy_load_funcs oc-fanout
+
+
+# The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
+# and it is reachable from every arm: selftest() loads the other tools' functions
+# through the hook above. `oc-deploy --selftest` is the documented spelling.
+
+usage() {
+  cat <<'USAGE'
+usage: oc-status status [--json]
+       oc-status poll [--execute] [--wait N] [--notify-session UUID]
+                      [--sha S] [--features F] [--priority low|normal]
+                      [--resolve-priority]
+       oc-status watch [--with-delta]
+       oc-status --selftest
+       oc-status --help
+
+Read + handoff leg of the four-way oc-deploy split. `status` reports the
+deployed sha, the daemon and the ledger without mutating anything. `poll` finds
+the newest GREEN carrier run, decodes its built sha, and (at stage S2, with
+--execute) hands off to the swap unit — guarded against a double arm (#729).
+`watch` is the report-only tripwire: it names a fork-main tip that no ship,
+swap or deployed marker covers.
+
+Exit codes: 0 ok | 1 usage | 2 inconsistent state | 3 fetch fail | 4 stage gate
+| 5 --wait timeout / nothing new | 9 kill file.  Full contract:
+tools/docs/RC-CONTRACT.md
+USAGE
+}
+
+case "${1:-}" in
+  status)     shift; status_run "$@"; exit $? ;;   # own arg shape (--json): BEFORE the flag loop
+  poll)       MODE="poll"; shift ;;
+  watch)      MODE="watch"; shift ;;
+  --selftest) selftest "$@"; exit $? ;;
+  -h|--help)  usage; exit 0 ;;
+  '')         die 1 "usage: oc-status status [--json] | poll [--execute] [--wait N] [--notify-session UUID] | watch [--with-delta]" ;;
+  *)          die 1 "unknown arg: $1" ;;
+esac
+oc_deploy_parse_args "$@"
+oc_priority_apply "$PRIORITY"
+oc_priority_report
+oc_features_resolve
+
+case "$MODE" in
+  # ------------------------------------------------------------------ poll --
+  poll)
+    kill_brake
+    # Duty-6 lens F task 5: --wait validated FIRST — before the RED-scan
+    # fanout side effects below (a bad --wait used to burn real fanout
+    # API calls + fanout.state writes before dying on validation).
+    case "$WAIT_SECS" in ''|*[!0-9]*) die 1 "--wait needs an integer (seconds)" ;; esac
+    STAGE="$(stage)"
+    plan "poll stage=$STAGE execute=$EXECUTE"
+    W_TIP="$(git ls-remote "$REMOTE" refs/heads/main 2>/dev/null | awk '{print $1}')"
+    [ -n "$W_TIP" ] && watch_precheck "$W_TIP"
+    # --- RED scan (issue #24 wiring): latest FAILED carrier run -> fanout.
+    #     Piggyback on every poll (same pattern family as the success query);
+    #     idempotent via fanout.state; suppressed by OC_DEPLOY_NOFANOUT=1.
+    #     Subshell: fanout_run's own exits must not kill the poll.
+    if [ "${OC_DEPLOY_NOFANOUT:-0}" != "1" ]; then
+      RED_JSON="$("$GH" api "repos/$FORK/actions/workflows/$WF/runs?status=failure&per_page=3" 2>/dev/null || true)"
+      for RED_ID in $(printf '%s' "$RED_JSON" | jq -r '.workflow_runs[].id // empty' 2>/dev/null || true); do
+        FO_RC=0; FO_OUT=""
+        FO_OUT="$( ( fanout_run "$RED_ID" 0 ) 2>&1 )" || FO_RC=$?
+        echo "RED scan: run=$RED_ID fanout rc=$FO_RC $(printf '%s' "$FO_OUT" | tail -1)"
+      done   # v0.4.79: iterate (idempotence makes repeats no-ops) — stale newest failure no longer masks older real ones
+    fi
+    # C-#2 (v0.4.78): --wait N blocks until a NEW green run (built sha !=
+    # deployed) appears or N seconds elapse (rc 5, optional --notify-session
+    # wake) — absorbs the hand-rolled fetch+poll loops (lens C, 2026-08-31).
+    # (validation moved to poll top — Duty-6 lens F task 5)
+    POLL_DEADLINE=$(( $(date +%s) + WAIT_SECS ))
+    POLL_INTERVAL="${OC_DEPLOY_POLL_INTERVAL:-30}"
+    # #85: the poll's tolerance is a WINDOW, so an unreadable API is "not yet"
+    # until that window closes — not a verdict on the first blip. Before this,
+    # one `gh api` hiccup on poll #1 killed a chain whose swap had already
+    # completed (measured 2026-11-18, run 44420005606: rc=2 "gh api runs query
+    # failed" while deployed.sha AND the installed binary were both the
+    # verified sha), so 12 polls of tolerance bought nothing.
+    POLL_API_TRIES="${OC_DEPLOY_POLL_API_TRIES:-3}"
+    POLL_API_BACKOFF="${OC_DEPLOY_POLL_API_BACKOFF:-5}"
+    while :; do
+      RUNS_JSON=""; POLL_API_ERR=""; POLL_API_OK=0; POLL_API_TRY=0
+      while [ "$POLL_API_TRY" -lt "$POLL_API_TRIES" ]; do
+        POLL_API_TRY=$((POLL_API_TRY + 1))
+        if RUNS_JSON="$("$GH" api "repos/$FORK/actions/workflows/$WF/runs?status=success&per_page=3" 2>&1)"; then
+          POLL_API_OK=1; POLL_API_ERR=""; break
+        fi
+        POLL_API_ERR="$RUNS_JSON"; RUNS_JSON=""
+        [ "$POLL_API_TRY" -lt "$POLL_API_TRIES" ] && sleep "$POLL_API_BACKOFF"
+      done
+      if [ "$POLL_API_OK" != 1 ]; then
+        # gh's own stderr is RETAINED: the old `2>/dev/null` threw away the
+        # only evidence of what broke, and the message then blamed a cause
+        # nobody measured.
+        if [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; then
+          echo "poll: gh api unavailable (try ${POLL_API_TRY}/${POLL_API_TRIES}: ${POLL_API_ERR:-<no stderr>}) — retrying in ${POLL_INTERVAL}s, deadline in $(( POLL_DEADLINE - $(date +%s) ))s" >&2
+          sleep "$POLL_INTERVAL"; continue
+        fi
+        shadow_log poll "-" "-" "api-fail"
+        die 2 "gh api runs query failed after ${POLL_API_TRY} tries within --wait ${WAIT_SECS}s: ${POLL_API_ERR:-<no stderr>} — $(poll_host_state)"
+      fi
+      # #63 fix (v0.4.79) + #72 fix (this change): iterate the latest runs,
+      # scanning ALL jobs of each run (gates-first ordering puts the build job
+      # at jobs[1]) and accepting BOTH name shapes (embed + bare-sha gates
+      # form). Skip a run only when NO job decodes (stale ORDER-gates /
+      # pre-rename formats); skips are diagnosed on stderr, never fatal.
+      RUN_ID=""; B_SHA=""
+      for RID in $(printf '%s' "$RUNS_JSON" | jq -r '.workflow_runs[].id // empty' 2>/dev/null); do
+        CAND="$(run_built_sha "$RID")"   # all jobs, both shapes (#72)
+        if [ -n "$CAND" ]; then RUN_ID="$RID"; B_SHA="$CAND"; break; fi
+        echo "poll: skip run $RID — no decodable build job (stale/non-build name)" >&2
+      done
+      if [ -z "$RUN_ID" ]; then
+        [ "$(date +%s)" -lt "$POLL_DEADLINE" ] && { sleep "$POLL_INTERVAL"; continue; }
+        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait ${WAIT_SECS}s timed out: no decodable carrier run found" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
+        die 5 "poll: no decodable carrier runs within --wait ${WAIT_SECS}s"
+      fi
+      DEP="$(cat "$DEPLOYED" 2>/dev/null || echo none)"
+      plan "latest green run=$RUN_ID built sha=$B_SHA deployed=$DEP"
+      # Ship-pending law (defect family: 2e161df3 + ebbae0aa rc=5 misses,
+      # disposed n=2003): when a ship dispatched a SPECIFIC sha (--sha), that
+      # sha going GREEN means the swap is PENDING — the deployed marker
+      # lagging behind it is expected mid-chain, not "nothing new". Only an
+      # UNDISPATCHED poll treats B_SHA == DEP as idle.
+      if [ -n "$SHA" ] && [ "$B_SHA" = "$SHA" ]; then
+        plan "poll --wait: dispatched sha ${SHA:0:8} is GREEN — SWAP PENDING (deployed=${DEP:0:8} lagging is expected mid-chain)"
+        break
+      fi
+      [ "$B_SHA" != "$DEP" ] && break
+      if [ "$WAIT_SECS" -eq 0 ]; then
+        echo "nothing to do: $B_SHA already deployed"
+        exit 0
+      fi
+      if [ "$(date +%s)" -ge "$POLL_DEADLINE" ]; then
+        if [ -n "$SHA" ] && [ "$B_SHA" = "$SHA" ]; then
+          # Dispatched sha GREEN but swap didn't complete within the window —
+          # a STUCK swap, never report "nothing new" (rc=5 miss family n=2003).
+          if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait STUCK: dispatched sha ${SHA:0:8} GREEN but swap not completed in ${WAIT_SECS}s (deployed=${DEP:0:8}) — SWAP PENDING, investigate" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
+          die 5 "poll --wait ${WAIT_SECS}s: dispatched sha ${SHA:0:8} GREEN but swap PENDING (stuck — deployed marker still ${DEP:0:8})"
+        fi
+        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait ${WAIT_SECS}s timed out: latest green $B_SHA already deployed — nothing new to swap" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
+        die 5 "poll --wait ${WAIT_SECS}s timed out: $B_SHA already deployed (nothing new)"
+      fi
+      plan "poll --wait: $B_SHA already deployed — next attempt in ${POLL_INTERVAL}s"
+      sleep "$POLL_INTERVAL"
+    done
+    if [ "$STAGE" = S2 ] || [ "$STAGE" = S3 ]; then
+      plan "auto-swap armed: GREEN run + artifact verify -> swap (consent eliminated owner 2026-08-28)"
+      if [ "$EXECUTE" = 1 ]; then
+        plan "swap chain: download artifact run=$RUN_ID -> oc-artifact-verify -> backup to $BACKUP_DIR -> atomic install -> seal -> marker writes -> bounce -> disk==proc verify -> ledger stamp -> receipt (auto-rollback on verify fail)"
+        # #729: do NOT arm a duplicate unit while one for THIS sha is in flight
+        # (see swap_inflight_units above). Exit 0 pre-bounce by design — exactly
+        # like a successful handoff: the live unit owns the swap and will flip
+        # deployed.sha, and the caller's marker poll (LEG5) keeps going.
+        INFLIGHT="$(swap_inflight_units "${B_SHA:0:8}")"
+        if [ -n "$INFLIGHT" ]; then
+          INFLIGHT_1="$(printf '%s\n' "$INFLIGHT" | head -1)"
+          shadow_log swap "$B_SHA" "$FEATURES" "inflight:$INFLIGHT_1"
+          plan "swap already in flight for ${B_SHA:0:8}: $INFLIGHT_1 — NOT arming a duplicate"
+          echo "swap already in flight: $INFLIGHT_1 owns sha=${B_SHA:0:8} (run=$RUN_ID) — not arming a duplicate" >&2
+          exit 0
+        fi
+        # USER-BUS PRE-FLIGHT (factory #48 defect 3). A chain armed as a SYSTEM
+        # transient unit carries no XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS,
+        # so the default `systemd-run --user` cannot reach the user manager: the
+        # handoff died ~31 s AFTER dispatch, `poll --execute` returned rc 4, and
+        # the chain reported it as infra rc 6 -- the reader hunted a phantom
+        # infrastructure fault while the cause was a known environmental
+        # precondition. The probe exercises the launcher's OWN bus path BEFORE
+        # anything is armed, so the refusal costs no wait and touches nothing.
+        #
+        # Only the DEFAULT launcher is probed. An explicit OC_SWAP_LAUNCH is the
+        # operator's own choice and is not ours to model -- every selftest stub
+        # takes that path, and a probe of an arbitrary launcher with systemd-run
+        # flags would be a wrong instrument.
+        if [ -z "${OC_SWAP_LAUNCH:-}" ]; then
+          # shellcheck disable=SC2086  # $LAUNCH is a command + args by design
+          if ! $LAUNCH --scope --collect /bin/true >/dev/null 2>&1; then
+            shadow_log swap "$B_SHA" "$FEATURES" "launch-preflight-no-user-bus"
+            die 4 "user bus unreachable — '$LAUNCH' cannot reach the systemd user manager (XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR:-<unset>}', DBUS_SESSION_BUS_ADDRESS='${DBUS_SESSION_BUS_ADDRESS:-<unset>}'), so the swap was NOT armed and nothing was touched. Resume from a shell that has the user bus: oc-deploy poll --execute (or set OC_SWAP_LAUNCH to a launcher that does not need it)."
+          fi
+        fi
+        UNIT="oc-swap-${B_SHA:0:8}-$(date +%s)"
+        OC_SWAP_DETACHED=1 $LAUNCH --unit="$UNIT" --collect "$SELF" swap-execute --sha "$B_SHA" --run "$RUN_ID" --features "$FEATURES" \
+          || { shadow_log swap "$B_SHA" "$FEATURES" "launch-fail"; die 4 "systemd-run handoff failed — nothing touched"; }
+        shadow_log swap "$B_SHA" "$FEATURES" "handed-off:$UNIT"
+        echo "HANDOFF: Phase B transient unit $UNIT owns the swap (sha=$B_SHA run=$RUN_ID) — poll (Phase A) exits pre-bounce by design"
+        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "HANDOFF: swap unit $UNIT owns sha=$B_SHA run=$RUN_ID (features=$FEATURES) — Phase B owns the bounce" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (handoff wake FAILED)" >&2; fi   # C-#2 + lens C MED-1 rc capture (v0.4.79)
+        exit 0
+      fi
+      plan "swap path armed at stage $STAGE — pass --execute when S2 pilot authorized"
+    else
+      plan "stage $STAGE < S2: swap LOCKED (shadow mode — set ledger meta.oc_deploy_stage to S2 to unlock)"
+      plan "would (at S2): artifact verify + auto-swap chain for $B_SHA, receipt"
+    fi
+    shadow_log poll "$B_SHA" "-" "planned"
+    echo "plan complete — nothing executed"
+    ;;
+  # ----------------------------------------------------------------- watch --
+  watch)
+    kill_brake
+    watch_run "${WITH_DELTA:-0}"
+    ;;
+esac
