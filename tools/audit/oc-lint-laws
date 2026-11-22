@@ -107,7 +107,7 @@ host_tool_path() {
 # editor-upstream-pr.md was folded into editor.md and no longer exists -- naming
 # it made EVERY run exit rc 3 before a single file was checked, which is worse
 # than a missed file: a corpus that cannot load reports nothing at all.
-DEFAULT_CORPUS="SKILL.md fleet-directives.md editor.md harvest.md hq.md triage.md toolsmith.md review-lenses.md upstream-merge-runbook.md s2-swap-journal-spec.md session-notify.md environment.md tools/docs/RC-CONTRACT.md"
+DEFAULT_CORPUS="SKILL.md README.md fleet-directives.md editor.md editor-ship.md editor-smoke.md harvest.md hq.md triage.md toolsmith.md review-lenses.md upstream-merge-runbook.md s2-swap-journal-spec.md session-notify.md environment.md reference-glossary.md reference-tools.md tools/docs/RC-CONTRACT.md"
 
 usage() { awk 'NR>2 && /^#/ { sub(/^# ?/, ""); print; next } NR>2 { exit }' "$SELF"; exit 0; }
 
@@ -420,6 +420,50 @@ EOT
     else
       bad "live corpus: declared but MISSING on the live tree:$_missing"
     fi
+  fi
+
+  # --- F-M2b: PATH-FORM citations must resolve too --------------------------
+  # The candidate extractor above attributes flags to `oc-<name>` TOKENS, so a
+  # citation written as a PATH (`./tools/ship/oc-swap`, `tools/lib/oc-log.sh`)
+  # is never checked for existence — the tool reads as real because its NAME
+  # parses, whether or not the file it names is there. #575 proved the class: a
+  # corpus naming a renamed file reported clean while every REAL run died rc 3.
+  # This leg resolves every path-form citation against the live tree. It
+  # tolerates an ELIDED extension (`tools/lib/oc-log` for `oc-log.sh`) because
+  # law prose cites a module by name, and it is a STATIC read of the corpus for
+  # the same reason the leg above is: a re-declared list drifts.
+  _pf_unresolved() { # $1=skill dir  $2=citation ; rc 0 = UNRESOLVED
+    _q="${2#./}"
+    [ -e "$1/$_q" ] && return 1
+    for _e in "$1/$_q".* "$1/$_q"/*; do [ -e "$_e" ] && return 1; done
+    return 0
+  }
+  _pf_live="$(dirname "$OC_TOOLS_DIR")"
+  _pf_n=0; _pf_bad=""
+  for _f in $_corpus; do
+    [ -r "$_pf_live/$_f" ] || continue
+    while IFS= read -r _c; do
+      [ -n "$_c" ] || continue
+      _pf_n=$((_pf_n+1))
+      _pf_unresolved "$_pf_live" "$_c" && _pf_bad="$_pf_bad $_f:$_c"
+    done <<PFEOF
+$(grep -oE '(\./)?tools/[A-Za-z0-9_./-]*oc-[a-z0-9-]+' "$_pf_live/$_f" 2>/dev/null)
+PFEOF
+  done
+  if [ "$_pf_n" = 0 ]; then
+    bad "path-form: extraction found ZERO citations — the leg cannot see anything"
+  elif [ -z "$_pf_bad" ]; then
+    ok "path-form: all $_pf_n cited tool paths resolve on the live tree"
+  else
+    bad "path-form: UNRESOLVED:$_pf_bad"
+  fi
+  # NEGATIVE CONTROL — a fabricated path MUST be reported. Without this the leg
+  # can degrade to "accept everything" and still read green, which is the exact
+  # failure the positive leg exists to prevent.
+  if _pf_unresolved "$_pf_live" "./tools/ship/oc-definitely-not-a-tool-$$"; then
+    ok "path-form negative control: a fabricated citation IS detected"
+  else
+    bad "path-form negative control: resolver ACCEPTED a fabricated path"
   fi
 
   printf 'selftest: %d passed, %d failed\n' "$pass" "$fail"
