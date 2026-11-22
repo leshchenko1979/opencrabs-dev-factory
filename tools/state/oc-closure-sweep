@@ -48,8 +48,12 @@
 #                         [--apply] [--json] [--selftest]
 #   DRY RUN IS THE DEFAULT. Without --apply this tool writes NOTHING to any
 #   tracker; it prints what it would close and exits 0.
-#   --repo      tracker to read state from and close on
-#               (default leshchenko1979/opencrabs-dev-factory — tooling issues)
+#   --repo      WHERE a close may be applied (default: BOTH live trackers). It
+#               narrows the close SCOPE only — never what is checked for
+#               ambiguity.
+#   --board     a tracker to CHECK for number collisions (repeatable; default
+#               BOTH live trackers). A number held by more than one board is
+#               AMBIGUOUS-TRACKER and is never closed, whatever `--repo` says.
 #   --log       smoke-verdicts.log (default $STATE_DIR/smoke-verdicts.log)
 #   --e-repo    the tracker a tools/** fix belongs to (default the factory)
 #   --ledger    workers-ledger.json (default $STATE_DIR/workers-ledger.json)
@@ -155,6 +159,16 @@ GH_BIN="${OC_GH_BIN:-gh}"
 # A `--repo` given on the command line REPLACES the default list.
 REPOS=("leshchenko1979/opencrabs-dev-factory" "leshchenko1979/opencrabs")
 REPO_GIVEN=0
+# THE BOARD SET — what is CHECKED for a number collision, ALWAYS, whatever
+# `--repo` narrows the close scope to (#140 face 1). The two lists are the same
+# by default and MUST NOT be conflated: `--repo factory` decides where a close is
+# written, and the fact that makes a receipt unattributable is that the number is
+# held ELSEWHERE — a fact that does not stop being true because the operator
+# narrowed where to write. Measured 2026-11-22: 121 numbers are held by both
+# boards, and 4 factory issues (#134, #135, #136, #140) are shadowed by a CLOSED
+# fork number, which is the exact shape a narrowed sweep could not see.
+BOARDS=("leshchenko1979/opencrabs-dev-factory" "leshchenko1979/opencrabs")
+BOARDS_GIVEN=0
 LOG="$STATE_DIR/smoke-verdicts.log"
 LEDGER="$STATE_DIR/workers-ledger.json"
 # Class (e) inputs. The battery receipt and the git tree it is judged in — both
@@ -188,6 +202,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || die 2 "--repo needs <owner/repo>"
       [ "$REPO_GIVEN" -eq 1 ] || { REPOS=(); REPO_GIVEN=1; }
       REPOS+=("$2"); shift 2 ;;
+    --board)
+      [ $# -ge 2 ] || die 2 "--board needs <owner/repo>"
+      [ "$BOARDS_GIVEN" -eq 1 ] || { BOARDS=(); BOARDS_GIVEN=1; }
+      BOARDS+=("$2"); shift 2 ;;
     --log)    [ $# -ge 2 ] || die 2 "--log needs a path"; LOG="$2"; shift 2 ;;
     --ledger) [ $# -ge 2 ] || die 2 "--ledger needs a path"; LEDGER="$2"; shift 2 ;;
     --battery) [ $# -ge 2 ] || die 2 "--battery needs a path"; BATTERY="$2"; shift 2 ;;
@@ -202,10 +220,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ "${#REPOS[@]}" -gt 0 ] || die 2 "--repo given with no value"
-for _r in "${REPOS[@]}"; do
+[ "${#BOARDS[@]}" -gt 0 ] || die 2 "--board given with no value"
+for _r in "${REPOS[@]}" "${BOARDS[@]}"; do
   case "$_r" in
     */*) ;;
-    *) die 2 "--repo must be owner/repo, got '$_r'" ;;
+    *) die 2 "--repo/--board must be owner/repo, got '$_r'" ;;
   esac
 done
 
@@ -278,6 +297,29 @@ run_selftest() {
     #   of the literals refuses this row — a false debt, and the reason the
     #   matcher is two literals rather than a substring.
     printf '%s\n' "2026-11-09T09:30:00Z${T}PASS${T}run=891${T}sha=kkkk${T}issue=323${T}target=live-ops${T}evidence=4-leg smoke pass: lineage=verified identity=MATCH no leg claimed or parked, all four ran"
+    # --- #140 fixtures -----------------------------------------------------
+    # FACE 2 — #350 carries a PASS row, a done row AND a CORRECTION row naming
+    # it. The PASS+done pair is load-bearing: a kill fixture whose number has NO
+    # PASS cannot observe `if tok in KILL` at all (measured in this file's own
+    # mutation run — a mutant that neutered that branch SURVIVED because the
+    # fixture retracted a number that was never a close candidate). So #350 must
+    # be a close candidate BEFORE the correction, or this arm proves nothing.
+    printf '%s\n' "2026-11-11T09:00:00Z${T}PASS${T}run=1010${T}sha=mmmm${T}actor=lane${T}issue=#350${T}target=live-ops${T}evidence=probe green, corrected the next day"
+    # FACE 1 — the #138 SHAPE: a number held by BOTH boards, one CLOSED and one
+    # OPEN. A PASS + done row would otherwise close it, and with `--repo` narrowed
+    # to one board there is no collision to see at all.
+    printf '%s\n' "2026-11-13T09:00:00Z${T}PASS${T}run=1020${T}sha=oooo${T}actor=lane${T}issue=340${T}target=live-ops${T}evidence=behavioural probe green"
+    # FACE 1 — the same collision, but the row's OWN evidence names its board.
+    # The URL is the positive discriminator: it must attribute #341 to o/one and
+    # close THERE, never on the o/two copy that is CLOSED.
+    printf '%s\n' "2026-11-14T09:00:00Z${T}PASS${T}run=1030${T}sha=pppp${T}actor=lane${T}issue=341${T}target=live-ops${T}evidence=probe green (tracked at https://github.com/o/one/issues/341)"
+    # FACE 3 — #351 has a done row and NO verdict of its own, so it IS a class
+    # (e) shape; a row for the same number on the OTHER board bars it. The row's
+    # evidence names that board, so the exclusion must be reported BY NAME.
+    printf '%s\n' "2026-11-15T09:00:00Z${T}FAIL${T}run=1040${T}sha=qqqq${T}actor=lane${T}issue=351${T}target=live-ops${T}evidence=probe red (see https://github.com/o/two/issues/351)"
+    # the CORRECTION last, so it retracts an EARLIER PASS (the live #138 shape:
+    # the correction follows the row it disavows).
+    printf '%s\n' "2026-11-12T09:00:00Z${T}CORRECTION${T}sha=nnnn${T}issue=#350${T}evidence=CORRECTION of my row of 2026-11-11T09:00:00Z: that probe ran against the wrong build"
   } > "$D/log"
 
   cat > "$D/ledger" <<'LEDGER'
@@ -298,23 +340,30 @@ run_selftest() {
  {"n":14,"t":"2026-11-21T04:20:00Z","kind":"done","what":"#330 landed, named only by a trailer"},
  {"n":15,"t":"2026-11-21T04:21:00Z","kind":"done","what":"#331 landed after the receipt"},
  {"n":16,"t":"2026-11-21T04:22:00Z","kind":"done","what":"#332 landed \u2014 detail: \"quoted\" and\na second line"},
- {"n":17,"t":"2026-11-21T04:23:00Z","kind":"done","what":"#333 a factory-shaped fix, but the number lives on the OTHER tracker"}
+ {"n":17,"t":"2026-11-21T04:23:00Z","kind":"done","what":"#333 a factory-shaped fix, but the number lives on the OTHER tracker"},
+ {"n":18,"t":"2026-11-13T09:05:00Z","kind":"done","what":"#340 landed, number also held by the other board"},
+ {"n":19,"t":"2026-11-14T09:05:00Z","kind":"done","what":"#341 landed, evidence names its own board"},
+ {"n":20,"t":"2026-11-11T09:05:00Z","kind":"done","what":"#350 landed, then the verdict was corrected away"},
+ {"n":21,"t":"2026-11-15T09:05:00Z","kind":"done","what":"#351 landed as a tools/** fix, but a foreign smoke row speaks the number"}
 ]}
 LEDGER
 
   # The stub serves `issue list` (the tracker-resolution call) for TWO repos, so
   # the ambiguity leg below is a real collision rather than a simulated one:
   #   o/one  holds 260 OPEN, 279 OPEN, 300 CLOSED, 302 OPEN, 303 OPEN, 304 OPEN
+  #          plus 340/341 OPEN and 350 OPEN (#140 fixtures)
   #   o/two  holds 260 OPEN as well  -> #260 is AMBIGUOUS, and must not close
-  #   (305 and 306 live nowhere -> ABSENT)
+  #          and 340/341 CLOSED     -> the #138 SHAPE: held by both boards, one
+  #                                    CLOSED one OPEN, so it is AMBIGUOUS too
+  #   (305 and 306 and 351 live nowhere -> ABSENT / never joined)
   cat > "$D/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_CALLS"
 case "$1 $2" in
   "issue list")
     case "$4" in
-      o/one) echo '[{"number":260,"state":"OPEN"},{"number":279,"state":"OPEN"},{"number":300,"state":"CLOSED"},{"number":302,"state":"OPEN"},{"number":303,"state":"OPEN"},{"number":304,"state":"OPEN"},{"number":305,"state":"OPEN"},{"number":310,"state":"OPEN"},{"number":320,"state":"OPEN"},{"number":321,"state":"OPEN"},{"number":322,"state":"OPEN"},{"number":323,"state":"OPEN"},{"number":330,"state":"OPEN"},{"number":331,"state":"OPEN"},{"number":332,"state":"OPEN"}]' ;;
-      o/two) echo '[{"number":310,"state":"OPEN"},{"number":333,"state":"OPEN"},{"number":777,"state":"CLOSED"}]' ;;
+      o/one) echo '[{"number":260,"state":"OPEN"},{"number":279,"state":"OPEN"},{"number":300,"state":"CLOSED"},{"number":302,"state":"OPEN"},{"number":303,"state":"OPEN"},{"number":304,"state":"OPEN"},{"number":305,"state":"OPEN"},{"number":310,"state":"OPEN"},{"number":320,"state":"OPEN"},{"number":321,"state":"OPEN"},{"number":322,"state":"OPEN"},{"number":323,"state":"OPEN"},{"number":330,"state":"OPEN"},{"number":331,"state":"OPEN"},{"number":332,"state":"OPEN"},{"number":340,"state":"OPEN"},{"number":341,"state":"OPEN"},{"number":350,"state":"OPEN"}]' ;;
+      o/two) echo '[{"number":310,"state":"OPEN"},{"number":333,"state":"OPEN"},{"number":340,"state":"CLOSED"},{"number":341,"state":"CLOSED"},{"number":777,"state":"CLOSED"}]' ;;
       *) echo '[]' ;;
     esac ;;
   "issue view") case "$3" in 300) echo CLOSED ;; *) echo OPEN ;; esac ;;
@@ -379,7 +428,7 @@ Issue-Ref: leshchenko1979/opencrabs-dev-factory#330'
   sweep() { # extra args...
     rc=0
     out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" \
-      --repo o/one --repo o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/battery-last.json" \
+      --repo o/one --repo o/two --board o/one --board o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/battery-last.json" \
       "$@" 2>"$D/err")" || rc=$?
   }
   # the DISABLED arm: an explicit --battery that fails leg (i). Same tree, so the
@@ -387,7 +436,16 @@ Issue-Ref: leshchenko1979/opencrabs-dev-factory#330'
   sweep_badbattery() { # extra args...
     rc=0
     out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" \
-      --repo o/one --repo o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/bad.json" \
+      --repo o/one --repo o/two --board o/one --board o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/bad.json" \
+      "$@" 2>"$D/err")" || rc=$?
+  }
+  # the #140 REPRO SHAPE: ONE close scope (`--repo`), BOTH boards checked
+  # (`--board`). `--repo` must decide WHERE a close is written and never WHAT is
+  # checked for a collision, so this run must still refuse a doubly-held number.
+  sweep_narrow() { # extra args...
+    rc=0
+    out="$(OC_GH_BIN="$D/gh" GH_CALLS="$D/calls" "$SELF" --log "$D/log" --ledger "$D/ledger" \
+      --repo o/one --board o/one --board o/two --e-repo o/one --tree "$D/tree" --battery "$D/tree/tools/tests/battery-last.json" \
       "$@" 2>"$D/err")" || rc=$?
   }
   # Tolerant on purpose: a leg that PARSES the JSON must never be the thing that
@@ -407,10 +465,10 @@ except Exception:
   : > "$D/calls"
   sweep --json
   GOT="$(printf '%s' "$out" | python3 -c 'import json,sys;print(",".join(str(r["issue"]) for r in sorted(json.load(sys.stdin)["rows"], key=lambda r: r["issue"])))' 2>/dev/null || echo PARSE-FAIL)"
-  if [ "$rc" -eq 0 ] && [ "$GOT" = "260,279,300,305,310,320,321,322,323,330,331,332,333" ]; then
+  if [ "$rc" -eq 0 ] && [ "$GOT" = "260,279,300,305,310,320,321,322,323,330,331,332,333,340,341" ]; then
     t_ok "the join yields the class (d) pairs AND the class (e) done-only rows (rc=$rc)"
   else
-    t_bad "join set (rc=$rc got=$GOT want=260,279,300,305,310,320,321,322,323,330,331,332,333 err=$(tr '\n' '|' < "$D/err"))"
+    t_bad "join set (rc=$rc got=$GOT want=260,279,300,305,310,320,321,322,323,330,331,332,333,340,341 err=$(tr '\n' '|' < "$D/err"))"
   fi
 
   # ---- leg 2: PASS-LATE-ENTRY is eligible (#279 is the regression case) -----
@@ -476,6 +534,20 @@ except Exception:
     t_bad "exclusion reasons missing from stderr ($(tr '\n' '|' < "$D/err"))"
   fi
 
+  # ---- leg 6a (#140 face 2): a CORRECTION retracts an earlier PASS ---------
+  # #350 carries a PASS row, a done row AND a CORRECTION row that names it, so on
+  # the receipt PAIR alone it would close. That PASS+done pair is what makes this
+  # NON-VACUOUS: a kill fixture whose number has no PASS cannot observe
+  # `if tok in KILL` at all, and a mutant that neutered that branch once SURVIVED
+  # against exactly such a fixture (recorded in this file's own comment above).
+  # The live shape is smoke-verdicts.log:146 (PASS-LATE-ENTRY for #138) followed
+  # by CORRECTION rows at :1206 and :1213.
+  if ! grep -q '"350":' <<< "$J" && grep -q 'RETRACTED  #350 — a CORRECTION row names it' "$D/err"; then
+    t_ok "a CORRECTION row RETRACTS an earlier PASS — #350 is not joined, and stderr names the token that killed it"
+  else
+    t_bad "CORRECTION retraction (350 in join=$(grep -c '"350":' <<< "$J") stderr=$(tr '\n' '|' < "$D/err"))"
+  fi
+
   # ---- leg 5b: a done row whose `what` spans a NEWLINE or carries a quote ----
   # The join stream is read line-by-line with \x1f separators, so a raw newline
   # in a ledger detail shifts every field after it: the continuation line's text
@@ -508,12 +580,70 @@ print("%d|%d|%s" % (len(bad), 1 if r else 0, r.get("ledger_n","-")))
     t_bad "wrong-tracker class (e) (action='$A333' want=skip-e-wrong-tracker)"
   fi
 
+  # ---- leg 5d (#140 face 3): a `spoke` exclusion is NAMED -------------------
+  # #351 is a class (e) shape — a done row and no verdict of its own — barred
+  # because SOME row for that number exists (here: a FAIL on o/two). Before this
+  # the bar was silent, which is indistinguishable from "no done row": factory
+  # #138 qualifies for class (e) on its own receipts and was barred by fork
+  # #138's September row with nothing on stderr. #305 is the POSITIVE CONTROL — a
+  # done row nothing ever spoke about must NOT be reported as skipped, or a
+  # message printed for every class (e) candidate would pass this leg.
+  if grep -q 'CLASS-E-SKIPPED #351 — a row from o/two speaks the number (FAIL)' "$D/err" \
+     && ! grep -q 'CLASS-E-SKIPPED #305' "$D/err" \
+     && ! grep -q '"351":' <<< "$J"; then
+    t_ok "a class (e) exclusion caused by a smoke row is NAMED with its board — and a done row nothing spoke about is not"
+  else
+    t_bad "class (e) exclusion naming (stderr=$(tr '\n' '|' < "$D/err"))"
+  fi
+
   # ---- leg 6b: the SAME NUMBER on two OPEN trackers is reported, never closed
   A310="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("310",{}).get("action",""))')"
   if [ "$A310" = "skip-ambiguous" ] && grep -q 'AMBIGUOUS-TRACKER #310' "$D/err"; then
     t_ok "a number OPEN on BOTH trackers is AMBIGUOUS — reported on stderr, never closed on a guess"
   else
     t_bad "cross-tracker collision handling (action='$A310' want=skip-ambiguous)"
+  fi
+
+  # ---- leg 6c (#140 face 1): the #138 SHAPE is AMBIGUOUS -------------------
+  # #340 is held by BOTH boards — o/one OPEN, o/two CLOSED. That is the live
+  # shape of #134/#135/#136/#140 (measured 2026-11-22: 121 numbers held by both
+  # boards, 4 of them a CLOSED fork copy shadowing an OPEN factory one). The
+  # guard must fire on ANY open copy, not only when BOTH are OPEN, or those four
+  # live cases are structurally unreachable.
+  A340="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("340",{}).get("action",""))')"
+  if [ "$A340" = "skip-ambiguous" ] && grep -q 'AMBIGUOUS-TRACKER #340' "$D/err"; then
+    t_ok "a number held by BOTH boards in a CLOSED+OPEN mix is AMBIGUOUS — the #138 shape is refused, not closed"
+  else
+    t_bad "the #138 shape (340 action='$A340' want=skip-ambiguous; stderr=$(tr '\n' '|' < "$D/err"))"
+  fi
+
+  # ---- leg 6d (#140 face 1): a NAMED board resolves the collision ----------
+  # #341 is held by both boards as well, but its own evidence carries a URL for
+  # its OWN number, naming o/one. The row is then ATTRIBUTABLE: it must close on
+  # o/one and never on the o/two copy (which is CLOSED — attributing there would
+  # silently read as skip-already-closed and lose a real close).
+  A341="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("341",{}).get("action",""))')"
+  R341="$(printf '%s' "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("341",{}).get("repo",""))')"
+  if [ "$A341" = "would-close" ] && [ "$R341" = "o/one" ]; then
+    t_ok "an evidence URL naming its OWN number resolves the collision — #341 closes on o/one, not on the other copy"
+  else
+    t_bad "evidence-URL attribution (341 action='$A341' repo='$R341' want=would-close/o/one)"
+  fi
+
+  # ---- leg 6e (#140 face 1): --repo narrows WHERE, never WHAT --------------
+  # THE REPORTED REPRO, verbatim in shape: ONE close scope, BOTH boards checked.
+  # Before the fix, `--repo` REPLACED the checked list, so #340 had one holder,
+  # no collision was visible, and the sweep offered to close it. This leg is the
+  # one that reddens when the board set is collapsed back onto the close scope —
+  # legs 6c/6d cannot see that mutation, because there the two lists are equal.
+  sweep_narrow --json
+  NJ="$(printf '%s' "$out" | rows)"
+  nact() { printf '%s' "$NJ" | python3 -c 'import json,sys;print(json.load(sys.stdin).get(sys.argv[1],{}).get("action",""))' "$1"; }
+  if [ "$(nact 340)" = "skip-ambiguous" ] && [ "$(nact 341)" = "would-close" ] \
+     && grep -q 'AMBIGUOUS-TRACKER #340' "$D/err"; then
+    t_ok "--repo narrows WHERE a close is written, never WHAT is checked: the one-board scope still refuses #340"
+  else
+    t_bad "the #140 repro survives (narrow 340 action='$(nact 340)' want=skip-ambiguous; 341='$(nact 341)' want=would-close)"
   fi
 
   # ---- leg 7: dry run writes nothing to the tracker ------------------------
@@ -527,10 +657,10 @@ print("%d|%d|%s" % (len(bad), 1 if r else 0, r.get("ledger_n","-")))
   : > "$D/calls"
   sweep --apply --json
   closed="$(grep -o 'issue close [0-9]*' "$D/calls" | awk '{print $3}' | sort -n | tr '\n' ' ')"
-  if [ "$closed" = "260 279 305 322 323 " ]; then
-    t_ok "--apply closes exactly the OPEN pairs (class (d) and (e)) and leaves CLOSED #300 alone (closed: $closed)"
+  if [ "$closed" = "260 279 305 322 323 341 " ]; then
+    t_ok "--apply closes exactly the OPEN pairs (class (d) and (e)), leaves CLOSED #300 alone, and refuses AMBIGUOUS #340 (closed: $closed)"
   else
-    t_bad "--apply close set (got='$closed' want='260 279 305 322 323 ')"
+    t_bad "--apply close set (got='$closed' want='260 279 305 322 323 341 ')"
   fi
   if grep -q 'smoke verdict: PASS 2026-11-01T10:00:00Z sha=aaaa run=111' "$D/calls" \
      && grep -q 'ledger: done #260 n=1' "$D/calls"; then
@@ -710,7 +840,7 @@ CLLEDGERBIN
     rc=0
     CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
       OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
-      "$SELF" --json --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two "$@" \
+      "$SELF" --json --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two --board o/one --board o/two "$@" \
       >"$D/cl-out" 2>"$D/cl-err" || rc=$?
   }
   cl_f() { python3 -c 'import json,sys;print(json.load(open(sys.argv[2])).get(sys.argv[1],"MISSING"))' "$1" "$D/cl-out" 2>/dev/null || echo PARSE-FAIL; }
@@ -733,7 +863,7 @@ CLLEDGERBIN
   rc=0
   CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
     OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
-    "$SELF" --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two \
+    "$SELF" --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two --board o/one --board o/two \
     >"$D/cl-out" 2>"$D/cl-err" || rc=$?
   if grep -q 'CLAIM-STALE' "$D/cl-out" && grep -q 'CLAIM-AMBIGUOUS' "$D/cl-out" \
      && grep -q '#777' "$D/cl-out" && grep -q '#888' "$D/cl-out"; then
@@ -773,7 +903,7 @@ CLLEDGERBIN
   rc=0
   CL_REL_RC=3 CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
     OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
-    "$SELF" --json --apply --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two \
+    "$SELF" --json --apply --log "$D/cl-log" --ledger "$D/cl-ledger" --repo o/one --repo o/two --board o/one --board o/two \
     >"$D/cl-out" 2>"$D/cl-err" || rc=$?
   if [ "$(cl_f claim_release_failed)" = "1" ] && [ "$(cl_f claim_released)" = "0" ] && [ "$rc" -eq 1 ]; then
     t_ok "claims: a release that fails is counted as failed, not reported as released — and rc is 1, not a silent 0"
@@ -789,7 +919,7 @@ CLLEDGERBIN
   rc=0
   CL_GH_CALLS="$D/cl-gh-calls" CL_REL_CALLS="$D/cl-rel-calls" \
     OC_GH_BIN="$D/cl-gh" OC_CLOSURE_LEDGER_BIN="$D/cl-ledger-bin" \
-    "$SELF" --json --log "$D/cl-log" --ledger "$D/cl-empty" --repo o/one --repo o/two \
+    "$SELF" --json --log "$D/cl-log" --ledger "$D/cl-empty" --repo o/one --repo o/two --board o/one --board o/two \
     >"$D/cl-out" 2>"$D/cl-err" || rc=$?
   if [ "$(cl_f claim_stale)" = "0" ] && [ "$(cl_f claim_live)" = "0" ] \
      && [ "$(cl_f claim_ambiguous)" = "0" ] && [ "$(cl_f claim_released)" = "0" ] \
@@ -822,7 +952,11 @@ command -v oc_close_on_receipt >/dev/null 2>&1 \
 # the gh stub in the selftest must be observable.
 #
 # Output: one US-delimited line per CANDIDATE:
-#   issue \x1f ledger_n \x1f ledger_ts \x1f verdict \x1f smoke_ts \x1f sha \x1f run \x1f evidence \x1f what \x1f class
+#   issue \x1f ledger_n \x1f ledger_ts \x1f verdict \x1f smoke_ts \x1f sha \x1f run \x1f evidence \x1f what \x1f class \x1f e_tracker
+#
+# `e_tracker` is the board the row's own `evidence` names, IFF it names THIS
+# number (#140 face 1); empty otherwise, which is the measured norm (4 of 363).
+# The class (e) stream always leaves it empty: it claims nothing about a smoke.
 #
 # TWO candidate streams, one line shape:
 #   class `smoke`  — a smoke PASS and a `done` row (class (d), the T-10 join).
@@ -851,16 +985,40 @@ import json, re, sys
 PASS = {"PASS", "PASS-LATE-ENTRY", "PASS-OWNER-EYE", "PASS-CALLBACK-LIVE"}
 # Look like PASSes, are not in the taxonomy: reported, never closable.
 OFF  = {"PASS-ADDENDUM", "OWNER-EYE-CONFIRM", "ADDENDUM"}
-KILL = {"RETRACTION"}
+# Tokens that WITHDRAW a PASS. CORRECTION belongs here because a correction row
+# is the author disavowing the verdict it names — leaving it out means a row its
+# own author withdrew still closes the issue (#140 face 2; measured live on #138,
+# whose PASS-LATE-ENTRY at smoke-verdicts.log:146 is followed by CORRECTION rows
+# at :1206 and :1213). KILL is consulted before PASS, so a CORRECTION row wins
+# over an earlier PASS for the same number.
+KILL = {"RETRACTION", "CORRECTION"}
 TS   = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 HASH = re.compile(r"#(\d+)\b")
+# An issue URL in a row's `evidence` (#140 face 1). This is the ONE place a row
+# can NAME its own tracker, and it is rare: measured 2026-11-22, 4 of 363 PASS
+# rows carry any issue URL, and 3 of those 4 name their own number. So it is a
+# POSITIVE discriminator only — when it is present and names THIS number the row
+# is attributed to that board; when it is absent nothing is inferred, because
+# refusing every row without a URL would refuse 360 of 363 class (d) closes and
+# turn a false close into a permanent false debt.
+URL = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/(\d+)")
+
+
+def evidence_tracker(ev, iss):
+    """The board a row's own evidence names, IFF it names THIS number."""
+    for m in URL.finditer(ev or ""):
+        if m.group(3) == iss:
+            return "%s/%s" % (m.group(1), m.group(2))
+    return ""
 
 log_path, ledger_path = sys.argv[1], sys.argv[2]
 
 verdict_of = {}   # issue -> newest eligible PASS record
 off_of     = {}   # issue -> newest off-taxonomy record
 killed     = set()
+killed_by  = {}     # issue -> the token that withdrew its PASS (#140 face 2)
 spoke      = set()  # issues ANY timestamped row speaks about (any token, PASS or not)
+spoke_by   = {}     # issue -> (token, board-or-"") of the row that spoke it (#140 face 3)
 unparsed   = 0
 
 for raw in open(log_path, encoding="utf-8", errors="replace"):
@@ -890,6 +1048,10 @@ for raw in open(log_path, encoding="utf-8", errors="replace"):
         t = t.strip().lstrip("#")
         if t.isdigit():
             spoke.add(t)
+            # ... and remember WHICH row spoke it, and which board that row's
+            # evidence names (usually none), so the class (e) exclusion can be
+            # REPORTED instead of silently applied (#140 face 3).
+            spoke_by[t] = (tok, evidence_tracker(kv.get("evidence", ""), t))
     if tok in KILL:
         # SCOPE THE KILL to the row's own issue= field when it carries one.
         # A hash scan of the whole LINE also harvests every #N quoted inside
@@ -905,9 +1067,12 @@ for raw in open(log_path, encoding="utf-8", errors="replace"):
         _named = [t for t in _named if t.isdigit()]
         if _named:
             killed.update(_named)
+            for _n in _named:
+                killed_by.setdefault(_n, tok)
         else:
             for m in HASH.finditer(line):
                 killed.add(m.group(1))
+                killed_by.setdefault(m.group(1), tok)
         continue
     if tok not in PASS and tok not in OFF:
         continue
@@ -948,7 +1113,8 @@ for iss in sorted(off_of, key=lambda x: int(x)):
                      % (iss, off_of[iss]["verdict"]))
 for iss in sorted(killed, key=lambda x: int(x)):
     if iss in verdict_of:
-        sys.stderr.write("RETRACTED  #%s — a RETRACTION row names it; the earlier PASS does not close\n" % iss)
+        sys.stderr.write("RETRACTED  #%s — a %s row names it; the earlier PASS does not close\n"
+                         % (iss, killed_by.get(iss, "KILL")))
 for iss in sorted(verdict_of, key=lambda x: int(x)):
     if iss in killed:
         continue
@@ -966,7 +1132,8 @@ for iss in sorted(verdict_of, key=lambda x: int(x)):
         what = what[:197] + "..."
     ev = " ".join(v["evidence"].split())
     print("\x1f".join([iss, str(n), t, v["verdict"], v["ts"],
-                       v["sha"], v["run"], ev, what, "smoke"]))
+                       v["sha"], v["run"], ev, what, "smoke",
+                       evidence_tracker(v["evidence"], iss)]))
 
 # CLASS (e) stream — a `done` row and NO smoke verdict at all. The empty verdict
 # fields are DELIBERATE: this stream claims nothing about a smoke, and the three
@@ -974,19 +1141,32 @@ for iss in sorted(verdict_of, key=lambda x: int(x)):
 # own. A retracted number is excluded here too — the kill is scoped to the
 # NUMBER, so a done-only issue whose verdict was withdrawn must not slip back in
 # through the class (e) door.
+#
+# FACE 3 (#140) — SAY WHY. `spoke` is filled by ANY timestamped row, and a
+# foreign row silently barring a legitimate tools/** fix is indistinguishable
+# from "no done row at all": factory #138 qualifies for class (e) on its own
+# receipts and was barred by fork #138's September row, with nothing on stderr.
+# So every exclusion CAUSED by `spoke` is named, with the token and — when that
+# row's own evidence names its board — the board. The kill case is not named
+# here: RETRACTED above already explains it.
 for iss in sorted(done_of, key=lambda x: int(x)):
     if iss in spoke or iss in killed:
+        if iss not in killed and iss not in verdict_of:
+            _tok, _trk = spoke_by.get(iss, ("?", ""))
+            sys.stderr.write(
+                "CLASS-E-SKIPPED #%s — a row from %s speaks the number (%s); class (e) "
+                "needs a fix that writes NO smoke verdict\n" % (iss, _trk or "a row", _tok))
         continue
     n, t, what = done_of[iss]
     what = " ".join(what.split())
     if len(what) > 200:
         what = what[:197] + "..."
-    print("\x1f".join([iss, str(n), t, "", "", "", "", "", what, "e"]))
+    print("\x1f".join([iss, str(n), t, "", "", "", "", "", what, "e", ""]))
 PY
 )" || die 3 "join FAILED (python3 rc=$?)"
 
 # ---------------------------------------------------------------------------
-# Tracker resolution. ONE list call per tracker, then the join is local.
+# Tracker resolution. ONE list call per BOARD, then the join is local.
 #
 # WHY NOT `gh issue view` PER CANDIDATE: the candidate set is ~300, and a live
 # dry run of the per-issue form spent minutes on reads that mostly FAILED
@@ -994,6 +1174,12 @@ PY
 # question for every candidate at once, and — the point — they answer the
 # question a per-issue read cannot: does this number exist on MORE THAN ONE
 # tracker? Closing on a guess there would close a different issue's number.
+#
+# THE LIST IS THE BOARD SET, NEVER `--repo` (#140 face 1). A sweep narrowed to
+# one board must still know what the other board holds, or the ambiguity it
+# exists to refuse is invisible — that is exactly how fork#138's PASS came to
+# close factory#138. A board that cannot be read therefore fails the run even
+# when it is outside the close scope: "cannot check" is not "clean".
 # ---------------------------------------------------------------------------
 declare -A TRACKER_OF=()   # "repo|number" -> STATE
 CAND=0; ELIGIBLE=0; ALREADY=0; APPLIED=0; FAILED=0; ABSENT=0; AMBIG=0; PARKED=0
@@ -1011,9 +1197,14 @@ add_json() { # issue state verdict smoke_ts ledger_n action [repo] [class]
   return 0
 }
 
-for _r in "${REPOS[@]}"; do
+# The CLOSE SCOPE as a lookup (`--repo`), kept distinct from the BOARD SET
+# (`--board`) that is checked for collisions. See the holder block in the loop.
+declare -A REPO_SCOPE=()
+for _r in "${REPOS[@]}"; do REPO_SCOPE["$_r"]=1; done
+
+for _r in "${BOARDS[@]}"; do
   _lst="$("$GH_BIN" issue list --repo "$_r" --state all --limit 1000 --json number,state 2>&1)" || {
-    die 3 "cannot list issues on $_r — a tracker that cannot be READ is not a clean sweep (${_lst//$'\n'/ })"
+    die 3 "cannot list issues on $_r — a board that cannot be READ is not a clean sweep (${_lst//$'\n'/ })"
   }
   while IFS=$'\x1f' read -r _num _st; do
     [ -n "${_num:-}" ] || continue
@@ -1142,42 +1333,99 @@ ce_fix_sha() {
 [ "$CE_ON" -eq 1 ] || printf '%s: NOTE class (e) DISABLED — %s; a tools/** fix cannot close on the battery this run\n' \
   "$PROG" "${CE_WHY:-unknown}" >&2
 
-while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT CLS; do
+while IFS=$'\x1f' read -r ISSUE LN LT VTKN VTS VSHA VRUN VEV LWHAT CLS ETRK; do
   [ -n "${ISSUE:-}" ] || continue
   CAND=$((CAND + 1))
 
-  # Which trackers hold this number, and in what state?
+  # Which boards hold this number, and in what state? TWO SETS, and the
+  # difference between them IS #140 face 1:
+  #
+  #   HOLDERS / OPEN_HOLDERS  — the CLOSE SCOPE (`--repo`). Where a close may be
+  #                             WRITTEN. May legitimately be one board.
+  #   BHOLDERS / BOPEN        — the BOARD SET (`--board`; both live trackers by
+  #                             default). What is CHECKED for a collision. Always.
+  #
+  # `--repo` must decide WHERE, never WHAT. The measured repro was a
+  # `--repo leshchenko1979/opencrabs-dev-factory` sweep in which fork#138's
+  # PASS-LATE-ENTRY closed factory#138: with one board in the list there is no
+  # collision to see, so the guard was never ASKED — it was not wrong, it was
+  # never consulted. Measured 2026-11-22: 121 numbers are held by both boards,
+  # and 4 factory issues (#134, #135, #136, #140) sit in exactly this shape — a
+  # CLOSED fork number shadowing an OPEN factory one, which the old both-OPEN
+  # narrowing of a one-board list could not report.
   HOLDERS=(); OPEN_HOLDERS=()
-  for _r in "${REPOS[@]}"; do
+  BHOLDERS=(); BOPEN=()
+  for _r in "${BOARDS[@]}"; do
     _st="${TRACKER_OF["$_r|$ISSUE"]:-}"
     [ -n "$_st" ] || continue
-    HOLDERS+=("$_r:$_st")
-    [ "$_st" = "OPEN" ] && OPEN_HOLDERS+=("$_r")
+    BHOLDERS+=("$_r:$_st")
+    [ "$_st" = "OPEN" ] && BOPEN+=("$_r")
+    if [ -n "${REPO_SCOPE["$_r"]:-}" ]; then
+      HOLDERS+=("$_r:$_st")
+      [ "$_st" = "OPEN" ] && OPEN_HOLDERS+=("$_r")
+    fi
   done
 
-  if [ "${#HOLDERS[@]}" -eq 0 ]; then
+  # POSITIVE attribution, before any refusal: a row whose own `evidence` carries
+  # an issue URL for ITS OWN number names its board, and that settles the
+  # question without a guess. Measured: 4 of 363 PASS rows carry any issue URL,
+  # so this can never be a REQUIREMENT (refusing the other 359 would convert a
+  # false close into a permanent false debt) — but where it is present it is
+  # exact, so it outranks the refusal below.
+  RESOLVED=""
+  if [ -n "${ETRK:-}" ]; then
+    for _h in "${BHOLDERS[@]}"; do
+      [ "${_h%:*}" = "$ETRK" ] && RESOLVED="${_h%:*}"
+    done
+  fi
+  if [ -n "$RESOLVED" ]; then
+    # Attribute to that board ONLY. The other copy of the number must never be
+    # the close target — that is precisely the wrong close this face exists to
+    # stop, so the scope is REPLACED, not merely reordered.
+    HOLDERS=(); OPEN_HOLDERS=()
+    _rst="${TRACKER_OF["$RESOLVED|$ISSUE"]:-}"
+    if [ -n "${REPO_SCOPE["$RESOLVED"]:-}" ] && [ -n "$_rst" ]; then
+      HOLDERS+=("$RESOLVED:$_rst")
+      [ "$_rst" = "OPEN" ] && OPEN_HOLDERS+=("$RESOLVED")
+    fi
+  fi
+
+  if [ "${#BHOLDERS[@]}" -eq 0 ]; then
     ABSENT=$((ABSENT + 1))
     [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" - ABSENT "$VTKN" "$VTS" "$LN" "not on any checked tracker — no issue to close"
     add_json "$ISSUE" "ABSENT" "$VTKN" "$VTS" "$LN" "skip-absent" ""
     continue
   fi
 
-  if [ "${#HOLDERS[@]}" -gt 1 ]; then
-    # The SAME NUMBER on two trackers. If every copy is CLOSED nothing is owed
-    # and the ambiguity costs nothing; if any copy is OPEN, closing it is a
-    # guess about WHICH issue the receipt belongs to — and a wrong close on a
-    # public tracker is worse than a reported debt. Never guess: report.
-    if [ "${#OPEN_HOLDERS[@]}" -eq 0 ]; then
+  if [ "${#BHOLDERS[@]}" -gt 1 ] && [ -z "$RESOLVED" ]; then
+    # The SAME NUMBER on two boards. If every copy is CLOSED nothing is owed and
+    # the ambiguity costs nothing; if ANY copy is OPEN, closing it is a guess
+    # about WHICH issue the receipt belongs to — and a wrong close on a public
+    # tracker is worse than a reported debt. Never guess: report. Note the
+    # condition is BOPEN, not "both OPEN": the measured live shape is one CLOSED
+    # + one OPEN (#138), and requiring both OPEN is why this guard read 0/121.
+    if [ "${#BOPEN[@]}" -eq 0 ]; then
       ALREADY=$((ALREADY + 1))
       [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" both CLOSED "$VTKN" "$VTS" "$LN" "closed on every tracker holding the number"
       add_json "$ISSUE" "CLOSED" "$VTKN" "$VTS" "$LN" "skip-already-closed" "both"
     else
       AMBIG=$((AMBIG + 1))
       printf '%s: AMBIGUOUS-TRACKER #%s exists on %s — NOT closing, the receipt does not say which\n' \
-        "$PROG" "$ISSUE" "$(printf '%s ' "${HOLDERS[@]}" | sed 's/ $//')" >&2
+        "$PROG" "$ISSUE" "$(printf '%s ' "${BHOLDERS[@]}" | sed 's/ $//')" >&2
       [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" both AMBIGUOUS "$VTKN" "$VTS" "$LN" "AMBIGUOUS — reported, never closed"
       add_json "$ISSUE" "AMBIGUOUS" "$VTKN" "$VTS" "$LN" "skip-ambiguous" "both"
     fi
+    continue
+  fi
+
+  if [ "${#HOLDERS[@]}" -eq 0 ]; then
+    # The number exists, but only OUTSIDE the close scope (`--repo`). That is not
+    # "absent": calling it absent would hide a real issue from a narrowed sweep,
+    # which is the silent-exclusion defect of face 3 one class over. Name it.
+    ABSENT=$((ABSENT + 1))
+    _why="held by $(printf '%s ' "${BHOLDERS[@]}" | sed 's/ $//'), outside the close scope (--repo) — no close"
+    [ "$JSON" -eq 1 ] || printf '%-7s %-8s %-11s %-18s %-21s %-7s %s\n' "#$ISSUE" - ABSENT "$VTKN" "$VTS" "$LN" "$_why"
+    add_json "$ISSUE" "ABSENT" "$VTKN" "$VTS" "$LN" "skip-absent" ""
     continue
   fi
 
@@ -1419,8 +1667,12 @@ if [ "$JSON" -eq 1 ]; then
   # PARSE-FAIL). Build the array literally instead.
   _repos_json=""
   for _r in "${REPOS[@]}"; do _repos_json="${_repos_json}${_repos_json:+,}\"$_r\""; done
-  printf '{"repos":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"class_e_disabled":%s,"class_e_skipped":%d,"battery_verified":%d,"claim_stale":%d,"claim_released":%d,"claim_ambiguous":%d,"claim_live":%d,"claim_release_failed":%d,"rows":[%s]}\n' \
-    "$_repos_json" "$([ "$APPLY" -eq 1 ] && echo true || echo false)" \
+  # The BOARD SET is reported beside the close scope so a reader can see that a
+  # narrowed sweep was still checked against every board (#140 face 1).
+  _boards_json=""
+  for _r in "${BOARDS[@]}"; do _boards_json="${_boards_json}${_boards_json:+,}\"$_r\""; done
+  printf '{"repos":[%s],"boards":[%s],"apply":%s,"candidates":%d,"eligible":%d,"already_closed":%d,"closed":%d,"failed":%d,"absent":%d,"ambiguous":%d,"parked":%d,"class_e_disabled":%s,"class_e_skipped":%d,"battery_verified":%d,"claim_stale":%d,"claim_released":%d,"claim_ambiguous":%d,"claim_live":%d,"claim_release_failed":%d,"rows":[%s]}\n' \
+    "$_repos_json" "$_boards_json" "$([ "$APPLY" -eq 1 ] && echo true || echo false)" \
     "$CAND" "$ELIGIBLE" "$ALREADY" "$APPLIED" "$FAILED" "$ABSENT" "$AMBIG" "$PARKED" \
     "$([ "$CE_ON" -eq 1 ] && echo false || echo true)" "$CE_NOT" "$CE_OK" \
     "$CLAIM_STALE" "$CLAIM_RELEASED" "$CLAIM_AMBIG" "$CLAIM_LIVE" "$CLAIM_FAILED" \

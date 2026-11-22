@@ -18,10 +18,21 @@
 # receipts, backup pruning, the fork-release identity and the argv loop are
 # SHARED and live in tools/lib/oc-deploy-lib.sh.
 #
-# KNOWN LATENT DEFECT, MOVED AS-IS (reported, not fixed, per the verbatim rule):
-# post_verify() calls `$PV_MAT` where the variable is `PV_MATCH`. The branch is
-# only reached when a post-verify actually MATCHES, which the DRILL path never
-# does, so no test has ever executed it. Introduced with this file (0d8c63d5).
+# RETRACTED (corrected 2026-11-22, factory#142). This header used to carry a
+# "KNOWN LATENT DEFECT" claiming post_verify() calls `$PV_MAT` where the variable
+# is `PV_MATCH`. Every part of that was false, and the note was itself the ONLY
+# bare `PV_MAT` in this file. The trap: `grep 'PV_MAT'` matches `PV_MATCH` as a
+# substring, so grep output showing `PV_MATCH` reads as "calls PV_MAT" — that
+# instrument produced the note, and the issue filed from it.
+#   - 0 bare `PV_MAT` in code at HEAD, and 0 in the pre-split monolith
+#     (1e66f389^:tools/ship/oc-deploy) — it was never broken, in any revision.
+#   - The call sites are NOT gated on a match: PV_MATCH is initialised to 0 at
+#     function entry, unconditionally, so the "only reached on MATCHES" reading
+#     is wrong too.
+#   - The cited origin 0d8c63d5 is one commit BEFORE post_verify first existed
+#     (3e6c7b16); at 0d8c63d5 neither tools/ship/oc-deploy nor tools/oc-deploy
+#     exists at all.
+# Keep this paragraph: without it the next reader re-derives the same phantom.
 #
 # RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-swap row).
 # =============================================================================
@@ -494,6 +505,11 @@ swap_execute() {
 # mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
 # invocation never sets the variable, so the test is false and `return` never
 # runs — this line is inert at runtime.
+#
+# BLIND SPOT (measured 2026-11-22, factory#142): the `return` fires BEFORE
+# `set -uo pipefail` below, so every selftest that sources these functions runs
+# with nounset OFF and structurally CANNOT catch an unset-variable bug here.
+# A test aimed at that failure class must re-enable `set -u` in its own body.
 [ "${OC_DEPLOY_FUNCS_ONLY:-0}" = 1 ] && return 0
 
 set -uo pipefail

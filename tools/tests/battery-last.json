@@ -1,6 +1,6 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-22T10:44:56Z",
+  "ts": "2026-11-22T12:31:36Z",
   "pass": 459,
   "fail": 0,
   "verdict": "PASS",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-rf140d5e4fb104ee7b8becab31aa7a3f9.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r66ca2e553b924f26843c0fc84b278d41.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 1456185,
-  "timing": {"max_concurrency": 1, "section_count": 71, "sum_ms": 1455997, "slowest": [{"n": 44, "ms": 725861, "start_ms": 1795343344143, "end_ms": 1795344070004, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 25, "ms": 176476, "start_ms": 1795342886959, "end_ms": 1795343063435, "title": "oc-deploy"}, {"n": 26, "ms": 120079, "start_ms": 1795343063435, "end_ms": 1795343183514, "title": "oc-ledger"}, {"n": 28, "ms": 68783, "start_ms": 1795343187156, "end_ms": 1795343255939, "title": "oc-gate"}, {"n": 48, "ms": 45205, "start_ms": 1795344086510, "end_ms": 1795344131715, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 55, "ms": 38236, "start_ms": 1795344183549, "end_ms": 1795344221785, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 49, "ms": 21118, "start_ms": 1795344131715, "end_ms": 1795344152833, "title": "oc-health (hourly health & cleanliness sweep)"}, {"n": 31, "ms": 20779, "start_ms": 1795343272473, "end_ms": 1795343293252, "title": "oc-drift-check"}, {"n": 65, "ms": 20152, "start_ms": 1795344237868, "end_ms": 1795344258020, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 35, "ms": 17960, "start_ms": 1795343299544, "end_ms": 1795343317504, "title": "oc-ledger lock budget (#619)"}]}
+  "wall_ms": 1520004,
+  "timing": {"max_concurrency": 1, "section_count": 71, "sum_ms": 1519833, "slowest": [{"n": 25, "ms": 321744, "start_ms": 1795349393737, "end_ms": 1795349715481, "title": "oc-deploy"}, {"n": 44, "ms": 229007, "start_ms": 1795350118018, "end_ms": 1795350347025, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 26, "ms": 182286, "start_ms": 1795349715481, "end_ms": 1795349897767, "title": "oc-ledger"}, {"n": 28, "ms": 109408, "start_ms": 1795349906097, "end_ms": 1795350015505, "title": "oc-gate"}, {"n": 55, "ms": 79084, "start_ms": 1795350530637, "end_ms": 1795350609721, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 48, "ms": 69015, "start_ms": 1795350399558, "end_ms": 1795350468573, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 45, "ms": 51488, "start_ms": 1795350347025, "end_ms": 1795350398513, "title": "rc contract --help=0 fleet-wide (C-#3)"}, {"n": 13, "ms": 50424, "start_ms": 1795349272272, "end_ms": 1795349322696, "title": "lib/oc_claims.py (canonical claim-closure predicate)"}, {"n": 11, "ms": 45817, "start_ms": 1795349226186, "end_ms": 1795349272003, "title": "oc-seal (incl. IFS-join regression)"}, {"n": 31, "ms": 24516, "start_ms": 1795350034802, "end_ms": 1795350059318, "title": "oc-drift-check"}]}
 }

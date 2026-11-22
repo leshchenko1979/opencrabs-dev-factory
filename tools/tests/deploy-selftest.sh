@@ -2218,6 +2218,48 @@ STUB
   if [ -n "$SESS_SAVE" ]; then OC_DEPLOY_RECEIPT_SESSION="$SESS_SAVE"; else unset OC_DEPLOY_RECEIPT_SESSION; fi
   unset OC_RECEIPT_DB STUB_LOG STUB_BODY STUB_RC
 
+  # --- #142: post_verify has NO coverage, and the harness could not give it any.
+  # The `return 0` at oc-swap:503 fires BEFORE `set -uo pipefail`, so every arm
+  # above this one runs with nounset OFF. These arms re-enable `set -u` locally
+  # and are the only place in this suite where an unset-variable read in a
+  # sourced deploy function can actually abort. post_verify was never called by
+  # ANY arm before this block (grep 'post_verify' over this file was empty),
+  # which is how a fabricated "PV_MAT" defect survived three weeks of green runs.
+  local _ns_was _ns_ctl _pv_sha _pv_abort
+  case $- in *u*) _ns_was=1 ;; *) _ns_was=0 ;; esac
+  set -u
+  # CONTROL FIRST: prove nounset is live in this block. Without this, an arm
+  # that "passes under set -u" passes identically when set -u silently failed.
+  if ( unset _ns_probe142; : "$_ns_probe142" ) 2>/dev/null; then _ns_ctl=0; else _ns_ctl=1; fi
+  check_rc "142-nounset-is-live-in-this-block" "$_ns_ctl" 1
+  # Fixture: a real file to hash, a marker holding that hash, an `active` stub,
+  # and a meta path that must stay absent (expect_meta=0).
+  printf 'binary-payload\n' > "$T/pv-target"
+  _pv_sha="$(sha256sum "$T/pv-target" | cut -d' ' -f1)"
+  printf '%s' "$_pv_sha" > "$T/pv-marker"
+  printf '#!/usr/bin/env bash\necho active\n' > "$T/pv-active"; chmod +x "$T/pv-active"
+  # (a) MATCH: every precondition satisfied -> PV_MATCH=1, and it survives nounset.
+  ACTIVE_CMD="$T/pv-active" SWAP_TARGET="$T/pv-target" DEPLOYED="$T/pv-marker" \
+  DEPLOYED_META="$T/pv-meta-absent" SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
+  post_verify "$_pv_sha" "$_pv_sha" 0
+  check_rc "142-post_verify-match-nounset" "$PV_MATCH" 1
+  check_has "142-post_verify-detail-nounset" "$PV_DETAIL" '"match":true'
+  # (b) NO MATCH: marker differs -> PV_MATCH=0, still no unset read.
+  ACTIVE_CMD="$T/pv-active" SWAP_TARGET="$T/pv-target" DEPLOYED="$T/pv-marker" \
+  DEPLOYED_META="$T/pv-meta-absent" SKIP_PROC=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
+  post_verify "$_pv_sha" "0000000000000000000000000000000000000000000000000000000000000000" 0
+  check_rc "142-post_verify-nomatch-nounset" "$PV_MATCH" 0
+  # (c) The MEASURED contract, not an assumed one. ACTIVE_CMD is read inside a
+  # command substitution (oc-swap:173); under nounset that aborts only the
+  # SUBSHELL, so post_verify continues, ACTIVE stays empty and PV_MATCH stays 0.
+  # That is fail-closed: an unset dependency can never yield a false PASS. The
+  # first version of this arm asserted an ABORT and went red on green code —
+  # assert the behaviour that exists, and that the bare read is disclosed.
+  { unset ACTIVE_CMD; post_verify "$_pv_sha" "$_pv_sha" 0; } 2>"$T/pv-unset.err" >/dev/null
+  check_rc "142-post_verify-unset-dep-no-false-pass" "$PV_MATCH" 0
+  check_has "142-post_verify-unset-dep-disclosed" "$(cat "$T/pv-unset.err")" "unbound variable"
+  [ "$_ns_was" = 1 ] || set +u
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]
