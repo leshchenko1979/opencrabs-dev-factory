@@ -1,5 +1,70 @@
 # Changelog — opencrabs-dev
 
+## v0.4.330 — the lint leg gets a watchdog, and the calibration that was hiding behind a truncated log
+
+**What changed.** The LINT job (`fmt` + `clippy --lib --bins --tests --benches
+--all-features`) carried **no** STALLWATCH: the detector lived only in
+`pr-gates-nextest`, which is a different surface. A wedged `rustc` in the lint job
+therefore burned its full 25-minute step cap in silence, with nothing naming the
+process. Carrier `ci/quick-build-linux` `667f4a4f9` arms a **two-predicate**
+watchdog on that step.
+
+**Two predicates, not three, and the reason is the surface.** Predicate B ("no test
+completing") is deliberately ABSENT: this job compiles and never executes a test
+binary, so there is no completion to count. Copying it would have added ~150 lines
+that can never fire — and a detector that cannot fire on its own surface is worse
+than none, because it reads as coverage.
+
+| predicate | threshold | what it sees |
+|---|---|---|
+| A — flat CPU over the step's own process tree | **480 s** | a wedged `rustc`, a futex hang; needs no output at all |
+| C — log silence (armed once the log is non-empty) | **900 s** | a tree burning CPU while emitting nothing |
+
+**The calibration, and the trap in measuring it.** Six cold/failing runs, 283
+intra-step gaps: worst healthy compile silence **152.9 s**, always the same
+`Checking whatsapp-rust v0.7.0` dependency compile; p99 128.0 s, p50 0 s. So 900 s
+is **5.9×** the worst gap. The trap: the same window read as **438–580 s of
+"silence"** on the first pass, because `gh run view --log` does not stop at a step
+boundary — it runs straight into the NEXT step, and the gap measured was the
+following step's work. Bound any silence read to the step's own output window, and
+never calibrate this from a delivered log without doing so. (This is the same
+class of reader artefact the carrier's own comment already warns about for the
+nextest leg.)
+
+**Driven, not asserted.** Three arms with thresholds shrunk to 6 s / 8 s, logic
+identical to production:
+
+| arm | expectation | observed |
+|---|---|---|
+| healthy — CPU advancing, no log | A must not fire, C disarmed | `no-fire` |
+| flat CPU (sleeper) | A fires | `FIRE predicate=flat_cpu`, `wchan=hrtimer_nanosleep` |
+| burning CPU, log seeded, no output | C fires | `FIRE predicate=silence`, 2 procs SIGTERMed |
+
+**Mutation-verified**, so each predicate is load-bearing rather than decorative:
+neutering A killed only the flat-CPU arm; neutering C killed only the silence arm;
+restoring both brought both back. A detector whose arms all pass because it never
+runs is the failure this check exists to catch.
+
+**Fail-open but visibly so:** no `python3`, or an unparsable heredoc, emits
+`::warning::` and continues; arming emits `::notice::STALLWATCH armed (clippy leg)`.
+Without those, "no stall detected" and "the detector never ran" are the same green
+run. `tee` + `PIPESTATUS[0]`, never `$?` — a pipeline makes `$?` report the tee.
+
+**Law.** `editor.md` §Red-run triage: the signature bullet is retitled from "a
+`Run tests` RED" to "a step RED", because it now covers a leg that runs no tests,
+and it enumerates the two legs with their DIFFERENT predicate sets. It also stops
+citing `ci-lane-impl.yml:503` and names the step's own `env:` block as the
+authority — a line number is a dead pointer by the next commit.
+
+**Revert.** Delete the clippy step's `env:` + heredoc block and restore the plain
+`run: cargo clippy ...` line; restore the single-leg wording in `editor.md`.
+
+**Residual, stated rather than buried.** This converts a silent 25-minute burn into
+~8 minutes plus a stack; it does not PREVENT the stall, and the mechanism behind
+the compile-phase stalls is still unidentified. The detector is what makes the next
+one yield evidence.
+
+
 ## v0.4.329 — five dead pointers, and the tool that still speaks the retired words
 
 **What changed.** Five line-numbered cross-references in the live law files were repointed

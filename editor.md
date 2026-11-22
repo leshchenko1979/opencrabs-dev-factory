@@ -345,16 +345,28 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
   `gh run view <id> --json status,conclusion` FIRST — even ACKs can be
   stale. v0.4.6 predicates govern claims WE pass on; nothing sanitizes claims
   that ARRIVE — the receiver checks.
-- **A `Run tests` RED carrying `STALLWATCH FIRE` is a STALL, not a test failure**
-  (2026-11-17; threshold and calibration re-read 2026-11-19): the gate's
-  phase-agnostic watchdog SIGTERMs the build after **480 s** of flat CPU across
-  the step's own process tree (`STALLWATCH_SECS: "480"`, `ci-lane-impl.yml:503`
-  — the CARRIER is the authority, so a `300 s` figure in older text is
-  superseded), so the step dies with no failing test name, usually in ~5 min
-  instead of burning to the 45-min job cap. **Calibration: 480 s = 6.25× the
-  worst healthy inter-line gap**, measured across three GREEN runs (1.28 min,
-  ~46k lines each) — the green side is the only side whose delivered log is
-  COMPLETE, so the threshold rests on it and never on the hung side.
+- **A step RED carrying `STALLWATCH FIRE` is a STALL, not a failure of the work**
+  (2026-11-17; thresholds re-read 2026-11-19; the LINT leg armed 2026-11-22):
+  the gate's watchdog SIGTERMs the build after **480 s** of flat CPU across the
+  step's own process tree, so the step dies with no failing test name, usually in
+  ~5 min instead of burning to its cap. **The CARRIER is the authority for every
+  threshold** — read the step's own `env:` block, never a figure in prose, and a
+  `300 s` figure in older text is superseded. **It runs on TWO legs, and they do
+  not carry the same predicates:**
+  - `pr-gates-nextest` — THREE predicates: flat CPU **480 s**, no test completing
+    **780 s** (armed only after the first completion), log silence **900 s**
+    (armed only once the log is non-empty). Silence calibration there is the worst
+    healthy compile gap; do NOT derive the 780 s progress figure from silence.
+  - the LINT job (fmt + clippy) — **TWO predicates only**: flat CPU **480 s** and
+    log silence **900 s**. Predicate B is absent by design: that job compiles and
+    never executes a test binary, so it has no completion to count. Silence
+    calibration there is **152.9 s** worst healthy gap (six cold/failing runs, 283
+    intra-step gaps; p99 128 s, p50 0 s — always the `Checking whatsapp-rust`
+    dependency compile), so 900 s is 5.9×.
+  A fire from either leg names `predicate=flat_cpu|progress|silence`, so the
+  verdict says which clock ran out.
+  **Calibration on the green side only:** the green log is the only COMPLETE one,
+  so thresholds rest on it and never on the hung side.
   Read the dump before touching a test: `wchan`/`kstack` (futex vs
   read/io_schedule) is the #781-deadlock vs I/O-thrash discriminator and
   `syscall` names the blocking call. **Do not read a "test hang" off the log:**
