@@ -857,6 +857,20 @@ DISPATCH_ROW_RE = re.compile(
 #: for the whole 7-day window -- trading a visible duplicate for a silent loss.
 INFLIGHT_ROW_RE = re.compile(r"\bIN FLIGHT\b", re.IGNORECASE)
 
+#: A SETTLEMENT row for a PROVEN non-delivery (#146). `_stamp_not_sent` writes it
+#: to close out an `IN FLIGHT` note whose send never left, and its text
+#: deliberately keeps matching `DISPATCH_ROW_RE` -- so the reader below would
+#: count it as a settled dispatch and refuse the very retry the row recommends.
+#: Measured 2026-11-22 (HQ lane): `n=17585` read
+#: "NOT SENT (rc 2: no route); a retry is correct", and the retry with the
+#: CORRECT uuid was refused rc 9 "ALREADY dispatched ... at 15:03:36" -- the
+#: refusal naming the settlement row's own timestamp.
+#:
+#: Skipping it is sound because the row asserts, by construction, that NOTHING
+#: WAS SENT: it is written only on the rc=2 path, the one PROVEN non-delivery
+#: (`classify_notify_rc`). No dispatch occurred, so there is nothing to dedupe.
+NOT_SENT_ROW_RE = re.compile(r"\bNOT SENT\b", re.IGNORECASE)
+
 def _parse_ledger_ts(value):
     """A ledger row's timestamp as an aware datetime, or None if unparseable."""
     try:
@@ -1060,6 +1074,12 @@ def recent_dispatches(ledger_data, window_days=DISPATCH_WINDOW_DAYS):
             # that may have landed is recorded, never omitted).
             if ts is None or ts >= live_cutoff:
                 continue
+        elif NOT_SENT_ROW_RE.search(row["what"]):
+            # A settlement row for a proven non-delivery (#146): nothing was
+            # sent, so there is no dispatch to remember. Skipped regardless of
+            # age -- unlike the IN FLIGHT case above, this row never becomes
+            # evidence of a send, because its own text denies one.
+            continue
         m = DISPATCH_ROW_RE.search(row["what"])
         if not m:
             continue
@@ -3611,6 +3631,44 @@ def run_selftest():
               _inflight_fx.get(402, ("", None))[0], "bbbb2222")
     assert_true("#471 the ceiling is a send budget, never a fixed literal",
                 INFLIGHT_LIVE_SECS >= NOTIFY_TIMEOUT_SECS + RECEIPT_GRACE_SECS)
+
+    # Test 11c (#146): a NOT SENT settlement row is NOT dispatch memory. The row
+    # is written only on the rc=2 path (the one PROVEN non-delivery), so by its
+    # own construction nothing was sent -- but its text keeps matching
+    # DISPATCH_ROW_RE, so the reader counted it as a settled dispatch and
+    # refused the retry the row itself recommends. Measured live 2026-11-22:
+    # `n=17585` "NOT SENT (rc 2: no route); a retry is correct", then the retry
+    # with the correct uuid was refused rc 9 "ALREADY dispatched ... 15:03:36"
+    # -- the refusal naming that settlement row's own timestamp.
+    #
+    # POSITIVE CONTROL is arm 11c-3: a plain settled dispatch row must STILL be
+    # memory. Without it, a reader that returned nothing at all would pass 11c-1
+    # and the dedupe would be silently dead -- the failure this guard exists to
+    # prevent, reintroduced by its own fix.
+    # MUTATION KILL: delete the NOT_SENT_ROW_RE branch and 11c-1 reddens; make
+    # the branch unconditional and 11c-3 reddens.
+    _notsent_fixture = {
+        "events": [
+            {"kind": "note", "by": "hq 0117dd29", "t": _fresh_ts,
+             "what": "Triage dispatch issue #501 to editor cccc3333 "
+                     "\u2014 NOT SENT (rc 2: no route); a retry is correct"},
+            {"kind": "note", "by": "hq 0117dd29", "t": _fresh_ts,
+             "what": "Triage dispatch issue #502 to editor dddd4444 "
+                     "\u2014 wire zero-ack claim-first"},
+            {"kind": "note", "by": "hq 0117dd29", "t": _dead_ts,
+             "what": "Triage dispatch issue #503 to editor eeee5555 "
+                     "\u2014 NOT SENT (rc 2: no route); a retry is correct"},
+        ]
+    }
+    _notsent_fx = recent_dispatches(_notsent_fixture)
+    assert_true("#146 a NOT SENT row does NOT suppress the retry it recommends (#501)",
+                501 not in _notsent_fx)
+    assert_true("#146 ...at any age, because its own text denies a send (#503)",
+                503 not in _notsent_fx)
+    assert_true("#146 POSITIVE CONTROL: a settled dispatch row is STILL memory (#502)",
+                502 in _notsent_fx)
+    assert_eq("#146 ...and still names its lane, so the control is not vacuous",
+              _notsent_fx.get(502, ("", None))[0], "dddd4444")
 
     # Test 12: #337 arm A -- fork-space scoping, probed against a REAL git repo.
     # origin/main is a fork branch that ALSO carries upstream's history, and
