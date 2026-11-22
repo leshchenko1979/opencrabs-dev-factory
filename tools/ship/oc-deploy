@@ -1028,7 +1028,7 @@ case "$*" in
   *actions/runs/333/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (dddddddddddddddddddddddddddddddddddddddd, telegram)"}]}' ;;
   *actions/runs/668/jobs*) echo '{"jobs":[{"name":"Linux amd64 (ffffffffffffffffffffffffffffffffffffffff, telegram)","conclusion":"failure","check_run_url":"https://api.github.com/repos/leshchenko1979/opencrabs/check-runs/9002"}]}' ;;
   *check-runs/9002/annotations*) echo '[]' ;;
-  *actions/runs/666/jobs*|*actions/runs/667/jobs*|*actions/runs/669/jobs*|*actions/runs/670/jobs*) echo '{"jobs":[{"name":"ORDER gates","conclusion":"success"},{"name":"Linux amd64 (eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, telegram)","conclusion":"failure","check_run_url":"https://api.github.com/repos/leshchenko1979/opencrabs/check-runs/9001"}]}' ;;
+  *actions/runs/666/jobs*|*actions/runs/667/jobs*|*actions/runs/669/jobs*|*actions/runs/670/jobs*|*actions/runs/676/jobs*) echo '{"jobs":[{"name":"ORDER gates","conclusion":"success"},{"name":"Linux amd64 (eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, telegram)","conclusion":"failure","check_run_url":"https://api.github.com/repos/leshchenko1979/opencrabs/check-runs/9001"}]}' ;;
   *check-runs/9001/annotations*) echo '[{"path":"bad.txt","start_line":3}]' ;;
   *actions/runs/444*) echo '{"status":"in_progress","conclusion":null}' ;;
   *actions/runs/222*|*actions/runs/333*|*actions/runs/555*|*actions/runs/789*|*actions/runs/790*|*actions/runs/791*|*actions/runs/774*) echo '{"status":"completed","conclusion":"success"}' ;;
@@ -1582,6 +1582,14 @@ NSTUB2
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
     "$SELF_BIN" fanout --run 998 2>&1)"; rc=$?
   check_rc "fanout-decode-fail-rc" $rc 3
+  # (#932 criterion 2, half A) The GENUINELY-undecodable run must read as a fact
+  # about the RUN: rc 3, marked, and the text must NOT mention the decoder library
+  # (10f-ter is the other half — a missing library is rc 2 and says so). Asserting
+  # the absence of the library token here is what makes the pair discriminate: if
+  # a future edit let the rc-3 arm mention oc-embed.sh again, an operator could no
+  # longer tell "restore your checkout" from "this run carries no sha".
+  check_has "fanout-decode-fail-says-run" "$out" "no job name decodes"
+  case "$out" in *oc-embed.sh*) fail=$((fail+1)); echo "SELFTEST FAIL: #932 criterion 2 -- the undecodable-RUN arm names the decoder library, so its text no longer differs from the missing-library arm";; *) pass=$((pass+1));; esac
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
     "$SELF_BIN" fanout --run 998 2>&1)"; rc=$?
   check_rc "fanout-998-retry-rc" $rc 0
@@ -1608,28 +1616,43 @@ NSTUB2
   check_rc "fanout-unreadable-retry-rc" $rc 3
   n2="$(grep -c 'actions/runs/997/jobs' "$T/gh84.log" 2>/dev/null || true)"
   [ "${n2:-0}" -gt "${n1:-0}" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #84 the retry did not re-read the jobs list (n1=${n1:-0} n2=${n2:-0}) — it was answered idempotent"; }
-  # 10f-ter. (#68-plan TASK 2) A MISSING lib/oc-embed.sh is a fault of THIS BOX,
-  # not a statement about the run. Before the guard, the bare `[ -f ] && source`
-  # left oc_decode_job_sha_any UNDEFINED, the `|| continue` at the decode loop ate
-  # the rc 127, and run_built_sha returned 3 — PERMANENT "the jobs list was READ
-  # and carries no sha" — so fanout MARKED the run and its attribution was lost
-  # with no diagnostic naming the library. The pair with 10f IS the assertion:
-  # 998 was READ and carries no sha -> rc 3 AND marked (permanent); a missing
-  # decoder -> rc 3 and NOT marked, plus a diagnostic naming oc-embed.sh (a
-  # transient box fault, retried by the next scan). Run 995 is used, not 998,
-  # because 10f already marked 998 and the idempotence guard would answer first.
+  # 10f-ter. (#932 criterion 1 + criterion 2 half B) A MISSING lib/oc-embed.sh is
+  # a fault of THIS BOX, not a statement about the run. Before the guard, the bare
+  # `[ -f ] && source` left oc_decode_job_sha_any UNDEFINED, the `|| continue` at
+  # the decode loop ate the rc 127, and run_built_sha returned 3 — PERMANENT "the
+  # jobs list was READ and carries no sha" — so fanout MARKED the run and its
+  # attribution was lost with no diagnostic naming the library.
+  # The pair with 10f IS the assertion (criterion 2): 998 was READ and carries no
+  # sha -> rc 3, marked, text about the RUN; a missing decoder -> rc 2, NOT marked,
+  # text naming the CHECKOUT. Different rc AND different text, asserted from both
+  # sides. Run 995 is used, not 998, because 10f already marked 998 and the
+  # idempotence guard would answer first.
   local ND="$T/noembed"
   mkdir -p "$ND/tools/lib" "$ND/tools/ship"
   cp "$SELF_BIN" "$ND/tools/ship/oc-deploy"
   cp "$OC_TOOLS_DIR/lib/oc-log.sh" "$ND/tools/lib/" 2>/dev/null || true
   cp "$OC_TOOLS_DIR/lib/oc-notify.sh" "$ND/tools/lib/" 2>/dev/null || true
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
+  # The GH_LOG assertion below is what pins the ORDERING: the guard must answer
+  # BEFORE any DECODER-NEEDING call, so a network blip cannot be reported as the
+  # cause while the broken checkout goes unnamed. The run-metadata fetch is allowed
+  # (it is what tells us success-vs-red, and red needs no decoder); the /jobs fetch
+  # is not, because that is the first call oc_decode_job_sha_any is needed for.
+  : > "$T/gh995.log"
+  out="$(GH_LOG="$T/gh995.log" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
     "$ND/tools/ship/oc-deploy" fanout --run 995 2>&1)"; rc=$?
-  check_rc "fanout-noembed-rc" $rc 3
+  check_rc "fanout-noembed-rc" $rc 2
   check_has "fanout-noembed-names-lib" "$out" "oc-embed.sh"
   check_has "fanout-noembed-not-an-absent-sha" "$out" "NOT marked done"
+  check_has "fanout-noembed-names-checkout" "$out" "broken LOCAL TOOL TREE"
+  check_has "fanout-noembed-escape-hatch" "$out" "OC_DEPLOY_ENV=missing-embed-lib"
+  if grep -q '/jobs' "$T/gh995.log" 2>/dev/null; then
+    fail=$((fail+1)); echo "SELFTEST FAIL: #932 the missing-library guard ran AFTER the jobs fetch — a network blip would be reported as the cause and the broken checkout would go unnamed"
+  else
+    pass=$((pass+1))
+  fi
+  case "$out" in *"no job name decodes"*) fail=$((fail+1)); echo "SELFTEST FAIL: #932 criterion 2 -- the missing-library arm uses the undecodable-RUN phrasing, so rc 2 and rc 3 no longer differ in text";; *) pass=$((pass+1));; esac
   if jq -e '.runs["995"]' "$SD/fanout.state" >/dev/null 2>&1; then
-    fail=$((fail+1)); echo "SELFTEST FAIL: #68 TASK 2 a missing decoder MARKED the run done — a box fault became a permanent loss of attribution"
+    fail=$((fail+1)); echo "SELFTEST FAIL: #932 a missing decoder MARKED the run done — a box fault became a permanent loss of attribution"
   else
     pass=$((pass+1))
   fi
@@ -1655,7 +1678,14 @@ NSTUB2
   # passes for the WRONG reason when the library is genuinely absent, since rc 4
   # would then come from the `! command -v` clause rather than the flag).
   command -v oc_notify_session >/dev/null 2>&1 && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #932 vacuity control -- oc_notify_session ABSENT here, so notify-nolib-rc cannot discriminate a missing library from a missing flag"; }
-  case "$out" in *127*) fail=$((fail+1)); echo "SELFTEST FAIL: #932 the missing-notify diagnostic leaked rc 127 -- an undeclared code in a durable record";; *) pass=$((pass+1));; esac
+  # The glob must be ANCHORED to a token. A bare `*127*` matched a digit run inside
+  # a mktemp path ($OC_TOOLS_DIR is e.g. /tmp/criterion-tree-65j127zo, and
+  # _OC_NOTIFY_LIB embeds it), so the arm failed for a reason that has nothing to
+  # do with the defect it names -- a test that lies in the SAFE direction still lies.
+  case "$out" in
+    *"rc 127"*|*"rc=127"*|*"verb_rc:127"*) fail=$((fail+1)); echo "SELFTEST FAIL: #932 the missing-notify diagnostic leaked rc 127 -- an undeclared code in a durable record";;
+    *) pass=$((pass+1));;
+  esac
   # the retry loop must not run for this cause: assert the budget gate names it
   grep -q '_OC_NOTIFY_MISSING:-0}" != 1' "$SELF_BIN" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #932 notify_one can still burn the retry budget on a missing library"; }
   # 10g. #72: gates-FIRST job ordering with the bare-sha gates name
@@ -2476,6 +2506,24 @@ NSTUB3
   grep -q "cccccccc-1111" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: RED scan did not notify culprit"; }
   jq -e '.runs["888"]' "$SD/fanout.state" >/dev/null 2>&1 \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: RED scan state unmarked"; }
+  # 17m-bis. (#932 REGRESSION CONTROL) A MISSING decoder must NOT refuse a RED run.
+  # red_leg needs no decoder at all (it reads the jobs list and runs git blame), so
+  # the entry guard is deliberately loud-but-not-fatal: refusing at entry would take
+  # away a path that works. 10f-ter alone cannot see that regression -- it passes
+  # whether the guard fires at entry or on the success arm -- so this arm is the one
+  # that discriminates, and it uses the SAME noembed tree 10f-ter built ($ND).
+  : > "$NOTIFY_LOG"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc1" OC_DEPLOY_REMOTE="$T/red1.git" \
+    OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
+    "$ND/tools/ship/oc-deploy" fanout --run 676 2>&1)"; rc=$?
+  check_rc "noembed-red-attrs-rc" $rc 0
+  check_has "noembed-red-warns" "$out" "oc-embed.sh"
+  case "$out" in
+    *"broken LOCAL TOOL TREE"*) fail=$((fail+1)); echo "SELFTEST FAIL: #932 a missing decoder REFUSED a red run — red_leg needs no decoder, so the guard narrowed a path that works";;
+    *) pass=$((pass+1));;
+  esac
+  grep -q "cccccccc-1111" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #932 a missing decoder suppressed RED blame attribution (no culprit notified)"; }
+  jq -e '.runs["676"]' "$SD/fanout.state" >/dev/null 2>&1 && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #932 a missing decoder left the red run UNMARKED — attribution would repeat forever"; }
   local NJ1 NJ2 NEWJ
   NJ1="$(ls "$SD/oc-deploy/journal/"fanout-888-*.jsonl 2>/dev/null | wc -l)"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc1" OC_DEPLOY_REMOTE="$T/red1.git" \
@@ -3167,10 +3215,30 @@ run_built_sha() { # $1=run id -> echo sha from the FIRST job name that decodes (
   # 44420005606 (2026-11-18) both recorded decode-error with notified=0 while a
   # plain re-run decoded the same run seconds later.
   #
-  # Internal code only — no user-facing rc changes. The three other callers
-  # (ship --wait candidate scans, poll) already treat empty output as "skip this
-  # candidate" and never branch on this rc.
+  # rc 2 is the third fact and the one #932 was filed for: the EMBED DECODER IS
+  # NOT ON THIS CHECKOUT. It is not a statement about the run at all — no job name
+  # can even be evaluated — so it is neither permanent (rc 3) nor worth a blind
+  # retry (rc 5): it is a broken local tools tree, and the caller must say so
+  # rather than report the run as unattributable.
+  #
+  # (#932) This DOES reach the user: `fanout` branches on rc 2 and dies 2 naming
+  # the missing library. An earlier version of this comment claimed "internal code
+  # only — no user-facing rc changes"; that stopped being true the moment a
+  # missing decoder got its own code, because the whole point is that the operator
+  # sees "restore tools/lib/oc-embed.sh" instead of "run has no decodable job".
+  # The three other callers (ship --wait candidate scans, poll) still treat empty
+  # output as "skip this candidate" and never branch on this rc, so they are
+  # unaffected.
   local jn s jobs jobs_rc names dec_rc
+  # (#932) Check the LOCAL defect BEFORE the network call. A missing decoder is
+  # both the more actionable fact and the one no retry can fix, so it must never
+  # be masked by a gh blip: with the check below, a broken checkout reports rc 2
+  # deterministically and makes no API call at all.
+  if [ "${_OC_EMBED_MISSING:-0}" = 1 ] || ! command -v oc_decode_job_sha_any >/dev/null 2>&1; then
+    printf 'decode unavailable: %s missing or does not define oc_decode_job_sha_any — this checkout cannot evaluate ANY job name; restore the library (a broken tools tree, not a fact about the run) (#932)\n' \
+      "${_OC_EMBED:-lib/oc-embed.sh}" >&2
+    return 2
+  fi
   jobs="$("$GH" api "repos/$FORK/actions/runs/$1/jobs" 2>&1)"; jobs_rc=$?
   if [ "$jobs_rc" != 0 ]; then
     printf 'gh api jobs rc=%s: %s' "$jobs_rc" \
@@ -3197,7 +3265,7 @@ run_built_sha() { # $1=run id -> echo sha from the FIRST job name that decodes (
   return 3
 }
 
-decode_built_sha() { # $1=run id -> echoes 40-hex sha from first decodable job name (any shape — #72); rc 0/3
+decode_built_sha() { # $1=run id -> echoes 40-hex sha from first decodable job name (any shape — #72); rc 0/2/3/5 (rc 2 = decoder lib missing from THIS checkout, #932)
   run_built_sha "$1"
 }
 
@@ -3454,6 +3522,23 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
     echo "fanout-skip run=$run reason=done (idempotent)"
     exit 0
   fi
+  # (#932) THE CHECKOUT GUARD, AT THE ENTRY — before the network call, because a
+  # missing decoder library makes EVERY job name of EVERY run unevaluable, and no
+  # retry can fix it. Placed after the idempotence skip (a finished run stays a
+  # no-op even on a broken tree) and before `gh api`, so a network blip can never
+  # be reported as the cause while the real fault — a broken LOCAL TOOL TREE —
+  # goes unnamed. The `success)`-arm backstop below stays as defence in depth.
+  if [ "${_OC_EMBED_MISSING:-0}" = 1 ] || ! command -v oc_decode_job_sha_any >/dev/null 2>&1; then
+    # (#932) LOUD at entry, FATAL on the success arm. Both halves matter.
+    # Loud here: the broken checkout is named on every invocation, before any
+    # network call, so a gh blip can never be read as the cause.
+    # NOT fatal here: red_leg needs no decoder at all (it reads the jobs list and
+    # git blame), so dying at entry would refuse a path that works -- a fix for
+    # one arm must not narrow another. The fatal refusal is the success arm below,
+    # which is the first point that genuinely needs oc_decode_job_sha_any.
+    jline fanout-start 2 "{\"run\":\"$run\",\"warning\":\"built-sha-no-embed-lib\"}"
+    printf '%s\n' "oc-deploy: WARNING — the embed decoder library is MISSING from this checkout (restore tools/lib/oc-embed.sh). A SUCCESS run will be REFUSED with rc 2 before any job name is evaluated; a RED run still attributes normally (#932)" >&2
+  fi
   runjson="$("$GH" api "repos/$FORK/actions/runs/$run" 2>/dev/null)" \
     || { jline fanout-start 3 "{\"run\":\"$run\",\"error\":\"gh-api-fail\"}"; die 3 "fanout: gh api run fetch failed for $run"; }
   status="$(printf '%s' "$runjson" | jq -r '.status // empty')"
@@ -3485,7 +3570,7 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
         # marked, because "the jobs list was read and carries no sha" is a fact
         # about the run and must not be re-struck forever (#63).
         jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-unreadable\"}"
-        die 3 "fanout: cannot READ the jobs list for run $run (or the decoder library is missing — see the diagnostic above) — NOT marked done, the next scan retries (#84)"
+        die 3 "fanout: cannot READ the jobs list for run $run — NOT marked done, the next scan retries (#84)"
       fi
       [ -n "$bsha" ] || { jline fanout-end 3 "{\"run\":\"$run\",\"error\":\"built-sha-decode-fail\",\"cause\":\"undecodable\"}"; fanout_mark_done "$run" "decode-error" 0 0 0; die 3 "fanout: no job name decodes a built sha for run $run (marked decode-error — the run itself carries no sha)"; }   # #63 family (v0.4.79): mark, don't re-strike forever
       dep="$(head -1 "$DEPLOYED" 2>/dev/null || echo none)"
