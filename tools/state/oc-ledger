@@ -239,6 +239,26 @@ parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
 }
 STATE_DIR() { dirname "$LEDGER"; }
 
+# --- THE LIVE STATE DIR, BY AN IDENTITY THAT CANNOT FLOAT (#149, 2026-11-22) --
+# The migrate destination guard compared STATE_DIR() against $STATE_DIR_DEFAULT,
+# and BOTH read $OC_DEV_STATE (:185 and :237) — so with that variable set they
+# were equal BY CONSTRUCTION and the guard fired on any scratch dir. Measured:
+# OC_DEV_STATE=/tmp/scratch → "refusing to migrate the LIVE state dir
+# (/tmp/scratch)". The consequence is worse than a false positive: the only way
+# past it was --live, the flag that permits the REAL live dir, so the guard
+# trained operators to reach for the bypass to do a safe thing. A guard whose
+# false positives are cured by its own bypass has inverted its purpose.
+# So the live dir is spelled from $HOME and NOTHING ELSE. $HOME stays in the
+# expression deliberately: a test can relocate it (HOME=$fake) and exercise the
+# guard without ever pointing it at the real record.
+LIVE_STATE_DIR="$HOME/.opencrabs/profiles/ops/opencrabs-dev"
+is_live_state_dir() { # $1 = candidate dir; rc 0 = it IS the live state dir
+  local d l
+  d="$(cd "${1:-}" 2>/dev/null && pwd -P)" || return 1
+  l="$(cd "$LIVE_STATE_DIR" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$d" ] && [ -n "$l" ] && [ "$d" = "$l" ]
+}
+
 # --- "is this path a git checkout?" (factory #70) -----------------------------
 # `[ -d "$sd/.git" ]` answers FALSE for a LINKED WORKTREE: there `.git` is a small
 # ASCII FILE holding `gitdir: …`, not a directory. Every site below either RUNS
@@ -2439,15 +2459,21 @@ cmd_migrate() {
   local to="" src_override="" force=0 live_ok=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      -h|--help) echo "usage: oc-ledger migrate --to jsonl [--source <workers-ledger.json>] [--force] [--live]
+      -h|--help) echo "usage: oc-ledger migrate --to jsonl [--source <workers-ledger.json>] [--ledger <path>] [--force] [--live]
   Convert a legacy single-file ledger into events.jsonl + workers.json, leaving
   workers-ledger.json as a regenerated view. Refuses to clobber an existing
   events.jsonl unless --force, and refuses the LIVE state dir unless --live
   (flipping the live write path is a declared window, not a side effect).
+  --ledger <path> points the STATE dir at a copy (the destination), so
+  'migrate --to jsonl --ledger /tmp/x/workers-ledger.json' migrates a scratch
+  copy; OC_LEDGER=<path> with OC_DEV_STATE unset is the same seam. #149: this
+  flag is named by the refusal below, so it must exist in THIS verb's arg loop
+  (a global --ledger only parses BEFORE the subcommand).
   Prints the frozen source path, its sha256 and the row count so a parity gate
   has something to check against."; exit 0 ;;
       --to) to="${2:-}"; shift 2 ;;
       --source) src_override="${2:-}"; shift 2 ;;
+      --ledger) LEDGER="${2:-}"; [ -n "$LEDGER" ] || die 2 "migrate: --ledger needs a path"; shift 2 ;;
       --force) force=1; shift ;;
       --live) live_ok=1; shift ;;
       *) die 2 "migrate: unknown argument '$1' (see --help)" ;;
@@ -2462,8 +2488,12 @@ cmd_migrate() {
   # "isolated" copy was never isolated and the write path flipped without a
   # declared window. A guard on the DESTINATION catches that class regardless of
   # how the path got there: flipping the live record is an explicit act.
-  if [ "$live_ok" -eq 0 ] && [ "$(cd "$sd" 2>/dev/null && pwd -P)" = "$(cd "$STATE_DIR_DEFAULT" 2>/dev/null && pwd -P)" ]; then
-    die 2 "migrate: refusing to migrate the LIVE state dir ($sd) — that flips the live write path (P3, a declared window). Use --ledger <scratch>/workers-ledger.json to migrate a copy, or pass --live to acknowledge the cutover."
+  # The identity comes from is_live_state_dir() (:242) — NOT from
+  # $STATE_DIR_DEFAULT, which reads $OC_DEV_STATE and so made this comparison
+  # compare a value with itself (#149, measured: a /tmp scratch dir was refused
+  # as "the LIVE state dir").
+  if [ "$live_ok" -eq 0 ] && is_live_state_dir "$sd"; then
+    die 2 "migrate: refusing to migrate the LIVE state dir ($sd) — that flips the live write path (P3, a declared window). Migrate a COPY instead: 'migrate --to jsonl --ledger <scratch>/workers-ledger.json' (or OC_LEDGER=<scratch>/workers-ledger.json with OC_DEV_STATE unset), or pass --live to acknowledge the cutover on the real one."
   fi
   local src="${src_override:-$LEDGER}"
   [ -f "$src" ] || die 2 "migrate: source ledger not found: $src"
@@ -5076,13 +5106,58 @@ EOF
  "meta":{"generation":3}}
 M149EOF
   }
-  # (1) the LIVE state dir is refused without --live
-  M149L="$M149/live"; seed149 "$M149L"
-  OC_DEV_STATE="$M149L/state" OC_LEDGER="$M149L/state/workers-ledger.json" \
-    bash "$ME" migrate --to jsonl >/dev/null 2>"$M149L/err"
+  # (1) #149 DEFECT, measured 2026-11-22 by the HQ lane while verifying P1+P2:
+  # the destination guard compared STATE_DIR() against $STATE_DIR_DEFAULT, and
+  # BOTH read $OC_DEV_STATE (:185 and :237) — so with that variable set they
+  # were equal BY CONSTRUCTION and EVERY scratch dir was refused as "the LIVE
+  # state dir". The arm that used to sit here ASSERTED that false positive (a
+  # $M149L/state scratch dir, refused as live), which is exactly how the guard
+  # stayed green while broken: the arm encoded the bug. The only way past it was
+  # --live — the flag that permits the REAL live dir.
+  # A GENUINE live dir is now spelled from a RELOCATED $HOME, so the guard is
+  # exercised without ever pointing at the real record.
+  M149H="$M149/home"
+  M149L="$M149H/.opencrabs/profiles/ops/opencrabs-dev"
+  mkdir -p "$M149L"
+  seed149 "$M149H/seedtmp"
+  mv "$M149H/seedtmp/state/workers-ledger.json" "$M149L/workers-ledger.json"
+  rm -rf "$M149H/seedtmp"
+  HOME="$M149H" OC_DEV_STATE= OC_LEDGER="$M149L/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>"$M149/err"
   chk "mig149-refuses-the-live-state-dir" 2 $?
-  [ ! -f "$M149L/state/events.jsonl" ] && ok || bad "mig149-live-refusal-wrote-nothing"
-  grep -q 'refusing to migrate the LIVE state dir' "$M149L/err" && ok || bad "mig149-live-refusal-names-the-reason"
+  [ ! -f "$M149L/events.jsonl" ] && ok || bad "mig149-live-refusal-wrote-nothing"
+  grep -q 'refusing to migrate the LIVE state dir' "$M149/err" && ok || bad "mig149-live-refusal-names-the-reason"
+
+  # (1b) POSITIVE CONTROL for that guard: SAME relocated $HOME, destination is a
+  # scratch dir reached through OC_DEV_STATE — the false positive must be GONE.
+  # Without this arm the guard could satisfy (1) by refusing everything, which
+  # is precisely the defect being fixed.
+  M149S="$M149/scratch"; seed149 "$M149S"
+  HOME="$M149H" OC_DEV_STATE="$M149S/state" OC_LEDGER="$M149S/state/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>"$M149/err2"
+  chk "mig149-scratch-not-refused-when-OC_DEV_STATE-set" 0 $?
+  [ -s "$M149S/state/events.jsonl" ] && ok || bad "mig149-scratch-guard-false-positive-wrote-nothing"
+  grep -q 'LIVE state dir' "$M149/err2" && bad "mig149-scratch-guard-false-positive-diagnostic" || ok
+
+  # (1c) --live must still permit the genuine live dir, or the bypass is dead
+  # and the guard has become a wall with no declared window at all.
+  HOME="$M149H" OC_DEV_STATE= OC_LEDGER="$M149L/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl --live >/dev/null 2>&1
+  chk "mig149-live-flag-permits-the-live-dir" 0 $?
+  [ -s "$M149L/events.jsonl" ] && ok || bad "mig149-live-flag-wrote-the-record"
+
+  # (1d) #149 DEFECT 2: the refusal's own remedy must EXIST. It printed
+  # "Use --ledger <scratch>/workers-ledger.json", and migrate's arg loop did not
+  # accept --ledger at all (rc 2 "unknown argument '--ledger'") — so the one
+  # instruction the operator was given could not be followed. This arm runs the
+  # printed remedy VERBATIM rather than a paraphrase of it.
+  M149D="$M149/remedy"; seed149 "$M149D"
+  HOME="$M149H" OC_DEV_STATE= \
+    bash "$ME" migrate --to jsonl --ledger "$M149D/state/workers-ledger.json" >/dev/null 2>&1
+  chk "mig149-printed-remedy-is-a-real-flag" 0 $?
+  [ -s "$M149D/state/events.jsonl" ] && ok || bad "mig149-printed-remedy-migrated-the-copy"
+  HOME="$M149H" OC_DEV_STATE= bash "$ME" migrate --to jsonl --ledger >/dev/null 2>&1
+  chk "mig149-ledger-flag-without-value" 2 $?
 
   # (2) a scratch dir migrates
   M149A="$M149/a"; seed149 "$M149A"
