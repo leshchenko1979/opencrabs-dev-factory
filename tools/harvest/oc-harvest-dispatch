@@ -73,6 +73,14 @@ Exit codes:
   2: Usage error
   3: Git or API failure
   4: CAPACITY_EXHAUSTED / Target lane busy with active claims
+
+MODE register (canonical: SKILL.md §UPSTREAM FILING REGISTER):
+  The dispatch contract line prints the LIVE state, read from the newest MODE: note row:
+    FORK-STANDING        default; nothing is filed -- not filing is the normal state
+    UPSTREAM-ON-REQUEST  only the groups the OWNER NAMED are filed, on a GREEN CI gate
+  Legacy rows read FORWARD, never backwards: MODE: DEGRADED => FORK-STANDING;
+  MODE: HIGH-TRUST => UPSTREAM-ON-REQUEST with no named groups. No MODE row, or an
+  unreadable ledger, reads FORK-STANDING (fail closed: nothing is filed).
 EOF
   exit "${1:-2}"
 }
@@ -1449,31 +1457,49 @@ elif action == 'dispatch':
     # They never block a dispatch — an orphan path is what an upstream PR is for.
     _adv = v.get('advisories') or []
     adv_section = ('\nPackaging Advisories (weigh at port time; NOT a gate failure):\n' + '\n'.join('  - ' + a for a in _adv) + '\n') if _adv else ''
+    # MODE register (canonical: SKILL.md §UPSTREAM FILING REGISTER). The owner
+    # retired the 2026-09-20 names on 2026-11-12; the two LIVE tokens are
+    # FORK-STANDING (default: nothing is filed, and not filing is the normal,
+    # finished state) and UPSTREAM-ON-REQUEST (only the groups the OWNER NAMED
+    # are filed). A legacy row reads FORWARD, never backwards: MODE: DEGRADED
+    # means FORK-STANDING, and MODE: HIGH-TRUST means UPSTREAM-ON-REQUEST with
+    # NO named groups (still nothing filed until a group is named). The legacy
+    # tokens stay readable on purpose -- ledger history is never rewritten --
+    # but neither is ever RETURNED or PRINTED.
     def read_harvest_mode(ledger_file):
-        '''Fail closed to DEGRADED when the live mode cannot be read.'''
+        '''Resolve the live MODE; fail closed to FORK-STANDING.
+
+        Fail-closed direction is "nothing is filed": no MODE row, an unreadable
+        ledger and a missing oc-ledger all read FORK-STANDING.
+        '''
         ledger_tool = os.path.join(os.environ.get('OC_TOOLS_DIR', ''), 'state', 'oc-ledger')
         if not ledger_tool or not os.path.exists(ledger_tool):
-            return 'DEGRADED'
+            return 'FORK-STANDING'
         try:
             res = subprocess.run([ledger_tool, 'events', '--n', '2000', '--kind', 'note', '--full'],
                                  capture_output=True, text=True, timeout=10)
         except Exception:
-            return 'DEGRADED'
+            return 'FORK-STANDING'
         if res.returncode != 0:
-            return 'DEGRADED'
+            return 'FORK-STANDING'
         for line in reversed(res.stdout.splitlines()):
             upper = line.upper()
+            if 'MODE:UPSTREAM-ON-REQUEST' in upper or 'MODE: UPSTREAM-ON-REQUEST' in upper:
+                return 'UPSTREAM-ON-REQUEST'
+            if 'MODE:FORK-STANDING' in upper or 'MODE: FORK-STANDING' in upper:
+                return 'FORK-STANDING'
+            # Legacy rows, read FORWARD only (owner ruling 2026-11-12).
             if 'MODE:HIGH-TRUST' in upper or 'MODE: HIGH-TRUST' in upper:
-                return 'HIGH-TRUST'
+                return 'UPSTREAM-ON-REQUEST'
             if 'MODE:DEGRADED' in upper or 'MODE: DEGRADED' in upper:
-                return 'DEGRADED'
-        return 'DEGRADED'
+                return 'FORK-STANDING'
+        return 'FORK-STANDING'
 
     harvest_mode = read_harvest_mode(ledger_file)
-    if harvest_mode == 'HIGH-TRUST':
-        contract_line = f'Mode: HIGH-TRUST. Contract: AUTO-SHIP on GREEN CI gate. File PR ({contract_mode}) on {upstream_repo}:main citing gate run ID, link fork {iss_str}, include dependency notices if applicable, notify Triage.'
+    if harvest_mode == 'UPSTREAM-ON-REQUEST':
+        contract_line = f'Mode: UPSTREAM-ON-REQUEST. Contract: only the groups the OWNER NAMED are filed, on a GREEN CI gate + verified 4-leg smoke pass. File PR ({contract_mode}) on {upstream_repo}:main citing the gate run ID + smoke evidence, link fork {iss_str}, include dependency notices if applicable, notify Triage.'
     else:
-        contract_line = f'Mode: DEGRADED. Contract: prepare and validate the harvest, but PARK the upstream PR for explicit owner approval; do not auto-file or auto-ship. Global harvest freeze applies under the MODE REGISTER.'
+        contract_line = 'Mode: FORK-STANDING. Contract: file NOTHING upstream; keeping the change on the fork is the normal, finished state, not a backlog. Prepare and validate the harvest, but do not file -- filing needs an UPSTREAM-ON-REQUEST MODE row naming the groups.'
 
     envelope = f'''[HARVEST DISPATCH: {iss_str}]
 Target Issue: {iss_str} ({slug})
@@ -2115,33 +2141,151 @@ EOF
   fi
   echo "  ok 6-S-2 - #343 the source set is comma-joined, not space-joined"
   unset OC_HARVEST_MOCK_DEPLOYED_TS
+  # 6a. MODE register (#141). The dispatch envelope is the most lane-facing text
+  #     in the harvest flow, so it must speak the LIVE vocabulary (owner ruling
+  #     2026-11-12: FORK-STANDING / UPSTREAM-ON-REQUEST) and a legacy row must
+  #     read FORWARD. These legs are a SET, not a pile: every leg asserts the
+  #     EXACT token on the contract line (never merely that a 'Mode:' line
+  #     exists), both legacy inputs are proven to land on their live successor,
+  #     the retired-token scan runs on the ACTUAL emitted bytes of every branch,
+  #     and 6a-7 is the POSITIVE CONTROL -- the same extractor and scan are fed
+  #     a retired-vocabulary decoy and must catch it, so a predicate that
+  #     recognises nothing cannot pass this set.
   local mode_ledger="$st_dir/ledger-mode.json"
-  jq '.events += [{"n":99,"t":"2026-09-24T00:00:00Z","kind":"note","by":"hq","what":"MODE: HIGH-TRUST"}]' "$mock_ledger" > "$mode_ledger"
-  export OC_LEDGER="$mode_ledger"
   export OC_HARVEST_MOCK_DEPLOYED_TS="100000"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)"
-  if [ "$?" -eq 0 ] && oc_has "$out" "Mode: HIGH-TRUST" && oc_has "$out" "Contract: AUTO-SHIP"; then
-    echo "  ok 6a - HIGH-TRUST dispatch carries AUTO-SHIP contract"
+
+  # mode_token <envelope> -> the token printed on the 'Mode: <TOKEN>.' line.
+  mode_token() { printf '%s\n' "$1" | sed -n 's/^Mode: \([A-Z-]*\)\..*$/\1/p' | head -1; }
+  # retired_hits <text> -> count of retired-vocabulary occurrences in the bytes.
+  retired_hits() { printf '%s\n' "$1" | grep -c -E 'DEGRADED|HIGH-TRUST' || true; }
+  # with_mode <note-text> -> $mode_ledger carrying that MODE row, newest.
+  # with_modes <note>... -> same, appending each in order (the LAST is newest).
+  with_modes() {
+    cp "$mock_ledger" "$mode_ledger"
+    local _n=90 _m
+    for _m in "$@"; do
+      jq --arg w "$_m" --argjson n "$_n" \
+        '.events += [{"n":$n,"t":"2026-09-24T00:00:00Z","kind":"note","by":"hq","what":$w}]' \
+        "$mode_ledger" > "$mode_ledger.tmp" && mv "$mode_ledger.tmp" "$mode_ledger"
+      _n=$((_n + 1))
+    done
+  }
+  with_mode() { with_modes "$1"; }
+  # dispatch_ledger <ledger-path> -> sets rc/out from a dry-run dispatch.
+  dispatch_ledger() {
+    export OC_LEDGER="$1"
+    rc=0
+    out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)" || rc=$?
+  }
+
+  # 6a. Live token UPSTREAM-ON-REQUEST -> the filing contract. The fixture puts
+  #     an OLDER legacy row UNDER it on purpose: a reader blind to the live token
+  #     falls through to the legacy row and answers FORK-STANDING, so this leg
+  #     fails for a blind reader instead of passing by luck.
+  with_modes "MODE: DEGRADED" "MODE: UPSTREAM-ON-REQUEST — owner named group 3"
+  dispatch_ledger "$mode_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "UPSTREAM-ON-REQUEST" ] && oc_has "$out" "citing the gate run ID"; then
+    echo "  ok 6a - #141 live MODE: UPSTREAM-ON-REQUEST wins over an older legacy row and dispatches as UPSTREAM-ON-REQUEST"
   else
-    echo "  bad 6a - HIGH-TRUST contract missing or wrong: $out"
+    echo "  bad 6a - #141 expected UPSTREAM-ON-REQUEST + filing contract, got rc=$rc token='$(mode_token "$out")' ($out)"
     return 1
   fi
-  jq 'del(.events[-1])' "$mode_ledger" > "$mode_ledger.tmp" && mv "$mode_ledger.tmp" "$mode_ledger"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mode_ledger" "false" "true" 2>&1)"
-  rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "Mode: DEGRADED" && ! oc_has "$out" "AUTO-SHIP" && oc_has "$out" "owner approval" && ! oc_has "$out" "relaxed PR-Freeze Law"; then
-    echo "  ok 6a-2 - missing MODE fails closed to DEGRADED"
+
+  # 6a-1. Live token FORK-STANDING -> the file-nothing contract. Same shape: an
+  #       older legacy HIGH-TRUST row sits UNDER it. Fail-closed alone cannot
+  #       pass this leg -- a reader blind to the live token reads the older row
+  #       and answers UPSTREAM-ON-REQUEST.
+  with_modes "MODE: HIGH-TRUST" "MODE: FORK-STANDING — nothing is filed"
+  dispatch_ledger "$mode_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "FORK-STANDING" ] && oc_has "$out" "file NOTHING upstream" && ! oc_has "$out" "File PR ("; then
+    echo "  ok 6a-1 - #141 live MODE: FORK-STANDING wins over an older legacy row, file nothing"
   else
-    echo "  bad 6a-2 - missing MODE must fail closed: rc=$rc ($out)"
+    echo "  bad 6a-1 - #141 expected FORK-STANDING + file-nothing contract, got rc=$rc token='$(mode_token "$out")' ($out)"
     return 1
   fi
-  export OC_LEDGER="$st_dir/missing-ledger.json"
-  out="$(run_engine "dispatch" "83" "$commit_83" "none" "$mock_repo" "adolfousier/main" "opencrabs/opencrabs" "$mock_ledger" "false" "true" 2>&1)"
-  rc=$?
-  if [ "$rc" -eq 0 ] && oc_has "$out" "Mode: DEGRADED" && ! oc_has "$out" "AUTO-SHIP"; then
-    echo "  ok 6a-3 - unreadable ledger fails closed"
+
+  # 6a-2. Legacy MODE: DEGRADED reads FORWARD to FORK-STANDING.
+  with_mode "MODE: DEGRADED"
+  dispatch_ledger "$mode_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "FORK-STANDING" ] && oc_has "$out" "file NOTHING upstream"; then
+    echo "  ok 6a-2 - #141 legacy MODE: DEGRADED reads FORWARD to FORK-STANDING"
   else
-    echo "  bad 6a-3 - unreadable MODE must fail closed: rc=$rc ($out)"
+    echo "  bad 6a-2 - #141 legacy DEGRADED must read forward to FORK-STANDING, got rc=$rc token='$(mode_token "$out")' ($out)"
+    return 1
+  fi
+
+  # 6a-3. Legacy MODE: HIGH-TRUST reads FORWARD to UPSTREAM-ON-REQUEST.
+  with_mode "MODE: HIGH-TRUST"
+  dispatch_ledger "$mode_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "UPSTREAM-ON-REQUEST" ] && oc_has "$out" "citing the gate run ID"; then
+    echo "  ok 6a-3 - #141 legacy MODE: HIGH-TRUST reads FORWARD to UPSTREAM-ON-REQUEST"
+  else
+    echo "  bad 6a-3 - #141 legacy HIGH-TRUST must read forward to UPSTREAM-ON-REQUEST, got rc=$rc token='$(mode_token "$out")' ($out)"
+    return 1
+  fi
+
+  # 6a-4. No MODE row at all -> fail closed to FORK-STANDING.
+  dispatch_ledger "$mock_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "FORK-STANDING" ]; then
+    echo "  ok 6a-4 - #141 no MODE row fails closed to FORK-STANDING"
+  else
+    echo "  bad 6a-4 - #141 a ledger with no MODE row must fail closed to FORK-STANDING, got rc=$rc token='$(mode_token "$out")' ($out)"
+    return 1
+  fi
+
+  # 6a-5. Unreadable ledger -> fail closed to FORK-STANDING.
+  dispatch_ledger "$st_dir/missing-ledger.json"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "FORK-STANDING" ]; then
+    echo "  ok 6a-5 - #141 an unreadable ledger fails closed to FORK-STANDING"
+  else
+    echo "  bad 6a-5 - #141 an unreadable ledger must fail closed to FORK-STANDING, got rc=$rc token='$(mode_token "$out")' ($out)"
+    return 1
+  fi
+
+  # 6a-6. No branch may emit the retired vocabulary -- asserted on the ACTUAL
+  #       emitted bytes (the issue's close criterion: grep -c over the envelope
+  #       is 0). Every state is re-emitted, INCLUDING both legacy inputs, so a
+  #       reader that recognises the old rows but echoes them back still fails.
+  local mode_case leak="" hits=0
+  for mode_case in "MODE: FORK-STANDING" "MODE: UPSTREAM-ON-REQUEST" "MODE: DEGRADED" "MODE: HIGH-TRUST" "__NO_MODE_ROW__"; do
+    if [ "$mode_case" = "__NO_MODE_ROW__" ]; then
+      dispatch_ledger "$mock_ledger"
+    else
+      with_mode "$mode_case"
+      dispatch_ledger "$mode_ledger"
+    fi
+    hits="$(retired_hits "$out")"
+    if [ "$rc" -ne 0 ] || [ "${hits:-0}" -ne 0 ]; then
+      leak="$mode_case (rc=$rc, hits=$hits)"
+      break
+    fi
+  done
+  if [ -n "$leak" ]; then
+    echo "  bad 6a-6 - #141 retired vocabulary reached the envelope for ledger '$leak'"
+    return 1
+  fi
+  echo "  ok 6a-6 - #141 no branch emits DEGRADED/HIGH-TRUST (scan of the emitted bytes, all 5 states)"
+
+  # 6a-7. POSITIVE CONTROL. The legs above are only evidence if the predicates
+  #       they use CAN fail. Feed the same extractor and the same scan a decoy
+  #       envelope written in the retired vocabulary: the extractor must name the
+  #       retired token and the scan must count it. If either cannot see it, the
+  #       green legs above are decoration and this leg says so.
+  local decoy='Mode: DEGRADED. Contract: prepare and validate the harvest, but PARK the upstream PR.'
+  if [ "$(mode_token "$decoy")" != "DEGRADED" ] || [ "$(retired_hits "$decoy")" -eq 0 ]; then
+    echo "  bad 6a-7 - #141 positive control: the extractor/scan cannot see a retired token, so 6a..6a-6 prove nothing"
+    return 1
+  fi
+  echo "  ok 6a-7 - #141 positive control: a retired-vocabulary envelope IS caught by the same predicates"
+
+  # 6a-8. --help must name BOTH live tokens (a lane reading help must be able to
+  #       learn the legal declarations without opening SKILL.md).
+  rc=0
+  out="$(bash "$0" --help 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && oc_has "$out" "FORK-STANDING" && oc_has "$out" "UPSTREAM-ON-REQUEST"; then
+    echo "  ok 6a-8 - #141 --help names both live MODE tokens"
+  else
+    echo "  bad 6a-8 - #141 --help must name FORK-STANDING and UPSTREAM-ON-REQUEST, got rc=$rc ($out)"
     return 1
   fi
   unset OC_LEDGER OC_HARVEST_MOCK_DEPLOYED_TS
