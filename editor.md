@@ -9,7 +9,7 @@ binary tracker since the owner's 2026-10-09 fork-first order) or a FACTORY issue
 `leshchenko1979/opencrabs-dev-factory`. Upstream `opencrabs/opencrabs` receives PULL REQUESTS ONLY.
 Fix the code in a
 worktree, SIGN every commit with the session trailer, push the branch, then ship via
-`oc-ship-chain` (§Phase 5 — Ship (`oc-ship-chain`), below).
+`oc-ship` (§Phase 5 — Ship (`oc-ship`), below).
 After any
 swap containing your commits you TEST what shipped (test-on-notify loop,
 Phase 6). The Editor NEVER dispatches BUILD runs (`quick-build-linux.yml`), NEVER
@@ -28,7 +28,7 @@ cargo/rustc/clippy are FORBIDDEN in ANY form — PATH prepends, explicit paths (
 
 **One sanctioned exception — `rustfmt`, pinned to the gate's own release (v0.4.315, owner order 2026-11-19).** Installed at `/opt/rustfmt-1.100.0`, Rust **1.100.0 / commit `0ef1bc3860`** — the release `channel-rust-stable.toml` resolved on install day, so local output and CI output agree byte-for-byte (verified: both name `Diff in …/src/a2a/handler/notify.rs:31` first). It carries **no compiler**: only `librustc_driver` + `libLLVM` were extracted from the rustc tarball, so `rustc`/`cargo`/`clippy` stay impossible — the pin is re-verified on every call by `/usr/local/bin/rustfmt` (`--pin` prints it; a mismatch exits 3). **Invoke it through `oc-fmt`, never directly.** `oc-fmt` scopes to the files a lane actually changed (vs merge-base with `origin/main`, plus untracked), reads the edition from `Cargo.toml`, and refuses to sweep: `oc-fmt --check` reports, `oc-fmt` applies, `oc-fmt --all` is the repo-wide sweep and is **not** per-lane work. **Edition is load-bearing:** the crate is `edition = "2024"` while `.rustfmt.toml` still says `2021`, and under 2021 rustfmt SKIPS files containing let-chains while reporting **zero diffs** — a false clean (measured 2026-11-19: 0 vs the true 589 diffs across 215 files). `oc-fmt` therefore takes the edition from `Cargo.toml`; never hand-run `rustfmt --edition 2021` and read its silence as a pass.
 
-CODE TESTS = the CI gate (`pr-checks.yml`, Phase 5 via `oc-ship-chain`; `harvest.md §Phase 7 step 2c` reuses it on upstream PR heads). Everything else — build, test, clippy — is a CI dispatch: need `cargo test`? Dispatch CI. Iterating clippy? Edit, re-dispatch pr-checks, read the run log. Never compile locally.
+CODE TESTS = the CI gate (`pr-checks.yml`, Phase 5 via `oc-ship`; `harvest.md §Phase 7 step 2c` reuses it on upstream PR heads). Everything else — build, test, clippy — is a CI dispatch: need `cargo test`? Dispatch CI. Iterating clippy? Edit, re-dispatch pr-checks, read the run log. Never compile locally.
 
 **`#[cfg(test)]` boundary — both directions, and the cost asymmetry is the point.** A test-only fn must never be called from production code: it reads as the production API and, with no local cargo, fails only at CI as `error[E0599]` — one ~30 min gate cycle. Mirror: a fn used ONLY by `src/tests` needs a `#[cfg(test)]` gate, not deletion (clippy `dead_code` fires in the non-test lib target). Incidents: `war-stories.md §OpenCrabs fork ops — tooling lessons` (brain dir — `load_brain_file`).
 
@@ -40,7 +40,7 @@ CODE TESTS = the CI gate (`pr-checks.yml`, Phase 5 via `oc-ship-chain`; `harvest
 
 **A ratchet is measured with `memory.events`, never with `memory.peak`** (c29 2026-11-19). `memory.peak` records how high demand REACHED; it cannot distinguish demand that was MET from demand that was REFUSED. `memory.events high` counts the times the kernel was forced to reclaim, which is the symptom a "memory grows until it is killed" report actually describes. Read all four together — `memory.current`, `memory.peak`, `memory.high`/`max`, `memory.events` — and treat `high > 0` as the finding. Corollary: a `memory.peak` at the wall with `high 0` is a ceiling that was touched and met, not a leak. Measured: pre-reduction `memory.peak` 2.751 GiB with `memory.events high` **5,813** (63.9/min over 91 min) vs post-reduction 2.036 GiB with **0** (58 min); `memory.max` and `oom_kill` 0 in both arms.
 
-**The structural closure is FILED, not assumed:** fork [#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached job in its own transient scope at the harness's own spawn point. Until it lands, a lane spawning heavy work spends the daemon's memory budget; #504 (8 h of jobs starved, silent) is the measured cost. Per-path patching will not converge — #720 (battery runner, the ONLY isolation today), #727 (`oc-prchecks`), #504 (cron child), #403 (`OOMPolicy`) each covered one path.
+**The structural closure is FILED, not assumed:** fork [#776](https://github.com/leshchenko1979/opencrabs/issues/776) — launch every detached job in its own transient scope at the harness's own spawn point. Until it lands, a lane spawning heavy work spends the daemon's memory budget; #504 (8 h of jobs starved, silent) is the measured cost. Per-path patching will not converge — #720 (battery runner, the ONLY isolation today), #727 (`oc-gate`), #504 (cron child), #403 (`OOMPolicy`) each covered one path.
 
 ## Telegram surface — editor duties (delta of SKILL.md §Telegram surface law)
 
@@ -75,9 +75,9 @@ editor-facing duties:
 
 **Direct dispatch:** work orders go sender → resource-owner directly, never through an intermediary lane. Address by full uuid from a same-turn roster read; stamp the dispatch + receipt id via `oc-ledger`.
 
-1. **Detached execution, actor attribution & re-dispatch:** W1/W2/W6 of `fleet-directives.md §CI-wait discipline & actor attribution` bind unchanged; a re-run because the head moved is inherent to a fix loop but goes through `oc-prchecks` re-dispatch — `pr-checks.yml` carries a concurrency group (`cancel-in-progress: true`), so the superseded run auto-cancels.
-2. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only identifies the DISPATCH; the run's checkout log line identifies the TESTED TREE — only the checkout-ref is terminal truth for code-level verdicts. Verify the run checked out your head sha before reading any verdict as lane evidence — `tools/ship/oc-job-verify <run-id> <source-ref>`, rc 4 = identity reported but never trusted; a mismatch is a carrier bug against the dispatch path — come straight to HQ with run id + checkout-ref + ledger incident stamp (suspect the single-flight dispatch lock adoption).
-3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify the run carries your head (job name embeds the head sha) before waiting — a dispatch on the wrong ref wastes the whole wait; `oc-prchecks` headSha adoption enforces this for its own runs. **The two obvious queries are BLIND to a PR-lane sha by construction** — `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a `workflow_dispatch` run carries the CARRIER head: read the sha out of the **JOB NAME**. General counter rule: `environment.md §Environment facts (all roles)` (binds every role that checks a gate, not editors only).
+1. **Detached execution, actor attribution & re-dispatch:** W1/W2/W6 of `fleet-directives.md §CI-wait discipline & actor attribution` bind unchanged; a re-run because the head moved is inherent to a fix loop but goes through `oc-gate` re-dispatch — `pr-checks.yml` carries a concurrency group (`cancel-in-progress: true`), so the superseded run auto-cancels.
+2. **Checkout-ref is terminal truth (Duty-4 P2, v0.4.77):** the job NAME only identifies the DISPATCH; the run's checkout log line identifies the TESTED TREE — only the checkout-ref is terminal truth for code-level verdicts. Verify the run checked out your head sha before reading any verdict as lane evidence — `tools/ship/oc-verify-job <run-id> <source-ref>`, rc 4 = identity reported but never trusted; a mismatch is a carrier bug against the dispatch path — come straight to HQ with run id + checkout-ref + ledger incident stamp (suspect the single-flight dispatch lock adoption).
+3. **Dispatch identity check (Duty-4 P3, v0.4.77):** after dispatching, verify the run carries your head (job name embeds the head sha) before waiting — a dispatch on the wrong ref wastes the whole wait; `oc-gate` headSha adoption enforces this for its own runs. **The two obvious queries are BLIND to a PR-lane sha by construction** — `--branch` and a `headSha` scan both return EMPTY for a gated ref, because a `workflow_dispatch` run carries the CARRIER head: read the sha out of the **JOB NAME**. General counter rule: `environment.md §Environment facts (all roles)` (binds every role that checks a gate, not editors only).
 4. **Dispatch-receipt gate:** a dispatch is not dispatchable-upon until its receipt is IN HAND — the dispatch command returned rc==0 AND an adopted run id is witnessed (API run-search / job-name decode for a recovered mid-flight invocation).
 5. **Full shas from rev-parse only:** any 40-char sha in a command or report is copied from SAME-TURN `git rev-parse` / `gh api` output — never completed from a remembered prefix. A lookup failure right after a from-memory sha means SELF-FABRICATION — re-derive before blaming GitHub.
 6. **Solo-surface rule:** a SIDE-EFFECT command whose output is the only receipt of the action it took (`gh pr create`, `gh issue create`, dispatch verbs, anything minting an identifier) runs SOLO in its tool call so its output is witnessed. Batched into a call whose tail output was truncated or lost → the identifier is UNFILED until a fresh verification call names it in a same-turn receipt.
@@ -150,14 +150,14 @@ Canonical descriptions + selftest contracts: `tools/docs/RC-CONTRACT.md` (full i
 | Tool | Invocation | For |
 |------|-----------|-----|
 | `oc-start` | `tools/git/oc-start <issue-N> --branch <branch>` | Milestone 1: atomic issue claim + branch + worktree setup |
-| `oc-ship-chain` | `tools/ship/oc-ship-chain --sha <sha> --branch <branch>` | Milestone 2: single-invocation gate → comment → ff-merge → carrier build → live swap |
+| `oc-ship` | `tools/ship/oc-ship --sha <sha> --branch <branch>` | Milestone 2: single-invocation gate → comment → ff-merge → carrier build → live swap |
 | `oc-smoke` | `tools/smoke/oc-smoke <issue-N> [--probe "<cmd>"] [--no-close] [--close-repo <owner/repo>]` | Milestone 3: unified 4-leg smoke verification & verdict logging; **closes the issue on PASS by default** |
 | `oc-commit` | `tools/git/oc-commit -m "<msg>" [--issue N]` | Gated SIGNED commit: Session-Id + Issue-Ref trailers derived from session ID + ledger claim |
 | `oc-drift-check` | `tools/state/oc-drift-check <your-uuid> [--ack]` | §Mid-cycle skill drift pull-check on detached resume |
 | `oc-issue-sweep` | `tools/issue/oc-issue-sweep '<query>' [--fork R]` | Phase 1 uniqueness gate (fork open+closed + upstream closed) |
 | `oc-ledger` | `stamp claim --what "…"` · `ack <uuid> <0.N.N>` | Roster receipts + version ack |
 
-*Plumbing (`oc-wt`, `oc-deploy`, `oc-prchecks`, `oc-issue-log`, `oc-attrib`, `oc-pr-fault-scope`) is orchestrated internally by `oc-start`, `oc-ship-chain` and `oc-smoke`.*
+*Plumbing (`oc-wt`, `oc-deploy`, `oc-gate`, `oc-issue-log`, `oc-attrib`, `oc-pr-fault-scope`) is orchestrated internally by `oc-start`, `oc-ship` and `oc-smoke`.*
 
 Rules that outlive any table: journal read-back after every `oc-ledger` claim/stamp (Phase 1 step 4); terminal truth = `gh run view --json conclusion`, never a tool's exit code alone; the ≥30s detached-poll floor (`fleet-directives.md §CI-wait discipline & actor attribution`).
 
@@ -208,7 +208,7 @@ Fetch both remotes: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs fetch
 
 - **Exclusivity**: ALL edits happen in `~/opencrabs-wt/<task>`, NEVER in the shared checkout. Parallel agents share the repository.
 - **Inline Execution**: While holding an active worktree, ALL execution runs inline in the owning session (`isolated=false`). Auto-spawned isolated workers are forbidden.
-- **Teardown**: After shipping via `oc-ship-chain` (Phase 5), remove the worktree:
+- **Teardown**: After shipping via `oc-ship` (Phase 5), remove the worktree:
   ```bash
   tools/git/oc-wt remove <task>
   ```
@@ -290,7 +290,7 @@ any gate or push (a hand-rolled `git interpret-trailers --parse` is agent-memory
 **fmt-clean ≠ compiles — audit CALL-SITE SHAPE before you chain (v0.4.141).**
 `which cargo` prints a path, but running it prints `BLOCKED` — *the presence of a
 path is not evidence of a toolchain*, same family as "an empty result from a wrong
-path is not a verdict". Before `oc-ship-chain`, mechanically
+path is not a verdict". Before `oc-ship`, mechanically
 cross-check every NEW or CHANGED call site against the callee's real definition:
 **free fn vs associated fn** (a free-fn path on an associated fn is `E0425`),
 the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
@@ -298,13 +298,13 @@ the **receiver** (`&self` / `&mut self` / none), and **`Drop`-impl move rules**
 `Option::take()`).
 - **Checkable Completion Formula**: DONE = Target change implemented, call-site shapes verified, and signed commit landed on branch with Session-Id trailer.
 
-## Phase 5 — Ship (`oc-ship-chain`)
+## Phase 5 — Ship (`oc-ship`)
 
-**The ship path is ONE tool.** `oc-ship-chain` runs the whole commit-to-swapped stretch — LEG1 CI gate -> LEG2 issue comment -> LEG3 fast-forward into fork `main` -> LEG4 carrier build -> LEG5 swap+seal — with NO legitimate manual exit point between gate verdict and swap (the #134 orphan class: stopping at GREEN without swapping).
+**The ship path is ONE tool.** `oc-ship` runs the whole commit-to-swapped stretch — LEG1 CI gate -> LEG2 issue comment -> LEG3 fast-forward into fork `main` -> LEG4 carrier build -> LEG5 swap+seal — with NO legitimate manual exit point between gate verdict and swap (the #134 orphan class: stopping at GREEN without swapping).
 
 **The Phase-5 trap stack has ONE home: `editor-ship.md`.** The launch-surface law (arm the chain in its OWN transient unit — the harness's `background:true` auto-detach dies ~75 s after the wrapper exits), the `--test-threads 2` law and its **ANY-gate-dispatch** scope, the FAST-gate caveat (a FAST run is NOT the 4-Leg Rubric's CI leg), the docs-only LEG1 SKIP, the **rebase-once-at-ship-time rule** (a mid-development rebase rewrites every sha and orphans every receipt recorded against the old ones), the rc register, the EIGHT exit-5 causes with the rebase recipe, the conflict-quality gate, post-landing-lock ancestor re-check, post-rewrite swap recovery, carrier coalescence and the features-compat gate all live there. **Read it before shipping.** Nothing in this section restates them: a second copy is a defect by definition, and `editor-ship.md` is the file a lane actually has open at ship time.
 
-- **Checkable Completion Formula**: DONE = `tools/ship/oc-ship-chain` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
+- **Checkable Completion Formula**: DONE = `tools/ship/oc-ship` exited 0 (SWAPPED) with the new binary live on `opencrabs-ops` and the worktree cleaned — **this closes the SHIP phase only; Phase 6 behavioural smoke on that binary is the outstanding obligation.**
 
 ## Phase 6 — Smoke Verification (oc-smoke)
 
@@ -332,7 +332,7 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
 `oc-deploy` RED reports + HQ triage); the Editor applies the same ones in its fix round
 (§Phase 6-Fix). No lane uses them as a licence to fix outside its scope.
 
-- **An EMPTY read is not a NEGATIVE read** (c29 2026-11-19). A verdict is a *value*; `""`, `null` and a failed call are the *absence* of a value, and absence must fail toward RETRY or UNKNOWN — never toward RED, never toward GREEN. Any code or lane that compares a freshly-read conclusion against `success` and treats everything else as failure has converted a network blip into a verdict. The correct shape is the one `oc-ship-chain:1494` already uses — distinguish "read and it was not success" from "could not read", and say which. Neither marker present ⇒ UNKNOWN ⇒ stop, never health. Measured: `oc-deploy:4225-4236` is UNGUARDED (empty conclusion ⇒ `ship-wait-red` + `die 6`) while `oc-ship-chain:1490-1500` is guarded — a chain stopped `rc=4 CARRIER-RED` naming run `44332662723`, which had concluded `success` at 15:20:20Z and was logged at 15:20:22Z.
+- **An EMPTY read is not a NEGATIVE read** (c29 2026-11-19). A verdict is a *value*; `""`, `null` and a failed call are the *absence* of a value, and absence must fail toward RETRY or UNKNOWN — never toward RED, never toward GREEN. Any code or lane that compares a freshly-read conclusion against `success` and treats everything else as failure has converted a network blip into a verdict. The correct shape is the one `oc-ship`'s LEG5 read already uses — distinguish "read and it was not success" from "could not read", and say which. Neither marker present ⇒ UNKNOWN ⇒ stop, never health. Measured: `oc-deploy`'s LEG5 wait is UNGUARDED (empty conclusion ⇒ `ship-wait-red` + `die 6`) while `oc-ship`'s LEG5 wait is guarded — a chain stopped `rc=4 CARRIER-RED` naming run `44332662723`, which had concluded `success` at 15:20:20Z and was logged at 15:20:22Z.
 - **Daemon log timestamps are suffixed `+00:00`, never `Z`** (c29 2026-11-19). Any log sweep whose regex keys on a `Z` suffix silently returns ZERO rows and reads as a clean result. Every zero-count log sweep must be validated against a **known-positive control line from the same file** before its zero is believed. Measured: a `Z`-keyed duplicate-send sweep returned **0 rows, 0 pairs** for a day carrying **9,322** `Telegram send ok` rows; the positive control was msg pair `96574`/`96575` at `03:56:45` (the measured 81 ms double-post, #826).
 - Fix unresolved-name/import errors FIRST (E0425/E0433...) — later errors are
   usually poisoned fallout. When scopes look shifted, count brace DEPTH, not
@@ -395,13 +395,13 @@ Your answer is always the SAME sequence:
 2. reproduce → fix → `oc-commit -m "<msg>"` — the gated wrapper takes `Session-Id` from the
    ambient session, derives `Issue-Ref` from your latest ledger claim, and folds the
    implementation comment in (§Phase 4 signing laws).
-3. push the branch, then `oc-ship-chain --sha <NEW-head-sha> --branch <branch> [--issue <n>]`
+3. push the branch, then `oc-ship --sha <NEW-head-sha> --branch <branch> [--issue <n>]`
    — Legs 1–5: CI gate → comment → ff-merge → carrier build → swap. Exact invocation, rc
    register and the eight exit-5 causes: `editor-ship.md`.
 4. exit 0 SWAPPED → `oc-wt remove <task>`, then the §Phase 6 smoke re-test on the swapped binary.
 
 **Per-commit laws live in their phases:** branch-attached HEAD + signing → §Phase 4; worktree-writer exclusivity → §Phase 2. They bind EVERY commit in ANY phase — read them there.
-- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + `oc-ship-chain` exits 0 (SWAPPED) + **Phase 6 smoke re-test PASSED on the swapped binary** + worktree removed — **UNLESS the unit carries an open `not-upstreamable` row, in which case the worktree is RETAINED (§Phase 2 teardown exemption) and the row's release condition is the remaining gate.**
+- **Checkable Completion Formula**: DONE = Bug reproduced + memory_search caller check performed + fix committed with trailers + `oc-ship` exits 0 (SWAPPED) + **Phase 6 smoke re-test PASSED on the swapped binary** + worktree removed — **UNLESS the unit carries an open `not-upstreamable` row, in which case the worktree is RETAINED (§Phase 2 teardown exemption) and the row's release condition is the remaining gate.**
 
 
 ## Phase 7 + 7b — NOT the editor's → `harvest.md` (HARVEST lane)
@@ -423,5 +423,5 @@ part ends at smoke evidence — post it and hand the feature over.
   resolved against its fleet-process write obligations.
 - **An UNATTENDED session MUST NOT open a plan (v0.4.246, HQ ruling 2026-09-24; origin #510).** A session with no channel binding (a cron worker, an A2A-origin session) has **no approval surface at all**, so a plan sits `Editing` with `approved_at: null` forever — measured on `ops` 2026-09-24: **6** such plans, **every one with 0 `plan_cards` rows and 0 `session_bindings`**. The class is **not cron-only** and **self-repeats**: a cron reuses its worker session, so every fire re-reads the stranded plan and re-reports a blocker no surface can clear. A cron/A2A prompt that could reach `plan init` must forbid it **explicitly**; `init mode=checklist` ALSO returns to `Editing`, so it is **not** a mitigation. Tool-side fix is **#510**; this clause is the law-side stop. A blocker claim is a status claim — the same-turn read applies (`AGENTS.md` §Execution Discipline).
 
-- **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship-chain`) to live host deployment and Phase 6 behavioral smoke testing.
+- **No Early Halts**: Editors MUST NOT stop, ask for confirmation, or stall after writing code (Phase 4), after pushing, or after intermediate ship legs. Work continues uninterrupted through Phase 5 (`oc-ship`) to live host deployment and Phase 6 behavioral smoke testing.
 - **Completion Definition** (owner order 2026-11-15): A task is complete ONLY when the live behavioral smoke test on the swapped binary has executed, its 4-leg receipt is recorded in `smoke-verdicts.log`, **and the fork issue is CLOSED on that receipt in the same turn**. Closing is not a separate errand and not a wait for anything: `oc-smoke` stamps the `done` row on PASS, and that row plus the PASS row IS the closure authority (`triage.md §Autonomous closure`, class (d)). An issue left OPEN behind a recorded PASS is an unfinished task, not a handoff.

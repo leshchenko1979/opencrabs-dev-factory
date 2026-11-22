@@ -155,9 +155,9 @@ git -C ~/opencrabs rev-parse adolfousier/main   # must equal the sha the port wa
 #     FIRST push the head branch (step 3's command — the workflow checks the branch out from the fork).
 #     MANDATORY FULL-GATE FORM (v0.4.149, owner order 2026-09-12):
 #     Pre-PR testing MUST use the full gate (cargo test + fmt + clippy, NO --fast):
-#       tools/harvest/oc-prchecks leshchenko1979/<feature>
+#       tools/harvest/oc-gate leshchenko1979/<feature>
 #     or blocking wait form:
-#       tools/harvest/oc-prchecks wait leshchenko1979/<feature>
+#       tools/harvest/oc-gate wait leshchenko1979/<feature>
 #     (Do NOT pass --fast for final pre-PR verification. Full gate ensures 100% upstream test parity.)
 #   Standing rules PR-GATE-STANDING in the Rules list below (flags verbatim
 #   from pr-checks.yml; ANY red = fix cycle + re-dispatch, never a filed PR;
@@ -237,7 +237,7 @@ Rules:
   there; do not restate it here.** Harvest-local PROCEDURE only: every harvested commit carries an
   `Issue-Ref: #N` trailer matching EXACTLY the single issue the PR claims; no commit without one, no PR
   claiming more than one. A PR whose diff mixes fixed and unfixed concerns forces a binary status on a mixed
-  bag and mislabels both. Gate with `./tools/harvest/oc-prchecks <branch>` and the atomicity check BEFORE closing the issue.
+  bag and mislabels both. Gate with `./tools/harvest/oc-gate <branch>` and the atomicity check BEFORE closing the issue.
 - **PR LIFECYCLE:** One PR = one atomic change; a bug found in review is fixed
   FORWARD on the same PR or the PR is closed — no draft limbo. A MERGED PR is
   closed forever: follow-up work = new branch + new PR, NEVER extend a merged
@@ -250,7 +250,7 @@ Rules:
   - **Zero error / warning suppression:** No `#[allow(dead_code)]` or `#[allow(unused)]` duct tape. Unused code must be deleted.
   - **`ONTOLOGY.md` synchronization:** If a change introduces, renames, or retires a concept, update `src/docs/reference/ONTOLOGY.md` in the same PR.
 
-- **BUILD TRIGGERS = exactly TWO, no exceptions:** Canonical law lives in `SKILL.md §Hard rules` (`oc-deploy ship` or owner word; CI gate = `oc-prchecks`).
+- **BUILD TRIGGERS = exactly TWO, no exceptions:** Canonical law lives in `SKILL.md §Hard rules` (`oc-deploy ship` or owner word; CI gate = `oc-gate`).
 - **PR-BASE-PRE-OPEN (v0.4.71, Duty-4 P6):** an upstream PR head is a harvest
   branch off `adolfousier/main` — NEVER a fork-main-based branch; base +
   atomicity check runs BEFORE the PR opens (a post-open atomicity FALSE
@@ -338,13 +338,13 @@ Contract:
    - **Mandatory Full PR Gate**: push the branch to origin (`leshchenko1979/opencrabs`) and dispatch the gate — canon: §Full-Gate Pre-PR Testing Law below:
      ```bash
      # Single-command blocking full PR gate:
-     tools/harvest/oc-prchecks wait leshchenko1979/fix/<slug>
+     tools/harvest/oc-gate wait leshchenko1979/fix/<slug>
      # Or standard dispatch:
-     tools/harvest/oc-prchecks leshchenko1979/fix/<slug>
+     tools/harvest/oc-gate leshchenko1979/fix/<slug>
      ```
 4. **Ship Execution**: When gate run exits GREEN (SUCCESS) AND 4-leg smoke pass is confirmed in `smoke-verdicts.log` (and ≥24h post-swap soak completed for `feat/*` or dependent fix bundles, counted strictly from the latest live deployment timestamp `deployed.ts` of ANY related node in the relationship graph — parent, sub-issues, and blockers, per 24h Feature Soak Harvest Law), the HARVEST lane verifies upstream baseline state (`git diff origin/main...adolfousier/main`) and files the upstream PR (`gh pr create --repo opencrabs/opencrabs --base main --head leshchenko1979:leshchenko1979/fix/<slug> [--draft]`) citing the gate run ID, quoting the 4-leg smoke receipt, and linking the fork issue. If upstream already resolved it, frame the narrative as extraction / refactor / hardening, not a regression (§UPSTREAM BASELINE & NARRATIVE VERIFICATION). (`--draft` per the Staged Upstream Draft PR Mandate). **A PR number is not FILED until a same-turn `gh pr create` (or `gh pr view <N>`) output names it** — if a guard flags the claim (`phantom_blocked`) or the output was not witnessed, the PR is UNFILED: re-verify and re-dispatch (v0.4.152 §Guard-Flag Escalation Law; worked example: an announced PR #1514 that never existed cost ~3 h).
 5. **Ack & Cleanup**: Remove harvest worktree, stamp completion in ledger, and notify Triage via `session_notify`.
-   - **Checkable Completion Formula**: `DONE = 4-leg smoke pass in smoke-verdicts.log + full oc-prchecks green on the branch`; filing upstream is an owner-requested follow-on and not a completion condition.
+   - **Checkable Completion Formula**: `DONE = 4-leg smoke pass in smoke-verdicts.log + full oc-gate green on the branch`; filing upstream is an owner-requested follow-on and not a completion condition.
 
 ## Phase 7 Reference Rules (Harvest Verification & Qualified Fork Refs)
 
@@ -465,14 +465,14 @@ Same root fact as ledger n=1537's `gh pr create` namespaced-head lesson.
 
 ## Full-Gate Pre-PR Testing Law (v0.4.149, owner order 2026-09-12) [LANE]
 
-- **Full CI Suite Mandatory for Upstream PRs**: The `--fast` flag (`fast=true`, lint/clippy only) is strictly permitted for internal Daytime Split-Gate merging (`oc-ship-chain`), but is **STRICTLY PROHIBITED** for final pre-PR verification.
-- **Upstream Triad Verification**: Before opening any upstream PR (`harvest.md` Phase 7 / 7c), the HARVEST lane MUST run the full test suite (`cargo nextest run --cargo-profile ci` + `cargo test --doc` + fmt + clippy — the `cargo test --all-features` leg was DELETED 2026-11-20) via `oc-prchecks` full gate:
+- **Full CI Suite Mandatory for Upstream PRs**: The `--fast` flag (`fast=true`, lint/clippy only) is strictly permitted for internal Daytime Split-Gate merging (`oc-ship`), but is **STRICTLY PROHIBITED** for final pre-PR verification.
+- **Upstream Triad Verification**: Before opening any upstream PR (`harvest.md` Phase 7 / 7c), the HARVEST lane MUST run the full test suite (`cargo nextest run --cargo-profile ci` + `cargo test --doc` + fmt + clippy — the `cargo test --all-features` leg was DELETED 2026-11-20) via `oc-gate` full gate:
   ```bash
   # Single-invocation blocking full gate:
-  tools/harvest/oc-prchecks wait leshchenko1979/fix/<slug>
+  tools/harvest/oc-gate wait leshchenko1979/fix/<slug>
 
   # Standard full gate dispatch:
-  tools/harvest/oc-prchecks leshchenko1979/fix/<slug>
+  tools/harvest/oc-gate leshchenko1979/fix/<slug>
   ```
 - **PR Citation**: The resulting GREEN run URL from the full CI run MUST be cited in the upstream PR body alongside the behavioral smoke test evidence.
 

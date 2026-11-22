@@ -50,7 +50,7 @@ per-commit at replay time.
    - A claim author whose uuid the session DB has never seen is reported as a
      **PHANTOM** and excluded from the roster — a hand-assembled id can never
      enter a freeze list.
-   - **Carrier chain check**: Ensure no carrier build, deploy chain, or `oc-ship-chain` is
+   - **Carrier chain check**: Ensure no carrier build, deploy chain, or `oc-ship` is
      actively running (`oc-deploy status`, no `SHIP-LOCK`).
    - **Fork-main push freeze**: Enforce the freeze on pushing/fast-forwarding to fork `main`.
      Active editor lanes continue in their worktrees, but fork `main` merges are paused
@@ -161,11 +161,11 @@ per-commit at replay time.
    to prevent silent trailer loss (v0.4.170, Finding H-1 / row n=2102) → force-push
    `--force-with-lease` to `origin/main`, consolidated report with the
    decisions table.
-   - **`DONE = tools/harvest/oc-prchecks wait <synced-head> returns GREEN, trailers retained, origin/main updated via --force-with-lease.`**
-   - **Reconcile the local `~/opencrabs` main worktree (v0.4.214, Triage lane 530c29ec).** The force-push rewrites `origin/main`; a local `main` left behind is no longer an ancestor of the new tip, so `oc-ship-chain` LEG3 runs its bare `git merge --ff-only $TIP` against the STALE local main and reports **NON-FF** for a lane correctly based on the new `origin/main` — its rc-5 text then points that lane at a rebase it does not need. Measured 2026-09-19: two LEG3 NON-FF failures inside one minute, both a stale local main. Step: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs checkout main && git -C ~/opencrabs merge --ff-only origin/main` (the main worktree mirrors fork main; lane work lives in worktrees — if it refuses, STOP and report, never force). **No sync is complete while local `main` trails `origin/main`.**
+   - **`DONE = tools/harvest/oc-gate wait <synced-head> returns GREEN, trailers retained, origin/main updated via --force-with-lease.`**
+   - **Reconcile the local `~/opencrabs` main worktree (v0.4.214, Triage lane 530c29ec).** The force-push rewrites `origin/main`; a local `main` left behind is no longer an ancestor of the new tip, so `oc-ship` LEG3 runs its bare `git merge --ff-only $TIP` against the STALE local main and reports **NON-FF** for a lane correctly based on the new `origin/main` — its rc-5 text then points that lane at a rebase it does not need. Measured 2026-09-19: two LEG3 NON-FF failures inside one minute, both a stale local main. Step: `git -C ~/opencrabs fetch origin && git -C ~/opencrabs checkout main && git -C ~/opencrabs merge --ff-only origin/main` (the main worktree mirrors fork main; lane work lives in worktrees — if it refuses, STOP and report, never force). **No sync is complete while local `main` trails `origin/main`.**
 9. **Swap stamp — REBASE heads are UNSIGNED BY CONSTRUCTION.**
    A rebase (like a synthesis or merge) cannot carry a `Session-Id` trailer, so
-   the build leg's ORDER gate 4 refuses the head: `oc-order-validate: UNSIGNED
+   the build leg's ORDER gate 4 refuses the head: `oc-verify-order: UNSIGNED
    … attribution mandatory`, and the chain exits **rc 6** (2026-09-03 finding:
    bare merge `d02f4e08` passed this lane GREEN, swap blocked exit 2
    pre-install; 2026-09-11: the atomic cutover head `12d25260` hit exactly
@@ -181,7 +181,7 @@ per-commit at replay time.
    **main stranded undeployed**.
    **PRE-CHECK SIGNATURE BEFORE THE MERGE (HQ ruling 2026-09-26).** Gate 4 runs
    inside `oc-deploy ship` — i.e. at LEG4, AFTER LEG3's `git merge --ff-only`
-   (`tools/ship/oc-ship-chain:1001`) — so a signature fault strands main instead
+   (`tools/ship/oc-ship`, LEG3 ff-merge) — so a signature fault strands main instead
    of refusing the merge. The check is PURE GIT (read the trailer, match the
    pattern) and costs no CI, so **the chain pre-checks SIGNATURE before LEG3's
    merge**; a marker then never strands main and the remedy loop closes.
@@ -305,7 +305,7 @@ Anything beyond a port seam → editor work.
 
 **Builds** fire ONLY via `oc-deploy`. A direct `gh workflow run quick-build-linux.yml` from any editor is FORBIDDEN. The workflow lives ONLY on carrier branch `ci/quick-build-linux`, never on fork `main`; the dispatch `ref` input must be the FULL 40-char sha — carrier Gate 1 (SHAPE) rejects branch names and short form. Carrier runs ORDER gates (shape / existence / containment / signature — pure git verification) before the build job (`needs: gates`); containment requires the sha already on fork `main`, so the ship path = FF-push main, then dispatch via `tools/ship/oc-deploy`. The carrier build COMPILES but runs NO test leg — all-features testing lives on the PR gate, so straight-to-main hotfix shas ship untested.
 
-**Ledger canonical path** = `opencrabs-dev/workers-ledger.json` — `oc-deploy` and `oc-order-validate` default to it directly; `OC_LEDGER` overrides, `OC_DEPLOY_STATE_DIR` isolates test fixtures.
+**Ledger canonical path** = `opencrabs-dev/workers-ledger.json` — `oc-deploy` and `oc-verify-order` default to it directly; `OC_LEDGER` overrides, `OC_DEPLOY_STATE_DIR` isolates test fixtures.
 
 Executing procedure for the sync leg: this runbook (delegated to Triage; HQ does not execute syncs).
 
@@ -448,7 +448,7 @@ Standard protocol for parallel harvesting of downstream fork commits to upstream
 | **1. Candidate Vetting** | Triage | **Upstream Absence Proof**: Confirm commit delta is non-empty on upstream tip (`git diff adolfousier/main -- <files>`), patch-id is not an ancestor/merged, upstream PR settling authority confirms unharvested, and candidate is not superseded. | `tools/harvest/oc-harvest-dispatch vet <issue-or-commits>` |
 | **2. Lane Availability** | Triage | **Verify-Unclaimed & Idle Law**: Scan `workers-ledger.json` for active `claim` rows. Target lane must have status `idle` and zero unfinished claims. Never dispatch to a busy lane (e.g. active plan or in-flight gate). | `tools/harvest/oc-harvest-dispatch dispatch <issue> <commits> [--to <uuid>]` (enforces rc 4 on busy lanes) |
 | **3. Dispatch Envelope** | Triage | **Atomic Dispatch**: Deliver standard payload via `session_notify` (`delivery.mode="turn-end"`). Zero Telegram noise to worker topics. Mandatory wire footer: `Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.` Receiving lanes do NOT ack via notify. | Standard wire envelope `[HARVEST DISPATCH: #N]` |
-| **4. Mechanized Ship & Ack** | HARVEST | **Ship Gate (v0.4.146)**: Dedicated worktree off `adolfousier/main`, cherry-pick with trailers, `oc-harvest-sweep`, push, `oc-prchecks`. On GREEN gate AND verified 4-leg smoke pass in `smoke-verdicts.log` → file the upstream PR **only for groups the owner named**; otherwise the stage ends at the smoke receipt. Never file unsmoked PRs. **Owner order 2026-09-24 centralising harvest (§Roles, Harvest lane).** | `harvest.md` Phase 7c |
+| **4. Mechanized Ship & Ack** | HARVEST | **Ship Gate (v0.4.146)**: Dedicated worktree off `adolfousier/main`, cherry-pick with trailers, `oc-harvest-sweep`, push, `oc-gate`. On GREEN gate AND verified 4-leg smoke pass in `smoke-verdicts.log` → file the upstream PR **only for groups the owner named**; otherwise the stage ends at the smoke receipt. Never file unsmoked PRs. **Owner order 2026-09-24 centralising harvest (§Roles, Harvest lane).** | `harvest.md` Phase 7c |
 
 ### 2. Standard Dispatch Wire Envelope
 
@@ -464,7 +464,7 @@ Commands:
   3. tools/harvest/oc-harvest-sweep {branch} --base adolfousier/main
   4. Verify 4-leg smoke pass in smoke-verdicts.log
   5. git push origin {branch}
-  6. tools/harvest/oc-prchecks {branch}
+  6. tools/harvest/oc-gate {branch}
 Mode: {FORK-STANDING|UPSTREAM-ON-REQUEST}   (read live from the ledger; fail-closed to FORK-STANDING = file nothing)
 Contract: {MODE-CONDITIONAL} — under FORK-STANDING: file NOTHING; keeping the change on the fork is the
 normal, finished state, not a backlog. Under UPSTREAM-ON-REQUEST: only the groups the OWNER NAMED are
@@ -507,7 +507,7 @@ sequenceDiagram
 
 **OpenCrabs source work** (`~/opencrabs`): any code edit, CI build, or binary swap follows the **`/opencrabs-dev`** skill (`skills/opencrabs-dev/SKILL.md`) — fresh-base fetch, fork issue claim via `Issue-Ref` trailer + `oc-ledger claim` row (NO tackling comments on fork issues — owner ban 2026-08-27), per-task worktree, CI gate (pr-checks), CI-only evidence gates, sha-verified run, backup + atomic swap, ops-only user-unit restart. Upstream stays PRs-only; this section is just the pointer (procedure canonical in the skill).
 
-**Implementation comment per commit (owner 2026-08-28 22:54Z)** — canonical procedure: per-commit gh comment (chained automatically in `oc-ship-chain` Leg 2, or folded into `oc-commit` via `oc-issue-log`; SKILL.md §Canonical tooling). Rule: one comment per editor commit, immediately — no batching at the end.
+**Implementation comment per commit (owner 2026-08-28 22:54Z)** — canonical procedure: per-commit gh comment (chained automatically in `oc-ship` Leg 2, or folded into `oc-commit` via `oc-issue-log`; SKILL.md §Canonical tooling). Rule: one comment per editor commit, immediately — no batching at the end.
 
 
 <!-- source: AGENTS block2 (build lane/cargo/surface/logging/gates/editors/cadence) -->

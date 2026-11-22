@@ -85,9 +85,9 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      branches are the distinct cases that reach the material; synonyms
      renaming one branch are one branch written twice — collapse them.
      PLUS the SUBSUMED PROCEDURE PRUNING RULE (v0.4.182): when a composite or
-     milestone tool ships (e.g. `oc-start`, `oc-ship-chain`, `oc-smoke`),
+     milestone tool ships (e.g. `oc-start`, `oc-ship`, `oc-smoke`),
      lower-level step-by-step plumbing rituals (manual worktree manipulation,
-     manual `oc-prchecks` loops, manual issue log comments, manual push to main,
+     manual `oc-gate` loops, manual issue log comments, manual push to main,
      manual log formatting) must be aggressively pruned from role files.
      Role files must document only the single milestone invocation and its
      recovery semantics, not internal plumbing procedures the tool handles.
@@ -199,7 +199,7 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      law violation (fleet-directives.md §CI-wait discipline W1–W2; class list
      `tools/docs/HEALTH-CLASSES.md`) — official surfaces are
      native detached execution (`background: true`) and one-shot `gh run view`
-     (for a verdict); `oc-prchecks --wait` is the sanctioned blocking gate, and
+     (for a verdict); `oc-gate --wait` is the sanctioned blocking gate, and
      a SECOND `--wait` used as a verdict waiter is the double-duty flagged. Each
      violation names the session id from the log row. Boundary watch vs A/B: C's dimension is
      GAPS (what should be a command), not doc wording or weight.
@@ -266,7 +266,7 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      HQ's poll triple-check + owner word.
    - **Reviewer H — LEDGER HEALTH (shipped v0.4.114, owner GO 2026-09-08 20:16Z):**
      the workers-ledger.json read AS A WHOLE, not per-slice — the slice tools
-     (`oc-ledger claims`, `oc-ship-audit`) each audit one family and stay the
+     (`oc-ledger claims`, `oc-audit-ship`) each audit one family and stay the
      enforcement surface, while the `oc-roster-detached-sweep` cron sweeps
      detached work; H reads for what they cannot
      see: (1) RECEIPT COMPLETENESS — incident/lesson-mention rows with no

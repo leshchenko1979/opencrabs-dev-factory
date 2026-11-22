@@ -319,7 +319,7 @@ Long-running commands (>60s, test batteries, carrier/CI waits, heavy audits) MUS
 
 - **Auto-resume & injection:** The daemon tracks detached executions natively and auto-resumes the session upon process completion.
 - **Terminal state:** CI waits must gate completion on terminal state (`completed` status; `success`/`failure` conclusion).
-- **Checkout-ref verification:** Checkout log lines identify the tested tree, but comparing them against the expected head SHA by hand is the agent-memory-as-gate-input defect (lens J / F27). Run `tools/ship/oc-job-verify <run-id> <source-ref>` — **rc 4 means the run's identity is reported but never trusted**; on rc 4 the verdict is not final evidence.
+- **Checkout-ref verification:** Checkout log lines identify the tested tree, but comparing them against the expected head SHA by hand is the agent-memory-as-gate-input defect (lens J / F27). Run `tools/ship/oc-verify-job <run-id> <source-ref>` — **rc 4 means the run's identity is reported but never trusted**; on rc 4 the verdict is not final evidence.
 - **REST v3 keys are snake_case:** In `gh api` `--jq` filters, `run_started_at`/`updated_at` work; camelCase (`runStartedAt`) silently evaluates to null.
 
 ## Cadence boundary is stamped at review consolidation

@@ -231,7 +231,7 @@ below needs a regular cadence to be worth anything.
      must conclude with: `Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.`
      Triage verifies delivery by polling `workers-ledger.json` (`oc-ledger events --kind claim`),
      NEVER by expecting, requesting, or processing `session_notify` conversational acks.
-   - **Smoke-ceiling label on wire (HQ ruling 2026-09-18, v0.4.202)**: before wiring an issue, read the live carrier set (`tools/ship/oc-carrier-features`). When the deliverable's feature-gated modules are OUTSIDE that set, the wire MUST carry `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, and the issue MUST be linked `--add-blocked-by` the carrier-set-widening issue. Such issues ARE dispatchable (`DISPATCHABLE = unclaimed AND vetted`): the CI gate compiles `--all-features`, so the code is verifiable — only the HARVEST is blocked. Never park or block an out-of-feature-set issue for that reason alone. Canon: `§Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled` (this file).
+   - **Smoke-ceiling label on wire (HQ ruling 2026-09-18, v0.4.202)**: before wiring an issue, read the live carrier set (`tools/ship/oc-features`). When the deliverable's feature-gated modules are OUTSIDE that set, the wire MUST carry `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, and the issue MUST be linked `--add-blocked-by` the carrier-set-widening issue. Such issues ARE dispatchable (`DISPATCHABLE = unclaimed AND vetted`): the CI gate compiles `--all-features`, so the code is verifiable — only the HARVEST is blocked. Never park or block an out-of-feature-set issue for that reason alone. Canon: `§Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled` (this file).
 5. Already-claimed issues:
    - Normal progression: no action; the owning editor's chain owns them.
    - **Continuous Relationship Linking Mandate (owner order 2026-09-16; creation gate + backstop added 2026-09-25)**: During triage sweeps, if Triage discovers open issues that depend on in-flight features or unharvested subsystems, Triage MUST establish native links in the same turn via `gh issue edit <issue> --parent <parent-issue>` and/or `gh issue edit <issue> --add-blocked-by <blocker-issue>`.
@@ -348,7 +348,7 @@ This is an **exemption on the harvest gate, not a fourth autonomous-close class*
 (a)/(b)/(c) dispose of issues whose work is NOT done, whereas this closes an issue
 whose work IS done AND recorded on a surface where no PR can ever exist — the same
 framing as the fork-only predicate above. Receipts: #420 (close n=9952,
-tools/ship/oc-ship-audit) and #422 (close n=9953, tools/issue/oc-census), landed + recorded
+tools/ship/oc-audit-ship) and #422 (close n=9953, tools/issue/oc-census), landed + recorded
 and unclosable by construction; `git ls-tree -r --name-only adolfousier/main --
 tools` → 0 files, `… -- .github/workflows` → 4 files.
 
@@ -537,7 +537,7 @@ The existing classification bucket governs — `DISPATCHABLE = unclaimed AND vet
 
 ### F2 — The ceiling is `structural N/A`, and the verdict MUST read `UNPROVEN (structural N/A)`
 
-Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absent from the shipped set. `structural N/A` is a legal leg-4 substitute under the 4-Leg Smoke Rubric — but per the corrected-code presence rule, presence is not behavioral proof: the verdict reads **`UNPROVEN (structural N/A)`** and is **NEVER GREEN**. The ceiling is determined mechanically, not by judgment: read the live set with `tools/ship/oc-carrier-features` and compare it against the deliverable's feature-gated modules.
+Leg 4 (behavioral probe) is unreachable when the deliverable's modules are absent from the shipped set. `structural N/A` is a legal leg-4 substitute under the 4-Leg Smoke Rubric — but per the corrected-code presence rule, presence is not behavioral proof: the verdict reads **`UNPROVEN (structural N/A)`** and is **NEVER GREEN**. The ceiling is determined mechanically, not by judgment: read the live set with `tools/ship/oc-features` and compare it against the deliverable's feature-gated modules.
 
 ### F3 — Harvest stays blocked; the lane parks and releases
 
@@ -547,7 +547,7 @@ A smoke PASS is required to file upstream (PR shipment law). `UNPROVEN (structur
 
 The churn cure — both operational (Triage-owned; no new tooling, no new class):
 
-1. When `oc-carrier-features` shows the deliverable's modules outside the set, the dispatch note carries `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, so wire 1 behaves like wire N.
+1. When `oc-features` shows the deliverable's modules outside the set, the dispatch note carries `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, so wire 1 behaves like wire N.
 2. The issue is linked natively — `gh issue edit <issue> --add-blocked-by 338` (leshchenko1979/opencrabs#338, the carrier-set **decision record** and the blocker anchor) — per the Continuous Issue Relationship Linking order. A wire carries the RELATION, so the anchor's own state never unblocks it: #338 is a RECORD whose decision is MADE (owner ruling 2026-09-18), not a live question. Its closure is Triage's call under `triage.md §Duty T5` (Autonomous closure, (c) owner-confirmed-withdrawn); no lane re-raises the question while the close is pending.
 
 **Worked example (2026-09-18):** #319 (post-delivery re-entry for failed image delivery on Slack / Discord / WhatsApp) — carrier set `telegram,code-graph,browser`; the three channels are feature-gated modules in `Cargo.toml [features]`, compiled only under `--all-features`. The CI gate covers them; the shipped binary does not. Verdict ceiling `UNPROVEN (structural N/A)`; harvest blocked on the carrier set — **permanently**, per the owner's 2026-09-18 ruling that the set stays as-is (leshchenko1979/opencrabs#338, the decision record); lane released. The 4th wire landed a claim (n=8274) — the issue was dispatchable on wire 1.

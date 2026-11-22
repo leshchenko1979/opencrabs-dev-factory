@@ -20,7 +20,7 @@ build/carrier surface, and the daemon facts.
   from `$OPENCRABS_SESSION_ID` (commit `978fe5fe`). Manual `export OC_ACTOR` is retired.
   **If it is exported anyway it must be the BARE uuid** — a `<role> <uuid>` value
   passes `oc-commit`'s presence-only guard and lands the role word in the
-  `Session-Id` trailer, which `oc-order-validate` gate 4 reads as UNSIGNED
+  `Session-Id` trailer, which `oc-verify-order` gate 4 reads as UNSIGNED
   (measured 2026-09-26: ship rc 2, main stranded undeployed).
 - **A tool whose import path is derived from `__file__` cannot be run from a copy outside its tree.**
   Copying `tools/registry_attest.py` (or any sibling that computes its own module root
@@ -52,7 +52,7 @@ build/carrier surface, and the daemon facts.
   `gh run view <id> --json jobs --jq '.jobs[].name'` →
   `gate / PR-lane gates (64b906b274aecfeba6803564f3a49740cbf883f1)`.
   **A zero from either blind query is NOT evidence the ref was never gated** — it is
-  an instrument that cannot register the class. Read the job name. `oc-prchecks`
+  an instrument that cannot register the class. Read the job name. `oc-gate`
   self-documents the caveat (`headSha is the carrier head, not the dispatch input`),
   so the tool is not the defect — **believing the blind zero is.**
 - **Before quoting ANY counter as a clearing receipt, state the mechanism by which
@@ -89,7 +89,7 @@ build/carrier surface, and the daemon facts.
 - Branch NAMESPACES are reserved so any role can tell development from upstream
   PR heads at a glance (decision 2026-08-25): `<type>/<slug>` with type ∈
   `feat|fix|ci|chore` = DEVELOPMENT — fork-only, ff-merged into fork `main`
-  (editor Phase 5 `oc-ship-chain`), archived after merge · `leshchenko1979/<slug>` = UPSTREAM PR HEADS ONLY (renamed from `up/*`, decision 2026-08-27)
+  (editor Phase 5 `oc-ship`), archived after merge · `leshchenko1979/<slug>` = UPSTREAM PR HEADS ONLY (renamed from `up/*`, decision 2026-08-27)
   — created solely in harvest Phase 7 off `adolfousier/main`, never merged into
   fork `main`, never a dispatch source. Any lane reads the prefix and knows
   what it is looking at.
@@ -122,7 +122,7 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   input `features` (comma-separated). Its **`default:` in the workflow yml on the
   CARRIER branch `ci/quick-build-linux` is the SINGLE SOURCE OF TRUTH** for what we
   ship — these skill files NEVER copy the set (drift killed 2026-08-25). Read it
-  live with `tools/ship/oc-carrier-features` (the reader oc-deploy itself resolves
+  live with `tools/ship/oc-features` (the reader oc-deploy itself resolves
   through). Changing the pick later = one-line Editor commit to that yml's `default:` —
   skills untouched.
 - Dispatch ALWAYS passes the set explicitly: `-f features=<set>` (decision
@@ -178,11 +178,11 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   each run cancelling the previous via `concurrency`). The red is Cargo Audit, not a compile
   failure.
   **CONSEQUENCE — fork `main` has NO post-merge CI net**, by design: the PRE-merge PR-lane gate
-  (`oc-ship-chain` LEG1) is the ONLY gate, and the only thing between a red commit and the carrier
+  (`oc-ship` LEG1) is the ONLY gate, and the only thing between a red commit and the carrier
   build. **Never read `main`'s workflow files as evidence about the fork's CI.**
   **AND `ci.yml` was never that gate:** `ci-lane-impl.yml` has exactly three jobs —
   `order-gates` `build` `pr-gates` — and **no audit job at all** (the only `audit` strings in it
-  name the `oc-ship-audit` TOOL). So a red Cargo Audit in `ci.yml` never blocked a lane's merge;
+  name the `oc-audit-ship` TOOL). So a red Cargo Audit in `ci.yml` never blocked a lane's merge;
   asserting otherwise is a measured error (ledger n=16514, corrected at n=16518).
 
 - **`EAGAIN` / `Errno 11` / `can't start new thread` in a gate is BOX SATURATION, never a gate

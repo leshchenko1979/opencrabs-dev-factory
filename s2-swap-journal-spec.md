@@ -41,9 +41,9 @@ last present line = last completed step.
 | 1 | `dispatch` | (existing) order sha, run_id | dispatch lands |
 | 2 | `consent` | sha, kind=deploy, msgid, topic, quote | **RETIRED 2026-08-28 18:50Z** (superseded by `auto-swap` — see amendment above; kept for historical journal parsing) |
 | 3 | `backup` | backup_path, backup_sha256, bytes | immediately after backup created. Skip → exit≠0 + skipped_reason; prod swap MUST NOT proceed |
-| 4 | `verify` | run_id, source_ref, artifact_sha256, features, verify_exit, provenance | after oc-artifact-verify; verify_exit≠0 HALTS |
+| 4 | `verify` | run_id, source_ref, artifact_sha256, features, verify_exit, provenance | after oc-verify-artifact; verify_exit≠0 HALTS |
 | 5 | `install` | old_sha256, new_sha256, bytes, method=install+mv | after atomic mv |
-| 6 | `seal` | baseline_path, cycle, seal_exit | after oc-seal-state; seal_exit≠0 HALTS before restart |
+| 6 | `seal` | baseline_path, cycle, seal_exit | after oc-seal; seal_exit≠0 HALTS before restart |
 | 7 | `restart` | unit, systemd_run_exit | chained unit accepted |
 | 8 | `post-verify` | is_active, disk_sha256, expected_sha256, match | post-bounce leg, from the chained unit's output |
 | 9 | `marker-write` | deployed_sha_path, deployed_sha, wrote | after marker write (below) |
@@ -87,7 +87,7 @@ answer requiring chat history = the reconstruction leg is not met.
   headSha, never "current main" — a merge landing mid-build leaves main ahead of
   the binary), notifies each contributing editor's session
   about the new binary, then records `{sha, run_id, contributors}` to the
-  baseline state file (`oc-seal-state`; canonical:
+  baseline state file (`oc-seal`; canonical:
   `/root/.opencrabs/profiles/ops/opencrabs-dev/baseline.json`) — its `sha` is
   the left edge of the next attribution range. LIVE since v0.4.37: `oc-deploy
   fanout --run <id>` ([#24](https://github.com/leshchenko1979/opencrabs/issues/24),

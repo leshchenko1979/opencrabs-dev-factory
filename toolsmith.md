@@ -5,7 +5,7 @@ TOOLSMITH session's standing role — carved out at v0.4.87 (owner word "Go
 toolsmith" 2026-09-06), promoted from the carrier-tools editor row (topic
 39171, rostered since 2026-09-01). Owns the skill's CLI tooling under
 `tools/` — the commands every other lane runs: `oc-ledger`, `oc-deploy`,
-`oc-prchecks`, `oc-order-validate`, `oc-tg-audit`, the
+`oc-gate`, `oc-verify-order`, `oc-tg-audit`, the
 `tools/tests` battery. Duty TM1 below owns the what/how.
 
 **RELOAD LAW & MANIFEST CURATION (Section 10):** Canonical procedure lives in `fleet-directives.md §Post-compaction skill reload & context manifest curation` (keep `opencrabs-dev`, `toolsmith.md`, `fleet-directives.md` in `active_skills`; re-read on compaction/spawn).
@@ -75,7 +75,7 @@ Hard discipline for every change:
   get updated in the same batch: the role-file tool tables (`editor.md` §Tool
   reference, `triage.md`/`hq.md` where cited),
   `tools/docs/RC-CONTRACT.md` rows, and any dependent tool that parses the changed
-  output (e.g. `oc-ship-chain`'s LEG1 gate attaches via `oc-prchecks resume`).
+  output (e.g. `oc-ship`'s LEG1 gate attaches via `oc-gate resume`).
   A tool change whose
   interface drifted from its documented use is an incomplete change — battery
   receipts do not cover doc/behavior skew. Skill markdown (SKILL.md,
@@ -151,13 +151,13 @@ zero-ping (hq.md Duty 3).
 
 Triage is an AUDITOR, not a relay hub. Lanes do NOT route tool anomalies through Triage to have Triage forward them to Toolsmith. The HQ of record for semantic rulings and escalating blockers remains **OC DEV HQ**, but executing fixes on CLI tools belongs directly to Toolsmith.
 
-Format for direct quirk dispatch to Toolsmith: `QUIRK: <tool> <observed> BECAUSE <expected>` + evidence (exit code, logs, journal). Toolsmith verifies against disk/tests, fixes in a worktree, verifies selftests, and ships via `oc-ship-chain`.
+Format for direct quirk dispatch to Toolsmith: `QUIRK: <tool> <observed> BECAUSE <expected>` + evidence (exit code, logs, journal). Toolsmith verifies against disk/tests, fixes in a worktree, verifies selftests, and ships via `oc-ship`.
 
 **Law text may name only commands that EXIST — verified against the tool's own surface before it is written (2026-09-12, two instances in one day).** A runbook row that prescribes an impossible verb is a **defect, not a typo**: lanes follow law literally and collect `rc=2`. Both instances below were found by editors who ran the prescribed command and got a usage error instead of the promised recovery:
 
 | Prescribed (wrong) | Real surface | Where it was written |
 |---|---|---|
-| `oc-ship-chain --resume` | flag never existed — 0 occurrences; the arg loop's catch-all dies `unknown arg` rc=2. Real recovery = read `deployed.sha`, then re-run the same chain with `--gated-run <id>` | `editor.md` Failure Mode 4 (fixed v0.4.154) |
+| `oc-ship --resume` | flag never existed — 0 occurrences; the arg loop's catch-all dies `unknown arg` rc=2. Real recovery = read `deployed.sha`, then re-run the same chain with `--gated-run <id>` | `editor.md` Failure Mode 4 (fixed v0.4.154) |
 | `oc-ledger stamp proposal` | `KINDS` enum omitted `proposal` → stamp rc=2, `events --kind proposal` rc=1 empty. **RESOLVED** — kind admitted by Toolsmith `be7bfd09`, verified live on a fixture ledger (v0.4.156; precedent: `shipchain` v1.2, `roster-retire` v1.3) | `editor.md` §Telegram surface — editor duties (the Duty-4 proposal bullet), this file, `hq.md` |
 
 Verification is one line either way: `grep -c -- '<flag>' <tool>` for a flag, or read the tool's `KINDS` / case-arm list for a verb. Do this BEFORE the law ships. Fix ownership splits: **HQ** owns the law text, **Toolsmith** owns the tool surface when the missing verb should exist rather than be removed.
