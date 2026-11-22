@@ -32,96 +32,41 @@
 #                                        # repair a truncated swap's missing ledger row (v0.4.153)
 #   oc-deploy --selftest
 #
-# S2 WIRING (2026-08-28, per s2-swap-journal-spec.md + owner tool-logging law):
-#   - swap-execute = Phase B body. Runs under a systemd-run --user TRANSIENT
-#     unit (spawned by init, not the opencrabs daemon) so the bounce it
-#     triggers cannot kill its own verifier. poll --execute at S2 hands off
-#     to that unit and exits BEFORE any bounce (Phase A/B split).
-#   - JOURNAL: $STATE_DIR/oc-deploy/journal/swap-<short>-<epoch>-<pid>.jsonl —
-#     append-only, one fsync'd JSON line per state-changing step BEFORE the
-#     next step starts (auto-swap/backup/verify/install/seal/marker-write/
-#     restart/post-verify/receipt/rollback). Last present line = last
-#     completed step; a crash is reconstructable from the journal alone.
-#   - MARKERS: deployed.sha + deployed.meta.json written by THIS script
-#     between seal and restart (the 03:11Z gap: HQ had to hand-restore).
-#     Rollback restores markers + baseline/orders backups too.
-#   - LEDGER STAMP: every attempt (success OR rollback OR drill) ends with a
-#     flock'd workers-ledger stamp kind=swap-result quoting the journal.
-#   - AUTO-ROLLBACK: post-bounce verify fail = restore backup + restart +
-#     re-verify + stamp ROLLED_BACK + A2A owner ping, automatic.
-#   - NO CONSENT GATE (owner 2026-08-28 18:50Z: consent process ELIMINATED):
-#     GREEN carrier run + artifact verify IS the authorization -> auto-swap.
-#     Post-SMOKE-FAIL rollback stays the owner's call (no auto-rollback there);
-#     the swap-chain auto-rollback on post-bounce verify fail is unchanged.
+# S2 WIRING — swap-execute runs under a transient unit so the bounce it triggers
+#   cannot kill its own verifier; poll --execute hands off to that unit and exits
+#   BEFORE any bounce (Phase A/B split). Journal file + per-step vocabulary, the
+#   marker write, the ledger stamp, auto-rollback and the retired consent gate are
+#   specified in s2-swap-journal-spec.md — that file is the register, this header is
+#   not. (2026-08-28, owner tool-logging law.)
 #
-# LINEAGE GUARD (v0.4.148 ancestry; REBASE-AWARE v0.4.151):
-#   swap-execute refuses to install an incoming sha that does not CARRY the
-#   currently deployed change — that is what stops a stale/delayed build from
-#   regressing the live binary. A fork-main rebase REWRITES shas and orphans
-#   the deployed commit, so the v0.4.148 ancestry-only test refused EVERY
-#   legitimate post-rewrite swap: fleet-blocking, reported 2026-09-12.
-#   Verdicts:
-#     monotonic — PREV is an ancestor of SHA -> accept (fast path, unchanged)
-#     rewritten — PREV orphaned, but a commit in merge-base(PREV,SHA)..SHA has
-#                 the SAME patch-id -> accept; journal reason
-#                 rewrite-equivalent-swap + rewritten_twin
-#     absent    — both objects exist and PREV's change is genuinely NOT carried
-#                 -> refuse rc 2, journal non-monotonic-swap, stderr token
-#                 OC_DEPLOY_SWAP_GUARD=stale-build
-#     unknown   — either object missing from OC_DEPLOY_REPO -> guard SKIPPED
-#                 (pre-v0.4.151 "if both exist" behaviour preserved)
-#   POST-REWRITE LANE RUNBOOK: after a rebase, just re-run the oc-ship-chain
-#   leg — the swap is accepted automatically as rewrite-equivalent-swap.
-#   NEVER hand-edit deployed.sha to re-point around a refusal (that is exactly
-#   the regression the guard exists to catch). Diagnose read-only with
-#   `oc-deploy lineage-check [--prev P] [--sha S] [--repo R] [--json]`
-#   (rc 0 monotonic|rewritten, rc 2 absent|unknown; prints verdict, twin and
-#   next step). A deliberate, audited regression uses
-#   `--allow-rewritten-lineage "<justification>" [--actor A]` — justification
-#   is MANDATORY (bare flag -> rc 2, OC_DEPLOY_GATE=override-needs-justification)
-#   and acceptance is journaled with justification + actor.
+# LINEAGE GUARD — refuses to install an incoming sha that does not CARRY the
+#   currently deployed change (stops a stale/delayed build regressing the live
+#   binary). Four verdicts: monotonic / rewritten (same patch-id, accepted as
+#   rewrite-equivalent-swap) / absent (rc 2, OC_DEPLOY_SWAP_GUARD=stale-build) /
+#   unknown (guard skipped). FULL register — patch-id rules, the audited
+#   --allow-rewritten-lineage escape hatch and the lineage-check diagnosis verb —
+#   is the oc-deploy row in tools/docs/RC-CONTRACT.md.
+#   NEVER hand-edit deployed.sha to re-point around a refusal: that is exactly the
+#   regression this guard exists to catch.
 #
-# RESTART SURVIVAL / CGROUP SAFETY (v0.4.153):
-#   A DIRECT `swap-execute` inherits the cgroup of whoever launched it. When that
-#   launcher is a session hosted by the very unit the swap bounces
-#   (opencrabs-ops.service), step 8's `systemctl --user restart` tears the cgroup
-#   down and SIGKILLs the swap AT the restart line. Steps 9-12 (post-verify,
-#   sidecar-sync, receipt, fanout) never run, and because the swap-result ledger
-#   stamp is deliberately LAST (v0.4.78 F-M1: receipt evidence must precede the
-#   stamp, so a crash can never leave an unbacked DEPLOYED row) NO row is written
-#   at all — the host is fully swapped and the ledger is SILENT. A false-negative
-#   audit trail is the dangerous direction of error.
-#   EVIDENCE 2026-09-12: journal swap-acb8e205-…jsonl stops at seq 7 marker-write
-#   (mtime == swapped_at second; daemon restarted the SAME second), while
-#   swap-74d85785-…jsonl — handed to a `systemd-run` transient unit by
-#   `poll --execute`, i.e. OUTSIDE the unit — carries all 11 seqs.
+# RESTART SURVIVAL / CGROUP SAFETY (v0.4.153) — a DIRECT swap-execute inherits the
+#   launcher's cgroup; if that launcher is a session hosted by the unit being
+#   bounced, step 8's restart SIGKILLs the swap AT the restart line and steps 9-12
+#   (post-verify, sidecar-sync, receipt, fanout) never run — the host is swapped and
+#   the ledger is SILENT, because the swap-result stamp is deliberately LAST (F-M1).
 #   FIX: swap-execute re-execs under a transient scope outside the bounce cgroup
-#   BEFORE any work (pre-lock, so a re-entry can never self-deadlock on the held
-#   host-swap.lock). The detach command MUST BLOCK and pass the child's rc
-#   through (`systemd-run --user --scope`, `setsid -w`) — a non-blocking launcher
-#   returns 0 immediately and a guard refusal would read as success.
-#   RECOVERY: `oc-deploy recover-receipt` repairs the missing row for a swap that
-#   already truncated. It stamps ONLY when the journal shows install exit=0 AND
-#   marker-write exit=0, has NO receipt step, the sha resolves, and no existing
-#   swap-result row quotes sha+run (idempotent — a re-run is a no-op). rc 0 =
-#   handled (recovered, or correctly nothing to do) · rc 2 = refused (the journal
-#   does not describe a recoverable real swap). `--historical` records a swap
-#   whose sha was later SUPERSEDED instead of refusing; `--dry-run`/`--json`
-#   inspect without writing. Fan-out is NOT replayed (use `oc-deploy fanout
-#   --run <id>` — it has its own done-marker and a replay would re-notify).
-#   Selftest section 22 covers this end-to-end with a restart shim that kills the
-#   swap's own process group.
+#   BEFORE any work (pre-lock); the detach MUST block and pass the child's rc
+#   through — a non-blocking launcher returns 0 and a refusal would read as success.
+#   Repair verb + full evidence: tools/docs/RC-CONTRACT.md (oc-deploy row,
+#   "Restart survival / cgroup safety").
 #
-# HARD SAFETY RULES (v0.4.27 + S2):
-#   - Plan-only UNLESS --execute. Every planned action prints as "PLAN: ...".
-#     NEVER bare exit 0 — plan mode always prints its full delta.
-#   - Kill file aborts EVERY invocation first (exit 9), selftest included.
-#     Either $STATE_DIR/oc-deploy.kill or ${HOME:-/root}/oc-work/oc-deploy.disabled.
-#   - Swap actions (poll execute + swap-execute) require stage >= S2.
-#   - Consent gate RETIRED 2026-08-28 (owner order): GREEN run -> auto-swap.
-#   - Shadow journal $STATE_DIR/oc-deploy-shadow.log records every run.
-#   - Bash-only, seconds of runtime, zero cargo.
+# ABORT & SAFETY LEVERS — kill file, plan-only default, S2 stage gate and the
+#   shadow journal are lane procedure: see editor-ship.md §Abort & safety levers.
+#   In one line each: the kill file aborts EVERY invocation first (rc 9, selftest
+#   included); nothing is dispatched or swapped without --execute; swap actions need
+#   stage >= S2; $STATE_DIR/oc-deploy-shadow.log records every run.
 #
+
 # Exit codes: 0 ok/noop | 1 usage | 2 rebase/gate/push/verify/rollback fail
 #             / watch stray | 3 retired (was consent) | 4 stage gate / launch fail
 #             | 5 poll --wait timeout (C-#2) | 9 kill file
@@ -2302,19 +2247,11 @@ fi
 # ship-only reconciliation against the live deployment (runs AFTER carrier
 # resolution so both default and explicit paths are covered; poll keeps the
 # pre-incident behavior — the incident window was ship dispatch).
-# #108 (2026-11-20, toolsmith): DROP-ONLY, mirroring the features-compat gate in
-# swap_execute() that this one precedes. The previous SYMMETRIC compare made the
-# deployed feature set IMMUTABLE: an addition was refused (rc 2) and an omitted
-# --features was rewritten back to the deployed set, so no carrier default could
-# ever ADD a feature to the live binary. The old justification ("artifact name
-# embeds features verbatim, this build could never be swapped") does not hold
-# for an addition: within one ship->poll->swap chain the SAME $FEATURES feeds
-# the dispatch (-f features=), `swap-execute --features` and `oc-seal-state
-# --features`, so a build and its swap cannot disagree. Additions are fine;
-# drops are the failure class (HQ LAW 2026-09-04, unchanged) — and an explicit
-# drop stays possible through --allow-features-drop, which is now honoured HERE
-# as well as at the swap gate, so a deliberate drop is not refused one stage
-# before the stage that permits it.
+# #108 (2026-11-20): DROP-ONLY, and the rationale is stated ONCE — see the #108
+# block above the omitted-features path. An addition proceeds; a DROP of a deployed
+# feature is the failure class (HQ LAW 2026-09-04) and --allow-features-drop is
+# honoured HERE as well as at the swap gate, so a deliberate drop is not refused one
+# stage before the stage that permits it.
 if [ "$MODE" = ship ] && [ -n "$FEATURES" ] && [ -f "$DEPLOYED_META" ]; then
   DEP_FEATS="$(jq -r '.features // ""' "$DEPLOYED_META" 2>/dev/null || true)"
   if [ -n "$DEP_FEATS" ] && [ "$DEP_FEATS" != "null" ]; then

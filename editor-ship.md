@@ -140,3 +140,13 @@ A rebase orphans the deployed sha (it stops being an ancestor of `main`), and th
 ## Features-compat gate — no silent feature-loss swaps (HQ ruling 2026-09-04, MANDATORY) [LANE]
 
 `oc-deploy swap-execute` **refuses** any artifact whose feature set drops a feature present in `deployed.meta.json` (exit 4, journal `features-drop-gate`, markers untouched) unless `--allow-features-drop` is passed explicitly. Feature *additions* pass freely; *drops* are the failure class. Enforced in-code (selftest 17p/17q). Rationale: the 06:36:06Z rogue swap (run `33844429519`, `features="telegram"` over a live `telegram,code-graph` binary) killed structural memory for 12h, and the 18:57Z f3c03269 swap was the same class. The gate would have refused both.
+
+## Abort & safety levers (`oc-deploy`) [LANE]
+
+A ship that must be stopped is stopped HERE, not by killing a PID — every lever below is read by the tool itself, before it does anything.
+
+- **Kill file aborts EVERY invocation, selftest included** (exit 9, checked first): `$STATE_DIR/oc-deploy.kill` or `${HOME:-/root}/oc-work/oc-deploy.disabled`. Touch either and every `ship` / `poll` / `swap-execute` / `fanout` refuses; remove it to re-arm. This is the only abort that survives a restart and reaches a run already dispatched.
+- **Plan-only UNLESS `--execute`.** Without the flag nothing is dispatched, nothing is swapped: every action prints as `PLAN: ...`. Plan mode always prints its full delta — it never exits 0 silently, so "no output" means the invocation died, not that there was nothing to do.
+- **Swap actions require stage ≥ S2** (`poll --execute`, `swap-execute`). Below S2 they refuse rather than degrade.
+- **Shadow journal** `$STATE_DIR/oc-deploy-shadow.log` records every run, plan or execute — the first place to look when you cannot tell whether an invocation happened.
+- **Consent gate RETIRED 2026-08-28** (owner order): a GREEN carrier run plus artifact verify IS the authorization. Post-SMOKE-FAIL rollback stays the owner's call.
