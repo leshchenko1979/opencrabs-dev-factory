@@ -91,7 +91,14 @@ if [ -f "$_OC_LIB" ]; then
   # T-1: a DETACHED CHILD owns the journal line for its invocation (the parent
   # suppresses its own at the hand-off), so mark the row. Without this the one
   # surviving row is indistinguishable from a run that never detached.
-  [ "${OC_PRCHECKS_DETACHED:-0}" = "1" ] && oc_log_extra "detached" "1"
+  if [ "${OC_PRCHECKS_DETACHED:-0}" = "1" ]; then
+    oc_log_extra "detached" "1"
+    # HQ order 2026-11-21: the log path travels IN THE ROW, not only in a stderr
+    # line a caller may already have scrolled past. The recurring shape is "the
+    # tool self-detaches and the reason is only in a file whose path you must
+    # discover" — and the pid you would guess is NOT the one that wrote it.
+    [ -n "${OC_PRCHECKS_LOG:-}" ] && oc_log_extra "detached_log" "$OC_PRCHECKS_LOG"
+  fi
 else oc_log_finish() { :; }; fi
 # #727: the re-exec target and the argv to replay, captured BEFORE the parse loop
 # shifts "$@" away. SELF is read AFTER oc_snap_guard (line above), so it names the
@@ -1529,6 +1536,23 @@ FDV
   jq -e 'select(.extra.detached=="1")' "$D/t1-child.log" >/dev/null 2>&1 && t_ok "21j T-1: row carries extra.detached=1" || t_bad "21j T-1: extra.detached missing ($(cat "$D/t1-child.log" 2>/dev/null))"
   jq -e 'select(.pid|type=="number")' "$D/t1-child.log" >/dev/null 2>&1 && t_ok "21j T-1: row carries a numeric pid" || t_bad "21j T-1: pid missing from the row"
 
+  # 21j2. THE PATH TRAVELS IN THE ROW (HQ order 2026-11-21). 21j above proves the
+  #       child tags its row `detached=1`, which says a hand-off HAPPENED and says
+  #       nothing about where the log went. That is the gap an operator hits: the
+  #       one surviving ledger line reports a gate and no path, so the log must be
+  #       guessed from a pid that is not the one that launched it. The positive
+  #       control is 21j itself — a run that detaches without a path writes the
+  #       `detached=1` row and no `detached_log`, so this arm cannot pass on a tool
+  #       whose tag site never runs.
+  rm -f "$D/t1-dlog.log" "$D/t1-dlog-row.log"
+  DET_RC=0
+  OC_PRCHECKS_DETACHED=1 OC_PRCHECKS_LOG="$D/t1-dlog.log" OC_TOOLS_NOLOG=0 \
+    OC_TOOLS_LOG="$D/t1-dlog-row.log" OC_DEPLOY_STATE_DIR="$D/state" \
+    "$SELF" --help >/dev/null 2>&1 || DET_RC=$?
+  jq -e --arg p "$D/t1-dlog.log" 'select(.extra.detached_log==$p)' "$D/t1-dlog-row.log" >/dev/null 2>&1 \
+    && t_ok "21j2 T-1: row carries extra.detached_log = the path the caller was given" \
+    || t_bad "21j2 T-1: extra.detached_log missing or wrong (want $D/t1-dlog.log; got $(jq -c '.extra' "$D/t1-dlog-row.log" 2>/dev/null || echo '<no row>'))"
+
   # 21k. T-1 PARENT SILENCE: a run that HANDS OFF writes no row of its own.
   #      The stub detach launches no child, so any row in this log could only
   #      have come from the parent — one invocation, one row, owned by whoever
@@ -1794,7 +1818,12 @@ prchecks_ensure_detached() { # re-exec outside the daemon cgroup (argv from ORIG
   # RESUMED (bash 4), so a SIGTERM mid-relay is deferred until the child exits and
   # the true rc still leaves this function.
   local _drc=0 _dchild=0
-  OC_PRCHECKS_DETACHED=1 $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1 &
+  # HQ order 2026-11-21: hand the CHILD the exact path this function printed.
+  # Without OC_PRCHECKS_LOG in its environment the child re-derives
+  # /tmp/oc-prchecks-detached-$$.log from its OWN $$ — a different file from the
+  # one the caller was told to read, and the journal row below then has no path to
+  # record. A tool that knows the path and withholds it is the defect.
+  OC_PRCHECKS_DETACHED=1 OC_PRCHECKS_LOG="$dlog" $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1 &
   _dchild=$!
   wait "$_dchild" || _drc=$?
   # RELAY — the child has exited, so the file is COMPLETE: no reader race even for

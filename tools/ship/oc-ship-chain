@@ -1114,7 +1114,15 @@ shipchain_ensure_detached() { # re-exec outside the bounce cgroup (argv from ORI
   # launching tool call still owns the pipes, so an unredirected re-exec dies
   # EPIPE on its first stderr write (see the block comment above).
   local dlog="${OC_SHIPCHAIN_LOG:-/tmp/oc-ship-chain-detached-$$.log}"
-  OC_SHIPCHAIN_DETACHED=1 exec $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1
+  # HQ order 2026-11-21: say where the log went, and hand the child the SAME path.
+  # Both halves matter. The echo alone is not enough — without OC_SHIPCHAIN_LOG in
+  # the child's environment it re-derives /tmp/oc-ship-chain-detached-$$.log from
+  # its OWN $$, a DIFFERENT file from the one just printed, so the operator reads a
+  # path that was never written while the real log sits beside it under a pid that
+  # is not the one that launched it. A tool that knows the path and withholds it is
+  # the defect.
+  echo "oc-ship-chain: detached log: $dlog" >&2
+  OC_SHIPCHAIN_DETACHED=1 OC_SHIPCHAIN_LOG="$dlog" exec $cmd "$SELF" "${ORIG_ARGS[@]}" </dev/null >>"$dlog" 2>&1
 }
 shipchain_ensure_detached
 
@@ -1196,6 +1204,16 @@ journal_summary() { # call before exit: one line if any journal write was lost
   [ "$JOURNAL_FAILS" -gt 0 ] || return 0
   printf '%s\n' "oc-ship-chain: $JOURNAL_FAILS journal line(s) lost for $CHAIN (see the first warning above)" >&2
 }
+
+# ---- detached log path (HQ order 2026-11-21) ------------------------------
+# The detach happened BEFORE journal() existed (it is an `exec` inside
+# shipchain_ensure_detached), so the parent could not record it and the CHILD is
+# the only process that can. Without this row the one surviving ledger line says a
+# chain ran and never says where its log went — the caller is left to guess a path
+# from a pid that is not the one that launched it.
+if [ "${OC_SHIPCHAIN_DETACHED:-0}" = "1" ] && [ -n "${OC_SHIPCHAIN_LOG:-}" ]; then
+  journal "detached log: $OC_SHIPCHAIN_LOG"
+fi
 
 # ---- pre-flight -----------------------------------------------------------
 require_fork_checkout "$FORK_REPO"
@@ -4551,6 +4569,14 @@ EOF
   grep -q "FAKE-DETACH-STDIO-BOUND" "$T/detach-stdio.log" \
     && ok "detach-stdio-bound-to-file" || bad "detach-stdio-bound-to-file"
   grep -q "DONE SWAPPED" "$T/journal.log" && ok "detach-chain-completed" || bad "detach-chain-completed"
+  # HQ order 2026-11-21: the detach must SAY where the log went, and the path must
+  # reach the ledger row. Both assertions ride this arm deliberately: 21a is the
+  # only place a detach actually FIRES, so they cannot pass on a chain that never
+  # detached. `detach-fired` above is their positive control.
+  grep -qF "oc-ship-chain: detached log: $T/detach-stdio.log" <<< "$OUT" \
+    && ok "detach-prints-log-path" || bad "detach-prints-log-path (stderr lacked the path; got: $(head -c 300 <<< "$OUT"))"
+  grep -qF "detached log: $T/detach-stdio.log" "$T/journal.log" 2>/dev/null \
+    && ok "detach-journals-log-path" || bad "detach-journals-log-path (journal has no path row: $(head -c 300 "$T/journal.log" 2>/dev/null))"
 
   # 21b. LOOP GUARD: a re-entered chain (OC_SHIPCHAIN_DETACHED=1) must NOT
   #      re-exec — otherwise the detach recurses forever.
