@@ -1506,21 +1506,61 @@ elif [ -n "$GATED_SHA" ]; then
   
   # On carrier dispatches, headSha is the carrier branch commit, NOT $SHA (v0.4.48 lesson).
   # Scan recent completed runs of pr-checks.yml matching job name 'PR-lane gates ($SHA)'.
+  #
+  # #153: IDENTITY IS A TOKEN, NOT A SUBSTRING. GitHub does NOT expose dispatch
+  # inputs on a run (`inputs: null`, measured 2026-11-23 on run 45183001870), and
+  # the run's own `name`/`display_title` carry no sha — so the gated ref lives
+  # ONLY in the job name `PR-lane gates (<40-hex>)`. That makes the job name the
+  # sole identity carrier, and a `contains($SHA)` test is therefore NOT proof of
+  # identity: it accepts an abbreviated sha, and it accepts any job whose name
+  # merely contains those bytes. Identity is established ONLY when the job name's
+  # own 40-hex token EQUALS the sha being shipped (oc_job_sha, exact compare) on
+  # a workflow_dispatch run of the CARRIER. Anything else is not evidence, and
+  # this leg fails closed rather than carrying a gate forward on a guess — which
+  # is the second half of #153's expected outcome, chosen because the first half
+  # (a machine-readable gated-ref field) does not exist to expose.
   MATCHED_RUN=""
+  CARRIER="${OC_SHIP_CARRIER:-ci/quick-build-linux}"
   RUNS_LIST="$("$GH_BIN" run list -R "${REPO:-leshchenko1979/opencrabs}" -w pr-checks.yml -L 20 --json databaseId,status,conclusion -q '.[] | select(.status=="completed" and .conclusion=="success") | .databaseId' 2>/dev/null || true)"
+  _CAND=0; _NOTDISPATCH=0; _NOPIN=0; _FOUND=0
   for RID in $RUNS_LIST; do
-    # Try the target sha first, then the sha the gate actually ran on: on a
-    # content-identical rebase the job name carries the PRE-rebase sha.
-    for _probe_sha in "$SHA" "$GATED_SHA"; do
-      [ -n "$_probe_sha" ] || continue
-      JOB_MATCH="$("$GH_BIN" run view "$RID" -R "${REPO:-leshchenko1979/opencrabs}" --json jobs -q '[.jobs[]? | select(.name | contains("'"$_probe_sha"'")) | .conclusion] | first // empty' 2>/dev/null || true)"
-      if [ "$JOB_MATCH" = "success" ]; then
-        MATCHED_RUN="$RID"
-        MATCHED_SHA="$_probe_sha"
-        break 2
-      fi
-    done
+    _CAND=$((_CAND+1))
+    # A run of another EVENT or another REF is not this gate at all: reading one
+    # as the gate would verify a tree nobody asked about. `headSha` cannot serve
+    # here (it names the carrier), so the event+ref pair is the only cheap
+    # discriminator that precedes the job-name read.
+    _RMETA="$("$GH_BIN" run view "$RID" -R "${REPO:-leshchenko1979/opencrabs}" --json event,headBranch -q '[.event, .headBranch] | join(" ")' 2>/dev/null || true)"
+    case "$_RMETA" in
+      "workflow_dispatch $CARRIER") : ;;
+      *) _NOTDISPATCH=$((_NOTDISPATCH+1)); continue ;;
+    esac
+    _JOB_NAMES="$("$GH_BIN" run view "$RID" -R "${REPO:-leshchenko1979/opencrabs}" --json jobs -q '.jobs[]? | "\(.name)\t\(.conclusion)"' 2>/dev/null || true)"
+    while IFS=$'\t' read -r _jn _jc; do
+      [ -n "$_jn" ] || continue
+      _js="$(oc_job_sha "$_jn")"
+      if [ -z "$_js" ]; then _NOPIN=$((_NOPIN+1)); continue; fi
+      # Try the target sha first, then the sha the gate actually ran on: on a
+      # content-identical rebase the job name carries the PRE-rebase sha.
+      for _probe_sha in "$SHA" "$GATED_SHA"; do
+        [ -n "$_probe_sha" ] || continue
+        if [ "$_js" = "$_probe_sha" ] && [ "$_jc" = "success" ]; then
+          MATCHED_RUN="$RID"
+          MATCHED_SHA="$_probe_sha"
+          _FOUND=1
+          break
+        fi
+      done
+      if [ "$_FOUND" = 1 ]; then break; fi
+    done <<EOF_JOBS
+$_JOB_NAMES
+EOF_JOBS
+    if [ "$_FOUND" = 1 ]; then break; fi
   done
+  # FAIL-CLOSED VISIBILITY (#153): an unestablished identity must never read as
+  # "no run exists" when the real cause is "the runs were not this gate" or "no
+  # job name carried a 40-hex token". Name the population, so the next reader
+  # does not hunt a dispatch that was never missing.
+  journal "LEG1 identity scan: ${_CAND} completed-success run(s); ${_NOTDISPATCH} not a carrier workflow_dispatch; ${_NOPIN} job name(s) carried no 40-hex token"
 
   if [ -n "$MATCHED_RUN" ]; then
     # #672: NO leg runs on this path either -- the chain only VERIFIED an

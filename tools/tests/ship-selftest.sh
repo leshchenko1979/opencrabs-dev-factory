@@ -872,18 +872,33 @@ FGHEOF
   # how this was found (battery died at 109 legs, not on an assertion).
 
   # 5. gated-sha with fake gh shim
-  cat > "$T/fake-gh" <<'EOF'
+  # #153: IDENTITY IS A TOKEN, NOT A SUBSTRING. oc-ship no longer reads the
+  # gated ref off a run's name or headSha (GitHub exposes neither: dispatch
+  # inputs are `inputs: null`, and headSha names the CARRIER). It reads the
+  # run's event+headBranch, then extracts the 40-hex token from the JOB NAME
+  # and compares it EXACTLY. This shim answers THAT contract, parameterised so
+  # a leg can vary the single field under test:
+  #   FAKE_GH_REF         event+branch of run 11111 (default: carrier dispatch)
+  #   FAKE_GH_JOB_SHA     the 40-hex token in the job name (default $FSHA)
+  #   FAKE_GH_JOB_SUFFIX  text appended AFTER the token (the substring trap)
+  #   FAKE_GH_JOB_CONC    that job's conclusion (default success)
+  # Run 22222 is permanently a `push` run: it must always be SKIPPED as
+  # not-a-carrier-dispatch, which is what makes the positive control prove the
+  # scan DISCRIMINATES rather than merely returning the first run it sees.
+  cat > "$T/fake-gh" <<EOF
 #!/usr/bin/env bash
-case "$*" in
+case "\$*" in
   *"run list"*)
-    echo "11111"
-    echo "22222"
+    printf '%s\n' 11111 22222
     ;;
-  *"run view 11111"*)
-    echo "success"
+  *"run view 11111"*"event,headBranch"*)
+    printf '%s\n' "\${FAKE_GH_REF:-workflow_dispatch ci/quick-build-linux}"
     ;;
-  *"run view 22222"*)
-    echo "failure"
+  *"run view 11111"*"--json jobs"*)
+    printf 'PR-lane gates (%s)%s\t%s\n' "\${FAKE_GH_JOB_SHA:-$FSHA}" "\${FAKE_GH_JOB_SUFFIX:-}" "\${FAKE_GH_JOB_CONC:-success}"
+    ;;
+  *"run view 22222"*"event,headBranch"*)
+    printf '%s\n' "push refs/heads/main"
     ;;
   *)
     exit 1
@@ -935,7 +950,12 @@ EOF
     fi
     git -C "$T/clone" checkout -q main
     git -C "$T/clone" reset -q --hard origin/main
-    RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$TWIN" 2>&1)" || RC=$?
+    # #153: a content-identical rebase is visible on the tracker ONLY as a job
+    # name carrying the PRE-rebase sha, which is exactly the SECOND probe the
+    # exact-token scan makes ($SHA first, $GATED_SHA second). Without this the
+    # job name carries $FSHA, probe 1 matches, and the leg silently stops
+    # exercising the carry-forward path at all.
+    RC=0; OUT="$(FAKE_GH_JOB_SHA="$TWIN" OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$TWIN" 2>&1)" || RC=$?
     check_rc "gated-sha-rebase-carried" "$RC" 0
     case "$OUT" in *"LEG1 gate carried forward"*) ok "gated-sha-rebase-loud" ;; *) bad "gated-sha-rebase-loud: $OUT" ;; esac
   fi
@@ -963,6 +983,56 @@ EOF
     check_rc "gated-sha-different-content" "$RC" 2
     case "$OUT" in *"LEG1 gate carried forward"*) bad "gated-sha-different-content-no-carry: carried a gate across DIFFERENT content" ;; *) ok "gated-sha-different-content-no-carry" ;; esac
   fi
+
+  # 5d. #153: IDENTITY IS A TOKEN, NOT A SUBSTRING.
+  # The pre-#153 scan matched `select(.name | contains($SHA))` on the RUN name.
+  # That is not proof of identity: it accepts an ABBREVIATED sha and it accepts
+  # any name that merely CONTAINS those bytes. GitHub exposes no dispatch inputs
+  # (`inputs: null`, measured 2026-11-23 on run 45183001870) and headSha names
+  # the CARRIER, so the job name is the sole identity carrier -- and only TOKEN
+  # EQUALITY establishes it. Leg 5 above is the POSITIVE CONTROL for this block:
+  # it keeps these three from passing on a scan that never matches anything.
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+
+  # (a) CONTAINS != IDENTITY. The job name carries a DIFFERENT 40-hex as its own
+  # token and $FSHA only as trailing text. `contains($SHA)` adopts this; exact
+  # token equality must refuse it.
+  _f1="${FSHA:0:1}"
+  if [ "$_f1" = "a" ]; then _nf=b; else _nf=a; fi
+  SUBSHA="$_nf${FSHA:1}"
+  if [ "$SUBSHA" = "$FSHA" ]; then
+    bad "153-substring: fixture built an identical sha"
+  else
+    rm -f "$T/journal.log"
+    RC=0; OUT="$(FAKE_GH_JOB_SHA="$SUBSHA" FAKE_GH_JOB_SUFFIX=" for $FSHA" OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+    check_rc "153-substring-is-not-identity" "$RC" 4
+    # Read the JOURNAL, not $OUT: the pre-verified line is journalled, never
+    # printed, so an $OUT grep here could never go red (found by mutation:
+    # this check stayed green while M1 adopted the substituted run).
+    if grep -q "LEG1 gate pre-verified GREEN" "$T/journal.log" 2>/dev/null; then
+      bad "153-substring-was-adopted (contains() would have passed this)"
+    else
+      ok "153-substring-not-adopted"
+    fi
+  fi
+
+  # (b) AN ABBREVIATED sha is not the sha. oc_job_sha returns EMPTY for a short
+  # token, and an empty token must never compare equal to anything.
+  rm -f "$T/journal.log"
+  RC=0; OUT="$(FAKE_GH_JOB_SHA="${FSHA:0:12}" OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "153-abbreviated-sha-refused" "$RC" 4
+  grep -q "1 job name(s) carried no 40-hex token" "$T/journal.log" && ok "153-abbreviated-counted-as-unpinned" || bad "153-abbreviated-counted-as-unpinned"
+
+  # (c) A RUN OF ANOTHER EVENT is not this gate at all. Reading one as the gate
+  # would verify a tree nobody asked about, so it is skipped and COUNTED.
+  rm -f "$T/journal.log"
+  RC=0; OUT="$(FAKE_GH_REF="push refs/heads/main" OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "153-non-carrier-event-refused" "$RC" 4
+  # FAIL-CLOSED VISIBILITY (#153): an unestablished identity must never read as
+  # "no run exists" when the real cause is "none of these runs were this gate".
+  grep -q "LEG1 identity scan:" "$T/journal.log" && ok "153-population-journalled" || bad "153-population-journalled"
+  grep -q "2 not a carrier workflow_dispatch" "$T/journal.log" && ok "153-population-counts-both-nondispatch" || bad "153-population-counts-both-nondispatch"
 
 
   # 6. gated-run with fake gh shim
