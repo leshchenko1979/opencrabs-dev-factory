@@ -146,6 +146,58 @@ DEFAULT_TRACKER = os.environ.get("OC_ISSUE_DISPATCH_TRACKER", "factory")
 #: number namespace being dispatched and the namespace being matched agree.
 TRACKER_SLUG = TRACKER_SLUGS.get(DEFAULT_TRACKER, TRACKER_SLUGS["factory"])
 
+# ---- #147: the LANDED arm's git log must speak the DISPATCHED namespace -------
+# `--tracker` chose the number space (TRACKER_SLUG) while the repo path stayed
+# DEFAULT_REPO -- the FORK. So `fetch_landed_issues` read the fork's git log
+# while matching FACTORY numbers: a fork fix for fork #136 carried both anchors
+# (`Issue-Ref: #136` and a subject ending `(#136)`) and landed factory #136, an
+# unrelated battery-deadlock issue. Two number namespaces, one predicate; and
+# both of the predicate's own tracker guards were evaluated against the wrong
+# log, so neither could help.
+#
+# The namespace a `git log` speaks is a property of the CHECKOUT, so the
+# checkout follows the tracker:
+#   factory     -> this skill tree's own repo (tools/ lives inside it, and its
+#                  origin IS the factory tracker, so this is a fact about where
+#                  the tool lives rather than a path someone must maintain)
+#   binary/fork -> the fork checkout
+def tracker_repo_path(tracker):
+    """The checkout whose ``origin/main`` speaks ``tracker``'s number space (#147)."""
+    if (tracker or "").strip().lower() == "factory":
+        # TOOL_DIR is <repo>/tools; the repo root is its parent.
+        return os.path.dirname(TOOL_DIR)
+    return DEFAULT_REPO
+
+def _origin_slug(repo_path):
+    """``owner/repo`` from a checkout's origin URL, or None when unreadable.
+
+    None is the honest answer for a directory with no remote -- the selftest
+    fixtures are exactly that -- and callers must not read it as a mismatch.
+    """
+    rc, out, _err = run_cmd(["git", "remote", "get-url", "origin"],
+                            cwd=repo_path, timeout=15)
+    if rc != 0 or not out.strip():
+        return None
+    m = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$", out.strip())
+    return "%s/%s" % (m.group(1), m.group(2)) if m else None
+
+def _warn_namespace_mismatch(repo_path, tracker):
+    """Say so when an explicit --repo speaks a different namespace (#147).
+
+    A mismatch is the #147 defect wearing a flag: the caller pinned a log that
+    belongs to another tracker. It stays a WARNING rather than a refusal
+    because refusing a lane its issue is the worse error (#329), and because a
+    remote-less fixture directory is legitimately unverifiable.
+    """
+    slug = _origin_slug(repo_path)
+    want = TRACKER_SLUGS.get((tracker or "").strip().lower())
+    if not slug or not want or slug.lower() == want.lower():
+        return
+    print("WARN: --repo %s is %s, but --tracker %s dispatches %s -- that git log "
+          "speaks a DIFFERENT number space, so a bare #N in it can mark an "
+          "unrelated issue LANDED (#147)." % (repo_path, slug, tracker, want),
+          file=sys.stderr)
+
 # The claim predicate is NOT local to this tool (#329). `tools/lib/oc_claims.py`
 # is its single implementation, shared with oc-ledger, oc-roster and
 # oc-harvest-dispatch — the module exists precisely because four inlined copies
@@ -1025,7 +1077,136 @@ def fetch_landed_issues(repo_path, mock_landed=None, surfaces=None):
             landed.add(int(m.group(1)))
     return landed
 
-def ledger_landed_issues(ledger_data):
+# ---- #147 (ledger arm): attribute a landing row by the COMMIT it names --------
+# The filing scoped this defect to the git log, but the live symptom has a
+# SECOND cause: ledger rows carry no tracker field at all (measured 2026-11-22:
+# 0 of 6019 rows do), so a `done` row that shipped a FORK issue lands the
+# same-numbered FACTORY issue. Measured: row n=6103 "Issue #136 shipped and
+# smoke-verified (83aa78f6, run 34922203756)" names a commit that exists ONLY in
+# the fork checkout, and it refused dispatch of factory #136 -- an unrelated
+# battery-deadlock issue that is still open.
+#
+# The only dimension the historical rows offer is the evidence they carry, so
+# attribution is by commit membership: the checkout that HOLDS a row's commit is
+# the number space that row speaks.
+#
+# The rule refuses only what the evidence DISPROVES. A row whose commits are in
+# no known checkout -- or that names none at all, 250 of 669 measured -- is
+# honoured as before, because the opposite error is worse: refusing a real
+# landing re-dispatches shipped work for the whole corpus (#329).
+_NS_SHAS = {}
+
+def _ns_name(tracker):
+    """Collapse the tracker aliases to the two real number spaces."""
+    return "factory" if (tracker or "").strip().lower() == "factory" else "binary"
+
+def _repo_commit_shas(repo_path):
+    """Set of commit shas on ``origin/main``, or None when unreadable.
+
+    Cached per process: a dispatch consults it for many rows, and a rev-list per
+    row would be hundreds of subprocesses.
+    """
+    key = os.path.abspath(repo_path)
+    if key in _NS_SHAS:
+        return _NS_SHAS[key]
+    rc, out, _err = run_cmd(["git", "rev-list", "origin/main"],
+                            cwd=repo_path, timeout=60)
+    val = {ln.strip().lower() for ln in out.splitlines() if ln.strip()} if rc == 0 else None
+    _NS_SHAS[key] = val
+    return val
+
+def _sha_in(shas, token):
+    """Is ``token`` (an abbreviated sha) the prefix of a commit in ``shas``?"""
+    if not shas or not token:
+        return False
+    t = token.lower()
+    return any(s.startswith(t) for s in shas)
+
+_NS_HOLDS = {}
+
+def _repo_holds(repo_path, token):
+    """Does this checkout hold ``token`` as a COMMIT object? (#147)
+
+    Reachability from ``origin/main`` is NOT the right test for repo identity:
+    measured 2026-11-22, the commit that row n=6103 cites (83aa78f6) is present
+    in the fork checkout but reachable only from feature branches, so a
+    rev-list test read it as "no checkout holds this" and the row was honoured
+    as a factory landing. A number space is identified by what the repository
+    CONTAINS, not by what its main branch currently reaches.
+    """
+    key = (os.path.abspath(repo_path), token.lower())
+    if key in _NS_HOLDS:
+        return _NS_HOLDS[key]
+    rc, _out, _err = run_cmd(["git", "cat-file", "-e", token + "^{commit}"],
+                             cwd=repo_path, timeout=20)
+    _NS_HOLDS[key] = (rc == 0)
+    return _NS_HOLDS[key]
+
+def _row_namespace_verdict(row, active_tracker):
+    """``own`` / ``foreign`` / ``unknown`` for a landing row (#147).
+
+    ``own``      the row's evidence is in the ACTIVE tracker's checkout.
+    ``foreign``  every commit it names lives in the OTHER checkout -- provably a
+                 different number space, so it lands nothing here.
+    ``unknown``  it names no commit, or names one no checkout holds. Honoured.
+    """
+    tokens = _SHA_TOKEN_RE.findall(str(row.get("what") or ""))
+    if not tokens:
+        return "unknown"
+    act = _ns_name(active_tracker)
+    act_path = tracker_repo_path(act)
+    own = _repo_commit_shas(act_path)
+    if own and any(_sha_in(own, t) for t in tokens):
+        # The cheap positive: on the active tracker's main line. This is also
+        # the shared-history case -- a commit present in BOTH checkouts reads as
+        # ours, which is the fail-open direction on purpose.
+        return "own"
+    if any(_repo_holds(act_path, t) for t in tokens):
+        # Present in this checkout but off main (rebased or branch-only): still
+        # this repository's number space.
+        return "own"
+    for other in ("factory", "binary"):
+        if other == act:
+            continue
+        oth_path = tracker_repo_path(other)
+        if any(_repo_holds(oth_path, t) for t in tokens):
+            return "foreign"
+    return "unknown"
+
+#: #148: a landing row must SAY something. Measured over the live ledger
+#: 2026-11-22: of 669 LANDED_KINDS rows carrying targets, the alpha-character
+#: count of `what` (reference tokens stripped) is 0 for exactly three rows --
+#: n=11631/11632/11633, whose entire body is a wall of checkmarks -- and the
+#: next lowest is 11. A gap with nothing in it, so the threshold sits mid-gap
+#: and no real row is near it.
+LEDGER_LANDING_MIN_ALPHA = 6
+
+#: A sha-shaped token is evidence on its own, whatever the prose says.
+_SHA_TOKEN_RE = re.compile(r"\b[0-9a-f]{7,40}\b")
+#: Reference tokens carry no content of their own: strip them before counting,
+#: so `#601` and `owner/repo#601` do not pad a contentless row.
+_REF_STRIP_RE = re.compile(r"[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+#\d+|#\d+")
+
+def landing_row_is_substantive(what):
+    """Does a landing row's prose say anything, or is it only decoration? (#148)
+
+    A `done` row whose whole body is `#601 ✅✅✅✅...` names its issue and
+    nothing else -- no sentence, no sha. Honoured as a landing it permanently
+    blocks dispatch of that issue, and the block is INVISIBLE: the tool reports
+    a confident LANDED verdict and the lane has no reason to doubt it.
+
+    Substantive = a sha-shaped token, OR at least LEDGER_LANDING_MIN_ALPHA
+    letters once reference tokens are stripped. ``isalpha()`` is Unicode-aware
+    on purpose: a Russian row IS prose, and an ASCII-only test would score it 0
+    and suppress a real landing.
+    """
+    s = str(what or "")
+    if _SHA_TOKEN_RE.search(s):
+        return True
+    return sum(1 for ch in _REF_STRIP_RE.sub(" ", s)
+               if ch.isalpha()) >= LEDGER_LANDING_MIN_ALPHA
+
+def ledger_landed_issues(ledger_data, tracker=None):
     """Issue numbers TARGETED by a LANDING ledger row (#337 arm B).
 
     Two independent constraints, both required:
@@ -1043,8 +1224,26 @@ def ledger_landed_issues(ledger_data):
     rows = oc_claims.parse_events(ledger_data.get("events", []))
     out = set()
     for row in rows:
-        if row["kind"] in oc_claims.LANDED_KINDS:
-            out.update(row["targets"])
+        if row["kind"] not in oc_claims.LANDED_KINDS:
+            continue
+        if not row["targets"]:
+            continue
+        if tracker and _row_namespace_verdict(row, tracker) == "foreign":
+            print("WARN: ledger row n=%s (%s) reads as a landing for %s, but every "
+                  "commit it names lives in ANOTHER tracker's checkout -- a different "
+                  "number space, so it lands nothing here (#147)."
+                  % (row["n"], row["kind"], sorted(row["targets"])), file=sys.stderr)
+            continue
+        if not landing_row_is_substantive(row["what"]):
+            # #148: reported, never silently honoured. A row that cannot say
+            # what landed is not evidence that anything did.
+            print("WARN: ledger row n=%s (%s) reads as a landing for %s but its "
+                  "`what` carries no sha and fewer than %d letters -- treated as "
+                  "noise, NOT a landing (#148)."
+                  % (row["n"], row["kind"], sorted(row["targets"]),
+                     LEDGER_LANDING_MIN_ALPHA), file=sys.stderr)
+            continue
+        out.update(row["targets"])
     return out
 
 def recent_dispatches(ledger_data, window_days=DISPATCH_WINDOW_DAYS):
@@ -2259,7 +2458,7 @@ def cmd_auto(args):
         # fetched issue list -- the same pass that supplies the candidates.
         landed = (fetch_landed_issues(args.repo,
                                       surfaces=issue_surfaces(open_issues))
-                  | ledger_landed_issues(ledger_data))
+                  | ledger_landed_issues(ledger_data, args.tracker))
 
     # #337 dedup — every run previously started from scratch, so an issue wired
     # to a lane but not yet acked was wired to a SECOND lane.
@@ -2530,7 +2729,7 @@ def cmd_targeted(args):
         landed = (fetch_landed_issues(
                       args.repo,
                       surfaces=issue_surfaces((open_issues or []) + [target_issue]))
-                  | ledger_landed_issues(ledger_data))
+                  | ledger_landed_issues(ledger_data, args.tracker))
     recent = {} if args.redispatch else recent_dispatches(ledger_data)
     arm_events, arm_ok = evaluate_landed_and_dedup_arms(target_issue, landed, recent)
     if not arm_ok:
@@ -3573,6 +3772,146 @@ def run_selftest():
     assert_true("#337 a body mention is not a landing (#207; the #329 phantom)",
                 207 not in _landed_pred)
 
+    # Test 10b: #148 -- a landing row must SAY something. A `done` row whose
+    # whole body is a wall of checkmarks names its issue and nothing else; honoured
+    # as a landing it permanently blocks dispatch of that issue, and the block is
+    # INVISIBLE (the tool reports a confident LANDED and the lane has no reason to
+    # doubt it). Measured live 2026-11-22: of 669 landing rows carrying targets,
+    # the alpha count was 0 for exactly three (n=11631/11632/11633) and the next
+    # lowest was 11, so the threshold sits mid-gap.
+    assert_true("#148 a checkmark wall is not a landing row",
+                not landing_row_is_substantive("#601 " + "\u2705" * 40))
+    assert_true("#148 POSITIVE CONTROL: real prose IS substantive",
+                landing_row_is_substantive("Issue #601 shipped and smoke-verified"))
+    assert_true("#148 a sha alone is evidence even with no prose at all",
+                landing_row_is_substantive("#601 83aa78f6"))
+    assert_true("#148 Cyrillic prose is prose (isalpha is Unicode-aware, not ASCII)",
+                landing_row_is_substantive("\u0437\u0430\u0434\u0430\u0447\u0430 #601 \u0437\u0430\u043a\u0440\u044b\u0442\u0430"))
+    assert_true("#148 a bare reference is not content (#601 + #602 + owner/repo#603)",
+                not landing_row_is_substantive("#601 #602 leshchenko1979/opencrabs#603"))
+    # End-to-end: the same noise row must not reach the landed set, and the
+    # warning must say why. Without this the pure function could be right while
+    # the caller still honours the row.
+    _noise_fixture = {"events": [
+        {"kind": "done", "by": "editor gggg", "what": "#601 " + "\u2705" * 40},
+    ]}
+    _noise_err = io.StringIO()
+    with contextlib.redirect_stderr(_noise_err):
+        _noise_landed = ledger_landed_issues(_noise_fixture)
+    assert_true("#148 a contentless done row does not land its target (#601)",
+                601 not in _noise_landed)
+    assert_true("#148 ...and the refusal is REPORTED, never silent (#148 in stderr)",
+                "#148" in _noise_err.getvalue())
+
+    # Test 10c: #147 -- a landing row belongs to the number space of the CHECKOUT
+    # that holds the commit it names, not to whichever tracker happens to be asked.
+    # Live defect: row n=6103 ("Issue #136 shipped and smoke-verified (83aa78f6,
+    # run 34922203756)") names a commit present ONLY in the fork checkout, and it
+    # refused dispatch of factory #136 -- an unrelated battery-deadlock issue that
+    # is still open. Ledger rows carry no tracker field (0 of 6019 measured), so
+    # the evidence they carry is the only dimension available.
+    #
+    # The two checkout reads are INJECTED rather than measured: the real ones are
+    # subprocess `git` calls against /root checkouts, and a selftest must be
+    # hermetic. Production reads them as module globals, so the real predicates
+    # run -- only their inputs are swapped (the OPEN_ISSUES_LIMIT / TOOL_DIR
+    # technique already used above).
+    _g = globals()
+    _ns_keys = ("tracker_repo_path", "_repo_commit_shas", "_repo_holds",
+                "_origin_slug", "_NS_SHAS", "_NS_HOLDS")
+    _ns_saved = {_k: _g[_k] for _k in _ns_keys}
+    try:
+        _fake_paths = {"factory": "/fake/factory-checkout",
+                       "binary": "/fake/fork-checkout"}
+        _fake_holds = {
+            # The factory tree holds its own commit; the fork holds the one the
+            # disputed row names. This IS the n=6103 shape.
+            "/fake/factory-checkout": {"aaaa1111bbbb2222cccc3333dddd4444"},
+            "/fake/fork-checkout": {"83aa78f6deadbeef83aa78f6deadbeef83aa"},
+        }
+        _g["tracker_repo_path"] = lambda t: _fake_paths[_ns_name(t)]
+        _g["_repo_commit_shas"] = lambda p: set()
+        _g["_repo_holds"] = lambda p, tok: any(
+            s.lower().startswith(tok.lower()) for s in _fake_holds.get(p, set()))
+        _g["_origin_slug"] = lambda p: "leshchenko1979/opencrabs-dev-factory"
+        _g["_NS_SHAS"] = {}
+        _g["_NS_HOLDS"] = {}
+
+        _ns_fixture = {"events": [
+            # Names a commit only the FORK holds.
+            {"kind": "done", "by": "editor hhhh",
+             "what": "Issue #136 shipped and smoke-verified (83aa78f6, run 34922203756)"},
+            # Names a commit only the FACTORY holds.
+            {"kind": "done", "by": "editor iiii",
+             "what": "DONE #501 -- merged as aaaa1111 on the factory main line"},
+            # Names no commit at all -- undecidable, honoured as before (#329).
+            {"kind": "done", "by": "editor jjjj",
+             "what": "DONE #502 -- merged, no sha recorded"},
+        ]}
+        # The SAME fixture, two trackers: the two provable rows must SWAP. A
+        # one-directional test passes on a tool that simply refuses everything.
+        _as_factory_err = io.StringIO()
+        with contextlib.redirect_stderr(_as_factory_err):
+            _as_factory = ledger_landed_issues(_ns_fixture, tracker="factory")
+        _as_binary_err = io.StringIO()
+        with contextlib.redirect_stderr(_as_binary_err):
+            _as_binary = ledger_landed_issues(_ns_fixture, tracker="binary")
+
+        assert_true("#147 a fork-only commit does NOT land factory #136 (the n=6103 defect)",
+                    136 not in _as_factory)
+        assert_true("#147 POSITIVE CONTROL: the same row DOES land binary #136",
+                    136 in _as_binary)
+        assert_true("#147 a factory-only commit lands factory #501",
+                    501 in _as_factory)
+        assert_true("#147 ...and does NOT land binary #501 (the verdict SWAPS with the tracker)",
+                    501 not in _as_binary)
+        assert_true("#147 a row naming no commit is honoured on BOTH sides (#329 fail-open)",
+                    502 in _as_factory and 502 in _as_binary)
+        assert_true("#147 the foreign refusal is REPORTED (#147 in stderr)",
+                    "#147" in _as_factory_err.getvalue())
+
+        # #147 path leg: the factory's log is THIS skill tree's repo (tools/ lives
+        # inside it and its origin IS the factory tracker), the binary's is the
+        # fork. A single hardcoded path cannot satisfy both.
+        _g["tracker_repo_path"] = _ns_saved["tracker_repo_path"]
+        assert_true("#147 factory LANDED reads this skill tree's own checkout",
+                    os.path.abspath(tracker_repo_path("factory"))
+                    == os.path.abspath(os.path.dirname(TOOL_DIR)))
+        assert_true("#147 binary LANDED reads the fork checkout, not the factory's",
+                    os.path.abspath(tracker_repo_path("binary"))
+                    != os.path.abspath(tracker_repo_path("factory")))
+        assert_eq("#147 'fork' is the binary namespace, not a third one",
+                  tracker_repo_path("fork"), tracker_repo_path("binary"))
+
+        # #147 override leg: an explicit --repo that speaks ANOTHER tracker is the
+        # defect wearing a flag, so it must be LOUD. Two directions, because a
+        # guard that warns on everything is as useless as one that never warns.
+        _mm_saved_slug = _g["_origin_slug"]
+        try:
+            _g["_origin_slug"] = lambda p: "leshchenko1979/opencrabs"
+            _mm_err = io.StringIO()
+            with contextlib.redirect_stderr(_mm_err):
+                _warn_namespace_mismatch("/fake/fork-checkout", "factory")
+            assert_true("#147 an explicit --repo speaking another namespace WARNS",
+                        "DIFFERENT number space" in _mm_err.getvalue())
+            _g["_origin_slug"] = lambda p: "leshchenko1979/opencrabs-dev-factory"
+            _ok_err = io.StringIO()
+            with contextlib.redirect_stderr(_ok_err):
+                _warn_namespace_mismatch("/fake/factory-checkout", "factory")
+            assert_true("#147 ...and a matching --repo stays SILENT (no warning spam)",
+                        _ok_err.getvalue() == "")
+            _g["_origin_slug"] = lambda p: None
+            _unread_err = io.StringIO()
+            with contextlib.redirect_stderr(_unread_err):
+                _warn_namespace_mismatch("/fake/remote-less", "factory")
+            assert_true("#147 an unreadable origin is NOT a mismatch (fixtures have no remote)",
+                        _unread_err.getvalue() == "")
+        finally:
+            _g["_origin_slug"] = _mm_saved_slug
+    finally:
+        for _k, _v in _ns_saved.items():
+            _g[_k] = _v
+
     # Test 11: #337 dispatch memory -- an issue wired to a lane inside the window
     # must not be wired to a SECOND lane on the next run. Every --auto run
     # previously started from scratch, so an unacked dispatch was duplicated.
@@ -3897,7 +4236,7 @@ def run_selftest():
             with open(_lp, "w") as _fh:
                 json.dump({"workers": [], "events": ledger_events}, _fh)
             _a = dict(repo=_repo370, ledger=_lp, issue=370, to=None, dry_run=True,
-                      force=False, allow_landed=False, redispatch=False, budget_secs=0)
+                      force=False, allow_landed=False, redispatch=False, tracker="factory", budget_secs=0)
             _a.update(kw)
             return argparse.Namespace(**_a)
 
@@ -4657,7 +4996,7 @@ def main():
                              "Two-stream routing, SKILL.md (owner order 2026-10-09)")
     # NOT a slug: this --repo is the PATH to the opencrabs checkout (used as cwd
     # for git). The tracker SLUG is --tracker. Do not conflate the two.
-    parser.add_argument("--repo", default=DEFAULT_REPO, help="Path to opencrabs repo checkout (a PATH, not a slug)")
+    parser.add_argument("--repo", default=None, help="Path to the checkout whose origin/main defines LANDED. Defaults to the ACTIVE tracker's checkout (#147: a PATH, not a slug)")
     parser.add_argument("--ledger", default=None, help="Path to workers-ledger.json")
     parser.add_argument("--dry-run", action="store_true", help="Preview dispatch actions without notifying or stamping ledger")
     parser.add_argument("--force", action="store_true", help="Force targeted dispatch even if issue has claim-gate markers")
@@ -4680,6 +5019,15 @@ def main():
     # namespace being dispatched and the namespace being matched agree.
     global TRACKER_SLUG
     TRACKER_SLUG = TRACKER_SLUGS[args.tracker]
+
+    # #147: the repo path follows the tracker unless the caller pinned one. An
+    # explicit --repo is a PATH OVERRIDE, and the namespace it speaks is read
+    # from its own origin so a mismatched pair is LOUD instead of silently
+    # answering in the wrong number space -- which IS the #147 defect.
+    if args.repo is None:
+        args.repo = tracker_repo_path(args.tracker)
+    else:
+        _warn_namespace_mismatch(args.repo, args.tracker)
 
     if args.selftest:
         sys.exit(run_selftest())
