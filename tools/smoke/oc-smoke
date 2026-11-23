@@ -71,7 +71,17 @@ SELFTEST=0
 # done row). `--no-close` is the suppression for the two legitimate cases where
 # a PASS is not a closing receipt.
 CLOSE_MODE=1
-CLOSE_REPO="leshchenko1979/opencrabs"
+# #154: EMPTY means "resolve the board", not "use the fork". The old default was
+# a constant, and a constant is a guess wearing a default's clothes: 121 issue
+# numbers are held by BOTH live trackers (measured 2026-11-22), so `#68` is the
+# fork's closed telegram fix AND this factory's smoke-order issue. Closing on
+# the constant therefore aimed at whichever board the author had in mind, and
+# where that board's number was already closed it either re-closed an unrelated
+# issue or reported a no-op that hid the fact the real issue was never touched.
+# Resolution now happens in oc_resolve_close_board (lib/oc-gh-close.sh): an
+# explicit flag, then $OC_SMOKE_CLOSE_REPO, then a state-based probe of both
+# trackers, and a refusal when the answer is ambiguous or absent.
+CLOSE_REPO=""
 # #68: the gh seam. Mirrors OC_LEDGER_BIN / OC_SMOKE_EVIDENCE_BIN so the
 # selftest drives a fake and never touches the real tracker.
 GH_BIN="${OC_GH:-gh}"
@@ -138,10 +148,14 @@ Options:
   --no-close          Suppress the close. For a MULTI-LEG issue whose done row
                       covers only one leg (triage.md §D1 LEG-SCOPE), or a probe
                       run that is not the feature's closing verification.
-  --close-repo <slug> Tracker holding the issue (default: leshchenko1979/opencrabs).
-                      Factory issues pass leshchenko1979/opencrabs-dev-factory.
-                      Every gh call carries -R, because gh inside ~/opencrabs
-                      defaults to UPSTREAM.
+  --close-repo <slug> Tracker holding the issue. NOT defaulted to a constant
+                      (#154): a number is not a board, and 121 numbers live on
+                      both trackers at once. Omitted, the board is RESOLVED —
+                      $OC_SMOKE_CLOSE_REPO, else a state-based probe of both
+                      live trackers, which picks the one OPEN copy and REFUSES
+                      (leaving the issue open) when two are open or none holds
+                      it. Every gh call carries -R, because gh inside
+                      ~/opencrabs defaults to UPSTREAM.
   --selftest          Run internal test battery
 
 Exit codes:
@@ -717,6 +731,26 @@ case "${1:-}" in
           echo "gh: could not resolve to an issue" >&2
           exit "${FAKE_GH_VIEW_RC}"
         fi
+        # #154: per-board state. The real hazard is a number held by BOTH
+        # trackers in DIFFERENT states, and a fake that answers one state for
+        # every repo cannot express it — the resolver's probe would be
+        # untestable. Format: "slug=STATE,slug=STATE". An unlisted board
+        # answers ABSENT (empty), which is what a tracker that does not hold
+        # the number actually does.
+        _repo=""
+        for _a in "$@"; do
+          case "$_a" in -R) _next=1; continue ;; esac
+          [ "${_next:-0}" = "1" ] && { _repo="$_a"; _next=0; }
+        done
+        if [ -n "${FAKE_GH_STATE_BY_REPO:-}" ]; then
+          _hit=""
+          IFS=',' read -ra _pairs <<< "$FAKE_GH_STATE_BY_REPO"
+          for _p in "${_pairs[@]}"; do
+            [ "${_p%%=*}" = "$_repo" ] && _hit="${_p#*=}"
+          done
+          [ -n "$_hit" ] && { printf '%s\n' "$_hit"; exit 0; }
+          exit 0
+        fi
         printf '%s\n' "${FAKE_GH_STATE:-OPEN}"
         exit 0 ;;
       close)
@@ -798,7 +832,7 @@ FAKEGHEOF
   out="$(FAKE_GH_STATE=CLOSED OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
     OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
-    "$0" 264 --probe "echo probe-ok" 2>&1)" || rc=$?
+    "$0" 264 --close-repo leshchenko1979/opencrabs --probe "echo probe-ok" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && grep -q 'issue view 264' "$d/gh.calls" \
      && ! grep -q 'issue close' "$d/gh.calls" \
      && case "$out" in *"already CLOSED"*) true ;; *) false ;; esac; then
@@ -815,7 +849,7 @@ FAKEGHEOF
   out="$(FAKE_GH_CLOSE_RC=1 OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
     OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
-    "$0" 265 --probe "echo probe-ok" 2>&1)" || rc=$?
+    "$0" 265 --close-repo leshchenko1979/opencrabs --probe "echo probe-ok" 2>&1)" || rc=$?
   row265="$(grep 'issue=#265' "$d/state/smoke-verdicts.log" | tail -n 1)"
   if [ "$rc" -eq 0 ] && case "$out" in *"WARNING: close of"*) true ;; *) false ;; esac \
      && grep -q 'issue close 265' "$d/gh.calls" \
@@ -833,7 +867,7 @@ FAKEGHEOF
   out="$(FAKE_GH_VIEW_RC=1 OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
     OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
-    "$0" 266 --probe "echo probe-ok" 2>&1)" || rc=$?
+    "$0" 266 --close-repo leshchenko1979/opencrabs --probe "echo probe-ok" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && ! grep -q 'issue close' "$d/gh.calls" \
      && case "$out" in *"cannot read state"*) true ;; *) false ;; esac; then
     t_ok "an unreadable tracker state SKIPs the close instead of guessing (#68)"
@@ -880,7 +914,7 @@ FAKEGHEOF
   out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
     OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
     OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
-    "$0" 269 --behavioral na --evidence "declared structural N/A" 2>&1)" || rc=$?
+    "$0" 269 --close-repo leshchenko1979/opencrabs --behavioral na --evidence "declared structural N/A" 2>&1)" || rc=$?
   if [ "$rc" -eq 0 ] && grep -q 'issue close 269' "$d/gh.calls" \
      && ! case "$out" in *UNPROVEN*) true ;; *) false ;; esac; then
     t_ok "a DECLARED --behavioral na still closes — the escape is not the refusal (T-7 control)"
@@ -906,6 +940,80 @@ FAKEGHEOF
     t_ok "--no-ledger AND no probe: the receipt blocker speaks first and both legs are named (T-7 ordering)"
   else
     t_bad "--no-ledger AND no probe: the receipt blocker speaks first and both legs are named (T-7 ordering) — expected the --no-ledger note to lead and to disclose the absent leg (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # ---- #154: board RESOLUTION arms. The constant this replaced was wrong for
+  # every factory issue, so the ladder itself is the fix; an untested ladder
+  # would be the same blind spot one layer down. Each arm pins the SOURCE it
+  # resolved by, because a close aimed by a probe and one aimed by a flag are
+  # different claims and must not look alike in a log.
+  #
+  # (12) The shadow case, and the reason this exists: the number is CLOSED on
+  # the fork and OPEN on the factory. A constant default would have re-closed
+  # the fork's unrelated twin; the probe must pick the live board.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    FAKE_GH_STATE_BY_REPO="leshchenko1979/opencrabs=CLOSED,leshchenko1979/opencrabs-dev-factory=OPEN" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 271 --probe "echo probe-ok" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q 'issue close 271 .*leshchenko1979/opencrabs-dev-factory' "$d/gh.calls" \
+     && ! grep -q 'issue close 271 .*leshchenko1979/opencrabs ' "$d/gh.calls" \
+     && case "$out" in *"source=probe"*) true ;; *) false ;; esac; then
+    t_ok "a CLOSED shadow on one board and an OPEN twin on the other resolves to the LIVE one (#154)"
+  else
+    t_bad "the probe must pick the OPEN board, never the closed shadow (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # (13) AMBIGUOUS: OPEN on both. There is no evidence in the tracker that says
+  # which factory this smoke belongs to, so the only honest answer is to refuse
+  # and name the flag. rc stays 0 — guard 7 — because the PASS stands.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    FAKE_GH_STATE_BY_REPO="leshchenko1979/opencrabs=OPEN,leshchenko1979/opencrabs-dev-factory=OPEN" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 272 --probe "echo probe-ok" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; } \
+     && case "$out" in *AMBIGUOUS*) true ;; *) false ;; esac \
+     && case "$out" in *"--close-repo"*) true ;; *) false ;; esac; then
+    t_ok "OPEN on both boards is AMBIGUOUS: refuse, name the flag, leave rc 0 (#154)"
+  else
+    t_bad "two OPEN holders must refuse and name --close-repo (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # (14) ABSENT: neither board holds the number. A close here would create the
+  # issue on whichever board the constant named — the loudest possible wrong.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    FAKE_GH_STATE_BY_REPO="someone/else=OPEN" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 273 --probe "echo probe-ok" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && { [ ! -f "$d/gh.calls" ] || ! grep -q 'issue close' "$d/gh.calls"; } \
+     && case "$out" in *ABSENT*) true ;; *) false ;; esac; then
+    t_ok "a number no checked board holds is ABSENT: no close, rc 0 (#154)"
+  else
+    t_bad "absent must refuse rather than close blind (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # (15) ENV: OC_SMOKE_CLOSE_REPO names the board, and the source says `env` so
+  # a log cannot mistake a caller's assertion for a tracker's answer.
+  rm -f "$d/gh.calls"
+  rc=0
+  out="$(OC_SMOKE_CLOSE_REPO="leshchenko1979/opencrabs-dev-factory" \
+    OC_DEPLOY_STATE_DIR="$d/state" OC_SMOKE_EVIDENCE_BIN="$d/fake-evidence" \
+    OC_LEDGER_BIN="$d/fake-ledger" OC_GH="$d/fake-gh" FAKE_GH_LOG="$d/gh.calls" \
+    OPENCRABS_SESSION_ID="test-session-uuid" OC_TOOLS_NOLOG=1 \
+    "$0" 274 --probe "echo probe-ok" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q 'issue close 274 .*leshchenko1979/opencrabs-dev-factory' "$d/gh.calls" \
+     && case "$out" in *"source=env"*) true ;; *) false ;; esac; then
+    t_ok "OC_SMOKE_CLOSE_REPO names the board and reports source=env (#154)"
+  else
+    t_bad "env-named board must close it and say source=env (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
   fi
 
   echo "selftest: $pass passed, $fail failed"
@@ -1271,10 +1379,38 @@ if [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$LEDGER_RC" -eq 0 ] 
   # already-CLOSED, printf-built comment); rc policy stays HERE, because the lib
   # never exits and guard 7 (a gh failure never changes the verdict) is this
   # file's promise, not the helper's.
-  if command -v oc_close_on_receipt >/dev/null 2>&1; then
-    oc_close_on_receipt "$PROG" "$GH_BIN" "$CLOSE_REPO" "$ISSUE" \
-      "smoke verdict: PASS $TS sha=$DEPLOYED_SHA run=$RUN_ID — $FULL_EVIDENCE" \
-      "ledger: done #$ISSUE smoke PASS verified" || true
+  if command -v oc_resolve_close_board >/dev/null 2>&1; then
+    # #154: resolve the BOARD before resolving the close. The source is printed
+    # either way, because a close aimed by a probe and a close aimed by a flag
+    # are different claims and the log must not make them look alike.
+    # `set -e` is ON in this script, so a bare assignment from a failing
+    # command kills the whole run: the resolver's rc 2/5/6 would exit the tool
+    # BEFORE the refusal below could state itself, and a PASS smoke would leave
+    # with a non-zero status — guard 7 (a close failure never changes the exit
+    # code) broken by the very block that implements it. `|| rc=$?` is the
+    # point of the line, not tidiness.
+    _board_rc=0
+    _board_line="$(oc_resolve_close_board "$PROG" "$GH_BIN" "$ISSUE" "$CLOSE_REPO")" || _board_rc=$?
+    if [ "$_board_rc" -eq 0 ]; then
+      _board="${_board_line%%$'\t'*}"; _src="${_board_line##*$'\t'}"
+      echo "$PROG: close-board resolved ${_board}#${ISSUE} (source=$_src)" >&2
+      if command -v oc_close_on_receipt >/dev/null 2>&1; then
+        oc_close_on_receipt "$PROG" "$GH_BIN" "$_board" "$ISSUE" \
+          "smoke verdict: PASS $TS sha=$DEPLOYED_SHA run=$RUN_ID — $FULL_EVIDENCE" \
+          "ledger: done #$ISSUE smoke PASS verified" || true
+      else
+        echo "$PROG: WARNING: --close unavailable — lib/oc-gh-close.sh is missing" >&2
+      fi
+    else
+      # Every refusal path is STATED. A quiet skip here would be
+      # indistinguishable from a close that ran and found the issue already
+      # closed, which is the same blind spot that let the constant default
+      # report success while closing the wrong tracker. The resolver's own
+      # NOTE has already reached stderr (it is NOT captured — only the slug on
+      # stdout is), so this only has to say what it means for the verdict.
+      echo "$PROG: NOTE --close skipped: the board could not be resolved unambiguously (rc=$_board_rc);" >&2
+      echo "$PROG:       the issue is left OPEN and the PASS verdict row stands (guard 7)." >&2
+    fi
   else
     echo "$PROG: WARNING: --close unavailable — lib/oc-gh-close.sh is missing" >&2
   fi

@@ -102,3 +102,100 @@ oc_close_on_receipt() {
     "$prog" "$repo" "$issue" "$cls"
   return 0
 }
+
+# oc_resolve_close_board — WHICH tracker holds this issue number (#154).
+#
+# WHY. `oc-smoke --close` used to default its target to a CONSTANT
+# (`leshchenko1979/opencrabs`, the fork). A number is not a board: 121 issue
+# numbers are held by BOTH live trackers (measured 2026-11-22), so a factory
+# issue #68 and the fork's #68 are different subjects sharing one integer. A
+# close aimed by a baked-in default therefore lands on whichever board the
+# author happened to be thinking about — and when that board's #68 is a closed
+# telegram fix, the close either re-closes an unrelated issue or silently
+# targets the wrong tracker entirely.
+#
+# The rule this replaces a constant with: a board is RESOLVED from the tracker,
+# never assumed. Ladder, highest first:
+#
+#   1. explicit --close-repo                 -> source=flag
+#   2. $OC_SMOKE_CLOSE_REPO                  -> source=env
+#   3. probe the live trackers, keep the ones that HOLD the number:
+#        exactly one OPEN                    -> source=probe
+#        one OPEN + the other CLOSED         -> source=probe (the live one)
+#        two or more OPEN                    -> AMBIGUOUS, refuse (rc 5)
+#        none OPEN, some CLOSED              -> already closed, nothing owed
+#                                               (rc 1: caller treats as no-op)
+#        none holds it                       -> ABSENT, refuse (rc 6)
+#        probe unreadable                    -> refuse (rc 2)
+#
+# A CLOSED copy of the number is never a close target: it is the SHADOW that
+# makes the wrong close look plausible. Where the only holders are closed there
+# is nothing to close, which is a no-op rather than an error.
+#
+# CONTRACT
+#   oc_resolve_close_board <prog> <gh> <issue> [explicit] [boards...]
+#     prints "<owner/repo>\t<source>" on rc 0
+#     rc 0 resolved | 1 all holders already CLOSED | 2 probe unreadable
+#     5 ambiguous (2+ OPEN) | 6 absent from every board | 4 non-numeric
+#   NEVER exits; every refusal writes NOTHING to any tracker.
+oc_resolve_close_board() {
+  local prog="${1:-oc-close}" gh="${2:-gh}" issue="$3" explicit="${4:-}"
+  shift 4 2>/dev/null || shift $#
+  local boards=("$@") open_slugs=() closed_slugs=() b st any=0
+
+  case "$issue" in
+    ''|*[!0-9]*)
+      printf "%s: NOTE close-board unresolved: '%s' is not a numeric ref\n" "$prog" "$issue" >&2
+      return 4 ;;
+  esac
+
+  # 1/2. A NAMED board wins. It is not verified here — naming a board is the
+  # caller's assertion, and oc_close_on_receipt already fails closed on an
+  # unreadable state, so a wrong name cannot close anything blind.
+  if [ -n "$explicit" ]; then
+    printf '%s\tflag\n' "$explicit"; return 0
+  fi
+  if [ -n "${OC_SMOKE_CLOSE_REPO:-}" ]; then
+    printf '%s\tenv\n' "$OC_SMOKE_CLOSE_REPO"; return 0
+  fi
+
+  [ "${#boards[@]}" -gt 0 ] || boards=(leshchenko1979/opencrabs leshchenko1979/opencrabs-dev-factory)
+
+  # 3. Probe. State is the discriminator, and it is the ONLY fact a tracker
+  # gives us that separates a shadow from a subject.
+  for b in "${boards[@]}"; do
+    st="$("$gh" issue view "$issue" -R "$b" --json state --jq .state 2>/dev/null)" || {
+      printf '%s: WARNING: close-board unresolved — cannot read %s#%s; no close attempted (guard 7)\n' \
+        "$prog" "$b" "$issue" >&2
+      return 2
+    }
+    st="$(printf '%s' "$st" | tr -d '[:space:]')"
+    case "$st" in
+      OPEN)   open_slugs+=("$b");   any=1 ;;
+      CLOSED) closed_slugs+=("$b"); any=1 ;;
+      '')     ;;  # not on this board
+      *)      ;;  # unknown state reads as not-held; never as closable
+    esac
+  done
+
+  if [ "${#open_slugs[@]}" -eq 1 ]; then
+    printf '%s\tprobe\n' "${open_slugs[0]}"; return 0
+  fi
+  if [ "${#open_slugs[@]}" -gt 1 ]; then
+    printf '%s: NOTE close-board AMBIGUOUS — #%s is OPEN on %s; refusing to guess which one this smoke belongs to.\n' \
+      "$prog" "$issue" "$(printf '%s ' "${open_slugs[@]}" | sed 's/ $//')" >&2
+    printf '%s:      pass --close-repo <owner/repo> (or set OC_SMOKE_CLOSE_REPO) to name the board.\n' "$prog" >&2
+    return 5
+  fi
+  if [ "${#closed_slugs[@]}" -gt 0 ]; then
+    printf '%s: NOTE close-board #%s is already CLOSED on %s — nothing owed\n' \
+      "$prog" "$issue" "$(printf '%s ' "${closed_slugs[@]}" | sed 's/ $//')" >&2
+    return 1
+  fi
+  if [ "$any" -eq 0 ]; then
+    printf '%s: NOTE close-board ABSENT — no checked tracker holds #%s; no close attempted\n' \
+      "$prog" "$issue" >&2
+    return 6
+  fi
+  return 6
+}
