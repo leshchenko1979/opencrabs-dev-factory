@@ -1,3 +1,7 @@
+## v0.4.332 (2026-11-23) — fixture A: one-commit proof
+
+Fixture entry for task-5 verification.
+
 # Changelog — opencrabs-dev
 
 ## v0.4.331 — the ledger's monolith leaves the tracked surface, and the law stops naming a file that is no longer the record
