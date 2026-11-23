@@ -49,7 +49,7 @@ right here (`opencrabs-ops` user unit).
    header): feature OK + one line of evidence + the oc-smoke IDENTITY-MATCH receipt.
    Running `oc-smoke <issue-N>` on PASS executes `oc-ledger stamp done` (suppressible
    via `--no-ledger`), mechanically closing the worker's in-flight claim in
-   `workers-ledger.json` and unblocking `oc-harvest-census` and Triage intake, **and
+   `events.jsonl` and unblocking `oc-harvest-census` and Triage intake, **and
    closes the ISSUE itself** (default `--close`; suppress with `--no-close`) — the
    `done` row plus the PASS row in `smoke-verdicts.log` are the closure authority
    (`triage.md §Autonomous closure`, class (d)), so the lane **VERIFIES THE CLOSE
@@ -138,7 +138,7 @@ live-testable on the running binary, static binary string probes or symbol searc
 are STRICTLY FORBIDDEN as proof of a smoke PASS. Binary strings prove only compilation
 presence, not runtime UI correctness or execution. A smoke PASS for live-testable UX
 features requires an explicit live behavioral execution receipt stamped into the stamp system
-(`smoke-verdicts.log` / `workers-ledger.json`). If behavioral verification cannot be fully
+(`smoke-verdicts.log` / `events.jsonl`). If behavioral verification cannot be fully
 automated and requires the owner's visual inspection, the lane MUST record `PARKED-OWNER-EYE`
 naming the exact owner action and packaging sha — never substitute a binary string probe for a
 live UX verification.

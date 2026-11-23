@@ -21,7 +21,7 @@
   resolve next to the invoking script.
   Its content is declared in TWO classes (v0.4.238, a RECOVERABILITY rule: a
   tracked file's only durable record is git):
-  - **TRACKED** — `workers-ledger.json` · `journal/` · `oc-deploy/journal/`
+  - **TRACKED** — `events.jsonl` · `workers.json` · `journal/` · `oc-deploy/journal/`
     (the deploy audit trail `oc-deploy recover-receipt` reads) · the lane
     `*-state.md` records · `reviews/` · `evidence/` · `tools.log` ·
     `smoke-verdicts.log` · `deployed.sha`/`.meta.json` · `baseline.json` ·
@@ -64,7 +64,7 @@
 - **Toolsmith lane** — the CLI tool lane carved out at v0.4.87 (owner "Go toolsmith" 2026-09-06): owns
   `tools/` code — makes + fixes the CLI tools every other role uses (`toolsmith.md`); never edits skill
   markdown. (Discover EITHER session via `session_search`, never uuid-from-memory.)
-- **Roster** — the worker registry in `workers-ledger.json` (enroll / claim /
+- **Roster** — the worker registry in `workers.json` (enroll / claim /
   ack rows); `oc-attrib` joins Session-Id trailers against it.
 - **Lens (Reviewer A–J)** — one Duty-6 read-only review perspective
   (catalog + full briefs: `review-lenses.md`; factory-side summary: `hq.md §Duty 6`).

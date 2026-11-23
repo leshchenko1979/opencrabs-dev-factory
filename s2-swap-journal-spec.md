@@ -116,7 +116,7 @@ answer requiring chat history = the reconstruction leg is not met.
 
 ## Post-swap notify (LIVE — mechanical fan-out since 2026-08-29)
 
-Mechanics canonical: `oc-deploy fanout` — §Fan-out legs above. No manual notify steps anywhere. Ledger path is canonical `opencrabs-dev/workers-ledger.json` — the skill-dir duplicate was deleted 2026-08-29 (v0.4.38); fix shipped FIRST, deletion second.
+Mechanics canonical: `oc-deploy fanout` — §Fan-out legs above. No manual notify steps anywhere. Ledger record path is canonical `opencrabs-dev/events.jsonl` (+ `workers.json`) — the skill-dir duplicate was deleted 2026-08-29 (v0.4.38); fix shipped FIRST, deletion second.
 
 **Fanout commit sweep excludes upstream merge ancestry (Duty-4 P-01, v0.4.133):** `oc-attrib --contributors --first-parent` strictly sweeps `--first-parent` for deployed commit attribution, preventing traversal into foreign upstream merge ancestry. Upstream sync merge commits (e.g. `8870bd40`) will NOT falsely wake completed historical editor lanes whose Session-Ids appeared in merged PRs.
 

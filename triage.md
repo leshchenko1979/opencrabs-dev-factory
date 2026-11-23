@@ -229,7 +229,7 @@ below needs a regular cadence to be worth anything.
    - **Designated Domain Affinity & Topic Context Focus Law (owner order 2026-09-17)**: Dispatches MUST match the target lane's designated topic/feature domain via `tools/issue/oc-issue-dispatch`. Never dispatch to a random idle lane or specialized lane with negative domain affinity (e.g. dumping persistence/db issues onto Mermaid/photo lanes). If no affinity match is idle, leave queued or commission a domain-appropriate lane.
    - **Wire Envelope Law (owner order 2026-09-13)**: Every dispatch wire envelope
      must conclude with: `Ack contract: NONE — claim on ledger (oc-ledger claim) and proceed.`
-     Triage verifies delivery by polling `workers-ledger.json` (`oc-ledger events --kind claim`),
+     Triage verifies delivery by polling the ledger record `events.jsonl` (`oc-ledger events --kind claim`),
      NEVER by expecting, requesting, or processing `session_notify` conversational acks.
    - **Smoke-ceiling label on wire (HQ ruling 2026-09-18, v0.4.202)**: before wiring an issue, read the live carrier set (`tools/ship/oc-features`). When the deliverable's feature-gated modules are OUTSIDE that set, the wire MUST carry `SMOKE CEILING: UNPROVEN (structural N/A) — <feature> absent from carrier set`, and the issue MUST be linked `--add-blocked-by` the carrier-set-widening issue. Such issues ARE dispatchable (`DISPATCHABLE = unclaimed AND vetted`): the CI gate compiles `--all-features`, so the code is verifiable — only the HARVEST is blocked. Never park or block an out-of-feature-set issue for that reason alone. Canon: `§Out-of-Feature-Set Issues — Dispatchable, Ceiling Labeled` (this file).
 5. Already-claimed issues:
@@ -434,10 +434,10 @@ line: `triaged=N · dispatched=M · expanded=K · parked=P · waiting=0`.
 
 ## Duty T6 — Registry writes: schema + seed rules (moved from hq.md Duty 2, lens B-F10 v0.4.96)
 
-Triage owns ALL `workers-ledger.json` writes (owner law v0.4.91): claims, ack
+Triage owns ALL ledger writes (`oc-ledger`, record `events.jsonl`) (owner law v0.4.91): claims, ack
 rows, event notes, roster enrollment (T3), `confirmed` flags.
 
-- Canonical path `/root/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json`
+- Canonical record path `/root/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl` (+ `workers.json` for non-event state; `workers-ledger.json` is a regenerated VIEW, untracked since #149 P3)
   (NOT next to the skill — two-file drift incident 2026-08-29; `oc-deploy`
   defaults to the canonical file since v0.4.38). Flock-serialize via `oc-ledger`.
 - Fields per worker (slow-changing ONLY): uuid, role, forum topic, feature,
@@ -477,7 +477,7 @@ fleet-directives.md §Decision Rollcall; editor-side duty: editor.md
    one targeted chase — to the lane, not a board complaint.
 3. Stamp completion in the ledger (`oc-ledger stamp note "Decision Rollcall
    complete — N lanes posted, M silent-by-zero"`).
-- **Checkable Completion Formula**: `DONE = Rollcall broadcast delivered to holding lanes + coverage verified + completion stamp recorded in workers-ledger.json note.`
+- **Checkable Completion Formula**: `DONE = Rollcall broadcast delivered to holding lanes + coverage verified + completion stamp recorded in the ledger (`events.jsonl`) note.`
 
 **Everything else is the §Decision Rollcall law, NOT a T7 duty.** Lane-direct
 delivery (item 2), the format law — no acks, no `telegram_send`, context +

@@ -234,11 +234,11 @@ What STAYS at this factory, because it is process law about US and not about the
 
 On protocol disputes — role boundaries, exception clauses, gate semantics —
 HQ issues BINDING rulings, each logged as an event entry in
-`workers-ledger.json` (`rulings`) with evidence and reasoning. Owner veto
+`events.jsonl` (`rulings`) with evidence and reasoning. Owner veto
 overrides retroactively. The standing lesson — never deny from codified text without
 checking the live record — lives in `SKILL.md §Hard rules (CONSENT REGISTER)`; the
 precedents behind it are in `CHANGELOG.md`.
-- **Checkable Completion Formula**: `DONE = ruling reasoning recorded in workers-ledger.json rulings event + notification delivered to involved lanes via session_notify.`
+- **Checkable Completion Formula**: `DONE = ruling reasoning recorded in the ledger (`events.jsonl`) rulings event + notification delivered to involved lanes via session_notify.`
 
 ## Duty 6 — Periodic subagent skill review
 

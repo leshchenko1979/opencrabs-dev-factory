@@ -185,7 +185,7 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      gates, smokes), anything already a gate. Candidates feed the
      HQ's process-tool ownership (scope above). PLUS USAGE-LOG
      ANALYSIS: every C pass reads the actual tool records — state-dir
-     `tools.log`, `oc-deploy/journal/*.jsonl`, `workers-ledger.json` events,
+     `tools.log`, `oc-deploy/journal/*.jsonl`, `events.jsonl` events,
      smoke-verdicts — and derives ground truth no prose review can: which
      verbs/flags are really invoked and how often, rc distributions (a tool
      whose calls cluster on rc 2 is a broken interface), documented tools
@@ -265,7 +265,7 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      "Looks stale" is a hypothesis, never a verdict. Nothing deletes without
      HQ's poll triple-check + owner word.
    - **Reviewer H — LEDGER HEALTH (shipped v0.4.114, owner GO 2026-09-08 20:16Z):**
-     the workers-ledger.json read AS A WHOLE, not per-slice — the slice tools
+     the ledger read AS A WHOLE (`events.jsonl`), not per-slice — the slice tools
      (`oc-ledger claims`, `oc-audit-ship`) each audit one family and stay the
      enforcement surface, while the `oc-roster-detached-sweep` cron sweeps
      detached work; H reads for what they cannot
@@ -298,7 +298,7 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      figures for one rule (A-5 wrote a withdrawn 300 s envelope while F-7 had
      read 480 s off the carrier); the number that wins is the one measured
      against the deployed artifact, never the one typed from memory, (3) FALSE-POSITIVE/NEGATIVE HISTORY —
-     the CORRECTION rows in `workers-ledger.json` (vocabulary
+     the CORRECTION rows in `events.jsonl` (vocabulary
      `WITHDRAWN|REVOKED|SELF-CORRECTION|FALSIFIED` over the `what`/`by`/`kind`
      fields; re-derive the count at read time — the ledger grows every turn).
      **The old `grep -i 'retract\|reject'` query is RETIRED** — measured

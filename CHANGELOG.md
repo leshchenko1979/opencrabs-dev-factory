@@ -1,5 +1,47 @@
 # Changelog — opencrabs-dev
 
+## v0.4.331 — the ledger's monolith leaves the tracked surface, and the law stops naming a file that is no longer the record
+
+**What changed.** `workers-ledger.json` is `git rm --cached` + `.gitignore`d in the
+state repo. It was never the RECORD after the #149 P3 cutover — `events.jsonl` is —
+but it stayed TRACKED, so every stamp committed a full-copy churn hunk of the view
+and the tree could never read clean (measured 2026-11-23: 256/228 lines of
+uncommitted view churn). The tool already assumed this: `oc-ledger:2369-2373`
+documents the blob as *"a materialized view that is gitignored after cutover"*, and
+`commit-pending`'s JSONL branch stages only `events.jsonl` + `workers.json`, so
+nothing re-adds it. The file stays ON DISK (2.8 MB) because the legacy `json.load`
+consumers — `oc-t5-sweep`, `oc-roster`, `oc-issue-dispatch` — read the view by path.
+
+**Why the tracked state was a defect, not cosmetics.** A permanently-dirty tree
+disarms every "clean tree" signal: a receipt that reads the working tree as its
+evidence cannot distinguish "my change landed" from "the view churned again". This
+is the same class as the #540 tracked-with-no-commit-path rows.
+
+**Law rewording (19 live references, 8 files).** `SKILL.md`'s pointer files named
+`workers-ledger.json` as the ledger in instructions a lane EXECUTES — verify a
+dispatch receipt by querying it, poll it for claims, scan it for active claims,
+record a ruling in it. Every one of those is now `events.jsonl` (or `workers.json`
+for non-event state). Two references are deliberately LEFT: `fleet-directives:375`
+and `upstream-merge-runbook:389` cite dated measurements, and rewriting a receipt
+to name a file it did not name would falsify the measurement.
+
+**The glossary was the worst of them.** `reference-glossary.md:24` listed
+`workers-ledger.json` under **TRACKED** — false as of this commit, and exactly the
+shape the glossary warns about elsewhere ("a class named TRACKED is only actually
+swept if it is in `STATE_TRACKED_PATHS`"). Corrected to `events.jsonl` ·
+`workers.json`.
+
+**Not touched, and owed to the Toolsmith:** `oc-ledger:478`'s comment still says
+`git_state_commit` stages `workers-ledger.json` on its own path. The MECHANISM is
+already right (`_ledger_tracked_names` returns `events.jsonl workers.json` whenever
+`events.jsonl` exists); only the comment is stale. `tools/**` is the Toolsmith's
+carve-out, so it is reported rather than edited.
+
+**Verification.** `git ls-files` → `events.jsonl`, `workers.json` (blob absent);
+`git check-ignore -v workers-ledger.json` → `.gitignore:28`; `git status` → no
+ledger churn; three consumers agree at 6090 rows (`jq -s length`, python line
+count, `grep -c .`); blob view and JSONL both max `n=17801`.
+
 ## v0.4.330 — the lint leg gets a watchdog, and the calibration that was hiding behind a truncated log
 
 **What changed.** The LINT job (`fmt` + `clippy --lib --bins --tests --benches
