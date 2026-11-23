@@ -3533,26 +3533,20 @@ def run_selftest():
     e14_lane = next(l for l in filtered_roster if l["uuid"] == "e14ea3a3-d1a1-4dd5-9902-8e90d5576439")
     assert_true("Classify-absent DB-alive worker defaults to idle", not e14_lane["is_busy"])
 
-    # Test 6d: Classify failure defaults workers to busy (conservative safety)
+    # Test 6d: the journal-receipt helper, which is hermetic.
+    # A live get_worker_roster() used to sit here with mock_classify=None. It ran
+    # the real `oc-roster classify --json` and stored the result in a name nothing
+    # read: one walk measured 28.48 s (2026-11-23), and it was the only call in
+    # this selftest that scaled with the live fleet. The busy-on-failure behaviour
+    # it was meant to pin is asserted by the stubbed arms in 6e, so it is gone.
+    assert_true("check_journal_receipt returns False for nonexistent journal", not check_journal_receipt("nonexistent", 0, "/tmp/no-journal"))
+
+    # Test 6e (#390): the classify budget, and the degradation report.
     mock_ledger_classify_fail = {
         "workers": [
             {"role": "editor", "uuid": "lane-safety-1", "topic": "safety lane"}
         ]
     }
-    # When mock_classify is empty dict without 'rows', classify_ok is True but rows empty.
-    # In live mode when oc-roster fails or mock_classify is None and oc-roster missing/fails,
-    # let's verify classify_ok=False defaults is_busy=True.
-    roster_classify_fail = get_worker_roster(
-        mock_ledger_classify_fail,
-        mock_classify=None,
-        mock_sessions={"lane-safety-1"},
-        db_path="/tmp/nonexistent-db.sqlite"
-    )
-    # Since oc-roster classify in test environment returns real rows or if absent fails,
-    # let's test check_journal_receipt helper directly
-    assert_true("check_journal_receipt returns False for nonexistent journal", not check_journal_receipt("nonexistent", 0, "/tmp/no-journal"))
-
-    # Test 6e (#390): the classify budget, and the degradation report.
     #
     # A stub `oc-roster` makes both arms deterministic. The stub `exec`s, so the
     # process `run_cmd` kills IS the sleeper -- without exec the kill lands on the
@@ -3560,7 +3554,12 @@ def run_selftest():
     # the elapsed assertion below measure the stub's sleep instead of the budget.
     def _stub_roster(body):
         d = tempfile.mkdtemp()
-        p = os.path.join(d, "oc-roster")
+        # The lookup is TOOL_DIR/state/oc-roster, the same layout as the real
+        # tools/state/oc-roster. A stub at the temp root is not found, the call
+        # takes the missing-binary path and returns in milliseconds, and the
+        # budget assertion below passes without a kill.
+        os.makedirs(os.path.join(d, "state"))
+        p = os.path.join(d, "state", "oc-roster")
         with open(p, "w") as fh:
             fh.write("#!/bin/sh\n" + body + "\n")
         os.chmod(p, 0o755)
