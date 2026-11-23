@@ -1,20 +1,96 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-22T16:05:16Z",
+  "ts": "2026-11-23T00:37:05Z",
   "pass": 459,
   "fail": 0,
   "verdict": "PASS",
-  "mode": "sequential",
+  "mode": "parallel jobs=2",
   "pids_max": "64",
-  "pids_cap": "",
+  "pids_cap": "jobs 4 -> 2 (pids.max=64, 32 pids/chunk)",
   "fail_log": "",
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r208b5daf758649558d29bd1a92072e31.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r2de6f97f12ab4fbcb240e840b22d65ef.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 828288,
-  "timing": {"max_concurrency": 1, "section_count": 71, "sum_ms": 828116, "slowest": [{"n": 25, "ms": 198254, "start_ms": 1795362727146, "end_ms": 1795362925400, "title": "oc-deploy"}, {"n": 44, "ms": 124908, "start_ms": 1795363200748, "end_ms": 1795363325656, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 26, "ms": 105211, "start_ms": 1795362925400, "end_ms": 1795363030611, "title": "oc-ledger"}, {"n": 28, "ms": 66704, "start_ms": 1795363034681, "end_ms": 1795363101385, "title": "oc-gate"}, {"n": 48, "ms": 43640, "start_ms": 1795363341644, "end_ms": 1795363385284, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 31, "ms": 27540, "start_ms": 1795363116450, "end_ms": 1795363143990, "title": "oc-drift-check"}, {"n": 65, "ms": 20145, "start_ms": 1795363461708, "end_ms": 1795363481853, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 35, "ms": 17850, "start_ms": 1795363157083, "end_ms": 1795363174933, "title": "oc-ledger lock budget (#619)"}, {"n": 49, "ms": 16583, "start_ms": 1795363385284, "end_ms": 1795363401867, "title": "oc-health (hourly health & cleanliness sweep)"}, {"n": 45, "ms": 15559, "start_ms": 1795363325656, "end_ms": 1795363341215, "title": "rc contract --help=0 fleet-wide (C-#3)"}]}
+  "wall_ms": 636632,
+  "timing": {
+    "max_concurrency": 2,
+    "section_count": 74,
+    "sum_ms": 1260119,
+    "slowest": [
+      {
+        "n": 31,
+        "ms": 277667,
+        "start_ms": 144355,
+        "end_ms": 422022,
+        "title": "10. oc-deploy -----------------------------------------------------------"
+      },
+      {
+        "n": 32,
+        "ms": 209422,
+        "start_ms": 146785,
+        "end_ms": 356207,
+        "title": "11. oc-ledger (KERNEL C1\u2013C5 + item-2(b) commit-pending sweep) ---------"
+      },
+      {
+        "n": 1,
+        "ms": 97513,
+        "start_ms": 762,
+        "end_ms": 98275,
+        "title": "00. lib/oc-log.sh (unified tools log, KERNEL batch D0) -----------------"
+      },
+      {
+        "n": 2,
+        "ms": 97513,
+        "start_ms": 762,
+        "end_ms": 98275,
+        "title": "00a2. lib/oc_log.py -- the PYTHON twin of oc-log.sh (#739) -------------"
+      },
+      {
+        "n": 39,
+        "ms": 97343,
+        "start_ms": 462075,
+        "end_ms": 559418,
+        "title": "18. oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z) -----------"
+      },
+      {
+        "n": 34,
+        "ms": 66729,
+        "start_ms": 363055,
+        "end_ms": 429784,
+        "title": "13. oc-gate (KERNEL C5 \u2014 one-command PR lint gate) ----------------"
+      },
+      {
+        "n": 50,
+        "ms": 51940,
+        "start_ms": 565339,
+        "end_ms": 617279,
+        "title": "64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)"
+      },
+      {
+        "n": 43,
+        "ms": 41234,
+        "start_ms": 486809,
+        "end_ms": 528043,
+        "title": "61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)"
+      },
+      {
+        "n": 37,
+        "ms": 39373,
+        "start_ms": 429811,
+        "end_ms": 469184,
+        "title": "16. lens-C tool builds (v0.4.58, owner Go 2026-08-31 04:20Z) -----------"
+      },
+      {
+        "n": 38,
+        "ms": 24702,
+        "start_ms": 437328,
+        "end_ms": 462030,
+        "title": "17. lens-F coverage batch (v0.4.72, F8: tools the battery never ran) ---"
+      }
+    ]
+  }
 }
