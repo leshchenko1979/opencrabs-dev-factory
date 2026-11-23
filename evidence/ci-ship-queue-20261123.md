@@ -128,3 +128,39 @@ predicates for one question and they disagreed on a production shape.
 For each order: commit shas (pushed, remote-verified), the battery line (`PASS: N FAIL: 0`, rc,
 wall, receipt path, tree fingerprint), what shipped, **what you did NOT change**, and anything you
 found that is not in this file. Cite a factory issue number for every code commit.
+
+---
+
+## ORDER 7 — factory#161: the log's row schema cannot name a refusal or a cancel class
+
+**Issue:** https://github.com/leshchenko1979/opencrabs-dev-factory/issues/161
+
+**Why it joins this queue:** orders 3–6 all READ the gate receipt, and order 4 (ship consumes the
+receipt) must be able to tell *"the ship REFUSED"* from *"the ship FAILED"* — a distinction the
+ship path cannot currently record. Fixing the receipt while leaving the log schema blind leaves
+the same gap one surface over.
+
+**Three deliverables**, each with a positive control (the issue carries the measured baseline):
+
+1. **A structured `refusal_class` key on the ship/dispatch path**, carrying the distinct codes
+   step 4 defines. Today the corpus has **3** structured refusal markers (`verdict=refused` ×2,
+   `verdict=BASE-FAULT` ×1) — all three the GATE's unpinned-refusal arm — and **37** rows carry a
+   refusal as free text. Control: the refusal actually FIRES and the row shows it, plus
+   suppression arms on the non-refusal paths.
+2. **A structured `cancel_class` key beside the prose.** `cancel-class` today is a SUBSTRING of
+   `verdict_reason` (TIMEOUT 25, NOT-ESTABLISHED 20, SUPERSEDED 16), while **121** rows say bare
+   `superseded` for the same event. Keep the prose for humans; add the key for machines.
+   Control: a **corpus-level invariant**, not a unit test — the key must equal the prose on all
+   **182** `verdict=CANCELLED` rows.
+3. **A positive control for the retry-success arm.** `dispatch_attempt1_rc` is on **484** rows;
+   `dispatch_attempt2_rc` on **1**, and that run FAILED. The schema can express *"dispatched,
+   failed, retried, and won"* but nothing proves the writer populates it on SUCCESS. Control:
+   force a failing-then-succeeding dispatch and assert `dispatch_attempts=2` and
+   `dispatch_attempt2_rc=0`.
+
+**Placement:** `tools/lib/oc-log.sh` (row schema) + the ship/dispatch call sites. Do NOT touch
+skill markdown — HQ owns `SKILL.md` / `CHANGELOG.md` / `hq.md` / `editor-ship.md`.
+
+**Report back** (same shape as the earlier orders): commit shas, the battery line, and for each
+of the three deliverables the POSITIVE CONTROL's own receipt — the row that proves the new field
+is written, not merely the test that asserts it.
