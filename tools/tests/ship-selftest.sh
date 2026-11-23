@@ -2445,6 +2445,58 @@ EOF
   grep -q "GATE-SKIPPED-DOCS" "$T/journal.log" && bad "docs-skip-override-disables" || ok "docs-skip-override-disables"
   grep -q "$DOCS_SHA" "$T/prchecks.log" && ok "docs-skip-override-gates" || bad "docs-skip-override-gates"
 
+  # 20e. THE RELEASE-NOTE SHAPE (#155). The issue's claim is that the mandatory
+  #      changelog commit re-enters the full CI gate for prose the gate does not
+  #      enforce. That claim was AUDITED before it was implemented, and the
+  #      predicate already answers correctly: CHANGELOG.md is not in the derived
+  #      compiled-md set, so a range that contains ONLY the release note is
+  #      docs-only and skips. What the suite lacked was any arm proving it for
+  #      THIS path, on the shape #975 actually hit — the note committed AFTER the
+  #      code it documents has already landed on main.
+  #
+  #      Two halves, because "skips" alone is satisfied by a predicate that skips
+  #      everything:
+  #        (1) changelog-only on top of landed code -> ZERO dispatches, and the
+  #            journal carries the auditable link (sha + the path that earned it)
+  #        (2) the same note bundled WITH code -> EXACTLY ONE dispatch. The count
+  #            is the assertion, not the presence: #155 is a claim about a
+  #            REDUNDANT cycle, so "a gate ran" cannot discriminate it.
+  rm -f "$T/journal.log" "$T/prchecks.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  # (1) the release note alone, on top of the landed tree.
+  git -C "$T/clone" checkout -qB changelog-fixture main
+  printf '\n## v0.4.999\n- release prose only\n' >> "$T/clone/CHANGELOG.md"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "docs: changelog for the shipped range" --trailer "Session-Id: $FIXTURE_SESSION"
+  CL_SHA="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" push -q -f origin changelog-fixture
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$CL_SHA" --branch changelog-fixture --wait 5 2>&1)" || RC=$?
+  check_rc "changelog-only-chain-green" "$RC" 0
+  grep -q "GATE-SKIPPED-DOCS sha=$CL_SHA" "$T/journal.log" \
+    && ok "changelog-only-skip-journaled" || bad "changelog-only-skip-journaled"
+  grep -q "CHANGELOG.md" "$T/journal.log" \
+    && ok "changelog-only-skip-names-the-path" || bad "changelog-only-skip-names-the-path"
+  [ -s "$T/prchecks.log" ] && bad "changelog-only-dispatch-count (want 0 got $(wc -l < "$T/prchecks.log"))" \
+    || ok "changelog-only-dispatch-count"
+  # (2) the same note bundled with code: exactly ONE dispatch, never two.
+  rm -f "$T/journal.log" "$T/prchecks.log"
+  git -C "$T/clone" checkout -qB changelog-code-fixture main
+  printf '\n## v0.4.998\n- note\n' >> "$T/clone/CHANGELOG.md"
+  printf 'pub fn x() {}\n' >> "$T/clone/src/lib.rs"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm "feat: code plus its changelog" --trailer "Session-Id: $FIXTURE_SESSION"
+  CC_SHA="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" push -q -f origin changelog-code-fixture
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$CC_SHA" --branch changelog-code-fixture --wait 5 2>&1)" || RC=$?
+  check_rc "changelog-code-chain-green" "$RC" 0
+  grep -q "GATE-SKIPPED-DOCS" "$T/journal.log" && bad "changelog-code-not-skipped" || ok "changelog-code-not-skipped"
+  _cc_disp="$(grep -c "$CC_SHA" "$T/prchecks.log" 2>/dev/null || echo 0)"
+  [ "$_cc_disp" -eq 1 ] && ok "changelog-code-gate-exactly-once" \
+    || bad "changelog-code-gate-exactly-once (want 1 got $_cc_disp)"
+
   # 20d. --eval-docs-skip standalone inspection verb (Defect #20 / Reviewer J-7).
   #      rc 0 = docs-only (prints paths); rc 1 = gate-required; rc 2 = missing sha;
   #      rc 3 = bad ref or git error.
