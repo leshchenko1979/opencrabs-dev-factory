@@ -162,6 +162,140 @@ prove it with a fixture — no gate is deleted, because no gate enforces the ord
 
 ---
 
+## D. The CI surface (workflows, carrier branch, job-name shapes)
+
+### D.1 Where the workflows live
+
+| Repo / branch | Files |
+|---|---|
+| `/root/opencrabs` (fork `main`) | `.github/workflows/`: `auto-assign.yml`, **`ci.yml`**, `fork-fmt-net.yml`, `prerelease.yml`, `release.yml` |
+| branch `ci/quick-build-linux` (carrier) | `ci-lane-impl.yml`, **`pr-checks.yml`**, `quick-build-linux.yml` |
+
+**`ci.yml` does NOT exist in the skill repo** — it lives in the source repo. The carrier files
+exist ONLY on `ci/quick-build-linux`; `main` carries upstream's workflows and therefore has no
+post-merge net. A path-based inventory that assumes them silently inventories nothing.
+
+### D.2 `ci.yml` (source repo, the ordinary CI)
+
+| Job | `name:` | Cap | Notes |
+|---|---|---|---|
+| `lint` | `Lint` | `timeout-minutes: 25` (:64) | `cargo fmt --all -- --check` (:119), `cargo clippy --locked … -D warnings` (:122) |
+| `build` | `Build (${{ matrix.target }})` | `timeout-minutes: 40` (:147) | `needs: [lint, audit]` (:133); Windows deliberately NOT built (#627) |
+| — | group `ci-${{ github.ref }}`, `cancel-in-progress: true` (:43-44) | | the supersede class of §H |
+
+### D.3 `ci-lane-impl.yml` (carrier) — the ORDER gates
+
+- `order-gates` job, `name: ORDER gates (${{ inputs.source_ref }})` (:226-228),
+  **`timeout-minutes: 45`** (:228).
+- The file's own header records the current shape (:71-73): the legacy `cargo test` leg was
+  **deleted**, there are **four 45-minute JOB caps**, and the test leg was re-homed into
+  `pr-gates-nextest`.
+- `mode` input = `build` (ORDER gates → Linux amd64 build) | `gate` (PR-lane gates) (:98).
+- Job-family token pinned to a short prefix-safe form, `ship` / `gate` (:91).
+
+### D.4 `pr-checks.yml` (carrier) — the gate lane
+
+- `name: PR-lane gates`, and exactly **ONE job, `name: gate`** (:149).
+- `diagnose` input (:98): prints the runner's resource envelope **twice** — before the test leg
+  and after it — because `memory.peak` taken before compilation is the peak of whatever ran
+  earlier in that cgroup, so a pre-only probe cannot show what the compile-and-test leg reached.
+  Now `default: false` (carrier `86bc423a2`).
+- `test-threads` input: **RETIRED 2026-11-20** (:111) — the libtest leg it configured is
+  deleted, nextest is the verdict; the input is accepted and IGNORED so
+  `oc-prchecks --test-threads N` keeps dispatching instead of erroring.
+
+### D.5 The three job-name shapes (the identity convention)
+
+From the verifiers' own fixtures (`oc-verify-job:154`, `oc-verify-artifact:143`):
+
+```
+gate / PR-lane gates (<sha>)
+gate / Linux amd64 (${{ inputs.source_ref }}, ${{ inputs.features }})
+gate / ORDER gates (${{ inputs.source_ref }})
+```
+
+`oc-verify-artifact:249` records the trap: when the build job is SKIPPED its name renders as the
+**literal** `${{ inputs.source_ref }}` placeholder, so a decoder that requires 40-hex finds
+nothing — that is #34.
+
+---
+
+## E. The selftest inventory
+
+23 files in `tools/tests/`: `run.sh` (299 KB — the battery), `deploy-selftest.sh` (170 KB),
+`ship-selftest.sh` (179 KB), `flake-fanout.sh`, `oc-mutate-selftest.sh`, one anchored-fence
+script, and **16 `negctl-*-mutation-guard.sh` scripts** (31 · 33 · 34 · 36 · 38 · 39 · 40 · 43 ·
+44 · 45 · 301 · 307 · 426 · 428 · 728).
+
+**The mutation guard is the house pattern** and the model step 2's control must follow:
+`negctl-34-mutation-guard.sh` copies the tree, neuters ONE predicate
+(`oc_decode_job_sha_any()` → `return 0 # MUTANT`, :123-141), re-runs the suite, and requires
+exactly the affected legs to go red. Its assertion requires **exactly one** definition of that
+function in `lib/oc-embed.sh`.
+
+**The JSONL gap is confirmed by bytes.** The three fixtures the plan names
+(`deploy-selftest.sh:583`, `:838`, `:863`) are:
+
+```sh
+printf '{"meta":{"oc_deploy_stage":"S2"}}'                          > "$SD/workers-ledger.json"
+printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}'               > "$SD/workers-ledger.json"
+printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}'               > "$SD/workers-ledger.json"
+```
+
+**Every fixture writes the LEGACY blob.** No fixture anywhere exercises the JSONL mode, which is
+why the view-erasure defect in §A.2 could survive a green battery: the production writer is
+exercised only in legacy mode, where the view IS the record.
+
+---
+
+## F. The dispatch classification — and TWO job-name decoders, not one
+
+**`oc-harvest-dispatch:2168` is NOT a production writer.** It sits inside the tool's embedded
+selftest block (`with_modes`) and writes a **mock** `$st_dir/ledger-mode.json`. The four `.bak`
+files are untracked, gitignored (`.gitignore:6`) husks left by the 2026-11-22 dispatch-tool
+edit. **Production writers: exactly one** (`deploy-lib:571`).
+
+### F.1 Two decoders, different predicates — the plan's step 3 instruction is wrong
+
+| Decoder | Site | Predicate |
+|---|---|---|
+| `oc_job_sha` | `tools/lib/oc-patch.sh:36-43` | **first 40-hex ANYWHERE** in the string (`grep -oE '[0-9a-f]{40}' \| head -1`) — a 40-hex outside parentheses still matches |
+| `oc_decode_job_sha_any` | `tools/lib/oc-embed.sh:35-41` | **two-pass**: first `oc_decode_job_embed` (the two-field embed, which carries FEATURES), then the **bare parenthesised** form only |
+
+`oc-fanout:124` carries a third *name* — `decode_job_sha_any()` — which **delegates** to
+`lib/oc-embed.sh` precisely so "the predicate has ONE home (factory #34)".
+
+**Consequence for step 3.** The plan says "reuse `oc_job_sha` — do NOT write a second job-name
+parser". But `oc_job_sha` IS a second parser with a *different* predicate, and the #34 mutation
+guard pins the any-shape decoder to `lib/oc-embed.sh`. A receipt whose `tested_sha` came from
+`oc_job_sha` would import a second predicate into the gate path — the very thing #34 settled.
+**The receipt's `tested_sha` must come from `oc_decode_job_sha_any`**, and reconciling the two
+decoders (one delegating to the other) belongs in the same step.
+
+`oc_job_sha`'s `|| true` is load-bearing, not a patch: under a caller's `set -o pipefail` a
+no-match grep (or `head`'s SIGPIPE, rc 141) would abort the CALLER — measured 2026-11-20, when
+oc-ship's LEG1 carry-forward died rc=1 with no message on a content-identical rebase purely
+because `gh` listed a sha-less job first.
+
+---
+
+## G. Who else consumes the job-name convention (step 4's scope is wider than written)
+
+| Consumer | Site | What it does with the name |
+|---|---|---|
+| `oc-ship` | `tools/ship/oc-ship:1446` | `oc_job_sha "$jn"` per job name |
+| **`oc-audit-ship`** | `tools/ship/oc-audit-ship:242` | selects the BUILD job by `name contains sha AND NOT contains("ORDER gates")`; :239 documents that the ORDER gates job embeds the same sha but is a different job |
+| `oc-verify-job` | `tools/ship/oc-verify-job:116`, `:154` | `STUB_JOBS` fixtures carrying all three name shapes |
+| `oc-verify-artifact` | `tools/ship/oc-verify-artifact:126`, `:143`, `:249` | same, plus the SKIPPED-build placeholder trap |
+| `oc-build` | `tools/ship/oc-build:355-356` | `"ORDER gates 4/4 PASS ($SHA)"` |
+
+**`oc-audit-ship` is not named in the plan at all.** It is the tool that already decides *which
+job's conclusion counts* — the exact discrimination the receipt must carry. A receipt that
+records `jobs[]` with name/conclusion/blocking (step 3) should be what `oc-audit-ship` reads,
+not a second opinion computed from the same job names.
+
+---
+
 ## H. The five failure classes, measured against the log's own fields
 
 Source: `opencrabs-dev/tools.log` — **91,310 lines / 21.2 MB**, 91,308 parsed (0 unparsed), schema
@@ -222,7 +356,3 @@ Two of these are **signals**, not decisions: **143** (SIGTERM, 542 rows) and **1
 difference between *refused* and *killed*, which is the difference a reader cannot reconstruct.
 
 ---
-
-## D–G. CI surface, selftest inventory, historical log, dispatch classification
-
-*(appended from the delegated read-only inventory — see below)*
