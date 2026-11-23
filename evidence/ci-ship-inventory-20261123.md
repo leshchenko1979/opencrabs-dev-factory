@@ -162,6 +162,67 @@ prove it with a fixture — no gate is deleted, because no gate enforces the ord
 
 ---
 
+## H. The five failure classes, measured against the log's own fields
+
+Source: `opencrabs-dev/tools.log` — **91,310 lines / 21.2 MB**, 91,308 parsed (0 unparsed), schema
+`ts · tool · actor · args · exit · secs · pid · extra`. Every count below is an enumeration over
+that file, not a sample.
+
+**The verdict field is too coarse to classify on.** `extra.verdict` carries
+`NO-DRIFT · DRIFT · GREEN · RED · CANCELLED · NO-HISTORY · IN-SCOPE · CLEAN · refused ·
+BASE-FAULT` — but the tool writes a FINER field for the same event: **`cancel-class=`
+(`TIMEOUT` · `NOT-ESTABLISHED` · `SUPERSEDED`)**, and `verdict_reason` headlines
+(`run-failure` 590 · `superseded` 121 · `cancel-class=TIMEOUT` 25 · `NOT-ESTABLISHED` 20 ·
+`SUPERSEDED` 16 · `run-cancelled` 3 · `jobs-failed: …` 2).
+
+### H.1 The census
+
+| Class | Rows | How it is recognised today | Machine-readable? |
+|---|---|---|---|
+| **stale-invocation** (a resume of an existing run) | **2,151** | `extra.resume` present (2,143 `oc-prchecks`, 8 `oc-gate`) + `extra.resumed_head` | **YES** — `resume`, `resumed_head` |
+| **supersede** (a newer run took over; not a failure) | **137** | `verdict=CANCELLED` with reason `superseded` (121) or `cancel-class=SUPERSEDED` (16) | **YES** — `cancel-class`, `verdict_reason` |
+| **timeout** (the run outlived its budget) | **25** | `cancel-class=TIMEOUT` | **YES** — `cancel-class` |
+| **not-established** (the cancel's class could not be determined) | **20** | `cancel-class=NOT-ESTABLISHED` | **YES** — `cancel-class` |
+| **refusal** | **3** | `verdict ∈ {refused, BASE-FAULT}` | **NO** — only 3 rows carry an explicit refusal marker, while 6,398 rows exit 1 |
+| **successful-retry** | **— (0 measurable)** | `dispatch_attempt1_rc` appears on **332 non-zero rows only** | **NO** — see H.2 |
+
+Every `verdict=CANCELLED` row is accounted for: 121 + 25 + 20 + 16 = **182** = the whole class.
+
+### H.2 The successful-retry class is not merely unmeasured — it is unrepresentable
+
+`extra.dispatch_attempt1_rc` exists on 332 rows, **all of them non-zero exits**. No exit-0 row
+carries a non-zero `dispatch_attempt1_rc`. Therefore a row **cannot distinguish** *"dispatched
+once and won"* from *"dispatched, failed, retried, and won"* — both are exit 0, and
+`dispatch_attempt1_rc=0` (the field's ordinary value) is compatible with both. The field that
+would discriminate is only ever written on the failure path.
+
+**A retry counter is the missing receipt field.** Without it, "the run succeeded" and "the run
+succeeded on the third attempt after two silent failures" are the same record — which is exactly
+the class of question the log is read by hand to answer.
+
+### H.3 The receipt field that replaces manual reading, per class
+
+| Class | Field that names it today | Where it must live after the fix |
+|---|---|---|
+| stale-invocation | `extra.resume`, `extra.resumed_head` | the gate receipt file (step 3) — a resumed run is a DIFFERENT tested tree |
+| supersede | `verdict_reason=superseded`, `cancel-class=SUPERSEDED` | receipt + the ship journal, so a supersede is not read as a failure |
+| timeout | `cancel-class=TIMEOUT` | receipt `verdict` + `verdict_reason` |
+| not-established | `cancel-class=NOT-ESTABLISHED` | receipt — the tool's own "I could not establish why" must survive into the file |
+| refusal | **none** | needs a new machine-readable refusal marker (step 4's distinct codes) |
+| successful-retry | **none** | needs an attempt counter on the row |
+
+### H.4 Exit-code vocabulary observed (for the rc register in step 6)
+
+`1` (6,398) · `2` (6,365) · `3` (2,319) · `5` (1,173) · `143` (542) · `4` (468) · `6` (229) ·
+`141` (218) · `127` (2).
+
+Two of these are **signals**, not decisions: **143** (SIGTERM, 542 rows) and **141** (SIGPIPE,
+218 rows) — tools killed mid-flight, whose receipts are therefore missing rather than negative.
+`127` (command not found) appears twice. A receipt that records only "exit != 0" loses the
+difference between *refused* and *killed*, which is the difference a reader cannot reconstruct.
+
+---
+
 ## D–G. CI surface, selftest inventory, historical log, dispatch classification
 
 *(appended from the delegated read-only inventory — see below)*
