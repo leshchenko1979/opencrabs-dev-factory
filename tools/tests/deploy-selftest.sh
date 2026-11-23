@@ -2464,6 +2464,39 @@ U156EOF
   jq -e --arg s "sha=$LNEW" 'select(.kind=="swap-result" and (.what|contains($s)))' "$SDG/events.jsonl" >/dev/null 2>&1 \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156g swap-result row vanished from the RECORD after the later stamp"; }
 
+  # 156h — NO DEPLOY PATH APPENDS TO THE RETIRED BLOB DIRECTLY (#152 acceptance,
+  #        second half). 156g proves the row LANDS on the record; this proves the
+  #        blob is not a SECOND write target. The invariant is a SUBSET relation:
+  #        every swap-result row in the legacy blob must also exist on the record.
+  #        A direct append puts a row in the blob the record never saw, and the
+  #        next view rebuild erases it — the #152 defect, stated as a measurement.
+  local SDH="$T/state156h" HBLB HREC _orph=0 _row
+  mkdir -p "$SDH/tools" "$SDH/backups"
+  printf '{"n":1,"t":"2026-11-01T00:00:00Z","by":"seed","kind":"note","what":"seed row"}\n' > "$SDH/events.jsonl"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}\n' > "$SDH/workers-ledger.json"
+  printf '%s\n' "$LNEW" > "$SDH/deployed.sha"
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDH" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  check_rc "156h-recover-rc" "$GRC" 0
+  # POSITIVE CONTROL: the row must exist SOMEWHERE. Without it the subset test
+  # below passes vacuously on a path that wrote nothing anywhere at all.
+  HREC="$(jq -s '[.[]|select(.kind=="swap-result")]|length' "$SDH/events.jsonl" 2>/dev/null)"
+  [ "${HREC:-0}" -ge 1 ] && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: 156h positive control — no swap-result row reached the RECORD"; }
+  # THE INVARIANT: count swap-result rows in the blob that the record does not
+  # carry. Any non-zero answer is a direct append to the retired artifact.
+  HBLB="$(jq -r '[.events[]? | select(.kind=="swap-result") | .t + "|" + (.what // "")] | .[]' "$SDH/workers-ledger.json" 2>/dev/null)"
+  if [ -n "$HBLB" ]; then
+    while IFS= read -r _row; do
+      [ -n "$_row" ] || continue
+      jq -s -e --arg r "$_row" '[.[]|select(.kind=="swap-result")|.t + "|" + (.what // "")] | index($r)' "$SDH/events.jsonl" >/dev/null 2>&1 \
+        || _orph=$((_orph+1))
+    done <<< "$HBLB"
+    [ "$_orph" = 0 ] && pass=$((pass+1)) \
+      || { fail=$((fail+1)); echo "SELFTEST FAIL: 156h $_orph swap-result row(s) in the legacy blob that the RECORD never saw (direct append)"; }
+  else
+    pass=$((pass+1))
+  fi
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]
