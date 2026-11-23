@@ -407,9 +407,20 @@ recover_receipt_run() { # [--journal PATH] [--run R] [--sha S] [--dry-run] [--js
     fi
   fi
   if [ "$ok" = 1 ]; then
-    existing="$(jq -r --arg s "sha=$sha" --arg r "run=$run" \
-      '[.events[]|select(.kind=="swap-result" and (.what|contains($s)) and (.what|contains($r)))]|length' \
-      "$LEDGER" 2>/dev/null || echo 0)"
+    # #156: read through the LEDGER's own reader, never raw-jq on $LEDGER. In
+    # JSONL mode $LEDGER names the legacy view file the record abandoned, so a
+    # raw read answers "no row" for a row that IS in events.jsonl — and the
+    # consequence is a SECOND stamp for the same swap, the exact duplicate this
+    # check exists to prevent. `events --json` resolves through ledger_load (the
+    # one reader). --n is widened because that verb's default window is the
+    # newest 20 rows and an older swap-result row would otherwise read absent;
+    # the `|| true` / empty->0 degrade is the pre-#156 one, kept deliberately
+    # (the stamp path itself fails loudly if the ledger is truly unreadable).
+    local _rr_rows
+    _rr_rows="$(OC_LEDGER="$LEDGER" "$LEDGER_TOOL" events --json --kind swap-result --n 1000000 2>/dev/null || true)"
+    existing="$(printf '%s' "${_rr_rows:-[]}" | jq -r --arg s "sha=$sha" --arg r "run=$run" \
+      '[.[]|select((.what|contains($s)) and (.what|contains($r)))]|length' 2>/dev/null || echo 0)"
+    [ -n "$existing" ] || existing=0
     [ "$existing" = 0 ] || { reason="ledger already carries a swap-result row for sha=$sha run=$run — idempotent no-op"; ok=0; }
   fi
 
@@ -578,15 +589,18 @@ EOF
 # The write is therefore DELEGATED, never reimplemented: mode decision,
 # locking, ordinal, append, read-back and the git tail are oc-ledger's.
 # OC_LEDGER carries the resolved path (oc-ledger's own first precedence —
-# there is no --ledger flag). Kind stays enum-guarded on this side; rc is
-# oc-ledger's, passed through verbatim.
+# `--ledger` exists only as a PRE-verb global, so appending it to the stamp
+# argv is rc 2 `unknown flag`; RC-CONTRACT used to print that fiction). Kind
+# stays enum-guarded on this side; rc is oc-ledger's, passed through verbatim.
 #
-# Positional <what> is safe HERE and only here because the call site passes
-# a quoted script variable ($2) straight to argv: no shell re-parses the
-# text, so the #341 class (expansion before the tool sees it; an empty
-# substitution leaves no trace) cannot fire. ANY caller that composes the
-# text with command substitution must pass --what-file instead — converting
-# a future call site to inline text reintroduces the defect.
+# The text travels as a FILE, never as an argument. Callers compose it with
+# command substitution (`"swap-result … sha=$(…) …"`), and text assembled that
+# way is already shell-expanded BEFORE any callee sees it: a substitution
+# yielding EMPTY output leaves no trace, and the ledger's read-back cannot see
+# it (it compares two already-expanded copies — the #341 class). --what-file
+# gives the bytes a path that never enters a shell. The temp is removed right
+# after the call returns, so a killed deploy leaves at most one tiny file in
+# TMPDIR rather than a half-written ledger row.
 #
 # One resolution, BY OVERRIDE: deploy-lib's LEDGER resolver (:53-59) stays
 # and oc-ledger's own resolver is overridden via OC_LEDGER="$LEDGER" on
@@ -611,12 +625,26 @@ ledger_stamp() { # $1=by  $2=what  $3=kind
   # The old body wrote by:"" silently when the actor was empty; the ledger's
   # own law calls an anonymous row a defect, so an empty actor becomes an
   # EXPLICIT declared one via the escape hatch cmd_stamp itself documents.
+  # The what-text goes through a file: see the header block above (#341).
+  local _ls_tmp _ls_rc
+  _ls_tmp="$(mktemp "${TMPDIR:-/tmp}/oc-deploy-what.XXXXXX")" || {
+    echo "oc-deploy: ledger_stamp: cannot create a temp file for --what-file" >&2
+    return 4
+  }
+  if ! printf '%s' "$2" > "$_ls_tmp"; then
+    rm -f "$_ls_tmp"
+    echo "oc-deploy: ledger_stamp: cannot write the --what-file temp $_ls_tmp" >&2
+    return 4
+  fi
   if [ -n "$1" ]; then
-    OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" "$2" --by "$1"
+    OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" --what-file "$_ls_tmp" --by "$1"
   else
-    OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" "$2" \
+    OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" --what-file "$_ls_tmp" \
       --by "(unattributed oc-deploy)" --allow-unattributed
   fi
+  _ls_rc=$?
+  rm -f "$_ls_tmp"
+  return $_ls_rc
 }
 
 # ----------------------------------------------------------------------------

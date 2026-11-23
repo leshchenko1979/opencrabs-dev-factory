@@ -21,6 +21,16 @@
 #                                          ref-less claim is a DEAD LETTER the
 #                                          scanner cannot see (it reported the
 #                                          issue CLEAN). Override: --allow-no-ref.
+#   fixture --n N --t <RFC3339> --kind K --by B --what "<text>"|--what-file <p>
+#                                          append a row with a FORCED ordinal and
+#                                          stamp — TEST FIXTURES ONLY (#156):
+#                                          --n and --t are REQUIRED (stamp derives
+#                                          both), so a seeded row keeps the order
+#                                          a "newest wins" assertion depends on.
+#                                          Same lock/append/read-back/view path as
+#                                          stamp, so the one-writer census stays
+#                                          empty. rc 0 / 2 usage / 3 ledger / 4
+#                                          read-back or write failure.
 #   lessons [--kind <lesson|incident|all>] [--class <text>]
 #                                          extract lesson/incident rows by class
 #                                          (H-2 v0.4.116; read-only)
@@ -1324,6 +1334,118 @@ cmd_stamp() {
     git_state_commit "ledger n=$n: $kind (oc-ledger stamp)"
   }
   with_lock _stamp_locked
+}
+
+# ---- fixture (156 task-2 remainder, 2026-11-23) -----------------------------
+# `fixture` — append a row whose `n` and `t` are FORCED, for test fixtures.
+#
+# WHY A VERB AND NOT A jq ONE-LINER. The one-writer census
+# (`grep -rn 'events *+=' tools/ --include='oc-*' --include='*.sh' | grep -v
+# '^tools/state/oc-ledger'`) must be EMPTY: no code outside this file may
+# mutate `.events`. Test fixtures still need rows at a chosen ordinal and a
+# chosen historical stamp (oc-harvest-dispatch's MODE-register legs seed n=90+
+# at 2026-09-24T00:00:00Z so "newest declaration wins" has a defined order),
+# and `stamp` cannot express that — it DERIVES n inside the lock and stamps
+# `now`. So the forcing lives HERE, behind the same lock/append/read-back/view
+# path as `stamp`, and the census stays countable.
+#
+# --n and --t are REQUIRED and rc 2 without them: that IS the verb's purpose.
+# A fixture row that silently took today's stamp would re-order every
+# "newest wins" assertion it was seeded for. --kind is validated against KINDS
+# exactly as `stamp` does, and --by is REQUIRED (never derived): a fixture row
+# is synthetic and must say who planted it.
+#
+# The text arrives via --what / --what-file / --what-stdin with stamp's
+# single-source rule; it is written VERBATIM (no lost-flag guard: a fixture
+# legitimately carries any bytes).
+cmd_fixture() {
+  case "${1:-}" in -h|--help)
+    printf '%s\n' \
+      'usage: oc-ledger fixture --n N --t <RFC3339> --kind K --by B (--what "<text>"|--what-file <path>|--what-stdin)' \
+      '' \
+      'Append a row with a FORCED ordinal and stamp — test fixtures only.' \
+      '--n and --t are REQUIRED (stamp derives both; a fixture exists to pin them).' \
+      'rc 0 appended + read-back ok · 2 usage · 3 ledger unreadable · 4 read-back/write failure'
+    exit 0 ;;
+  esac
+  local n="" t="" kind="" by="" what="" what_file="" what_stdin=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --n)    [ $# -ge 2 ] || die 2 "fixture: --n needs a value"; n="$2"; shift 2 ;;
+      --t)    [ $# -ge 2 ] || die 2 "fixture: --t needs a value"; t="$2"; shift 2 ;;
+      --kind) [ $# -ge 2 ] || die 2 "fixture: --kind needs a value"; kind="$2"; shift 2 ;;
+      --by)   [ $# -ge 2 ] || die 2 "fixture: --by needs a value"; by="$2"; shift 2 ;;
+      --what) [ $# -ge 2 ] || die 2 "fixture: --what needs a value"; what="$2"; shift 2 ;;
+      --what-file) [ $# -ge 2 ] || die 2 "fixture: --what-file needs a path"; what_file="$2"; shift 2 ;;
+      --what-stdin) what_stdin=1; shift ;;
+      *) die 2 "fixture: unknown arg '$1' (usage: oc-ledger fixture --n N --t <RFC3339> --kind K --by B --what \"<text>\")" ;;
+    esac
+  done
+  case "$n" in
+    '') die 2 "fixture: --n N is REQUIRED — a fixture row exists to FORCE its ordinal (stamp derives one)" ;;
+    *[!0-9]*) die 2 "fixture: --n must be a non-negative integer (got '$n')" ;;
+  esac
+  [ -n "$t" ] || die 2 "fixture: --t <RFC3339> is REQUIRED — a fixture row exists to FORCE its stamp (stamp writes now)"
+  # Shape, not normalisation: the value is stored VERBATIM (the read-back below
+  # pins byte equality). A stamp outside the ISO-8601 UTC family would be
+  # unrankable by `events --since`, which is exactly what a seeded fixture is for.
+  case "$t" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) die 2 "fixture: --t must be RFC3339 UTC (YYYY-MM-DDTHH:MM:SSZ), got '$t'" ;;
+  esac
+  [ -n "$kind" ] || die 2 "fixture: --kind K is REQUIRED"
+  kind="${kind//_/-}"
+  [ "$kind" = "skill-bump" ] && die 2 "fixture: kind skill-bump is sync-only — it is not a fixture row"
+  case "$KINDS" in *" $kind "*) ;; *) die 2 "fixture: unknown kind '$kind' (v1.3 vocabulary — see header)" ;; esac
+  [ -n "$by" ] || die 2 "fixture: --by B is REQUIRED — a fixture row names its planter, it is never derived"
+  local _srcs=0
+  [ -n "$what" ] && _srcs=$((_srcs+1))
+  [ -n "$what_file" ] && _srcs=$((_srcs+1))
+  [ "$what_stdin" = 1 ] && _srcs=$((_srcs+1))
+  [ "$_srcs" -le 1 ] || die 2 "fixture: give the text ONE way (--what | --what-file | --what-stdin), not $_srcs"
+  if [ -n "$what_file" ]; then
+    [ -r "$what_file" ] || die 2 "fixture: --what-file not readable: $what_file"
+    what="$(cat -- "$what_file")"
+  elif [ "$what_stdin" = 1 ]; then
+    what="$(cat)"
+  fi
+  [ -n "$what" ] || die 2 "fixture: what must be non-empty"
+  ledger_ok || die 3 "fixture: ledger missing or unparseable: $LEDGER"
+  # Mirrors cmd_stamp's append shape EXACTLY (same atomic_jq program, same lock,
+  # same read-back discipline) so the JSONL branch is the one already proven:
+  # atomic_jq splits the unified dict back into events.jsonl + workers.json and
+  # regenerates the view. The read-back resolves through `ledger_load` — the
+  # RECORD — and compares the LAST row against all four forced values, so a verb
+  # that quietly derived n or t cannot report success.
+  _fixture_locked() {
+    # The `issues` field is carried for kind=claim exactly as cmd_stamp derives
+    # it: a seeded claim without it is invisible to cmd_claims, so a fixture that
+    # seeds a claim would test a row shape the live writer never produces.
+    local issues_json="null"
+    if [ "$kind" = "claim" ]; then
+      issues_json="$(_primary_issue_tokens "$what" \
+        | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber) | if length == 0 then null else . end')"
+    fi
+    atomic_jq --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
+      --argjson iss "$issues_json" \
+      '.events += [{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
+                    + (if $iss == null then {} else {issues: $iss} end)] | .updated_at = $t' || return $?
+    local rb
+    rb="$(ledger_load 2>/dev/null | jq -r --argjson n "$n" --arg t "$t" --arg k "$kind" --arg w "$what" '
+      ([.events[]][-1] // {}) as $r
+      | if ($r.n == $n) and (($r.t // "") == $t) and (($r.kind // "") == $k) and (($r.what // "") == $w)
+        then "ok"
+        else "MISMATCH sent n=\($n) t=\($t) kind=\($k) disk n=\($r.n // "<none>") t=\($r.t // "<none>") kind=\($r.kind // "<none>") what=\(($r.what // "<none>")|tostring|.[0:60])"
+        end' 2>/dev/null)"
+    [ "$rb" = "ok" ] || die 4 "fixture READ-BACK ${rb:-FAILED (ledger_load unavailable)} — the forced n/t did not land; investigate before further fixture rows"
+    local w_show w_len w_hash
+    w_show="$(oc_clip_chars "$(printf '%s' "$what" | tr '\n' ' ')" 80)"
+    w_len=${#what}
+    w_hash="$(printf '%s' "$what" | sha256sum | cut -c1-8)"
+    echo "fixtured n=$n kind=$kind t=$t (read-back ok) what=\"$w_show\" len=$w_len hash8=$w_hash"
+    git_state_commit "ledger n=$n: $kind (oc-ledger fixture)"
+  }
+  with_lock _fixture_locked
 }
 
 # ---- sync -------------------------------------------------------------------
@@ -2667,6 +2789,50 @@ PAYLOAD
   bash "$ME" stamp note --what x --what-file "$T/payload.txt" >/dev/null 2>&1; chk "stamp-two-sources-refused" 2 $?
   bash "$ME" stamp note --what-file "$T/does-not-exist.txt" >/dev/null 2>"$T/wfmiss.err"; chk "stamp-what-file-missing" 2 $?
   case "$(cat "$T/wfmiss.err")" in *"not readable"*) ok ;; *) bad "stamp-what-file-missing-owned-diagnostic" ;; esac
+  # --- fixture verb (#156 task-2 remainder, 2026-11-23) ---------------------
+  # The one-writer census forbids `.events +=` outside this file, so a fixture
+  # builder that needs a CHOSEN ordinal and a CHOSEN stamp must come through a
+  # verb. `stamp` derives both, so these arms pin the FORCING itself: the record
+  # is seeded at n=7 and the fixture asks for n=9, so an implementation that
+  # derived n would land 8 and fail BOTH the equality and the anti-vacuity arm.
+  # The forced `t` is a date in the PAST on purpose (2026-09-24) — a verb that
+  # stamped `now` would store today and redden the verbatim arm.
+  local FX="$T/fixture-jsonl"; mkdir -p "$FX"
+  printf '{"n":7,"t":"2026-11-01T00:00:00Z","by":"seed","kind":"note","what":"seed row"}\n' > "$FX/events.jsonl"
+  printf '{"workers":[],"meta":{}}\n' > "$FX/workers.json"
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 9 --t 2026-09-24T00:00:00Z \
+    --kind note --by hq --what "forced fixture row" >"$T/fx.out" 2>&1; chk "fixture-rc" 0 $?
+  _fxn="$(jq -s -r '[.[]][-1].n' "$FX/events.jsonl" 2>/dev/null)"
+  chk "fixture-forced-n" "9" "$_fxn"
+  [ "$_fxn" != "8" ] && ok || bad "fixture-forced-n-not-derived (a derived ordinal would have been 8)"
+  chkeq "fixture-forced-t-verbatim" "2026-09-24T00:00:00Z" \
+    "$(jq -s -r '[.[]][-1].t' "$FX/events.jsonl" 2>/dev/null)"
+  chkeq "fixture-kind-by-what-verbatim" "note|hq|forced fixture row" \
+    "$(jq -s -r '[.[]][-1] | "\(.kind)|\(.by)|\(.what)"' "$FX/events.jsonl" 2>/dev/null)"
+  # the row landed on the RECORD, not on the derived view
+  [ "$(wc -l < "$FX/events.jsonl" | tr -d ' ')" = 2 ] && ok || bad "fixture-row-on-the-record"
+  # --what-file carries shell-hostile bytes through a path (#341 class)
+  printf 'forced `text` with $HOME\n' > "$T/fx-payload.txt"
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 12 --t 2026-09-24T00:00:01Z \
+    --kind note --by hq --what-file "$T/fx-payload.txt" >/dev/null 2>&1; chk "fixture-what-file-rc" 0 $?
+  chkeq "fixture-what-file-verbatim" 'forced `text` with $HOME' \
+    "$(jq -s -r '[.[]][-1].what' "$FX/events.jsonl" 2>/dev/null)"
+  # a seeded CLAIM carries the structured `issues` field cmd_stamp derives, so
+  # it is visible to the scanner that keys on it (a fixture that seeds a claim
+  # without it would test a row shape the live writer never produces).
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 13 --t 2026-09-24T00:00:02Z \
+    --kind claim --by hq --what "CLAIM #777 — fixture claim" >/dev/null 2>&1; chk "fixture-claim-rc" 0 $?
+  chkeq "fixture-claim-issues-field" "777" \
+    "$(jq -s -r '[.[]][-1].issues[0]' "$FX/events.jsonl" 2>/dev/null)"
+  chkeq "fixture-claim-visible-to-claims" "1" \
+    "$(OC_LEDGER="$FX/workers-ledger.json" bash "$ME" claims 777 2>/dev/null | grep -c 'fixture claim')"
+  # --n and --t are REQUIRED — that is the verb's purpose, so their absence is
+  # rc 2 (not a silently derived value), and nothing is written on those paths.
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --t 2026-09-24T00:00:00Z --kind note --by hq --what x >/dev/null 2>&1; chk "fixture-n-required" 2 $?
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 11 --kind note --by hq --what x >/dev/null 2>&1; chk "fixture-t-required" 2 $?
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 11 --t 2026-09-24T00:00:00Z --kind bogus --by hq --what x >/dev/null 2>&1; chk "fixture-kind-validated" 2 $?
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 11 --t 2026-09-24T00:00:00Z --kind note --what x >/dev/null 2>&1; chk "fixture-by-required" 2 $?
+  chk "fixture-refusals-wrote-nothing" "4" "$(wc -l < "$FX/events.jsonl" | tr -d ' ')"
   # 9-13: sync gates
   bash "$ME" sync --version 0.4.2 >/dev/null 2>&1; chk "sync-no-receipt" 5 $?
   echo '{"verdict":"FAIL","fail":2,"ts":"'"$(now_iso)"'"}' > "$T/skill/tools/tests/battery-last.json"
@@ -6198,13 +6364,21 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   [ "$n" -ge 1 ] || die 2 "events: --n must be >= 1 (got '$n')"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
   local sel rc
+  # #156 (2026-11-23): read through `ledger_load` — the ONE reader — instead of
+  # raw-jq on `$LEDGER`. In JSONL mode `$LEDGER` names the DERIVED view, which
+  # is gitignored once cut over: on a fresh clone (record present, view absent)
+  # this verb used to die rc 3 "ledger unreadable" for a ledger that is perfectly
+  # readable, and every caller that reads back a row it just wrote — including
+  # oc-deploy's recover-receipt idempotence check — inherited that false absence.
+  # Legacy mode is byte-identical (`ledger_load` is `cat "$LEDGER"` there), and
+  # `pipefail` (line 167) means a loader refusal is NOT masked by jq's rc.
   # Schema-mismatch fix (lane 329bf3a3 report): `.events[]` carries 27 distinct
   # key schemas and this verb read ONLY the canonical {n,t,kind,by,what}. A row
   # that kept its content in `text` (or its stamp in `ts`, its actor in `actor`)
   # rendered with a BLANK content column AND was invisible to --actor/--since.
   # The projection below is normalised ONCE and used by BOTH the filter and the
   # render, so a row can never be SELECTABLE by a value it does not PRINT.
-  sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" --argjson n "$n" '
+  sel="$(ledger_load | jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" --argjson n "$n" '
     # H-1 (c23): the ledger is not ONE schema. Widened to every key the live
     # corpus actually uses -- measured over 10300 events: the 22-row
     # {at,detail,id,type} block rendered a BLANK stamp AND a blank content
@@ -6237,7 +6411,7 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
       | select(($since == "") or (n_t >= $since))
     ] as $m
     | ($m | length) as $len
-    | $m[(if $len > $n then $len - $n else 0 end):]' "$LEDGER")"
+    | $m[(if $len > $n then $len - $n else 0 end):]')"
   rc=$?
   [ $rc -eq 0 ] || die 3 "events: jq failed (rc $rc) — ledger unreadable or query error"
 
@@ -6308,25 +6482,36 @@ cmd_mode() {
       *) die 2 "mode: unknown arg: $1 (see oc-ledger mode --help)" ;;
     esac
   done
+  # `ledger_ok` is ALREADY mode-aware (#149): in JSONL mode it validates the
+  # RECORD, never the derived view. The projection below was not — it raw-read
+  # `$LEDGER`, which in JSONL mode names a view that is gitignored once cut over.
+  # Measured 2026-11-23 on a fixture carrying events.jsonl + workers.json and no
+  # legacy blob: `oc-ledger mode` died rc 3 "projection failed on
+  # workers-ledger.json" while `events` answered from the same directory. #156
+  # routes it through `ledger_load` (the ONE reader) so the two verbs cannot
+  # disagree about which file the ledger IS. `pipefail` (line 167) keeps a
+  # loader refusal from being masked by jq's rc.
   ledger_ok || die 3 "mode: ledger unreadable: $LEDGER"
+  local _msrc
+  if _jsonl_mode; then _msrc="$(_JSONL_EVENTS)"; else _msrc="$LEDGER"; fi
 
   # Projection and render each re-state the defs: jq defs do not cross calls.
   local proj
-  proj=$(jq -c '
+  proj=$(ledger_load | jq -c '
     def dw: ((.what // .text // .note // .detail // "") | tostring)
             | gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def is_decl: dw | test("^MODE:[ ]+[A-Z][A-Z0-9_-]*([ ]+(—|--|-)[ ]+.*)?$");
     def is_prose: (dw | test("MODE:")) and (is_decl | not);
     { decl: ([.events[]? | select(is_decl)] | sort_by(.n // 0) | last),
       prose: ([.events[]? | select(is_prose)] | length) }
-  ' "$LEDGER" 2>/dev/null) || die 3 "mode: projection failed on $LEDGER"
+  ' 2>/dev/null) || die 3 "mode: projection failed on $_msrc"
 
   local decl
   decl=$(printf '%s' "$proj" | jq -c '.decl')
   if [ "$decl" = "null" ] || [ -z "$decl" ]; then
     local prose
     prose=$(printf '%s' "$proj" | jq -r '.prose')
-    echo "oc-ledger: mode: NO DECLARATION in $LEDGER" >&2
+    echo "oc-ledger: mode: NO DECLARATION in $_msrc" >&2
     echo "oc-ledger: mode: $prose row(s) mention MODE: but none IS a declaration — prose is not a ruling" >&2
     echo "oc-ledger: mode: fail closed — no declaration means FORK-STANDING" >&2
     exit 1
@@ -6352,7 +6537,7 @@ cmd_mode() {
 
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
-case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
 if [ "$SELFTEST" -eq 1 ]; then
   # (#722) `selftest --help` must be a READ. parse_global consumes the bare
   # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
@@ -6364,6 +6549,7 @@ fi
 sub="${ARGS[0]:-}"; rest=("${ARGS[@]:1}")
 case "$sub" in
   stamp) cmd_stamp "${rest[@]+"${rest[@]}"}" ;;
+  fixture) cmd_fixture "${rest[@]+"${rest[@]}"}" ;;
   sync) cmd_sync "${rest[@]+"${rest[@]}"}" ;;
   check-version) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger check-version"; exit 0 ;; esac; cmd_check_version ;;
   law-digest) cmd_law_digest "${rest[@]+"${rest[@]}"}" ;;
@@ -6389,7 +6575,7 @@ case "$sub" in
   mode) cmd_mode "${rest[@]+"${rest[@]}"}" ;;
   selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
-    echo "stamp sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
+    echo "stamp fixture sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
     exit 0
     ;;
   *)
@@ -6402,7 +6588,7 @@ case "$sub" in
       kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
       push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
       version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
-      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
     esac
     ;;
 esac

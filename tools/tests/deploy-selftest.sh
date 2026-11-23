@@ -2405,6 +2405,65 @@ U156EOF
     | jq '[.[] | select(.kind=="swap-result")] | length' 2>/dev/null)"
   [ "${EV156:-0}" -ge 1 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156f oc-ledger events does not see the deploy-stamped row"; }
 
+  # 156g — the FULL SEQUENCE on a state dir that HAS the record and NO legacy
+  #        blob (plan task-2 Done-when). Every pre-existing fixture in this file
+  #        writes a workers-ledger.json blob, so none of them could exercise the
+  #        shape a cut-over state dir actually has: events.jsonl + workers.json
+  #        with the legacy name ABSENT until a write regenerates it as a view.
+  #        The sequence proves the three surfaces agree about which file the
+  #        ledger IS — the MODE verb's projection, recover-receipt's existence
+  #        read, and a later stamp — because each one used to raw-read $LEDGER
+  #        and would answer "missing"/"no row" against the absent legacy name.
+  #        It also pins that the swap-result row SURVIVES the later stamp: a row
+  #        written to the view is erased by the next view rebuild, which is the
+  #        original #156 defect seen from the reader side.
+  local SDG="$T/state156g" GEV GOUT GRC
+  mkdir -p "$SDG/tools" "$SDG/backups"
+  printf '{"n":1,"t":"2026-11-01T00:00:00Z","by":"seed","kind":"note","what":"seed row"}\n' > "$SDG/events.jsonl"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"workers":[]}\n' > "$SDG/workers.json"
+  [ ! -f "$SDG/workers-ledger.json" ] && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: 156g fixture is not record-only (legacy blob present)"; }
+  # (1) mode: a record-only dir with NO declaration is the fail-closed VERDICT
+  #     (rc 1), never "ledger unreadable" (rc 3). Pre-fix this died rc 3
+  #     "projection failed on .../workers-ledger.json" — the file that is absent.
+  GOUT="$(OC_LEDGER="$SDG/workers-ledger.json" "$OC_TOOLS_DIR/state/oc-ledger" mode 2>&1)"; GRC=$?
+  check_rc "156g-mode-record-only-rc1-not-rc3" "$GRC" 1
+  check_has "156g-mode-resolves-the-record" "$GOUT" "events.jsonl"
+  case "$GOUT" in *"projection failed"*|*"workers-ledger.json"*) fail=$((fail+1)); echo "SELFTEST FAIL: 156g mode still resolves the absent legacy view" ;; *) pass=$((pass+1)) ;; esac
+  # (2) with a declaration ON THE RECORD, mode answers it (rc 0).
+  OC_LEDGER="$SDG/workers-ledger.json" "$OC_TOOLS_DIR/state/oc-ledger" fixture \
+    --n 2 --t 2026-11-02T00:00:00Z --kind note --by hq \
+    --what "MODE: FORK-STANDING — 156g fixture" >/dev/null 2>&1
+  GOUT="$(OC_LEDGER="$SDG/workers-ledger.json" "$OC_TOOLS_DIR/state/oc-ledger" mode 2>&1)"; GRC=$?
+  check_rc "156g-mode-declaration-from-record" "$GRC" 0
+  check_has "156g-mode-declaration-value" "$GOUT" "FORK-STANDING"
+  # (3) recover-receipt into that dir. The truncated journal is the one the
+  #     cgroup negative control produced ($NEG_JF, stops at marker-write with
+  #     deployed_sha=$LNEW), so the row is a REAL reconstruction.
+  printf '%s\n' "$LNEW" > "$SDG/deployed.sha"
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  check_rc "156g-recover-rc" "$GRC" 0
+  check_has "156g-recover-verdict" "$GOUT" "row stamped"
+  jq -e --arg s "sha=$LNEW" 'select(.kind=="swap-result" and (.what|contains($s)))' "$SDG/events.jsonl" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156g swap-result row is not on the RECORD (events.jsonl)"; }
+  # (4) idempotence is read off the RECORD too: a re-run must be a no-op, and
+  #     pre-fix the raw-jq read against the absent legacy view answered 0 rows,
+  #     so the second run stamped a DUPLICATE.
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  check_rc "156g-recover-idempotent-rc" "$GRC" 0
+  check_has "156g-recover-idempotent-msg" "$GOUT" "idempotent no-op"
+  [ "$(jq -s '[.[]|select(.kind=="swap-result")]|length' "$SDG/events.jsonl" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: 156g recover-receipt double-stamped on the record"; }
+  # (5) a LATER unrelated stamp still exits 0 and does not disturb the row.
+  GOUT="$(OC_LEDGER="$SDG/workers-ledger.json" "$OC_TOOLS_DIR/state/oc-ledger" stamp note "156g later note" --by hq 2>&1)"; GRC=$?
+  check_rc "156g-later-stamp-rc" "$GRC" 0
+  GEV="$(OC_LEDGER="$SDG/workers-ledger.json" "$OC_TOOLS_DIR/state/oc-ledger" events --kind swap-result --json 2>/dev/null)"; GRC=$?
+  check_rc "156g-events-after-stamp-rc" "$GRC" 0
+  [ "$(printf '%s' "$GEV" | jq 'length' 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: 156g the swap-result row did not survive the later stamp"; }
+  jq -e --arg s "sha=$LNEW" 'select(.kind=="swap-result" and (.what|contains($s)))' "$SDG/events.jsonl" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156g swap-result row vanished from the RECORD after the later stamp"; }
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]

@@ -2160,13 +2160,22 @@ EOF
   retired_hits() { printf '%s\n' "$1" | grep -c -E 'DEGRADED|HIGH-TRUST' || true; }
   # with_mode <note-text> -> $mode_ledger carrying that MODE row, newest.
   # with_modes <note>... -> same, appending each in order (the LAST is newest).
+  # #156 (2026-11-23): the seed rows go through `oc-ledger fixture`, never a raw
+  # jq append. The one-writer census forbids a raw jq event append outside
+  # tools/state/oc-ledger, and this builder was the last hit outside it: the rows
+  # it planted are exactly what a chosen ordinal and a chosen stamp are for, so
+  # the verb exists for it. Semantics are unchanged — n=90, 91, … and
+  # t=2026-09-24T00:00:00Z, one row per note, appended in order so the LAST is
+  # newest (every "newest declaration wins" leg depends on that order). A seed
+  # failure is LOUD and stops the leg set: a silently missing MODE row would make
+  # 6a-2/6a-3 pass by reading a different row.
   with_modes() {
     cp "$mock_ledger" "$mode_ledger"
     local _n=90 _m
     for _m in "$@"; do
-      jq --arg w "$_m" --argjson n "$_n" \
-        '.events += [{"n":$n,"t":"2026-09-24T00:00:00Z","kind":"note","by":"hq","what":$w}]' \
-        "$mode_ledger" > "$mode_ledger.tmp" && mv "$mode_ledger.tmp" "$mode_ledger"
+      OC_LEDGER="$mode_ledger" "$OC_TOOLS_DIR/state/oc-ledger" fixture \
+        --n "$_n" --t 2026-09-24T00:00:00Z --kind note --by hq --what "$_m" >/dev/null 2>&1 \
+        || { echo "  bad 6a-0 - #156 fixture seed row n=$_n failed: $_m"; return 1; }
       _n=$((_n + 1))
     done
   }
