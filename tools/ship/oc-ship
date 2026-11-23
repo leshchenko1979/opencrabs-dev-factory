@@ -98,8 +98,13 @@
 # Exit (FULL register: tools/docs/RC-CONTRACT.md — `oc-ship` row in the rc table):
 #   0 SWAPPED · 2 usage · 3 precondition not met (fork checkout ABSENT or not a git
 #   checkout — a LINKED WORKTREE is accepted, #69; dirty checkout; or $BRANCH absent
-#   from the fork remote. Lane fix, NEVER infra) · 4 GATE-RED / CARRIER-RED
-#   (structured verdict) · 6 dispatch/poll infra, incl. a lineage-guard refusal
+#   from the fork remote. Lane fix, NEVER infra) · 4 STRUCTURED VERDICT — the
+#   gate/carrier went RED, or a #158 binding refused: BUILD-IDENTITY-UNBOUND
+#   (the GREEN run did not build $SHA — nothing was swapped) /
+#   ARTIFACT-IDENTITY-UNBOUND (the host is swapped but no verdict ties the
+#   installed bytes to the verified build — nothing is CLAIMED). Distinct
+#   tokens, one class: the chain's own bookkeeping is wrong, not the box.
+#   6 dispatch/poll infra, incl. a lineage-guard refusal
 #   (rebase-aware: re-run; diagnose with `oc-deploy lineage-check`) · 7 gate still
 #   IN FLIGHT — do NOT re-dispatch, re-run with --gated-run <id> · 8 SHIP-WAIT-TIMEOUT
 #   — the build is still RUNNING, resume with `oc-deploy poll --execute` · 9
@@ -162,6 +167,18 @@
 #                    a selftest hook, so the probe never reaches the network.
 #   OC_SHIPCHAIN_LEDGER  path for chain journal lines (default: oc-ledger)
 #   OC_TOOLS_NOLOG=1     suppress ledger stamps (battery/selftest)
+#   OC_VERIFY_JOB_BIN       default tools/ship/oc-verify-job (#158 build stage)
+#   OC_VERIFY_ARTIFACT_BIN  default tools/ship/oc-verify-artifact (#158 artifact
+#                    stage). Both are shimmed by the selftest exactly like
+#                    OC_PRCHECKS_BIN / OC_DEPLOY_BIN: the suite must never reach
+#                    a real verifier, because a real one calls gh.
+#   OC_SHIP_ARTIFACT_MARKERS  comma-separated feature markers to require in the
+#                    installed artifact (#158 artifact stage, forwarded verbatim
+#                    to oc-verify-artifact --markers). UNSET = no marker is
+#                    claimed, and the journal says so — a check that did not run
+#                    must never read as a check that passed.
+#   OC_SHIP_ARTIFACT_VERSION  the version banner the artifact must print
+#                    (oc-verify-artifact --expect-version). UNSET = not claimed.
 #
 # Actor (attribution — v0.4.152 §Attribution & Goal Hygiene A1): OC_ACTOR wins;
 #   otherwise the actor is derived from the `Session-Id` trailer on the --sha commit
@@ -629,6 +646,13 @@ SWAPPED=0
 PRCHECKS_BIN="${OC_PRCHECKS_BIN:-$TOOLS_DIR/harvest/oc-gate}"
 DEPLOY_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-deploy}"
 ISSUELOG_BIN="${OC_ISSUELOG_BIN:-$TOOLS_DIR/issue/oc-issue-log}"
+# #158 (plan step 4, second half): the two verifiers whose VERDICTS bind this
+# chain's build and artifact to the sha it ships. Resolved here, beside every
+# other child, so the selftest shims them the same way it shims oc-gate and
+# oc-deploy — and so no call site can quietly grow a hardcoded path.
+VERIFY_JOB_BIN="${OC_VERIFY_JOB_BIN:-$TOOLS_DIR/ship/oc-verify-job}"
+VERIFY_ARTIFACT_BIN="${OC_VERIFY_ARTIFACT_BIN:-$TOOLS_DIR/ship/oc-verify-artifact}"
+
 FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_GH:-gh}"
 # T10 (plan #68): the post-4-way-split home of the rebase auditor. Named here
@@ -913,6 +937,182 @@ EOF
   [ -n "$_carrier" ] || { GATE_RECEIPT_WHY="receipt names no carrier_ref — cannot bind it to ${_want_carrier}"; return 2; }
   [ "$_carrier" = "$_want_carrier" ] || { GATE_RECEIPT_WHY="receipt was earned on carrier '${_carrier}' but this chain ships on '${_want_carrier}'"; return 8; }
   GATE_RECEIPT_PATH="$rp"
+  return 0
+}
+
+# --- #158: BIND THE BUILD AND THE ARTIFACT -----------------------------------
+# The receipt check above binds the GATE's verdict to $SHA. It says nothing
+# about the BUILD that produced the binary, nor about the bytes that reach the
+# host — so a chain that stops there can still ship a binary from a run that
+# never built this commit, and no line in its journal would be false.
+#
+# Both facts already have an owner, so this chain CONSUMES their verdicts
+# instead of re-deriving either (a second job-name parser here would be a second
+# thing to rot — the #631 lesson the receipt check above states):
+#   oc-verify-job       BUILD stage: enforces the carrier job-name embed against
+#                       the sha (rc 4 REF-MISMATCH; --identity-only is its
+#                       RED-run provenance mode, not used here — this chain only
+#                       reaches the stage on a terminal success).
+#   oc-verify-artifact  ARTIFACT stage: enforces embed-source sha (exact or
+#                       12-hex), marker presence and version on an artifact.
+#
+# A verifier that did NOT run is the same class as one that refused: "tool not
+# called" must never read as "verified". So a missing run id, an absent binary,
+# an unreadable verdict and a non-zero rc all REFUSE the chain. Refusal maps
+# onto oc-ship's EXISTING rc 4 — the chain-bookkeeping class the gate-receipt
+# refusal already uses — with a DISTINCT journal reason per stage, so
+# tools/docs/RC-CONTRACT.md gains no new oc-ship rc for this.
+#
+# PLACEMENT OF THE ARTIFACT STAGE, stated because it looks late. Before the
+# swap the artifact exists only inside oc-swap's transient WORKDIR (deleted on
+# exit, `_OC_SWAP_WORKDIR`), and `poll --execute` accepts no --artifact-dir to
+# hand one in, so verifying it earlier would mean oc-ship downloading the ~83MB
+# release a SECOND time. The installed binary IS that artifact, and
+# deployed.meta.json — written by oc-swap in the same marker-write step, so it
+# exists exactly when the swap does — carries the identity it was verified
+# under: sha, run_id, artifact_sha256. What this stage therefore refuses is the
+# CLAIM: it sits BEFORE the DONE/SWAPPED line, so a refusal means the chain
+# never states that the swap is bound to the build it verified.
+SHIP_BIND_RUN=""              # carrier run id whose build verdict was appended
+SHIP_VERIFY_JOB_WHY=""
+SHIP_VERIFY_ARTIFACT_WHY=""
+SHIP_VERIFY_JOB_EMBED=""
+SHIP_VERIFY_JOB_REF=""
+SHIP_VERIFY_ARTIFACT_SHA256=""
+SHIP_VERIFY_ARTIFACT_SRC=""
+
+shipchain_verify_job_binding() { # $1=carrier run id $2=sha about to ship ; 0 = BOUND
+  local rid="${1:-}" want="${2:-}" d rc verified embed concl
+  SHIP_VERIFY_JOB_WHY=""; SHIP_VERIFY_JOB_EMBED=""; SHIP_VERIFY_JOB_REF=""
+  if [ -z "$rid" ]; then
+    SHIP_VERIFY_JOB_WHY="no carrier run id could be resolved from the ship leg, so the build identity was never checked"
+    return 1
+  fi
+  if [ ! -x "$VERIFY_JOB_BIN" ]; then
+    SHIP_VERIFY_JOB_WHY="verifier absent or not executable at $VERIFY_JOB_BIN — a verdict that was never produced is not a verdict"
+    return 1
+  fi
+  command -v jq >/dev/null 2>&1 || { SHIP_VERIFY_JOB_WHY="jq absent — cannot read the verifier's verdict"; return 2; }
+  d="$(mktemp -d)" || { SHIP_VERIFY_JOB_WHY="mktemp failed"; return 2; }
+  # `|| rc=$?` rather than set +e/set -e: this function must not change the
+  # caller's errexit state, and a bare failing command would abort the chain.
+  rc=0
+  if [ -n "$REPO" ]; then
+    OC_TOOLS_NOLOG=1 "$VERIFY_JOB_BIN" "$rid" "$want" --repo "$REPO" --json >"$d/out" 2>"$d/err" || rc=$?
+  else
+    OC_TOOLS_NOLOG=1 "$VERIFY_JOB_BIN" "$rid" "$want" --json >"$d/out" 2>"$d/err" || rc=$?
+  fi
+  if [ "$rc" != "0" ]; then
+    # The verifier's OWN diagnosis, never a paraphrase: its rc classes mean
+    # different things (2 in-flight / 3 FAILED / 4 REF-MISMATCH / 5 not found)
+    # and the lane's next move differs per class.
+    SHIP_VERIFY_JOB_WHY="$(tail -n 1 "$d/err" 2>/dev/null || true)"
+    [ -n "$SHIP_VERIFY_JOB_WHY" ] || SHIP_VERIFY_JOB_WHY="verifier exited $rc with no diagnosis"
+    rm -rf "$d"
+    return "$rc"
+  fi
+  verified="$(jq -r '.verified // false' "$d/out" 2>/dev/null || true)"
+  embed="$(jq -r '.embed_sha // ""' "$d/out" 2>/dev/null || true)"
+  concl="$(jq -r '.conclusion // ""' "$d/out" 2>/dev/null || true)"
+  rm -rf "$d"
+  # rc 0 alone is not the binding: the verdict must SAY verified, and the
+  # identity it names must be the sha being shipped (exact, or the 12-hex
+  # prefix the verifier itself tolerates for truncated embeds).
+  if [ "$verified" != "true" ]; then
+    SHIP_VERIFY_JOB_WHY="verifier exited 0 but its verdict does not say verified=true"
+    return 2
+  fi
+  if [ -n "$embed" ] && [ "$embed" = "$want" ]; then
+    SHIP_VERIFY_JOB_REF="exact"
+  elif [ -n "$embed" ] && [ "${embed:0:12}" = "${want:0:12}" ]; then
+    SHIP_VERIFY_JOB_REF="prefix12"
+  else
+    SHIP_VERIFY_JOB_WHY="verifier exited 0 but the identity it names (${embed:-none}) is not $want"
+    return 4
+  fi
+  SHIP_VERIFY_JOB_EMBED="$embed"
+  SHIP_VERIFY_JOB_CONCL="${concl:-success}"
+  return 0
+}
+
+shipchain_verify_artifact_binding() { # $1=sha shipped ; 0 = BOUND
+  local want="${1:-}" meta bin rid art msha d rc pass sha256 src ver
+  SHIP_VERIFY_ARTIFACT_WHY=""; SHIP_VERIFY_ARTIFACT_SHA256=""; SHIP_VERIFY_ARTIFACT_SRC=""
+  meta="$STATE_DIR/deployed.meta.json"
+  if [ ! -f "$meta" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="no $meta — nothing on disk records which artifact the swap installed"
+    return 1
+  fi
+  command -v jq >/dev/null 2>&1 || { SHIP_VERIFY_ARTIFACT_WHY="jq absent — cannot read the installed identity"; return 2; }
+  # The recorded identity is the SUBJECT of the check: a meta naming another
+  # commit describes another artifact, however well-formed it is.
+  msha="$(jq -r '.sha // ""' "$meta" 2>/dev/null || true)"
+  if [ "$msha" != "$want" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="deployed.meta.json names sha '${msha:-none}' but this chain shipped $want"
+    return 3
+  fi
+  rid="$(jq -r '.run_id // ""' "$meta" 2>/dev/null || true)"
+  case "$rid" in
+    ''|*[!0-9]*) SHIP_VERIFY_ARTIFACT_WHY="deployed.meta.json carries no numeric run_id ('${rid:-none}') — the artifact's provenance cannot be proven"
+                 return 2 ;;
+  esac
+  art="$(jq -r '.artifact_sha256 // ""' "$meta" 2>/dev/null || true)"
+  if ! printf '%s' "$art" | grep -Eq '^[0-9a-f]{64}$'; then
+    SHIP_VERIFY_ARTIFACT_WHY="deployed.meta.json artifact_sha256 '${art:-none}' is not a sha256"
+    return 2
+  fi
+  # The build verdict and the artifact's run must be the SAME run: an artifact
+  # built by another run is not the build this chain verified, however green
+  # that other run was. (A coalesced descendant build lands here too, and it is
+  # refused deliberately — the swap's own provenance gate refuses it as well.)
+  if [ -n "$SHIP_BIND_RUN" ] && [ "$rid" != "$SHIP_BIND_RUN" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="the installed artifact came from run $rid but the verified build run was $SHIP_BIND_RUN"
+    return 4
+  fi
+  if [ ! -x "$VERIFY_ARTIFACT_BIN" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="verifier absent or not executable at $VERIFY_ARTIFACT_BIN — a verdict that was never produced is not a verdict"
+    return 1
+  fi
+  # No local pre-check of the file (existence, ELF, size): oc-verify-artifact
+  # owns every one of those gates (rc 2), and duplicating one here would be a
+  # second implementation that can disagree with the owner.
+  bin="${OC_SWAP_TARGET:-/usr/local/bin/opencrabs}"
+  d="$(mktemp -d)" || { SHIP_VERIFY_ARTIFACT_WHY="mktemp failed"; return 2; }
+  rc=0
+  # --source + --run-id make the embed-source identity gate run (exact or
+  # 12-hex); --expect-sha pins the installed bytes to the recorded artifact.
+  # Markers and version are forwarded only when the caller NAMED them: absent,
+  # they are reported as not-checked rather than silently counted as passed.
+  VA_ARGS=( "$bin" --source "$want" --run-id "$rid" --expect-sha "$art" --json )
+  if [ -n "${OC_SHIP_ARTIFACT_MARKERS:-}" ]; then VA_ARGS+=( --markers "$OC_SHIP_ARTIFACT_MARKERS" ); fi
+  if [ -n "${OC_SHIP_ARTIFACT_VERSION:-}" ]; then VA_ARGS+=( --expect-version "$OC_SHIP_ARTIFACT_VERSION" ); fi
+  if [ -n "$REPO" ]; then VA_ARGS+=( --repo "$REPO" ); fi
+  OC_TOOLS_NOLOG=1 "$VERIFY_ARTIFACT_BIN" "${VA_ARGS[@]}" >"$d/out" 2>"$d/err" || rc=$?
+  if [ "$rc" != "0" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="$(tail -n 1 "$d/err" 2>/dev/null || true)"
+    [ -n "$SHIP_VERIFY_ARTIFACT_WHY" ] || SHIP_VERIFY_ARTIFACT_WHY="verifier exited $rc with no diagnosis"
+    rm -rf "$d"
+    return "$rc"
+  fi
+  pass="$(jq -r '.pass // false' "$d/out" 2>/dev/null || true)"
+  sha256="$(jq -r '.sha256 // ""' "$d/out" 2>/dev/null || true)"
+  src="$(jq -r '.source_match // ""' "$d/out" 2>/dev/null || true)"
+  ver="$(jq -r '.version // ""' "$d/out" 2>/dev/null || true)"
+  rm -rf "$d"
+  if [ "$pass" != "true" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="verifier exited 0 but its verdict does not say pass=true"
+    return 2
+  fi
+  # The provenance gate must have RUN and passed. A run-id-less artifact would
+  # report `unverified-no-run-id`, which is exactly the reading this stage
+  # exists to forbid.
+  if [ "$src" != "verified" ]; then
+    SHIP_VERIFY_ARTIFACT_WHY="verifier exited 0 but source_match='${src:-none}' (the embed-source gate did not verify $want)"
+    return 4
+  fi
+  SHIP_VERIFY_ARTIFACT_SHA256="${sha256:-$art}"
+  SHIP_VERIFY_ARTIFACT_SRC="$src"
+  SHIP_VERIFY_ARTIFACT_VER="${ver:-<unreported>}"
   return 0
 }
 
@@ -2265,6 +2465,34 @@ case "$SHIP_RC" in
     journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
 esac
 
+# ---- leg 4b: BIND THE BUILD (#158) ----------------------------------------
+# LEG4's GREEN says the carrier run concluded success. It does NOT say the run
+# built THIS commit — and the sha is what every later leg claims about, so the
+# identity question is asked NOW, by the tool that owns it, and its verdict is
+# appended here. The run id is read from the `SHIP-WAIT: run <id> GREEN` line
+# the real `oc-deploy ship --execute --wait` prints on its polling path; an
+# unresolvable id REFUSES rather than skipping the stage, because a build
+# identity that was never checked must not read as bound.
+#
+# ALWAYS $SHA, never $GATED_SHA / $GATED_RUN: those are hand-passed claims about
+# which run GATED this commit, and a claim about the gate cannot stand in for
+# evidence about the build. A hand-passed --gated-sha is checked (the receipt
+# leg above binds it) and still not trusted here.
+SHIP_BIND_RUN="$(grep -oE 'SHIP-WAIT: run [0-9]+' <<< "$SHIP_OUT" | head -1 | awk '{print $3}' || true)"
+if [ -z "$SHIP_BIND_RUN" ]; then
+  SHIP_BIND_RUN="$(grep -oE 'run=[0-9]+' <<< "$SHIP_OUT" | head -1 | cut -d= -f2 || true)"
+fi
+SHIP_VERIFY_JOB_RC=0
+shipchain_verify_job_binding "$SHIP_BIND_RUN" "$SHA" || SHIP_VERIFY_JOB_RC=$?
+if [ "$SHIP_VERIFY_JOB_RC" = "0" ]; then
+  journal "LEG4 verify-job OK run=$SHIP_BIND_RUN sha=$SHA embed=$SHIP_VERIFY_JOB_EMBED ref=$SHIP_VERIFY_JOB_REF conclusion=${SHIP_VERIFY_JOB_CONCL:-success}"
+  printf 'oc-ship: LEG4 build identity verified — run %s embed names %s (%s)\n' \
+    "$SHIP_BIND_RUN" "$SHIP_VERIFY_JOB_EMBED" "$SHIP_VERIFY_JOB_REF" >&2
+else
+  journal "LEG4 verify-job REFUSED rc=$SHIP_VERIFY_JOB_RC run=${SHIP_BIND_RUN:-none} sha=$SHA — $SHIP_VERIFY_JOB_WHY"
+  die "BUILD-IDENTITY-UNBOUND (verify-job rc $SHIP_VERIFY_JOB_RC): ${SHIP_VERIFY_JOB_WHY}. The carrier run is GREEN but this chain cannot tie it to $SHA, so nothing was swapped and nothing is claimed. Re-run the chain so it dispatches and polls a build of $SHA itself — do NOT re-arm it against a run that built another commit (that is the verdict-with-no-subject this check exists to refuse)." 4
+fi
+
 # ---- leg 5: swap confirmation ---------------------------------------------
 # THE PREDICATE IS THE MARKER, NOT A STDOUT TOKEN (defect fix 2026-09-12,
 # editor 462181e9 report, receipted live). This loop scanned the poll's
@@ -2354,6 +2582,36 @@ done
 if [ "$SWAPPED" != "1" ]; then
   journal "LEG5 swap NOT confirmed after 12 polls (deployed=${CUR_DEPLOYED:-none} expected=$SHA)"
   die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA — $(leg5_host_state) — inspect via: oc-deploy status" 6
+fi
+
+# ---- leg 5b: BIND THE ARTIFACT (#158) -------------------------------------
+# The marker says the host now RUNS $SHA's build; it does not say the bytes on
+# disk are the artifact oc-verify-artifact's identity gates cover. That stage is
+# run here, on the installed binary, with the identity oc-swap recorded in the
+# same marker-write step (sha, run_id, artifact_sha256) as its subject — the
+# tool's OWN CLI, never a re-implementation of its embed/marker/version gates.
+#
+# It runs BEFORE the DONE/SWAPPED line on purpose: a refusal here means the
+# chain must not claim the swap is bound to the build. (Why the artifact stage
+# cannot run pre-swap is stated at the function's banner above: the artifact
+# exists only inside oc-swap's transient WORKDIR, and `poll` takes no
+# --artifact-dir.)
+SHIP_VERIFY_ARTIFACT_RC=0
+shipchain_verify_artifact_binding "$SHA" || SHIP_VERIFY_ARTIFACT_RC=$?
+if [ "$SHIP_VERIFY_ARTIFACT_RC" = "0" ]; then
+  # What was NOT requested is journalled as not-requested, never omitted: a
+  # reader must be able to tell "no marker was claimed" from "markers passed".
+  _bind_mnote="none-requested"
+  if [ -n "${OC_SHIP_ARTIFACT_MARKERS:-}" ]; then _bind_mnote="$OC_SHIP_ARTIFACT_MARKERS"; fi
+  _bind_vnote="none-requested"
+  if [ -n "${OC_SHIP_ARTIFACT_VERSION:-}" ]; then _bind_vnote="$OC_SHIP_ARTIFACT_VERSION"; fi
+  journal "LEG5 verify-artifact OK sha=$SHA run=$SHIP_BIND_RUN artifact_sha256=$SHIP_VERIFY_ARTIFACT_SHA256 source_match=$SHIP_VERIFY_ARTIFACT_SRC version=${SHIP_VERIFY_ARTIFACT_VER:-<unreported>} markers_gate=$_bind_mnote version_gate=$_bind_vnote"
+
+  printf 'oc-ship: LEG5 artifact identity verified — %s source_match=%s sha256=%s\n' \
+    "$SHA" "$SHIP_VERIFY_ARTIFACT_SRC" "$SHIP_VERIFY_ARTIFACT_SHA256" >&2
+else
+  journal "LEG5 verify-artifact REFUSED rc=$SHIP_VERIFY_ARTIFACT_RC sha=$SHA — $SHIP_VERIFY_ARTIFACT_WHY"
+  die "ARTIFACT-IDENTITY-UNBOUND (verify-artifact rc $SHIP_VERIFY_ARTIFACT_RC): ${SHIP_VERIFY_ARTIFACT_WHY}. The host IS swapped to $SHA, but the chain is NOT bound: no artifact verdict ties the installed bytes to the build it verified, so this run is not evidence that $SHA's build is what is running. Inspect with: oc-deploy status --json + oc-verify-artifact \${OC_SWAP_TARGET:-/usr/local/bin/opencrabs} --source $SHA --run-id <run> --verbose" 4
 fi
 journal "DONE SWAPPED sha=$SHA"
 echo "SHIP-CHAIN $CHAIN: SWAPPED sha=$SHA gate=$SHIP_GATE_MODE"

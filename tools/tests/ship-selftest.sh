@@ -172,6 +172,82 @@ jq -n --arg schema "oc-gate-receipt/1" \
 exit 0
 EOF
   chmod +x "$T/write-receipt"
+  # #158: marker-write is ONE step in the real swap (oc-swap:461-463 writes
+  # deployed.sha AND deployed.meta.json together), and the meta is the artifact
+  # IDENTITY the chain's artifact stage binds. A stub that writes only the sha
+  # models a swap the real tool cannot produce — the fixture-dishonesty class
+  # the rc-3 and poll comments above already record.
+  cat > "$T/write-marker" <<'EOF'
+#!/usr/bin/env bash
+# $1 = state dir. Copies pending.sha -> deployed.sha and writes the meta the
+# real swap records beside it. FAKE_META_RUN_ID (default FAKE_SHIP_RUN_ID) lets
+# an arm make the swapped artifact name a DIFFERENT run than the verified build.
+d="$1"; mkdir -p "$d" 2>/dev/null || true
+[ -f "$d/pending.sha" ] || exit 0
+cp "$d/pending.sha" "$d/deployed.sha" 2>/dev/null || true
+_sha="$(cat "$d/pending.sha" 2>/dev/null || true)"
+_art="$(sha256sum "${OC_SWAP_TARGET:-/usr/local/bin/opencrabs}" 2>/dev/null | awk '{print $1}')"
+jq -n --arg s "$_sha" --arg r "${FAKE_META_RUN_ID:-${FAKE_SHIP_RUN_ID:-4242}}" \
+   --arg a "${_art:-none}" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+   '{sha:$s, run_id:$r, artifact_sha256:$a, features:"telegram", swapped_at:$t, auth:"auto-swap", prev_sha:"none"}' \
+   > "$d/deployed.meta.json" 2>/dev/null || true
+exit 0
+EOF
+  chmod +x "$T/write-marker"
+  # #158 BUILD + ARTIFACT verifier stubs. The chain CONSUMES both verdicts, so a
+  # suite that let it reach the REAL tools would call gh (network) and read the
+  # box. Each stub records its argv — so a leg can assert WHICH sha the chain
+  # asked about — and answers from env, so an arm can remove exactly ONE
+  # binding. Same discipline as the gate-receipt stub above.
+  cat > "$T/fake-verify-job" <<'EOF'
+#!/usr/bin/env bash
+# oc-verify-job stub: <run-id> <sha> [--features F] [--repo R] [--json]
+printf '%s\n' "$*" >> "${FAKE_VJ_LOG:-/dev/null}"
+json=0
+for a in "$@"; do [ "$a" = "--json" ] && json=1; done
+if [ "${FAKE_VJ_RC:-0}" != 0 ]; then
+  echo "oc-verify-job: REF-MISMATCH: job embed sha ${FAKE_VJ_EMBED_SHA:-9999999999999999999999999999999999999999} != expected ${2:-?} (run ${1:-?}) (fake)" >&2
+  exit "$FAKE_VJ_RC"
+fi
+if [ "$json" = 1 ]; then
+  printf '{"verified":true,"run_id":"%s","status":"completed","conclusion":"%s","job_name":"ship / Linux amd64 (%s, telegram)","embed_sha":"%s","embed_features":"telegram","source_ref":"%s","head_sha_carrier_tip":"ffffffffffffffffffffffffffffffffffffffff"}\n' \
+    "${1:-}" "${FAKE_VJ_CONCL:-success}" "${2:-}" "${FAKE_VJ_EMBED_SHA:-${2:-}}" "${2:-}"
+fi
+exit 0
+EOF
+  cat > "$T/fake-verify-artifact" <<'EOF'
+#!/usr/bin/env bash
+# oc-verify-artifact stub: <artifact> [--source S] [--run-id R] [--markers M]
+#   [--expect-sha H] [--expect-version V] [--repo X] [--json]
+printf '%s\n' "$*" >> "${FAKE_VA_LOG:-/dev/null}"
+json=0; exp=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json=1; shift ;;
+    --expect-sha) exp="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "${FAKE_VA_RC:-0}" != 0 ]; then
+  echo "oc-verify-artifact: SHA-MISMATCH: artifact ${FAKE_VA_SHA:-deadbeef} != expected ${exp:-?} (fake)" >&2
+  exit "$FAKE_VA_RC"
+fi
+if [ "$json" = 1 ]; then
+  printf '{"pass":true,"artifact":"fake","elf64":true,"sha256":"%s","version":"%s","source_match":"%s","markers":{}}\n' \
+    "${FAKE_VA_SHA:-${exp:-none}}" "${FAKE_VA_VER:-opencrabs 0.0.0 (fake)}" "${FAKE_VA_SRC:-verified}"
+fi
+exit 0
+EOF
+  chmod +x "$T/fake-verify-job" "$T/fake-verify-artifact"
+  # #158: BOTH verifier children are stubs for the WHOLE suite, EXPORTED rather
+  # than threaded through run_chain: the arms that build their own env (the #85
+  # stubs, actor_probe, the env-boundary legs) would otherwise reach a real
+  # verifier by omission — the same hole the receipt stub had to close. The
+  # swap target is fixture-local for the same reason the #85 legs already
+  # override it: an arm must never read the box's installed binary.
+  printf 'fixture-swapped-binary\n' > "$T/fake-swapped"
+  export OC_VERIFY_JOB_BIN="$T/fake-verify-job" OC_VERIFY_ARTIFACT_BIN="$T/fake-verify-artifact"
+  export OC_SWAP_TARGET="$T/fake-swapped"
   cat > "$T/fake-deploy" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -196,7 +272,11 @@ case "$1" in
         d="${OC_DEPLOY_STATE_DIR:-/tmp}"; mkdir -p "$d" 2>/dev/null || true
         printf '%s\n' "$s" > "$d/pending.sha" 2>/dev/null || true
         rm -f "$d/deployed.sha" "$d/polls" 2>/dev/null || true
-        echo "carrier run GREEN (fake)"; exit 0 ;;
+        # #158: the real `oc-deploy ship --execute --wait` announces the run it
+        # polled (`SHIP-WAIT: run <id> GREEN`, oc-build:420) and oc-ship
+        # consumes that id for its build-identity stage. A stub printing none
+        # is not contract-faithful — it would make every green arm refuse.
+        echo "SHIP-WAIT: run ${FAKE_SHIP_RUN_ID:-4242} GREEN (sha=$s) within --wait 5s — swap chain ready: poll --execute (fake)"; exit 0 ;;
   poll) # CONTRACT-FAITHFUL (defect fix 2026-09-12): the real `poll --execute`
         # exits 0 PRE-bounce and prints a HANDOFF line, NEVER a completion
         # token. Printing `SWAPPED (fake)` here is exactly how the rc-6 defect
@@ -210,7 +290,7 @@ case "$1" in
         if [ "$n" -lt "${FAKE_POLL_ROUNDS:-1}" ]; then
           echo "S2 pending (fake)"; exit 0
         fi
-        [ -f "$d/pending.sha" ] && cp "$d/pending.sha" "$d/deployed.sha" 2>/dev/null || true
+        "$(dirname "$0")/write-marker" "$d" || true
         echo "HANDOFF: Phase B transient unit owns the swap (fake) — poll exits pre-bounce by design"
         exit 0 ;;
   status) # read-only marker view — the same surface the real tool exposes
@@ -1101,12 +1181,13 @@ EOF
   #     the binding is assertable at the stage where it exists. The mutation
   #     that must redden this leg is a one-line LEG4 edit handing `ship`
   #     anything but $SHA ($GATED_SHA is empty on a fresh dispatch).
-  #     SCOPE, stated so no report overclaims it: `oc-ship` does NOT invoke
-  #     oc-verify-job or oc-verify-artifact today — the only artifact read is
-  #     deployed.meta.json at :2296 (leg5_host_state). The #158 binding between
-  #     the VERIFIER's verdict and the shipped artifact is therefore NOT
-  #     implemented; this arm binds the receipt's subject to the deploy's --sha,
-  #     which is the stage that actually exists.
+  #     SCOPE: this arm binds the receipt's subject to the deploy's --sha — the
+  #     stage that hands the sha over. What it does NOT cover is whether the run
+  #     that went GREEN actually built that sha, or whether the bytes on disk are
+  #     the verified artifact; those two verdicts are consumed by LEG4b/LEG5b and
+  #     asserted in the "#158: LEG4b/LEG5b CONSUME THE TWO VERIFIER VERDICTS"
+  #     block below (it used to say here that `oc-ship` never invoked the two
+  #     verifiers, which was true then and is false now).
   rm -f "$T/journal.log" "$T/deploy-argv.log"
   RC=0; OUT="$(FAKE_SHIP_LOG="$T/deploy-argv.log" OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
   check_rc "artifact-stage-chain-green" "$RC" 0
@@ -1129,6 +1210,125 @@ EOF
   case "$OUT" in *"rc 2"*) ok "receipt-carrier-absent-same-class-as-empty" ;; *) bad "receipt-carrier-absent-same-class-as-empty: $OUT" ;; esac
   # restore the good receipt for 5b and everything after it
   gate_receipt 11111 "$FSHA"
+  # ---- #158: LEG4b/LEG5b CONSUME THE TWO VERIFIER VERDICTS ----------------
+  # The receipt legs above prove the GREEN was ABOUT $FSHA. They do not prove
+  # the carrier RUN that produced the GREEN built $FSHA, nor that the bytes on
+  # disk are the artifact whose identity gates passed — and "this run is
+  # evidence about this sha" is a claim about BOTH. oc-ship therefore asks the
+  # two tools that own those questions, through their own CLIs, and refuses on
+  # their verdict (rc 4 reused: a chain bookkeeping fault, no new rc class).
+  # Every arm below removes exactly ONE binding, so a leg that reddens on all
+  # of them cannot be told from one that reddens on any.
+  # The verifiers are STUBBED for the whole suite (OC_VERIFY_JOB_BIN /
+  # OC_VERIFY_ARTIFACT_BIN exported at fixture setup): a real oc-verify-job
+  # shells out to gh, i.e. network inside a selftest, and a real
+  # oc-verify-artifact would read the box's installed binary.
+  # POSITIVE CONTROL: both verdicts consumed, the chain ships, and BOTH argv
+  # lines name $FSHA — without this, every refusal arm below would pass on a
+  # stage that never executed at all.
+  rm -f "$T/journal.log" "$T/vj.log" "$T/va.log" "$T/state/deployed.sha"
+  git -C "$T/clone" reset -q --hard origin/main
+  RC=0; OUT="$(FAKE_VJ_LOG="$T/vj.log" FAKE_VA_LOG="$T/va.log" OC_GH="$T/fake-gh" \
+    run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "bind-positive-control" "$RC" 0
+  grep -q "LEG4 verify-job OK run=4242 sha=$FSHA" "$T/journal.log" \
+    && ok "bind-positive-journal-build" || bad "bind-positive-journal-build: $(grep -c . "$T/journal.log" 2>/dev/null) journal lines"
+  grep -q "LEG5 verify-artifact OK sha=$FSHA run=4242" "$T/journal.log" \
+    && ok "bind-positive-journal-artifact" || bad "bind-positive-journal-artifact"
+  # WHAT was asked, not just that something was asked: the build verdict must be
+  # about the run oc-deploy polled AND the sha being shipped.
+  grep -qF "4242 $FSHA" "$T/vj.log" 2>/dev/null \
+    && ok "bind-positive-job-asked-about-run-and-sha" \
+    || bad "bind-positive-job-asked-about-run-and-sha: $(cat "$T/vj.log" 2>/dev/null || echo '<verifier never called>')"
+  # The artifact verdict must name the sha as its --source AND pin the bytes it
+  # expects to the identity oc-swap recorded — an unpinned artifact check would
+  # verify "some binary".
+  ART_SHA="$(sha256sum "$T/fake-swapped" | awk '{print $1}')"
+  grep -qF -- "--source $FSHA" "$T/va.log" 2>/dev/null \
+    && ok "bind-positive-artifact-asked-about-sha" \
+    || bad "bind-positive-artifact-asked-about-sha: $(cat "$T/va.log" 2>/dev/null || echo '<verifier never called>')"
+  grep -qF -- "--run-id 4242" "$T/va.log" 2>/dev/null \
+    && ok "bind-positive-artifact-asked-about-run" || bad "bind-positive-artifact-asked-about-run"
+  grep -qF -- "--expect-sha $ART_SHA" "$T/va.log" 2>/dev/null \
+    && ok "bind-positive-artifact-pins-installed-bytes" \
+    || bad "bind-positive-artifact-pins-installed-bytes: expected --expect-sha $ART_SHA"
+  # BUILD REFUSAL (verifier rc 4 = REF-MISMATCH): the carrier run is GREEN but
+  # it built another commit. rc 4, the verifier's own diagnosis surfaced, and
+  # the chain must NOT reach the swap — the message claims "nothing was
+  # swapped", so this arm MEASURES that claim instead of trusting it.
+  rm -f "$T/journal.log" "$T/vj.log" "$T/va.log" "$T/state/deployed.sha"
+  RC=0; OUT="$(FAKE_VJ_RC=4 FAKE_VJ_LOG="$T/vj.log" FAKE_VA_LOG="$T/va.log" OC_GH="$T/fake-gh" \
+    run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "bind-job-ref-mismatch-refused" "$RC" 4
+  case "$OUT" in *"BUILD-IDENTITY-UNBOUND"*) ok "bind-job-ref-mismatch-names-binding" ;;
+                 *) bad "bind-job-ref-mismatch-names-binding: $OUT" ;; esac
+  case "$OUT" in *"REF-MISMATCH"*) ok "bind-job-ref-mismatch-surfaces-verifier-diagnosis" ;;
+                 *) bad "bind-job-ref-mismatch-surfaces-verifier-diagnosis: $OUT" ;; esac
+  grep -q "LEG4 verify-job REFUSED rc=4" "$T/journal.log" \
+    && ok "bind-job-ref-mismatch-journal-refused" || bad "bind-job-ref-mismatch-journal-refused"
+  grep -q "LEG5 swap poll start" "$T/journal.log" \
+    && bad "bind-job-ref-mismatch-swapped-anyway: chain reached LEG5 after refusing the build" \
+    || ok "bind-job-ref-mismatch-stopped-before-swap"
+  [ -f "$T/state/deployed.sha" ] \
+    && bad "bind-job-ref-mismatch-marker-written: $(cat "$T/state/deployed.sha")" \
+    || ok "bind-job-ref-mismatch-marker-absent"
+  [ -s "$T/va.log" ] && bad "bind-job-ref-mismatch-artifact-verifier-ran (a refused build must not reach the artifact stage)" \
+    || ok "bind-job-ref-mismatch-artifact-stage-unreached"
+  # ARTIFACT REFUSAL (verifier rc 4): the host IS swapped to $FSHA, so this arm
+  # also pins the discriminator against the arm above — the marker must be
+  # PRESENT here. Without that, "refused" and "never got there" are the same
+  # observation.
+  rm -f "$T/journal.log" "$T/vj.log" "$T/va.log" "$T/state/deployed.sha"
+  RC=0; OUT="$(FAKE_VA_RC=4 FAKE_VJ_LOG="$T/vj.log" FAKE_VA_LOG="$T/va.log" OC_GH="$T/fake-gh" \
+    run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "bind-artifact-mismatch-refused" "$RC" 4
+  case "$OUT" in *"ARTIFACT-IDENTITY-UNBOUND"*) ok "bind-artifact-mismatch-names-binding" ;;
+                 *) bad "bind-artifact-mismatch-names-binding: $OUT" ;; esac
+  case "$OUT" in *"SHA-MISMATCH"*) ok "bind-artifact-mismatch-surfaces-verifier-diagnosis" ;;
+                 *) bad "bind-artifact-mismatch-surfaces-verifier-diagnosis: $OUT" ;; esac
+  [ "$(cat "$T/state/deployed.sha" 2>/dev/null)" = "$FSHA" ] \
+    && ok "bind-artifact-mismatch-swap-did-happen" \
+    || bad "bind-artifact-mismatch-swap-did-happen: marker=$(cat "$T/state/deployed.sha" 2>/dev/null || echo '<absent>')"
+  grep -q "DONE SWAPPED" "$T/journal.log" \
+    && bad "bind-artifact-mismatch-claimed-done: a refused artifact still printed the DONE/SWAPPED claim" \
+    || ok "bind-artifact-mismatch-no-done-claim"
+  # RUN IDENTITY, not just the sha: an artifact built by ANOTHER run is not the
+  # build this chain verified, however green that other run was. The swap
+  # records a different run in deployed.meta.json; nothing else differs.
+  rm -f "$T/journal.log" "$T/vj.log" "$T/va.log" "$T/state/deployed.sha"
+  RC=0; OUT="$(FAKE_META_RUN_ID=9999 FAKE_VJ_LOG="$T/vj.log" FAKE_VA_LOG="$T/va.log" OC_GH="$T/fake-gh" \
+    run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "bind-artifact-run-mismatch-refused" "$RC" 4
+  case "$OUT" in *"ARTIFACT-IDENTITY-UNBOUND"*) ok "bind-artifact-run-mismatch-names-binding" ;;
+                 *) bad "bind-artifact-run-mismatch-names-binding: $OUT" ;; esac
+  case "$OUT" in *"run 9999"*) ok "bind-artifact-run-mismatch-names-the-artifact-run" ;;
+                 *) bad "bind-artifact-run-mismatch-names-the-artifact-run: $OUT" ;; esac
+  case "$OUT" in *"run was 4242"*) ok "bind-artifact-run-mismatch-names-the-verified-run" ;;
+                 *) bad "bind-artifact-run-mismatch-names-the-verified-run: $OUT" ;; esac
+  [ -s "$T/va.log" ] && bad "bind-artifact-run-mismatch-verifier-ran (the run ids differ before any verifier call)" \
+    || ok "bind-artifact-run-mismatch-refused-without-asking"
+  # A VERIFIER THAT NEVER RAN IS NOT A VERDICT. Both stages must refuse when
+  # their tool is absent, because the alternative reading — "no verdict, no
+  # complaint" — is the fail-open class this whole stage exists to close. The
+  # two stages are separated on purpose: the artifact function returns 1 for
+  # BOTH "no deployed.meta.json" and "verifier absent", so a leg that only
+  # covered the first would not notice the second being collapsed.
+  rm -f "$T/journal.log" "$T/vj.log" "$T/va.log" "$T/state/deployed.sha"
+  RC=0; OUT="$(OC_VERIFY_JOB_BIN="$T/no-such-verifier" OC_GH="$T/fake-gh" \
+    run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "bind-job-verifier-absent-refused" "$RC" 4
+  case "$OUT" in *"BUILD-IDENTITY-UNBOUND"*) ok "bind-job-verifier-absent-names-binding" ;;
+                 *) bad "bind-job-verifier-absent-names-binding: $OUT" ;; esac
+  case "$OUT" in *"never produced is not a verdict"*) ok "bind-job-verifier-absent-says-why" ;;
+                 *) bad "bind-job-verifier-absent-says-why: $OUT" ;; esac
+  rm -f "$T/journal.log" "$T/vj.log" "$T/va.log" "$T/state/deployed.sha"
+  RC=0; OUT="$(OC_VERIFY_ARTIFACT_BIN="$T/no-such-verifier" OC_GH="$T/fake-gh" \
+    run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "bind-artifact-verifier-absent-refused" "$RC" 4
+  case "$OUT" in *"ARTIFACT-IDENTITY-UNBOUND"*) ok "bind-artifact-verifier-absent-names-binding" ;;
+                 *) bad "bind-artifact-verifier-absent-names-binding: $OUT" ;; esac
+  case "$OUT" in *"never produced is not a verdict"*) ok "bind-artifact-verifier-absent-says-why" ;;
+                 *) bad "bind-artifact-verifier-absent-says-why: $OUT" ;; esac
   # 5b. Duty-4 n=2520: a METADATA-ONLY rebase rewrites the sha while the patch
   # is unchanged, so strict sha equality voided a GREEN gate by construction
   # (measured 2026-09-25: ONE patch, THREE shas, THREE full ~25-min gates). The
@@ -2584,10 +2784,10 @@ case "$1" in
         d="${OC_DEPLOY_STATE_DIR:-/tmp}"; mkdir -p "$d" 2>/dev/null || true
         printf '%s\n' "$s" > "$d/pending.sha" 2>/dev/null || true
         rm -f "$d/deployed.sha" "$d/polls" 2>/dev/null || true
-        echo "carrier run GREEN (fake)"; exit 0 ;;
+        echo "SHIP-WAIT: run ${FAKE_SHIP_RUN_ID:-4242} GREEN (sha=$s) within --wait 5s — swap chain ready: poll --execute (fake)"; exit 0 ;;
   poll) # no completion token — the MARKER is the completion signal
         d="${OC_DEPLOY_STATE_DIR:-/tmp}"; mkdir -p "$d" 2>/dev/null || true
-        [ -f "$d/pending.sha" ] && cp "$d/pending.sha" "$d/deployed.sha" 2>/dev/null || true
+        "$(dirname "$0")/write-marker" "$d" || true
         echo "HANDOFF: Phase B transient unit owns the swap (fake) — poll exits pre-bounce by design"
         exit 0 ;;
   status) d="${OC_DEPLOY_STATE_DIR:-/tmp}"
