@@ -255,22 +255,45 @@ selftest block (`with_modes`) and writes a **mock** `$st_dir/ledger-mode.json`. 
 files are untracked, gitignored (`.gitignore:6`) husks left by the 2026-11-22 dispatch-tool
 edit. **Production writers: exactly one** (`deploy-lib:571`).
 
-### F.1 Two decoders, different predicates — the plan's step 3 instruction is wrong
+### F.1 Two decoders — and MEASUREMENT REVERSED my first reading of them
+
+My first pass at this section read the two headers and concluded the any-shape decoder was the
+canonical one. **The measurement says the opposite**, and the note is corrected in place
+(factory **#160** filed).
 
 | Decoder | Site | Predicate |
 |---|---|---|
-| `oc_job_sha` | `tools/lib/oc-patch.sh:36-43` | **first 40-hex ANYWHERE** in the string (`grep -oE '[0-9a-f]{40}' \| head -1`) — a 40-hex outside parentheses still matches |
-| `oc_decode_job_sha_any` | `tools/lib/oc-embed.sh:35-41` | **two-pass**: first `oc_decode_job_embed` (the two-field embed, which carries FEATURES), then the **bare parenthesised** form only |
+| `oc_job_sha` | `tools/lib/oc-patch.sh:36-43` | **first 40-hex ANYWHERE** (`grep -oE '[0-9a-f]{40}' \| head -1`) |
+| `oc_decode_job_sha_any` | `tools/lib/oc-embed.sh:35-41` | two-pass: `oc_decode_job_embed` (two-field), else `sed -nE 's/.*\(([0-9a-f]{40})\).*/\1/p'` — the sha must be **immediately** followed by `)` |
 
-`oc-fanout:124` carries a third *name* — `decode_job_sha_any()` — which **delegates** to
-`lib/oc-embed.sh` precisely so "the predicate has ONE home (factory #34)".
+**The four REAL job-name shapes** (from `ci-lane-impl.yml:226,263,401` and `pr-checks.yml:149`),
+measured this session:
 
-**Consequence for step 3.** The plan says "reuse `oc_job_sha` — do NOT write a second job-name
-parser". But `oc_job_sha` IS a second parser with a *different* predicate, and the #34 mutation
-guard pins the any-shape decoder to `lib/oc-embed.sh`. A receipt whose `tested_sha` came from
-`oc_job_sha` would import a second predicate into the gate path — the very thing #34 settled.
-**The receipt's `tested_sha` must come from `oc_decode_job_sha_any`**, and reconciling the two
-decoders (one delegating to the other) belongs in the same step.
+| job name | `oc_job_sha` | `oc_decode_job_sha_any` |
+|---|---|---|
+| `PR-lane gates (<sha>)` | `<sha>` | `<sha>` |
+| **`PR-lane gates (<sha> — FIX MODE)`** | `<sha>` | **EMPTY** |
+| `ORDER gates (<sha>)` | `<sha>` | `<sha>` |
+| `Linux amd64 (<sha>, feat-a)` | `<sha>` | `<sha>` |
+
+`ci-lane-impl.yml:401` renders
+`PR-lane gates (${{ inputs.ref }}${{ inputs.fix && ' — FIX MODE' || inputs.lockregen && ' — LOCK REGEN' || inputs.lockupdate && ' — LOCK UPDATE' || inputs.swap && ' — SWAP MODE' || inputs.fast && ' — FAST' || '' }})`
+— **five** real shapes carry a suffix, and the any-shape decoder returns empty on all five.
+
+**Blast radius** (read from the consumers): `oc-verify-job:256-263` and `oc-verify-artifact:261-267`
+SCAN all names and take the first that decodes, so they tolerate the empty decode only while
+another job still decodes — and in a **gate-mode** run the build job is SKIPPED (its name renders
+as the literal placeholder, `oc-verify-artifact:249`) and `ORDER gates` belongs to build mode, so
+`PR-lane gates` is the ONLY sha-carrying job. With a suffix: `oc-verify-job` → rc 4
+`REF-MISMATCH`, `oc-verify-artifact` → rc 4 `PROVENANCE`, `oc-fanout:124` → empty sha →
+unattributable range (the #932 symptom). **Fail-closed, not wrong-write.**
+
+**Consequence for step 3 — the plan's instruction is VINDICATED.** "Reuse `oc_job_sha`, do NOT
+write a second job-name parser" is correct: `oc_job_sha` covers every real shape today. The
+correction the receipt needs is the opposite of what this section first claimed: the receipt's
+`tested_sha` should come from `oc_job_sha` (or from a decoder FIXED to cover the suffix shape —
+factory #160), and a gate must assert the two decoders AGREE on every real shape, because the
+fleet has two predicates for one question and they disagreed on a production shape.
 
 `oc_job_sha`'s `|| true` is load-bearing, not a patch: under a caller's `set -o pipefail` a
 no-match grep (or `head`'s SIGPIPE, rc 141) would abort the CALLER — measured 2026-11-20, when
