@@ -63,6 +63,13 @@ SKILL_DIR="/root/.opencrabs/profiles/ops/skills/opencrabs-dev"
 #: real regression, not only to convict its own internal mutant.
 SRC="${OC_NEGCTL_SRC:-$SKILL_DIR/tools}"
 TOOL_REL="ship/oc-ship"
+#: The #39 LEGS live in the selftest BODY, which the T6 split (74244b21) moved
+#: out of oc-ship into its own file; oc-ship now SOURCES it. A guard that greps
+#: only TOOL_REL for them finds nothing and calls itself vacuous on a tree where
+#: every leg is present — which is what it did, six FAILs per run, from that
+#: refactor until this line existed. Both files are searched because the SPLIT
+#: is what moved them: a future move back must not silently disarm the control.
+BODY_REL="tests/ship-selftest.sh"
 #: a guard fixture must never append to the shared tools log.
 export OC_TOOLS_NOLOG=1
 
@@ -137,9 +144,13 @@ grep -qF 'OC_SHIPCHAIN_TEST_THREADS needs a non-negative integer' "$SRC/$TOOL_RE
   || bad "the env shape gate is MISSING from oc-ship — the guard would be vacuous"
 for leg in test-threads/forwarded test-threads/journal-resolved-argv test-threads/env \
            test-threads/absent test-threads/shape-usage test-threads/inert-carry-green; do
-  grep -qF "$leg" "$SRC/$TOOL_REL" \
-    && ok "baseline carries leg $leg" \
-    || bad "leg $leg is MISSING from oc-ship — the guard would be vacuous"
+  #: Search BOTH surfaces: the legs sit in the body since the T6 split, and the
+  #: predicate must match every place the thing can live, not one phrasing of it.
+  if grep -qF "$leg" "$SRC/$BODY_REL" 2>/dev/null || grep -qF "$leg" "$SRC/$TOOL_REL"; then
+    ok "baseline carries leg $leg"
+  else
+    bad "leg $leg is MISSING from $TOOL_REL and $BODY_REL — the guard would be vacuous"
+  fi
 done
 
 # --- arms --------------------------------------------------------------------
