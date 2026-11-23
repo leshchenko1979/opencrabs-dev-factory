@@ -191,6 +191,70 @@ FAULT_TOOL="${OC_PRCHECKS_FAULT_SCOPE:-$OC_TOOLS_DIR/harvest/oc-pr-fault-scope}"
 CHECKPOINT_DIR="$LOCK_DIR/runs/in-flight"
 CHECKPOINT_FILE=""
 
+# --- Gate receipt: the identity this gate ESTABLISHES, written durably --------
+# The gate proves tested_sha (adopted job-name pin), carrier ref+head, run id,
+# per-job conclusions and the failing steps it already parses for tiebreaks.
+# Until this existed that identity lived only in the tools.log row and on
+# stdout, so `oc-deploy ship` had nothing on disk to BIND an artifact to — the
+# swap could name any sha and no receipt contradicted it.
+# FAIL CLOSED on an empty pin: an unpinned run's tested_sha is UNCONFIRMED, and
+# a receipt naming a sha the gate never verified is worse than none — a consumer
+# would bind an artifact to a stranger's run (the #631 decoy, now persisted).
+# The pin is read from oc_job_sha, the SAME parser the adoption gate uses; a
+# second job-name parser here would be a second thing to rot.
+_pr_gate_receipt_path() { printf '%s/oc-deploy/journal/gate-%s.json' "$LOCK_DIR" "${RUN_ID:-}"; }
+
+_pr_write_gate_receipt() { # $1=verdict $2=reason $3=adopted pin sha
+  local verdict="${1:-}" reason="${2:-}" pin="${3:-}" _dir _tmp _jobs
+  [ -n "${RUN_ID:-}" ] || return 0
+  # No pin -> no receipt, and SAY SO in the journal (silence would read as
+  # "nothing to write" rather than "the identity was unconfirmed").
+  if [ -z "$pin" ]; then oc_log_extra "gate_receipt" "skipped-unpinned"; return 0; fi
+  command -v jq >/dev/null 2>&1 || { oc_log_extra "gate_receipt" "skipped-no-jq"; return 0; }
+  _dir="$(dirname "$(_pr_gate_receipt_path)")"
+  mkdir -p "$_dir" 2>/dev/null || { oc_log_extra "gate_receipt" "skipped-mkdir"; return 0; }
+  # blocking = a job whose conclusion is anything other than success/skipped/
+  # neutral. Derived, never a hardcoded job-name list: the carrier may add jobs.
+  # Fetch RAW and transform locally. gh's own --jq is not relied on: the selftest
+  # shim serves the raw payload, so a --jq-shaped call made the array/object
+  # distinction untestable (the fixture handed back {"jobs":[…]} and the arm
+  # asserting .jobs[0] read a key of that object — a green control that proved
+  # nothing). Local jq is already a hard dependency two lines above.
+  _jobs="$("$GH_BIN" run view "$RUN_ID" --repo "$REPO" --json jobs 2>/dev/null || true)"
+  [ -n "$_jobs" ] || _jobs='{}'
+  _jobs="$(printf '%s' "$_jobs" | jq -c '[.jobs[]? | {name: .name, conclusion: .conclusion,
+             blocking: (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"),
+             failed_steps: [.steps[]? | select(.conclusion == "failure") | .name]}]' 2>/dev/null || true)"
+  [ -n "$_jobs" ] || _jobs='[]'
+  _tmp="$(_pr_gate_receipt_path).tmp.$$"
+  if ! jq -n \
+      --arg schema "oc-gate-receipt/1" \
+      --arg requested_sha "${SHA:-}" \
+      --arg tested_sha "$pin" \
+      --arg carrier_ref "$CARRIER" \
+      --arg carrier_head "${CARRIER_HEAD:-}" \
+      --arg run_id "$RUN_ID" \
+      --arg run_url "${RUN_URL:-}" \
+      --arg verdict "$verdict" \
+      --arg reason "$reason" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --argjson jobs "$_jobs" \
+      '{schema: $schema, requested_sha: $requested_sha, tested_sha: $tested_sha,
+        carrier_ref: $carrier_ref, carrier_head: $carrier_head,
+        run_id: $run_id, run_url: $run_url, jobs: $jobs,
+        verdict: $verdict, reason: $reason, ts: $ts}' > "$_tmp" 2>/dev/null; then
+    rm -f "$_tmp" 2>/dev/null || :
+    oc_log_extra "gate_receipt" "failed-jq"
+    return 0
+  fi
+  if ! mv -f "$_tmp" "$(_pr_gate_receipt_path)" 2>/dev/null; then
+    rm -f "$_tmp" 2>/dev/null || :
+    oc_log_extra "gate_receipt" "failed-mv"
+    return 0
+  fi
+  oc_log_extra "gate_receipt" "$(_pr_gate_receipt_path)"
+}
+
 _pr_write_checkpoint() {
   local actor="${OC_ACTOR:-unknown}"
   [ "$actor" = "unknown" ] && [ -n "${OPENCRABS_SESSION_ID:-}" ] && actor="$OPENCRABS_SESSION_ID"
@@ -458,6 +522,17 @@ YEOF
   *"run view"*"--json jobs"*)
     case "\$S" in
       adopt_sha_foreign) printf '{"jobs":[{"name":"gate / PR-lane gates (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)","conclusion":"success","steps":[]}]}\n' ;;
+      # Gate-receipt NEGATIVE fixture: a materialised job whose name carries NO
+      # 40-hex, i.e. the queued/renamed shape. The gate cannot confirm a tested
+      # sha from it, so the receipt leg must fail closed and write nothing.
+      receipt_unpinned) printf '{"jobs":[{"name":"gate / PR-lane gates (queued-no-sha-yet)","conclusion":"success","steps":[]}]}\n' ;;
+      # Gate-receipt DERIVATION fixture: a sha-bearing pin (so a receipt IS
+      # written) alongside one genuinely failing job. Proves the blocking flag is
+      # derived from the conclusion rather than hardcoded, and that the failed
+      # step name survives into the receipt — the two fields ship reads.
+      # NO BACKTICKS HERE: this body is an UNQUOTED heredoc, so a backtick pair
+      # in a comment runs as a command substitution at shim-generation time.
+      receipt_red) printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]},{"name":"gate / PR-lane tests","conclusion":"failure","steps":[{"name":"Run tests","conclusion":"failure"}]}]}\n' ;;
       adopt_sha_own)     printf '{"jobs":[{"name":"gate / PR-lane gates (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)","conclusion":"success","steps":[]}]}\n' ;;
       fmt_failed)  printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"failure"}]},{"name":"test","conclusion":"success","steps":[]}]}\n' ;;
       fmt_skipped) printf '{"jobs":[{"name":"lint","conclusion":"success","steps":[{"name":"cargo fmt","conclusion":"skipped"}]}]}\n' ;;
@@ -536,7 +611,7 @@ YEOF
       inflight)       printf '{"status":"in_progress","conclusion":null,"headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' && exit 0 ;;
       cancelled|cancelled_timeout|cancelled_short|cancelled_self|cancelled_bot|cancelled_annfail) printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
       supersede_*)    printf '{"status":"completed","conclusion":"cancelled","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","createdAt":"%s","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' "\$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)" ;;
-      run_failed)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      run_failed|receipt_red) printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       red_logged)     printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       red_nomarker)   printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       red_logfail)    printf '{"status":"completed","conclusion":"failure","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
@@ -910,6 +985,92 @@ do_selftest() {
   if [ -f "$D/tools.log" ] && jq -e 'select(.tool=="oc-gate" and .exit==0 and .extra.verdict=="GREEN")' "$D/tools.log" >/dev/null 2>&1; then
     t_ok "journal line with extra.verdict=GREEN"
   else t_bad "journal line missing/wrong"; fi
+
+  # ---- GATE RECEIPT: the identity, written to disk for `ship` to bind --------
+  # POSITIVE CONTROL FIRST. Every "wrote no receipt" arm below is vacuous
+  # unless the fixture actually serves a sha-bearing job name — a shim that
+  # silently stopped carrying the sha would make all three negatives pass while
+  # the receipt leg was dead. Prove the input exists before testing the output.
+  mk_shim "$D/gh" green
+  # Read the RAW payload and extract LOCALLY — the same path the receipt writer
+  # uses. Extracting through gh's --jq made this control vacuous against a shim
+  # that does not implement --jq: the raw JSON blob still contains the 40-hex, so
+  # oc_job_sha "matched" a name list that was never produced. The `{` guard is
+  # what makes it bite — a raw JSON blob is not a name list.
+  _pc_raw="$("$D/gh" run view 222 --repo "$REPO" --json jobs 2>/dev/null || true)"
+  _pc_names="$(printf '%s' "$_pc_raw" | jq -r '[.jobs[]?.name]|join(" ")' 2>/dev/null || true)"
+  _pc_sha="$(oc_job_sha "$_pc_names" 2>/dev/null || true)"
+  case "$_pc_names" in
+    *"{"*|"") t_bad "receipt CONTROL: the fixture payload did not yield a name list (got '$_pc_names')" ;;
+    *) if [ "$_pc_sha" = "$SHA" ]; then
+         t_ok "receipt CONTROL: the green fixture serves a sha-bearing job name ($_pc_sha)"
+       else t_bad "receipt CONTROL: fixture job name carries no matching sha (got '$_pc_sha' from '$_pc_names')"; fi ;;
+  esac
+  # PINNED GREEN -> a receipt whose tested_sha IS the 40-hex from the job name.
+  _rcp="$D/state/oc-deploy/journal/gate-222.json"
+  rm -rf "$D/state/oc-deploy"
+  OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_TOOLS_NOLOG=1 "$SELF" "$SHA" >/dev/null 2>&1 || true
+  if [ -s "$_rcp" ] \
+     && [ "$(jq -r '.tested_sha // empty' "$_rcp" 2>/dev/null)" = "$SHA" ] \
+     && printf '%s' "$(jq -r '.tested_sha // empty' "$_rcp" 2>/dev/null)" | grep -qE '^[0-9a-f]{40}$' \
+     && [ "$(jq -r '.verdict // empty' "$_rcp" 2>/dev/null)" = "GREEN" ] \
+     && [ "$(jq -r '.run_id // empty' "$_rcp" 2>/dev/null)" = "222" ]; then
+    t_ok "receipt: pinned GREEN writes gate-222.json, tested_sha == the 40-hex job-name pin"
+  else t_bad "receipt: pinned GREEN produced no/incorrect receipt at $_rcp"; fi
+  # The receipt must carry the jobs[] the verdict rested on, not just the sha.
+  # Explicit .jobs[...] indexing rather than `.jobs | length >= 1 and (.[0] | …)`:
+  # `|` binds looser than `and`, so the pipe form silently compared keys of the
+  # array itself and read as a shape failure even on a well-formed receipt.
+  if jq -e '(.jobs | length) >= 1 and (.jobs[0] | has("name") and has("conclusion") and has("blocking"))' "$_rcp" >/dev/null 2>&1; then
+    t_ok "receipt: jobs[] carries name/conclusion/blocking"
+  else t_bad "receipt: jobs[] missing or shapeless"; fi
+  # DERIVATION, not shape. A RED run whose pin IS present must still write a
+  # receipt, and `blocking` must be true for the failing job ALONE, with its
+  # failed step named. A hardcoded blocking:false, a receipt written only on
+  # GREEN, or a dropped steps[] all fail here while the shape arm above passes.
+  rm -rf "$D/state/oc-deploy"
+  mk_shim "$D/gh" receipt_red
+  OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_TOOLS_NOLOG=1 "$SELF" "$SHA" >/dev/null 2>&1 || true
+  if [ -s "$_rcp" ] \
+     && [ "$(jq -r '.verdict // empty' "$_rcp" 2>/dev/null)" = "RED" ] \
+     && [ "$(jq -r '[.jobs[] | select(.blocking)] | length' "$_rcp" 2>/dev/null)" = "1" ] \
+     && [ "$(jq -r '[.jobs[] | select(.blocking)][0].name' "$_rcp" 2>/dev/null)" = "gate / PR-lane tests" ] \
+     && [ "$(jq -r '[.jobs[] | select(.blocking)][0].failed_steps[0]' "$_rcp" 2>/dev/null)" = "Run tests" ]; then
+    t_ok "receipt: RED with a pin still writes; blocking derived on the failing job, failed step named"
+  else t_bad "receipt: RED receipt absent or wrong (verdict=$(jq -r '.verdict // "none"' "$_rcp" 2>/dev/null))"; fi
+  # UNPINNED -> NO receipt (fail closed). A sha-less job name means the tested
+  # identity is UNCONFIRMED; writing a receipt anyway would let `ship` bind an
+  # artifact to a run nobody verified.
+  rm -rf "$D/state/oc-deploy"
+  mk_shim "$D/gh" receipt_unpinned
+  OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_PRCHECKS_PIN_TRIES=1 OC_TOOLS_NOLOG=1 "$SELF" "$SHA" >/dev/null 2>&1 || true
+  if [ ! -e "$_rcp" ]; then
+    t_ok "receipt: an UNPINNED run writes NO receipt (fail closed)"
+  else t_bad "receipt: unpinned run still wrote $_rcp"; fi
+  # FOREIGN SHA -> NO receipt. Adoption refuses rc 4 before any verdict, so no
+  # receipt may exist for the stranger's run.
+  rm -rf "$D/state/oc-deploy"
+  mk_shim "$D/gh" adopt_sha_foreign
+  OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_PRCHECKS_PIN_TRIES=1 OC_TOOLS_NOLOG=1 "$SELF" "$SHA" >/dev/null 2>&1 || true
+  if [ ! -e "$_rcp" ]; then
+    t_ok "receipt: a foreign-sha job name writes NO receipt"
+  else t_bad "receipt: foreign-sha run still wrote $_rcp"; fi
+  # SHIM RESTORE — the arms above deliberately leave the shim on a REFUSING
+  # fixture (adopt_sha_foreign), and the arms that follow inherit whatever shim
+  # this block leaves behind. The next arm runs without `|| true` under set -e,
+  # so a refusing shim makes it exit 4 and errexit aborts the WHOLE selftest
+  # before any FAIL line or summary can print — the failure then reads as a
+  # bare rc=4 with no named defect (observed 2026-11-23: 6/6 receipt arms OK,
+  # no summary, rc=4). Restore the green fixture the following arms assume.
+  mk_shim "$D/gh" green
   # --no-log suppresses
   rm -f "$D/tools.log"
   OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
@@ -2512,6 +2673,8 @@ esac
 oc_log_extra "fmt" "$(printf '%s' "$FMT_LINES" | awk -F'\t' '{print $3}' | sort -u | tr '\n' ',' | sed 's/,$//')"
 oc_log_extra "verdict" "$VERDICT"
 oc_log_extra "verdict_reason" "$REASON"
+# Durable receipt: the identity the gate just proved, on disk for `ship` to bind.
+_pr_write_gate_receipt "$VERDICT" "$REASON" "${_pin_sha:-}"
 
 echo "VERDICT $VERDICT${REASON:+ (reason: $REASON)}"
 echo "RUN $RUN_URL"
