@@ -321,9 +321,10 @@ not a second opinion computed from the same job names.
 
 ## H. The five failure classes, measured against the log's own fields
 
-Source: `opencrabs-dev/tools.log` — **91,310 lines / 21.2 MB**, 91,308 parsed (0 unparsed), schema
-`ts · tool · actor · args · exit · secs · pid · extra`. Every count below is an enumeration over
-that file, not a sample.
+Source: `opencrabs-dev/tools.log` — **91,319 lines**, 91,317 parsed (0 unparsed), file mtime
+**2026-11-23T10:24:22Z**, schema `ts · tool · actor · args · exit · secs · pid · extra`. Every
+count below is an enumeration over ONE coherent snapshot of that file, not a sample — and the log
+is **appended live**, so a re-read drifts by a few rows.
 
 **The verdict field is too coarse to classify on.** `extra.verdict` carries
 `NO-DRIFT · DRIFT · GREEN · RED · CANCELLED · NO-HISTORY · IN-SCOPE · CLEAN · refused ·
@@ -337,25 +338,28 @@ BASE-FAULT` — but the tool writes a FINER field for the same event: **`cancel-
 | Class | Rows | How it is recognised today | Machine-readable? |
 |---|---|---|---|
 | **stale-invocation** (a resume of an existing run) | **2,151** | `extra.resume` present (2,143 `oc-prchecks`, 8 `oc-gate`) + `extra.resumed_head` | **YES** — `resume`, `resumed_head` |
-| **supersede** (a newer run took over; not a failure) | **137** | `verdict=CANCELLED` with reason `superseded` (121) or `cancel-class=SUPERSEDED` (16) | **YES** — `cancel-class`, `verdict_reason` |
-| **timeout** (the run outlived its budget) | **25** | `cancel-class=TIMEOUT` | **YES** — `cancel-class` |
-| **not-established** (the cancel's class could not be determined) | **20** | `cancel-class=NOT-ESTABLISHED` | **YES** — `cancel-class` |
-| **refusal** | **3** | `verdict ∈ {refused, BASE-FAULT}` | **NO** — only 3 rows carry an explicit refusal marker, while 6,398 rows exit 1 |
-| **successful-retry** | **— (0 measurable)** | `dispatch_attempt1_rc` appears on **332 non-zero rows only** | **NO** — see H.2 |
+| **supersede** (a newer run took over; not a failure) | **137** | `verdict=CANCELLED` with reason `superseded` (121) or `cancel-class=SUPERSEDED` (16) | **PARTLY** — both carriers are free text (`verdict_reason`), no structured key |
+| **timeout** | **25** | `verdict_reason` containing `cancel-class=TIMEOUT` | **PARTLY** — free TEXT inside `verdict_reason`; there is no structured `cancel_class` key |
+| **not-established** | **20** | `verdict_reason` containing `cancel-class=NOT-ESTABLISHED` | **PARTLY** — same free-text carrier |
+| **refusal** | **3** | `verdict ∈ {refused, BASE-FAULT}` (2 + 1) | **PARTLY** — the marker exists, but only in the GATE's vocabulary and on 3 of 91,317 rows; **37** rows carry a refusal as free text instead, and the ship/dispatch path carries none |
+| **successful-retry** | **0 instances** (schema-capable) | `dispatch_attempt1_rc` on **484** rows; `dispatch_attempt2_rc` on **1** (exit ≠ 0) | **NO** — the fields EXIST, but no row proves the second attempt is written when a retry **succeeds** (see H.2) |
 
 Every `verdict=CANCELLED` row is accounted for: 121 + 25 + 20 + 16 = **182** = the whole class.
 
-### H.2 The successful-retry class is not merely unmeasured — it is unrepresentable
+### H.2 The successful-retry class: the SCHEMA can express it, the CORPUS never exercises it
 
-`extra.dispatch_attempt1_rc` exists on 332 rows, **all of them non-zero exits**. No exit-0 row
-carries a non-zero `dispatch_attempt1_rc`. Therefore a row **cannot distinguish** *"dispatched
-once and won"* from *"dispatched, failed, retried, and won"* — both are exit 0, and
-`dispatch_attempt1_rc=0` (the field's ordinary value) is compatible with both. The field that
-would discriminate is only ever written on the failure path.
+**CORRECTION to an earlier reading of this section — the retry counter is NOT missing.**
+`extra.dispatch_attempts` together with `extra.dispatch_attempt{1,2}_rc` / `_err` / `_args` all
+exist: `dispatch_attempt1_rc` is written on **484** rows, `dispatch_attempt2_rc` on **1**.
 
-**A retry counter is the missing receipt field.** Without it, "the run succeeded" and "the run
-succeeded on the third attempt after two silent failures" are the same record — which is exactly
-the class of question the log is read by hand to answer.
+Measured: that one second-attempt row's run `exit` is **NOT 0**, so the corpus holds **zero**
+instances of *"dispatched, failed, retried, and won"*. The fields can express it; **no row
+proves the writer populates them when a retry succeeds** — an unexercised arm is not a working
+arm, and a reader must not infer that it works from its presence in the schema.
+
+So the two readings remain indistinguishable in today's corpus not because a field is absent, but
+because the only second-attempt row is a failure. The missing receipt is therefore not a counter
+— it is **a positive control** proving the attempt-2 fields are written on the success path.
 
 ### H.3 The receipt field that replaces manual reading, per class
 
@@ -365,17 +369,18 @@ the class of question the log is read by hand to answer.
 | supersede | `verdict_reason=superseded`, `cancel-class=SUPERSEDED` | receipt + the ship journal, so a supersede is not read as a failure |
 | timeout | `cancel-class=TIMEOUT` | receipt `verdict` + `verdict_reason` |
 | not-established | `cancel-class=NOT-ESTABLISHED` | receipt — the tool's own "I could not establish why" must survive into the file |
-| refusal | **none** | needs a new machine-readable refusal marker (step 4's distinct codes) |
-| successful-retry | **none** | needs an attempt counter on the row |
+| refusal | `verdict=refused` (2) / `verdict=BASE-FAULT` (1) — **gate-side only**; the ship/dispatch path carries none | a STRUCTURED refusal marker on the ship path (step 4's distinct codes) |
+| successful-retry | `dispatch_attempts` / `dispatch_attemptN_rc` — **exist, unexercised on success** | receipt — plus the positive control proving the attempt-2 fields are written when a retry WINS |
 
 ### H.4 Exit-code vocabulary observed (for the rc register in step 6)
 
-`1` (6,398) · `2` (6,365) · `3` (2,319) · `5` (1,173) · `143` (542) · `4` (468) · `6` (229) ·
-`141` (218) · `127` (2).
+`0` (70,582) · `1` (6,401) · `2` (6,370) · `5` (2,955) · `3` (2,729) · `143` (729) · `4` (550) ·
+`6` (408) · `141` (235) · `120` (118) · `7` (82) · `9` (81). Codes below 81 rows are omitted;
+`127` (command not found) falls under that floor in this snapshot.
 
-Two of these are **signals**, not decisions: **143** (SIGTERM, 542 rows) and **141** (SIGPIPE,
-218 rows) — tools killed mid-flight, whose receipts are therefore missing rather than negative.
-`127` (command not found) appears twice. A receipt that records only "exit != 0" loses the
-difference between *refused* and *killed*, which is the difference a reader cannot reconstruct.
+Two of these are **signals**, not decisions: **143** (SIGTERM, 729 rows) and **141** (SIGPIPE,
+235 rows) — tools killed mid-flight, whose receipts are therefore missing rather than negative.
+A receipt that records only "exit != 0" loses the difference between *refused* and *killed*,
+which is the difference a reader cannot reconstruct.
 
 ---
