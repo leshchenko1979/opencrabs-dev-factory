@@ -151,7 +151,7 @@ Options:
   --close-repo <slug> Tracker holding the issue. NOT defaulted to a constant
                       (#154): a number is not a board, and 121 numbers live on
                       both trackers at once. Omitted, the board is RESOLVED —
-                      $OC_SMOKE_CLOSE_REPO, else a state-based probe of both
+                      \$OC_SMOKE_CLOSE_REPO, else a state-based probe of both
                       live trackers, which picks the one OPEN copy and REFUSES
                       (leaving the issue open) when two are open or none holds
                       it. Every gh call carries -R, because gh inside
@@ -1014,6 +1014,24 @@ FAKEGHEOF
     t_ok "OC_SMOKE_CLOSE_REPO names the board and reports source=env (#154)"
   else
     t_bad "env-named board must close it and say source=env (rc=$rc calls=$(tr '\n' '|' < "$d/gh.calls" 2>/dev/null) out=$(printf '%s' "$out" | tr '\n' '|'))"
+  fi
+
+  # (16) USAGE PATH IS ALIVE. #154 put a literal `$OC_SMOKE_CLOSE_REPO` inside the
+  # usage() heredoc, which is DELIBERATELY unquoted (it expands $PROG), so under
+  # `set -u` the help text died with `unbound variable` before arg parsing ever
+  # set it: rc=1, ZERO bytes on stdout, a shell diagnostic on stderr. Every
+  # --selftest arm passed throughout, because none of them drove --help — the
+  # battery caught it six ways and this tool caught it not at all. The stderr
+  # assertion is the load-bearing one: a usage path that writes a SHELL
+  # DIAGNOSTIC is broken even when it happens to exit 0.
+  rc=0; _hout=""; _herr=""
+  _hout="$("$0" --help 2>/tmp/oc-smoke-help.$$.err)" || rc=$?
+  _herr="$(cat /tmp/oc-smoke-help.$$.err 2>/dev/null)"; rm -f /tmp/oc-smoke-help.$$.err
+  if [ "$rc" -eq 0 ] && [ -n "$_hout" ] && [ -z "$_herr" ] \
+     && case "$_hout" in *--close-repo*) true ;; *) false ;; esac; then
+    t_ok "--help exits 0, writes usage to STDOUT, no shell diagnostic on stderr"
+  else
+    t_bad "--help must be a live usage path (rc=$rc stdout=$(printf '%s' "$_hout" | wc -c)B stderr=$(printf '%s' "$_herr" | tr '\n' '|'))"
   fi
 
   echo "selftest: $pass passed, $fail failed"
