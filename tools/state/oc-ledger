@@ -221,7 +221,10 @@ KINDS=" ruling idea idea-verdict design-feedback design-locked review-battery in
 # still fork space (that is the space the ledger's own rows were written in).
 HOME_REPOS=( leshchenko1979/opencrabs leshchenko1979/opencrabs-dev-factory opencrabs/opencrabs )
 
-now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# #149 spawn reduction: `date` costs one execve per call and now_iso sits on
+# every stamp's hot path. bash's %()T strftime builtin is byte-identical to
+# `date -u +%Y-%m-%dT%H:%M:%SZ` under TZ=UTC0 (verified against coreutils).
+now_iso() { local t; TZ=UTC0 printf -v t '%(%Y-%m-%dT%H:%M:%SZ)T' -1; printf '%s\n' "$t"; }
 die() { echo "oc-ledger: $2" >&2; exit "$1"; }
 
 parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
@@ -237,7 +240,12 @@ parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
   [ -n "$LEDGER" ] || LEDGER="$STATE_DIR_DEFAULT/workers-ledger.json"
   ARGS=("$@")
 }
-STATE_DIR() { dirname "$LEDGER"; }
+# #149 spawn reduction: `dirname` costs one execve per call and STATE_DIR() is
+# reached ~8x per stamp. Pure-bash and byte-identical to `dirname` on every path
+# shape — trailing slashes collapsed, no-slash -> ".", "/x" -> "/" (verified
+# against coreutils on each case).
+_oc_dirname() { local p=$1; while [ "${p%/}" != "$p" ] && [ "$p" != "/" ]; do p=${p%/}; done; case $p in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac; printf '%s\n' "$p"; }
+STATE_DIR() { _oc_dirname "$LEDGER"; }
 
 # --- THE LIVE STATE DIR, BY AN IDENTITY THAT CANNOT FLOAT (#149, 2026-11-22) --
 # The migrate destination guard compared STATE_DIR() against $STATE_DIR_DEFAULT,
@@ -659,7 +667,7 @@ _git_state_commit_now() { # $1=message — the commit/sweep/push tail itself; ne
   if _jsonl_mode; then
     git -C "$sd" add events.jsonl workers.json 2>/dev/null || stage_ok=0
   else
-    git -C "$sd" add "$(basename "$LEDGER")" 2>/dev/null || stage_ok=0
+    git -C "$sd" add "${LEDGER##*/}" 2>/dev/null || stage_ok=0
   fi
   if [ "$stage_ok" -eq 1 ] \
      && git -C "$sd" commit -q -m "$1" 2>/dev/null; then
