@@ -825,6 +825,97 @@ EOF
   return 0
 }
 
+# --- #158: CONSUME THE GATE RECEIPT ------------------------------------------
+# oc-gate persists what it actually VERIFIED to
+# `<state>/oc-deploy/journal/gate-<run>.json` (#157). Before this check, LEG1
+# adopted a run on IDENTITY alone — the run was green, its job name carried our
+# sha — and LEG2 bound an artifact to it. Nothing proved the GREEN verdict was
+# ABOUT the sha being shipped. Every run-list field is identical across
+# concurrent dispatches (#631), so "green" without the receipt is a verdict with
+# no subject: it authorizes whatever commit the caller names next.
+#
+# A DISTINCT rc PER FAILURE CLASS, because the remedy differs per class. One
+# GATE-RED for all of them is precisely the undiagnosable verdict this plan
+# exists to abolish.
+#   0  receipt present, well-formed, names $2 as tested_sha, GREEN, gate job ok
+#   1  no receipt for the run        -> re-run oc-gate (it writes one now)
+#   2  malformed / wrong schema      -> corrupt receipt; re-run oc-gate
+#   3  tested_sha != the sha shipped  -> the green was about a DIFFERENT commit
+#   4  verdict is not GREEN          -> nothing to carry forward
+#   5  no job reached `success`      -> a SKIPPED gate job is a false green
+#   6  stale beyond the budget       -> re-gate
+#   7  no successful job NAMES $2    -> the passing job does not prove this sha
+#   8  earned on a DIFFERENT carrier -> re-gate against the carrier you ship on
+shipchain_gate_receipt_check() { # $1=run_id $2=sha_about_to_ship
+  local rid="${1:-}" want="${2:-}" rp schema tested verdict nsucc ts maxage now age _n _named _carrier _want_carrier
+  GATE_RECEIPT_WHY=""
+  GATE_RECEIPT_PATH=""
+  [ -n "$rid" ] && [ -n "$want" ] || { GATE_RECEIPT_WHY="no run id or no sha to bind"; return 1; }
+  rp="$STATE_DIR/oc-deploy/journal/gate-$rid.json"
+  [ -f "$rp" ] || { GATE_RECEIPT_WHY="no receipt at $rp"; return 1; }
+  command -v jq >/dev/null 2>&1 || { GATE_RECEIPT_WHY="jq absent — cannot verify the receipt"; return 2; }
+  schema="$(jq -r '.schema // ""' "$rp" 2>/dev/null || true)"
+  [ "$schema" = "oc-gate-receipt/1" ] || { GATE_RECEIPT_WHY="schema '${schema:-none}' is not oc-gate-receipt/1"; return 2; }
+  tested="$(jq -r '.tested_sha // ""' "$rp" 2>/dev/null || true)"
+  [ "${#tested}" -eq 40 ] || { GATE_RECEIPT_WHY="receipt tested_sha '${tested:-none}' is not a full 40-char sha"; return 2; }
+  [ "$tested" = "$want" ] || { GATE_RECEIPT_WHY="receipt tested $tested but this chain ships $want"; return 3; }
+  verdict="$(jq -r '.verdict // ""' "$rp" 2>/dev/null || true)"
+  [ "$verdict" = "GREEN" ] || { GATE_RECEIPT_WHY="receipt verdict is '${verdict:-none}', not GREEN"; return 4; }
+  # A GREEN receipt must still show a job that ACTUALLY PASSED. `blocking` is
+  # derived in the writer as "conclusion is not success/skipped/neutral", so a
+  # GREEN receipt legitimately carries ZERO blocking jobs — "no blocking job"
+  # therefore cannot be the discriminator here, and asserting it would refuse
+  # every valid receipt. The discriminator is a job whose conclusion is
+  # literally `success`: a run whose gate job was SKIPPED produces no such job,
+  # and carrying THAT forward is the false green this check exists to refuse.
+  nsucc="$(jq -r '[.jobs[]? | select(.conclusion == "success")] | length' "$rp" 2>/dev/null || true)"
+  [ "${nsucc:-0}" -gt 0 ] 2>/dev/null || { GATE_RECEIPT_WHY="receipt lists no job with conclusion=success (a skipped gate job is not evidence)"; return 5; }
+  # ...and that passing job must NAME the sha, read with the SAME parser the
+  # adoption gate uses. A second job-name parser here would be a second thing to
+  # rot, and #631 already measured what a loose one costs.
+  command -v oc_job_sha >/dev/null 2>&1 || { GATE_RECEIPT_WHY="oc_job_sha unavailable (tools/lib/oc-patch.sh not sourced)"; return 7; }
+  _named=""
+  while IFS= read -r _n; do
+    [ -n "$_n" ] || continue
+    if [ "$(oc_job_sha "$_n")" = "$tested" ]; then _named="1"; break; fi
+  done <<EOF
+$(jq -r '.jobs[]? | select(.conclusion == "success") | .name' "$rp" 2>/dev/null || true)
+EOF
+  [ -n "$_named" ] || { GATE_RECEIPT_WHY="no successful job names the tested sha $tested"; return 7; }
+  # STALENESS. The tested commit is immutable, so age alone cannot make the
+  # verdict WRONG about that commit; what age erodes is the claim that the tree
+  # still looks the way it did when the verdict was earned. 24h default, env
+  # override, 0 disables. An UNREADABLE ts is refused rather than assumed fresh:
+  # "cannot bound the age" must never read as "fresh enough".
+  maxage="${OC_SHIP_GATE_RECEIPT_MAX_AGE_SECS:-86400}"
+  case "$maxage" in ''|*[!0-9]*) maxage=86400 ;; esac
+  if [ "$maxage" -gt 0 ]; then
+    ts="$(jq -r '.ts // ""' "$rp" 2>/dev/null || true)"
+    age=""
+    [ -n "$ts" ] && age="$(date -u -d "$ts" +%s 2>/dev/null || true)"
+    if [ -z "$age" ]; then
+      GATE_RECEIPT_WHY="receipt ts '${ts:-none}' is unreadable — cannot bound its age"
+      return 6
+    fi
+    now="$(date -u +%s)"
+    if [ "$((now - age))" -gt "$maxage" ]; then
+      GATE_RECEIPT_WHY="receipt is $((now - age))s old, beyond the ${maxage}s budget — re-gate"
+      return 6
+    fi
+  fi
+  # ...and it must have been earned on the CARRIER this chain dispatches against.
+  # A receipt written by a gate that ran on another branch proves a green about a
+  # workflow this chain will not execute — while naming the SAME sha, so nothing
+  # above discriminates it. rc 8, not rc 3: the subject is right, the instrument
+  # is not, and the remedy is a gate on the carrier actually being shipped.
+  _carrier="$(jq -r '.carrier_ref // ""' "$rp" 2>/dev/null || true)"
+  _want_carrier="${OC_SHIP_CARRIER:-${CARRIER:-ci/quick-build-linux}}"
+  [ -n "$_carrier" ] || { GATE_RECEIPT_WHY="receipt names no carrier_ref — cannot bind it to ${_want_carrier}"; return 2; }
+  [ "$_carrier" = "$_want_carrier" ] || { GATE_RECEIPT_WHY="receipt was earned on carrier '${_carrier}' but this chain ships on '${_want_carrier}'"; return 8; }
+  GATE_RECEIPT_PATH="$rp"
+  return 0
+}
+
 FAST_GATE=1
 EVAL_DOCS_SKIP=0
 # #77: scheduling class for this chain. `low` (nice 19 + ionice class idle) is
@@ -1632,7 +1723,13 @@ else
        # #355: retain the run id on the SUCCESS path. oc-gate prints
        # `run=<id>` on stdout; the rc=5 loop already relied on that shape, so
        # this is the same parse, simply not withheld from the happy path.
-       GATE_RUN_ID="$(printf '%s' "$GATE_OUT" | grep -oE 'run=[0-9]+' | head -1 | cut -d= -f2 || true)"
+       # #158: re-extract (a resume may have ADOPTED a superseding run, and the
+       # adopted id is the one a receipt must name) but NEVER clobber a resolved
+       # id: a resume that answers GREEN without echoing `run=` would otherwise
+       # erase the id the rc-5 loop already established and journalled, and LEG1
+       # would refuse the very gate it just watched go green.
+       _GREEN_RUN="$(printf '%s' "$GATE_OUT" | grep -oE 'run=[0-9]+' | head -1 | cut -d= -f2 || true)"
+       [ -n "$_GREEN_RUN" ] && GATE_RUN_ID="$_GREEN_RUN"
        [ -n "$GATE_RUN_ID" ] && journal "LEG1 gate GREEN run=$GATE_RUN_ID" || journal "LEG1 gate GREEN (run id not on stdout)" ;;
     3) journal "LEG1 gate RED";  printf '%s\n' "$GATE_OUT"; die "GATE-RED" 4 ;;
     # rc 2 is prchecks' USAGE/PRECONDITION class ("usage / sha-shape / unknown
@@ -1685,6 +1782,54 @@ else
          fi
        fi
        die "gate infra rc=$GATE_RC" 6 ;;
+  esac
+fi
+
+# #158: BIND THE VERDICT TO A SUBJECT, before a single leg runs. The gate is
+# now RESOLVED (fresh / --gated-run / --gated-sha), so this is the last moment
+# at which a wrong-subject verdict can still be refused cheaply. Skipped ONLY on
+# the docs-only path, and that skip is itself journalled: no gate ran here, so
+# there is no receipt to consume and none is CLAIMED (#672's GATE MODE banner
+# states the same fact downstream).
+if [ "$GATE_SKIPPED_DOCS" = "1" ]; then
+  journal "LEG1 gate receipt NOT REQUIRED (docs-only skip: no gate ran in this chain, none is claimed)"
+else
+  GATE_RECEIPT_RUN=""
+  if [ -n "$GATED_RUN" ]; then
+    GATE_RECEIPT_RUN="$GATED_RUN"
+  elif [ -n "${MATCHED_RUN:-}" ]; then
+    GATE_RECEIPT_RUN="$MATCHED_RUN"
+  elif [ -n "${GATE_RUN_ID:-}" ]; then
+    # #158: the run id this chain DISPATCHED and watched (rc-5 resume-poll, or a
+    # fresh dispatch whose id was on stdout) is already resolved — re-parsing
+    # GATE_OUT here would re-derive a fact the chain holds, and lose it whenever
+    # the final resume line does not repeat `run=`.
+    GATE_RECEIPT_RUN="$GATE_RUN_ID"
+  else
+    # Fresh dispatch: oc-gate announces `adopted run=<id>` on stderr (:2328) and
+    # GATE_OUT captures 2>&1, so the id is already in hand. Same extraction the
+    # rc-5 resume-poll uses — no second shape of the same fact.
+    GATE_RECEIPT_RUN="$(grep -oE 'run=[0-9]+' <<< "${GATE_OUT:-}" | head -1 | cut -d= -f2 || true)"
+  fi
+  # Compare against the FULL sha: the receipt records a 40-hex pin, and an
+  # abbreviated --sha would otherwise refuse as a mismatch while naming two
+  # identical commits (the same normalisation the rc-2 arm above relies on).
+  GATE_RECEIPT_SHA="$(git -C "$FORK_REPO" rev-parse "$SHA" 2>/dev/null || printf '%s' "$SHA")"
+  set +e
+  shipchain_gate_receipt_check "$GATE_RECEIPT_RUN" "$GATE_RECEIPT_SHA"
+  GATE_RECEIPT_RC=$?
+  set -e
+  case "$GATE_RECEIPT_RC" in
+    0) journal "LEG1 gate receipt OK — run $GATE_RECEIPT_RUN tested $GATE_RECEIPT_SHA GREEN ($GATE_RECEIPT_PATH)"
+       printf 'oc-ship: LEG1 gate receipt verified — run %s tested %s GREEN\n' "$GATE_RECEIPT_RUN" "$GATE_RECEIPT_SHA" >&2 ;;
+    3) # The ONLY class that is a legitimate state rather than a defect: a
+       # content-identical rebase (patch-id carry-forward) makes the gated sha
+       # NOT survive, so the receipt naming the old sha cannot authorize the new
+       # one by construction. Re-gate; do not "fix" this by loosening the check.
+       die "gate receipt REFUSES this chain (rc 3): ${GATE_RECEIPT_WHY}. A patch-id carry-forward invalidates the receipt BY DESIGN — re-run the gate on ${GATE_RECEIPT_SHA}, then re-arm with --gated-run <new id>." 4 ;;
+    1) die "gate receipt REFUSES this chain (rc 1): ${GATE_RECEIPT_WHY}. The gate run was resolved but nothing on disk says which sha it verified — re-run oc-gate for ${GATE_RECEIPT_SHA} (it writes the receipt), then re-arm with --gated-run <id>." 4 ;;
+    8) die "gate receipt REFUSES this chain (rc 8): ${GATE_RECEIPT_WHY}. The verdict is about this sha but was earned on another carrier, so it says nothing about the workflow this chain will run — gate ${GATE_RECEIPT_SHA} on the carrier you are shipping, then re-arm with --gated-run <new id>." 4 ;;
+    *) die "gate receipt REFUSES this chain (rc ${GATE_RECEIPT_RC}): ${GATE_RECEIPT_WHY}" 4 ;;
   esac
 fi
 

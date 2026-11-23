@@ -60,6 +60,9 @@
   echo feat > "$T/clone/feat.txt"
   git -C "$T/clone" add -A && git -C "$T/clone" commit -qm feat --trailer "Session-Id: $FIXTURE_SESSION"
   FSHA="$(git -C "$T/clone" rev-parse HEAD)"
+  # #158: the sha under test, for fake gates that must write a receipt naming
+  # what the chain ships rather than whatever the fixture clone's HEAD is.
+  printf '%s\n' "$FSHA" > "$T/ship-sha"
   # The remote-branch pre-flight (defect fix 2026-09-11) requires $BRANCH to
   # exist on the fork remote, because LEG1's gate needs it there. Every test
   # below chains --branch feat, so feat MUST be pushed or they all die rc 3 at
@@ -107,8 +110,68 @@ if [ "${FAKE_GATE:-green}" = "infra6" ]; then
 fi
 # green unless FAKE_GATE=red
 [ "${FAKE_GATE:-green}" = "red" ] && exit 3
+# #158: the REAL gate announces the run it adopted (`oc-gate: adopted run=<id>`)
+# and persists a receipt naming what it verified (#157). oc-ship's LEG1 now
+# CONSUMES that receipt, so a stub doing neither is not contract-faithful: it
+# would redden every green arm for a reason the real tool never produces — the
+# same class of fixture dishonesty the rc-3 and poll comments above record.
+# Every field is env-corruptible so an arm can break exactly ONE binding.
+_RID="${FAKE_GATE_RUN_ID:-11111}"
+printf 'oc-gate: adopted run=%s (fake)\n' "$_RID"
+# #158: a RESUME re-attaches to a run that already has a receipt; its first
+# positional is the literal word `resume`, not a sha. Writing one here would
+# stamp tested_sha="resume" over the good receipt and refuse the very run the
+# resume just reported GREEN — a fixture artefact, since oc-gate resume
+# re-reads the run rather than inventing a sha.
+if [ "${FAKE_GATE_NO_RECEIPT:-0}" != "1" ] && [ "${1:-}" != "resume" ]; then
+  _d="${OC_DEPLOY_STATE_DIR:-/tmp}/oc-deploy/journal"; mkdir -p "$_d" 2>/dev/null || true
+  jq -n --arg schema "oc-gate-receipt/1" \
+     --arg requested_sha "$1" --arg tested_sha "${FAKE_GATE_RCPT_SHA:-$1}" \
+     --arg carrier_ref "${FAKE_GATE_RCPT_CARRIER-ci/quick-build-linux}" \
+     --arg carrier_head "$1" --arg run_id "$_RID" --arg run_url "" \
+     --arg verdict "${FAKE_GATE_RCPT_VERDICT:-GREEN}" --arg reason "" \
+     --arg ts "${FAKE_GATE_RCPT_TS:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+     --arg jobname "PR-lane gates (${FAKE_GATE_RCPT_JOB_SHA:-$1})" \
+     --arg jobconc "${FAKE_GATE_RCPT_JOB_CONC:-success}" \
+     '{schema:$schema, requested_sha:$requested_sha, tested_sha:$tested_sha,
+       carrier_ref:$carrier_ref, carrier_head:$carrier_head, run_id:$run_id,
+       run_url:$run_url, jobs:[{name:$jobname, conclusion:$jobconc}],
+       verdict:$verdict, reason:$reason, ts:$ts}' > "$_d/gate-$_RID.json" 2>/dev/null || true
+fi
 exit 0
 EOF
+
+  # #158: ONE receipt writer for every OTHER fake gate. Each stub below stands
+  # in for oc-gate on a path where the real tool would have written a receipt
+  # (#157), so a stub that writes none is not contract-faithful: it reddens a
+  # green arm for a reason production never produces. Same shape as the real
+  # writer, same env-corruptible fields, so an arm can still break exactly one
+  # binding. Writing a superset of run ids is harmless — the check reads only
+  # the file named by the run it resolved.
+  cat > "$T/write-receipt" <<'EOF'
+#!/usr/bin/env bash
+# $1=run_id $2=tested_sha ; optional $3=carrier $4=verdict $5=jobconc $6=jobsha
+# The sha DEFAULTS to $T/ship-sha: several arms reset the fixture clone to
+# main before invoking the chain, so a stub that self-derived HEAD would name
+# main's commit while the chain ships FSHA — a mismatch that reddens a green
+# arm for a fixture reason. $T/ship-sha is the single source of "the sha under
+# test", written once beside FSHA.
+[ -n "${2:-}" ] || set -- "$1" "$(cat "$(dirname "$0")/ship-sha" 2>/dev/null || true)"
+_d="${OC_DEPLOY_STATE_DIR:-/tmp}/oc-deploy/journal"; mkdir -p "$_d" 2>/dev/null || true
+jq -n --arg schema "oc-gate-receipt/1" \
+   --arg requested_sha "$2" --arg tested_sha "${RCPT_SHA-$2}" \
+   --arg carrier_ref "${3:-ci/quick-build-linux}" \
+   --arg carrier_head "$2" --arg run_id "$1" --arg run_url "" \
+   --arg verdict "${4:-GREEN}" --arg reason "" \
+   --arg ts "${RCPT_TS-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+   --arg jobname "PR-lane gates (${6:-$2})" --arg jobconc "${5:-success}" \
+   '{schema:$schema, requested_sha:$requested_sha, tested_sha:$tested_sha,
+     carrier_ref:$carrier_ref, carrier_head:$carrier_head, run_id:$run_id,
+     run_url:$run_url, jobs:[{name:$jobname, conclusion:$jobconc}],
+     verdict:$verdict, reason:$reason, ts:$ts}' > "$_d/gate-$1.json" 2>/dev/null || true
+exit 0
+EOF
+  chmod +x "$T/write-receipt"
   cat > "$T/fake-deploy" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -914,6 +977,27 @@ EOF
   # reset origin/main back to the commit before diverge so feat is fast-forwardable
   git -C "$T/clone" push -q -f origin "$FSHA:main"
   git -C "$T/clone" reset -q --hard origin/main
+  # #158 fixture: a contract-faithful gate receipt for the --gated-sha path,
+  # where NO stub runs (the run is resolved from `gh run view`). One field per
+  # arm is corruptible; `${V-x}` rather than `:-` so an arm can force an EMPTY
+  # field and prove the check REFUSES it instead of silently defaulting it.
+  gate_receipt() { # $1=run_id $2=tested_sha
+    local d="$T/state/oc-deploy/journal"
+    mkdir -p "$d"
+    jq -n --arg schema "oc-gate-receipt/1" \
+      --arg requested_sha "$2" --arg tested_sha "${RCPT_SHA-$2}" \
+      --arg carrier_ref "${RCPT_CARRIER-ci/quick-build-linux}" \
+      --arg carrier_head "$2" --arg run_id "$1" --arg run_url "" \
+      --arg verdict "${RCPT_VERDICT-GREEN}" --arg reason "" \
+      --arg ts "${RCPT_TS-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+      --arg jobname "PR-lane gates (${RCPT_JOB_SHA-$2})" \
+      --arg jobconc "${RCPT_JOB_CONC-success}" \
+      '{schema:$schema, requested_sha:$requested_sha, tested_sha:$tested_sha,
+        carrier_ref:$carrier_ref, carrier_head:$carrier_head, run_id:$run_id,
+        run_url:$run_url, jobs:[{name:$jobname, conclusion:$jobconc}],
+        verdict:$verdict, reason:$reason, ts:$ts}' > "$d/gate-$1.json"
+  }
+  gate_receipt 11111 "$FSHA"
   RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
   check_rc "gated-sha-green" "$RC" 0
   grep -q "LEG1 gate pre-verified GREEN (gh run 11111" "$T/journal.log" && ok "journal-gated-sha" || bad "journal-gated-sha"
@@ -929,6 +1013,122 @@ EOF
   case "$OUT" in *"GATE MODE = CARRIED-FORWARD"*) ok "gate-mode-gated-sha-carried-forward" ;; *) bad "gate-mode-gated-sha-carried-forward: $OUT" ;; esac
   case "$OUT" in *"GATE MODE = FAST"*) bad "gate-mode-gated-sha-claims-fast (no leg ran)" ;; *) ok "gate-mode-gated-sha-does-not-claim-fast" ;; esac
   grep -q "GATE MODE CARRIED-FORWARD" "$T/journal.log" && ok "gate-mode-journal-carried-forward" || bad "gate-mode-journal-carried-forward"
+  # ---- #158: LEG1 CONSUMES THE GATE RECEIPT -------------------------------
+  # Before this, LEG1 adopted a run on IDENTITY alone (a green run whose job
+  # name carried our sha) and LEG2 bound an artifact to it: nothing proved the
+  # GREEN was ABOUT the sha being shipped. Every arm below corrupts exactly ONE
+  # binding, so a leg that reddens on all of them cannot be told from one that
+  # reddens on any — the discriminator discipline the #85 stubs also use.
+  # (a) POSITIVE CONTROL: a well-formed receipt naming this sha SHIPS and the
+  #     journal names it. Without this, every refusal arm would pass on a check
+  #     that never executed at all.
+  grep -q "LEG1 gate receipt OK — run 11111 tested $FSHA GREEN" "$T/journal.log" \
+    && ok "receipt-consumed-positive-control" || bad "receipt-consumed-positive-control"
+  # (b) ABSENT: the run resolved, but nothing on disk says what it verified.
+  rm -f "$T/state/oc-deploy/journal/gate-11111.json"
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-absent-refused" "$RC" 4
+  case "$OUT" in *"rc 1"*) ok "receipt-absent-names-its-class" ;; *) bad "receipt-absent-names-its-class: $OUT" ;; esac
+  # (c) SHA MISMATCH — and the carried-forward-rebase case with it: a patch-id
+  #     carry-forward rewrites the sha, so a receipt naming the old one cannot
+  #     authorize the new one BY DESIGN. Both refuse rc 3; do not loosen it.
+  RCPT_SHA="1111111111111111111111111111111111111111"; gate_receipt 11111 "$FSHA"; unset RCPT_SHA
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-sha-mismatch-refused" "$RC" 4
+  case "$OUT" in *"rc 3"*) ok "receipt-sha-mismatch-names-its-class" ;; *) bad "receipt-sha-mismatch-names-its-class: $OUT" ;; esac
+  # (d) WRONG CARRIER: right sha, wrong INSTRUMENT. The receipt proves a green
+  #     about a workflow this chain will never run, and nothing above
+  #     discriminates it because the sha matches.
+  RCPT_CARRIER="ci/some-other-lane"; gate_receipt 11111 "$FSHA"; unset RCPT_CARRIER
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-wrong-carrier-refused" "$RC" 4
+  case "$OUT" in *"rc 8"*) ok "receipt-wrong-carrier-names-its-class" ;; *) bad "receipt-wrong-carrier-names-its-class: $OUT" ;; esac
+  # (e) NO CARRIER DECLARED: an unnameable instrument is refused, never assumed.
+  RCPT_CARRIER=""; gate_receipt 11111 "$FSHA"; unset RCPT_CARRIER
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-no-carrier-refused" "$RC" 4
+  case "$OUT" in *"rc 2"*) ok "receipt-no-carrier-names-its-class" ;; *) bad "receipt-no-carrier-names-its-class: $OUT" ;; esac
+  # (f) STALE: age cannot make the verdict WRONG about an immutable commit, but
+  #     it erodes "the tree still looks the way it did". An unreadable ts is
+  #     refused too — "cannot bound the age" must never read as "fresh enough".
+  RCPT_TS="2020-01-01T00:00:00Z"; gate_receipt 11111 "$FSHA"; unset RCPT_TS
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-stale-refused" "$RC" 4
+  case "$OUT" in *"rc 6"*) ok "receipt-stale-names-its-class" ;; *) bad "receipt-stale-names-its-class: $OUT" ;; esac
+  # (f2) UNREADABLE ts: same rc 6 as stale, DIFFERENT reason — and it must be a
+  #      separate arm, because "age beyond budget" and "cannot compute the age"
+  #      are answered by two different branches of the check. Without this arm
+  #      the unreadable branch had NO test at all: deleting it (letting an
+  #      unparseable ts fall through to the carrier check and pass) reddened
+  #      zero legs, so the "cannot bound the age is not fresh enough" invariant
+  #      was asserted only in a comment.
+  RCPT_TS="not-a-timestamp"; gate_receipt 11111 "$FSHA"; unset RCPT_TS
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-ts-unreadable-refused" "$RC" 4
+  case "$OUT" in *"rc 6"*) ok "receipt-ts-unreadable-names-its-class" ;; *) bad "receipt-ts-unreadable-names-its-class: $OUT" ;; esac
+  case "$OUT" in *"unreadable"*) ok "receipt-ts-unreadable-says-why" ;; *) bad "receipt-ts-unreadable-says-why: $OUT" ;; esac
+  # (g) NOT GREEN: nothing to carry forward.
+  RCPT_VERDICT="RED"; gate_receipt 11111 "$FSHA"; unset RCPT_VERDICT
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-not-green-refused" "$RC" 4
+  case "$OUT" in *"rc 4"*) ok "receipt-not-green-names-its-class" ;; *) bad "receipt-not-green-names-its-class: $OUT" ;; esac
+  # (h) A SKIPPED JOB IS NOT EVIDENCE: GREEN whose only job never actually ran.
+  RCPT_JOB_CONC="skipped"; gate_receipt 11111 "$FSHA"; unset RCPT_JOB_CONC
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-no-success-job-refused" "$RC" 4
+  case "$OUT" in *"rc 5"*) ok "receipt-no-success-job-names-its-class" ;; *) bad "receipt-no-success-job-names-its-class: $OUT" ;; esac
+  # (i) THE PASSING JOB MUST NAME THE SHA: a success for some other commit is
+  #     not evidence about this one (#631 measured what a loose name match costs).
+  RCPT_JOB_SHA="2222222222222222222222222222222222222222"; gate_receipt 11111 "$FSHA"; unset RCPT_JOB_SHA
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-job-names-other-sha-refused" "$RC" 4
+  case "$OUT" in *"rc 7"*) ok "receipt-job-names-other-sha-names-its-class" ;; *) bad "receipt-job-names-other-sha-names-its-class: $OUT" ;; esac
+  # (j) MALFORMED: a corrupt receipt is a DEFECT, not an absent one — rc 2 says
+  #     re-gate, rc 1 would say the writer never ran.
+  jq -n --arg s "$FSHA" '{schema:"something-else/2", tested_sha:$s}' \
+    > "$T/state/oc-deploy/journal/gate-11111.json"
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-malformed-refused" "$RC" 4
+  case "$OUT" in *"rc 2"*) ok "receipt-malformed-names-its-class" ;; *) bad "receipt-malformed-names-its-class: $OUT" ;; esac
+  # Leave a GOOD receipt behind: later arms and tests share $T/state, and a
+  # corrupt one left here would redden an unrelated leg for the wrong reason.
+  gate_receipt 11111 "$FSHA"
+  # (k) ARTIFACT-STAGE SHA BINDING (reviewer gap). A receipt that proves a GREEN
+  #     about $FSHA is worth nothing if the sha LEG4 hands to `oc-deploy ship`
+  #     is some other commit: the receipt would be evidence about a subject the
+  #     deploy never receives. LEG4 builds the ship argv from $SHA and the fake
+  #     deploy records that argv VERBATIM (it logged --wait for the 3e arm), so
+  #     the binding is assertable at the stage where it exists. The mutation
+  #     that must redden this leg is a one-line LEG4 edit handing `ship`
+  #     anything but $SHA ($GATED_SHA is empty on a fresh dispatch).
+  #     SCOPE, stated so no report overclaims it: `oc-ship` does NOT invoke
+  #     oc-verify-job or oc-verify-artifact today — the only artifact read is
+  #     deployed.meta.json at :2296 (leg5_host_state). The #158 binding between
+  #     the VERIFIER's verdict and the shipped artifact is therefore NOT
+  #     implemented; this arm binds the receipt's subject to the deploy's --sha,
+  #     which is the stage that actually exists.
+  rm -f "$T/journal.log" "$T/deploy-argv.log"
+  RC=0; OUT="$(FAKE_SHIP_LOG="$T/deploy-argv.log" OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "artifact-stage-chain-green" "$RC" 0
+  grep -q "LEG1 gate receipt OK" "$T/journal.log" \
+    && ok "artifact-stage-receipt-consumed" || bad "artifact-stage-receipt-consumed"
+  grep -qE -- "--sha $FSHA( |$)" "$T/deploy-argv.log" 2>/dev/null \
+    && ok "artifact-stage-sha-bound" \
+    || bad "artifact-stage-sha-bound: $(cat "$T/deploy-argv.log" 2>/dev/null || echo '<no ship call recorded>')"
+  # (l) CARRIER ABSENT vs EMPTY: the SAME class, deliberately, and this arm pins
+  #     that they are not distinguished. An empty carrier_ref (arm e) and a
+  #     receipt with NO carrier_ref key both mean "this verdict cannot be bound
+  #     to an instrument", so both refuse rc 2. The distinction that would be
+  #     wrong is the asymmetric one: reading a MISSING key as "no opinion,
+  #     therefore allow" is the loosest possible reading of an absent field, and
+  #     it is exactly the reading a corrupt writer produces.
+  jq 'del(.carrier_ref)' "$T/state/oc-deploy/journal/gate-11111.json" > "$T/rcpt-nocarrier.json" \
+    && mv "$T/rcpt-nocarrier.json" "$T/state/oc-deploy/journal/gate-11111.json"
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-carrier-absent-refused" "$RC" 4
+  case "$OUT" in *"rc 2"*) ok "receipt-carrier-absent-same-class-as-empty" ;; *) bad "receipt-carrier-absent-same-class-as-empty: $OUT" ;; esac
+  # restore the good receipt for 5b and everything after it
+  gate_receipt 11111 "$FSHA"
   # 5b. Duty-4 n=2520: a METADATA-ONLY rebase rewrites the sha while the patch
   # is unchanged, so strict sha equality voided a GREEN gate by construction
   # (measured 2026-09-25: ONE patch, THREE shas, THREE full ~25-min gates). The
@@ -959,6 +1159,36 @@ EOF
     check_rc "gated-sha-rebase-carried" "$RC" 0
     case "$OUT" in *"LEG1 gate carried forward"*) ok "gated-sha-rebase-loud" ;; *) bad "gated-sha-rebase-loud: $OUT" ;; esac
   fi
+
+  # 5b-rcpt. #158 REVIEWER GAP: the carry-forward and the receipt TOGETHER.
+  # 5b proves a content-identical rebase CARRIES the gate forward, but it ships
+  # $FSHA while the receipt ALSO names $FSHA — so the receipt check passes on
+  # that leg and the refusal it exists for is never exercised. The state that
+  # actually happens in production is the one below: the gate ran BEFORE the
+  # rebase, so the receipt names the OLD commit by design, and the chain ships
+  # the NEW one. rc 3 must fire there, and the carry-forward line must ALREADY
+  # be on stderr — otherwise this leg would pass on a chain that refused before
+  # it ever compared patch-ids, which is a different check answering a different
+  # question ("is this sha the gated sha?", not "may this rebase carry it?").
+  rm -f "$T/journal.log"
+  git -C "$T/clone" checkout -q --detach "$FSHA"
+  GIT_COMMITTER_DATE="2020-03-03T00:00:00Z" git -C "$T/clone" commit -q --amend --no-edit --date="2020-03-03T00:00:00Z"
+  TWIN_RCPT="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" reset -q --hard origin/main
+  if [ "$TWIN_RCPT" = "$FSHA" ]; then
+    bad "carried-forward-rebase-refused-no-receipt: fixture failed to move the sha"
+  else
+    # the receipt the gate wrote BEFORE the rebase: it names $FSHA, and the
+    # chain below ships $TWIN_RCPT.
+    gate_receipt 11111 "$FSHA"
+    RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$TWIN_RCPT" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+    check_rc "carried-forward-rebase-refused-no-receipt" "$RC" 4
+    case "$OUT" in *"rc 3"*) ok "carried-forward-rebase-refusal-names-its-class" ;; *) bad "carried-forward-rebase-refusal-names-its-class: $OUT" ;; esac
+    case "$OUT" in *"carried forward"*) ok "carried-forward-rebase-reached-the-carry-forward" ;; *) bad "carried-forward-rebase-reached-the-carry-forward (refused before the patch-id comparison): $OUT" ;; esac
+  fi
+  # restore the good receipt: 5c and the sections after it share $T/state.
+  gate_receipt 11111 "$FSHA"
 
   # 5c. CONTROL: a gated-sha whose CONTENT genuinely differs must still die rc 2.
   # Without this arm the content leg could silently degrade into a blanket
@@ -1051,6 +1281,13 @@ EOF
   cat > "$T/fake-gh-resume" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "${FAKE_GH_LOG:-/dev/null}"
+# #158: oc-gate resume ADOPTS the superseding run and persists its receipt
+# (#157). Without one LEG1 has nothing to bind and a green chain is refused.
+# The sha is SELF-DERIVED from the fork checkout the chain was handed, so this
+# stub needs no write-time interpolation and cannot go stale.
+_rid=""
+for a in "$@"; do case "$a" in ''|*[!0-9]*) ;; *) _rid="$a"; break ;; esac; done
+[ -n "$_rid" ] && "$(dirname "$0")/write-receipt" "$_rid"
 echo "completed success success"
 exit 0
 EOF
@@ -1231,6 +1468,8 @@ EOF
   # 6b. gated-run with in_progress status triggers oc-gate resume
   cat > "$T/fake-gh-run-inprogress" <<'EOF'
 #!/usr/bin/env bash
+# #158: the resumed run's receipt must exist for LEG1 to bind it.
+"$(dirname "$0")/write-receipt" 11111
 echo "in_progress null in_progress"
 exit 0
 EOF
@@ -1254,6 +1493,11 @@ EOF
   # globally, so neutralize it explicitly and redirect the tool log instead.
   mkdir -p "$T/bin"
   cp "$SELF" "$T/bin/oc-ship"
+  # #158: the LEG1 receipt check calls oc_job_sha, sourced from
+  # tools/lib/oc-patch.sh by RELATIVE path. A bare copy of the tool resolves
+  # TOOLS_DIR to $T/bin, so without lib/ the check refuses rc 7 (helper
+  # unavailable) and reddens every journal arm for a fixture reason.
+  cp -r "$(cd "$(dirname "$SELF")/.." && pwd)/lib" "$T/bin/lib"
   mkdir -p "$T/bin/state"
   cat > "$T/bin/state/oc-ledger" <<'EOF'
 #!/usr/bin/env bash
@@ -1354,6 +1598,10 @@ EOF
   # that gives up as rc 7 (in flight), distinct from rc 6 (infra).
   cat > "$T/fake-prchecks-inflight" <<'EOF'
 #!/usr/bin/env bash
+# #158: both the in-flight run (888) and the default (11111) need receipts —
+# which one LEG1 binds depends on how the resume reports the run id.
+"$(dirname "$0")/write-receipt" 888
+"$(dirname "$0")/write-receipt" 11111
 if [ "${1:-}" = "resume" ]; then
   case "${GATE_MODE:-green}" in
     green)  echo "VERDICT GREEN"; exit 0 ;;
@@ -1799,6 +2047,13 @@ if [ "${#a}" -ne 40 ]; then
   exit 2
 fi
 echo "$*" >> "${FAKE_PRCHECKS_LOG:-/dev/null}"
+# #158: the real gate writes a receipt naming what it verified (#157) AND
+# prints `run=<id>` on stdout (oc-ship:1725 reads exactly that). A stub that
+# omits either half is not contract-faithful: with no run id on stdout the
+# chain has nothing to name the receipt by, and a green arm reddens for a
+# fixture reason production never produces.
+"$(dirname "$0")/write-receipt" 11111 "$a"
+echo "run=11111"
 exit 0
 EOF2
   chmod +x "$T/fake-prchecks-sha-bound"
@@ -2423,6 +2678,19 @@ EOF
   grep -q "ONTOLOGY.md" "$T/journal.log" && ok "docs-only-skip-names-paths" || bad "docs-only-skip-names-paths"
   [ -s "$T/prchecks.log" ] && bad "docs-only-dispatched-no-gate" || ok "docs-only-dispatched-no-gate"
   grep -q "LEG1 gate start" "$T/journal.log" && bad "docs-only-no-gate-start" || ok "docs-only-no-gate-start"
+  # #158 REVIEWER GAP: the docs-only path SKIPS the receipt check, and "skipped"
+  # must not be readable as "claimed". Two assertions, because either alone is
+  # satisfied by the wrong implementation: the journal must SAY no receipt is
+  # required (a silently absent check is not evidence of a decision), and it
+  # must NOT say one was consumed (a check that ran and passed here would be
+  # claiming evidence for a gate that never ran in this chain).
+  # Positive control: `receipt-consumed-positive-control` above proves the OK
+  # line IS emitted when a real receipt exists — without it, "not claimed" would
+  # pass on a chain that never emits the line under any condition.
+  grep -q "gate receipt NOT REQUIRED (docs-only skip" "$T/journal.log" \
+    && ok "docs-only-no-receipt-claimed" || bad "docs-only-no-receipt-claimed"
+  grep -q "LEG1 gate receipt OK" "$T/journal.log" \
+    && bad "docs-only-must-not-claim-a-consumed-receipt" || ok "docs-only-claims-no-consumed-receipt"
   case "$OUT" in *SWAPPED*) ok "docs-only-chain-completed" ;; *) bad "docs-only-chain-completed: $OUT" ;; esac
   case "$OUT" in *"GATE SKIPPED"*) ok "docs-only-skip-visible-on-stderr" ;; *) bad "docs-only-skip-visible-on-stderr" ;; esac
 
