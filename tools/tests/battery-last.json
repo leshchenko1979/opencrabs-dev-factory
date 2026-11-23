@@ -1,6 +1,6 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-23T02:32:21Z",
+  "ts": "2026-11-23T15:52:00Z",
   "pass": 459,
   "fail": 0,
   "verdict": "PASS",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r61564fa4c7db4942adfb7e0a3af06769.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-ra89e22d2e697480b8098034ef3d7e5ac.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 923664,
-  "timing": {"max_concurrency": 1, "section_count": 71, "sum_ms": 923472, "slowest": [{"n": 26, "ms": 232864, "start_ms": 1795400481698, "end_ms": 1795400714562, "title": "oc-ledger"}, {"n": 25, "ms": 214897, "start_ms": 1795400266801, "end_ms": 1795400481698, "title": "oc-deploy"}, {"n": 44, "ms": 96278, "start_ms": 1795400860354, "end_ms": 1795400956632, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 28, "ms": 65248, "start_ms": 1795400718984, "end_ms": 1795400784232, "title": "oc-gate"}, {"n": 48, "ms": 39620, "start_ms": 1795400971913, "end_ms": 1795401011533, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 65, "ms": 20142, "start_ms": 1795401086311, "end_ms": 1795401106453, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 35, "ms": 17744, "start_ms": 1795400818473, "end_ms": 1795400836217, "title": "oc-ledger lock budget (#619)"}, {"n": 49, "ms": 15985, "start_ms": 1795401011533, "end_ms": 1795401027518, "title": "oc-health (hourly health & cleanliness sweep)"}, {"n": 45, "ms": 14919, "start_ms": 1795400956632, "end_ms": 1795400971551, "title": "rc contract --help=0 fleet-wide (C-#3)"}, {"n": 55, "ms": 14484, "start_ms": 1795401056692, "end_ms": 1795401071176, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}]}
+  "wall_ms": 2144957,
+  "timing": {"max_concurrency": 1, "section_count": 71, "sum_ms": 2144746, "slowest": [{"n": 7, "ms": 454299, "start_ms": 1795447210201, "end_ms": 1795447664500, "title": "unified-log wire (real tool -> tmp log)"}, {"n": 55, "ms": 359917, "start_ms": 1795448678843, "end_ms": 1795449038760, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 25, "ms": 243700, "start_ms": 1795447820045, "end_ms": 1795448063745, "title": "oc-deploy"}, {"n": 26, "ms": 179847, "start_ms": 1795448063745, "end_ms": 1795448243592, "title": "oc-ledger"}, {"n": 44, "ms": 112123, "start_ms": 1795448410409, "end_ms": 1795448522532, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 4, "ms": 107175, "start_ms": 1795447040519, "end_ms": 1795447147694, "title": "flood guard reads both ts forms (#738)"}, {"n": 28, "ms": 73530, "start_ms": 1795448247786, "end_ms": 1795448321316, "title": "oc-gate"}, {"n": 1, "ms": 54599, "start_ms": 1795446975753, "end_ms": 1795447030352, "title": "lib/oc-log.sh (unified tools log)"}, {"n": 17, "ms": 53426, "start_ms": 1795447732142, "end_ms": 1795447785568, "title": "oc-attrib #407 novelty filter (re-sha'd + empty commits)"}, {"n": 48, "ms": 53205, "start_ms": 1795448543024, "end_ms": 1795448596229, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}]}
 }
