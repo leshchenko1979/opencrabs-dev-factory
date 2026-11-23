@@ -474,10 +474,13 @@ state_tracked_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
     echo "state-tracked: NOTE — declared-vs-mechanism check SKIPPED: no '  - **TRACKED** —' bullet in any of the ${#LAW_FILES[@]} LAW_FILES. This is NOT a clean result and NOT a finding." >&2
     return 0
   fi
-  # Names carried by ANY mechanism: the two list variables, plus
-  # workers-ledger.json which git_state_commit stages on its OWN path and which
-  # is deliberately NOT in STATE_TRACKED_PATHS (the auto-commit tail would
-  # otherwise stage it against a foreign lock).
+  # Names carried by ANY mechanism: the two list variables, plus the LEDGER
+  # RECORD, which `_ledger_tracked_names` answers mode-aware — `events.jsonl
+  # workers.json` in JSONL mode, `workers-ledger.json` in legacy mode. It is
+  # deliberately NOT in STATE_TRACKED_PATHS: the ledger tail commits it under
+  # the ledger lock, and a sweep must not stage it from a path holding no such
+  # lock. After the #149 cutover the blob is gitignored and staged by NOTHING,
+  # so asking the list alone would name the wrong file as the carried one.
   mech="$STATE_TRACKED_PATHS $STATE_TRACKED_GLOB $(_ledger_tracked_names)"
   while IFS= read -r tok; do
     [ -n "$tok" ] || continue
@@ -533,9 +536,12 @@ EOF
 # put it there, and a leg that cried wolf on it would be ignored — which is
 # worse than no leg.
 #
-# Models the UNION of every commit path, not just the list: workers-ledger.json
-# is staged by its OWN path and is deliberately absent from STATE_TRACKED_PATHS,
-# so a list-only leg would falsely flag the most-committed file in the repo.
+# Models the UNION of every commit path, not just the list: the ledger record
+# is carried by `_ledger_tracked_names` — `events.jsonl workers.json` in JSONL
+# mode, the blob in legacy mode — and is deliberately absent from
+# STATE_TRACKED_PATHS, so a list-only leg would falsely flag the most-committed
+# file in the repo. Since the #149 cutover it would also flag the WRONG NAME:
+# the gitignored blob instead of the JSONL pair that actually carries the rows.
 #
 # WARN-only and rc 0 always — same posture and same reason as state_tracked_audit.
 state_out_of_scope_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
@@ -3497,9 +3503,13 @@ FIXTURE
     && ok || bad "state-out-of-scope-reports-dirty-out-of-scope"
   grep -q '^state-out-of-scope: WARN' <<< "$_sout" \
     && ok || bad "state-out-of-scope-warns-on-dirty"
-  # (c) AC3 — workers-ledger.json is staged by its OWN path and is deliberately
-  #     absent from STATE_TRACKED_PATHS, so a list-only leg would falsely flag
-  #     the most-committed file in the repo. Make it DIRTY and prove silence.
+  # (c) AC3 — the ledger record is deliberately absent from STATE_TRACKED_PATHS
+  #     and carried by `_ledger_tracked_names` instead, so a list-only leg would
+  #     falsely flag the most-committed file in the repo. THIS FIXTURE IS LEGACY
+  #     MODE (no events.jsonl), so the carrier is workers-ledger.json; in JSONL
+  #     mode the same arm would have to dirty events.jsonl, because the blob is
+  #     gitignored there and `git ls-files` never lists it. Make it DIRTY and
+  #     prove silence.
   printf '\n' >> "$T/state/workers-ledger.json"
   [ "$(git -C "$T/state" status --porcelain -- workers-ledger.json)" != "" ] \
     && ok || bad "state-out-of-scope-ledger-probe-not-dirty"
