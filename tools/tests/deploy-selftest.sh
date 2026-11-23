@@ -2334,6 +2334,77 @@ STUB
   check_has "142-post_verify-unset-dep-disclosed" "$(cat "$T/pv-unset.err")" "unbound variable"
   [ "$_ns_was" = 1 ] || set +u
 
+  # ---------------------------------------------------------------------
+  # (156) the swap-result write is DELEGATED to tools/state/oc-ledger
+  # ---------------------------------------------------------------------
+  # The pre-#156 body jq-appended to $LEDGER (the legacy view name) under a
+  # deploy-lib-held flock. In JSONL mode that name is neither the record
+  # (events.jsonl) nor the view (workers.json): a row could land on a file
+  # the ledger no longer tracks, with an ordinal derived from a stale view.
+  # Arms run ledger_stamp in a CHILD that sources the lib with its own
+  # OC_DEPLOY_STATE_DIR — never in this shell, whose $LEDGER still resolves
+  # the ambient (production) path.
+  local _u156="$T/u156-child.sh"
+  cat > "$_u156" <<'U156EOF'
+set -u
+export OC_TOOLS_NOLOG=1
+. "$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
+case "$1" in
+  stamp) ledger_stamp "$2" "$3" "$4" ;;
+  stage) stage ;;
+esac
+U156EOF
+  # 156a — JSONL mode: the row lands on the RECORD, ordinal from the record,
+  #        and the stage read off the view SURVIVES the stamp.
+  local SD156="$T/state156"; mkdir -p "$SD156/tools" "$SD156/backups"
+  printf '{"n":7,"t":"2026-11-01T00:00:00Z","by":"seed","what":"seed row","kind":"note"}\n' > "$SD156/events.jsonl"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD156/workers.json"
+  out="$(OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stamp toolsmith-156 "swap-result probe row" swap-result 2>&1)"; rc=$?
+  check_rc "156a-stamp-rc" "$rc" 0
+  jq -e 'select(.kind=="swap-result" and .n==8)' "$SD156/events.jsonl" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156a row not on the RECORD (events.jsonl) at n=8"; }
+  check_has "156a-stage-survives" "$(OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stage 2>/dev/null)" "S2"
+  # 156b — ordinal from the RECORD, never from a stale view: record carries
+  #        n=1..3, the legacy-name file (what the old body read) lies at n=99.
+  local SDB="$T/state156b"; mkdir -p "$SDB/tools" "$SDB/backups"
+  printf '{"n":1,"t":"t","by":"s","what":"a","kind":"note"}\n{"n":2,"t":"t","by":"s","what":"b","kind":"note"}\n{"n":3,"t":"t","by":"s","what":"c","kind":"note"}\n' > "$SDB/events.jsonl"
+  printf '{"meta":{},"events":[{"n":97,"t":"t","by":"s","what":"x","kind":"note"},{"n":98,"t":"t","by":"s","what":"y","kind":"note"},{"n":99,"t":"t","by":"s","what":"z","kind":"note"}]}' > "$SDB/workers-ledger.json"
+  OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SDB" bash "$_u156" stamp toolsmith-156 "swap-result ordinal probe" swap-result >/dev/null 2>&1
+  jq -e 'select(.n==4 and .kind=="swap-result")' "$SDB/events.jsonl" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156b ordinal not derived from the RECORD (expected n=4)"; }
+  # 156c — stage reads the JSONL VIEW: workers.json says S2, the legacy-name
+  #        file (what the pre-#156 reader consulted) says S0.
+  local SDC="$T/state156c"; mkdir -p "$SDC/tools" "$SDC/backups"
+  printf '{"n":1,"t":"t","by":"s","what":"a","kind":"note"}\n' > "$SDC/events.jsonl"
+  printf '{"meta":{"oc_deploy_stage":"S0"},"events":[]}' > "$SDC/workers-ledger.json"
+  printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SDC/workers.json"
+  check_has "156c-stage-reads-jsonl-view" "$(OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SDC" bash "$_u156" stage 2>/dev/null)" "S2"
+  # 156d — LEGACY mode unchanged: record==view==workers-ledger.json, no
+  #        events.jsonl is created, the row still lands (positive control for
+  #        the delegation serving the mode it must not break).
+  local SDD="$T/state156d"; mkdir -p "$SDD/tools" "$SDD/backups"
+  printf '{"meta":{"oc_deploy_stage":"S1"},"events":[]}' > "$SDD/workers-ledger.json"
+  OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SDD" bash "$_u156" stamp toolsmith-156 "swap-result legacy probe" swap-result >/dev/null 2>&1
+  jq -e '[.events[] | select(.kind=="swap-result")] | length == 1' "$SDD/workers-ledger.json" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156d legacy-mode row missing from workers-ledger.json"; }
+  [ ! -f "$SDD/events.jsonl" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156d created events.jsonl in legacy mode"; }
+  # 156e — the enum guard and the empty-what guard hold on THIS side; the
+  #        empty-actor branch stamps an EXPLICIT unattributed row (rc 0), not
+  #        a silent by:"" — positive control is 156a itself.
+  OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stamp toolsmith-156 "x probe" note >/dev/null 2>&1
+  check_rc "156e-foreign-kind-rc2" "$?" 2
+  OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stamp toolsmith-156 "" swap-result >/dev/null 2>&1
+  check_rc "156e-empty-what-rc2" "$?" 2
+  OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stamp "" "swap-result empty-actor probe" swap-result >/dev/null 2>&1
+  check_rc "156e-empty-actor-rc0" "$?" 0
+  grep -q 'unattributed oc-deploy' "$SD156/events.jsonl" \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156e empty actor did not stamp an explicit unattributed row"; }
+  # 156f — the row is visible to the LEDGER's own reader (the acceptance
+  #        shape: `oc-ledger events` sees what deploy stamped).
+  local EV156; EV156="$(OC_LEDGER="$SD156/workers-ledger.json" "$OC_TOOLS_DIR/state/oc-ledger" events --json 2>/dev/null \
+    | jq '[.[] | select(.kind=="swap-result")] | length' 2>/dev/null)"
+  [ "${EV156:-0}" -ge 1 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156f oc-ledger events does not see the deploy-stamped row"; }
+
   echo "oc-deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]

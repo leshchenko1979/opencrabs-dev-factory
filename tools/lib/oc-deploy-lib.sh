@@ -68,6 +68,7 @@ DEPLOYED="$STATE_DIR/deployed.sha"
 DEPLOYED_META="$STATE_DIR/deployed.meta.json"
 JOURNAL_DIR="$STATE_DIR/oc-deploy/journal"
 TOOLS_DIR="$OC_TOOLS_DIR"   # script-relative (Duty-6 P0 fix 2026-08-31: $STATE_DIR/tools/ never existed post-split — latent ship breaker, lenses B+E)
+LEDGER_TOOL="$TOOLS_DIR/state/oc-ledger"   # (156) the ONE ledger writer: stamp delegations go through it, never around it
 VALIDATE="${OC_DEPLOY_VALIDATE:-$TOOLS_DIR/ship/oc-verify-order}"
 # CONSENT tool var retired 2026-08-28 (consent process eliminated by owner order)
 ARTVERIFY="${OC_DEPLOY_ARTVERIFY:-$TOOLS_DIR/ship/oc-verify-artifact}"
@@ -442,7 +443,7 @@ recover_receipt_run() { # [--journal PATH] [--run R] [--sha S] [--dry-run] [--js
 # ----------------------------------------------------------------------------
 # stage reader + shadow log (moved verbatim: 585-590)
 # ----------------------------------------------------------------------------
-stage() { jq -r '.meta.oc_deploy_stage // "S0"' "$LEDGER" 2>/dev/null || echo S0; }
+stage() { jq -r '.meta.oc_deploy_stage // "S0"' "$(ledger_view)" 2>/dev/null || echo S0; }
 shadow_log() { # <op> <sha> <features> <result>
   printf '%s\t%s\t%s\t%s\t%s\tstage=%s\n' \
     "$(date -u +%FT%TZ)" "$1" "${2:--}" "${3:--}" "${4:--}" "$(stage)" \
@@ -556,21 +557,83 @@ EOF
 }
 
 # ----------------------------------------------------------------------------
-# ledger stamp, flock'd (moved verbatim: 744-758)
+# ledger stamp — DELEGATED to tools/state/oc-ledger (#156)
 # ----------------------------------------------------------------------------
-# -------------------------------------------------- ledger stamp (flock'd) --
+# ledger_stamp (by, what, kind) — the swap-result write.
+#
+# The pre-#156 body appended the row with bare jq under a deploy-lib-held
+# flock. Three defects lived in those ten lines:
+#   a. it poked the VIEW name (workers-ledger.json) blindly. In JSONL mode
+#      (STATE_DIR carries events.jsonl) the RECORD is events.jsonl and the
+#      view is workers.json — the row landed on a file the ledger no longer
+#      tracks: invisible to every `oc-ledger events` consumer, never staged
+#      by the git state-commit.
+#   b. the ordinal was `max(events in the file it happened to hold)` — in
+#      JSONL mode that is the STALE view, so n could collide with rows the
+#      record already carries.
+#   c. the deploy-lib flock and oc-ledger's with_lock lock the SAME
+#      "$LEDGER.lock": a delegation made under a parent-held flock deadlocks
+#      (the child inherits the open file description), so the flock must go.
+#
+# The write is therefore DELEGATED, never reimplemented: mode decision,
+# locking, ordinal, append, read-back and the git tail are oc-ledger's.
+# OC_LEDGER carries the resolved path (oc-ledger's own first precedence —
+# there is no --ledger flag). Kind stays enum-guarded on this side; rc is
+# oc-ledger's, passed through verbatim.
+#
+# Positional <what> is safe HERE and only here because the call site passes
+# a quoted script variable ($2) straight to argv: no shell re-parses the
+# text, so the #341 class (expansion before the tool sees it; an empty
+# substitution leaves no trace) cannot fire. ANY caller that composes the
+# text with command substitution must pass --what-file instead — converting
+# a future call site to inline text reintroduces the defect.
+#
+# One resolution, BY OVERRIDE: deploy-lib's LEDGER resolver (:53-59) stays
+# and oc-ledger's own resolver is overridden via OC_LEDGER="$LEDGER" on
+# every stamp call, so deploy-lib's path is the single authority for the
+# writer AND the readers in this file (stage/shadow_log/recover-receipt).
+# Deleting this fallback instead was considered and rejected: the readers
+# and the fixture harness resolve through it, and the override already
+# removes the second live opinion — do NOT "fix" either side back to a
+# bare-default call.
+#
+# The ledger's own stdout (stamped n=... read-back ok) is NOT discarded:
+# it flows into the ship journal as the write receipt and is the only place
+# the row's n is visible to the swap tail.
 ledger_stamp() { # $1=by  $2=what  $3=kind
-  [ "$3" = "swap-result" ] || { echo "oc-deploy: ledger_stamp kind must be swap-result (enum write-side guard, v0.4.77)" >&2; return 2; }
-  (
-    flock -x 9
-    local n tmp
-    n="$(jq '[.events[].n] | max // 0' "$LEDGER" 2>/dev/null || echo 0)"
-    tmp="$(mktemp)" || exit 4
-    jq --argjson n "$((n+1))" --arg t "$(date -u +%FT%TZ)" --arg by "$1" \
-       --arg what "$2" --arg kind "$3" \
-       '.events += [{n:$n, t:$t, by:$by, what:$what, kind:$kind}]' \
-       "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
-  ) 9>"$LEDGER.lock"
+  local _ls_kind="${3:-swap-result}"
+  [ "$_ls_kind" = "swap-result" ] || { echo "oc-deploy: ledger_stamp kind must be swap-result (enum write-side guard, v0.4.77)" >&2; return 2; }
+  [ -n "$2" ] || { echo "oc-deploy: ledger_stamp what must be non-empty" >&2; return 2; }
+  if [ ! -x "$LEDGER_TOOL" ]; then
+    echo "oc-deploy: ledger_stamp: ledger tool missing or not executable: $LEDGER_TOOL" >&2
+    return 4
+  fi
+  # The old body wrote by:"" silently when the actor was empty; the ledger's
+  # own law calls an anonymous row a defect, so an empty actor becomes an
+  # EXPLICIT declared one via the escape hatch cmd_stamp itself documents.
+  if [ -n "$1" ]; then
+    OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" "$2" --by "$1"
+  else
+    OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" "$2" \
+      --by "(unattributed oc-deploy)" --allow-unattributed
+  fi
+}
+
+# ----------------------------------------------------------------------------
+# ledger_view — the path a READER consults (#156 companion to the stamp fix)
+# ----------------------------------------------------------------------------
+# The pre-#156 stage() read `.meta.oc_deploy_stage` off $LEDGER verbatim. In
+# JSONL mode $LEDGER names the legacy file the record abandoned, so the stage
+# reader would answer S0 forever (a swap LOCKED at S2 reads unlocked). The
+# mode test mirrors oc-ledger's `_ledger_tracked_names` — events.jsonl in the
+# ledger's dir means the view is workers.json — so the two tools cannot drift
+# apart silently; the selftest's stage arms pin BOTH modes.
+ledger_view() {
+  if [ -f "$(dirname -- "$LEDGER")/events.jsonl" ]; then
+    printf '%s/workers.json' "$(dirname -- "$LEDGER")"
+  else
+    printf '%s' "$LEDGER"
+  fi
 }
 
 # ----------------------------------------------------------------------------
