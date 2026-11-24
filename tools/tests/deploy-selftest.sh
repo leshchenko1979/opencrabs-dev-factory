@@ -212,6 +212,43 @@ FSTUB
   git -C "$T/foreign" config user.email t@t; git -C "$T/foreign" config user.name t
   echo x > "$T/foreign/g1"; git -C "$T/foreign" add g1; git -C "$T/foreign" commit -qm foreign-one
   mkdir -p "$T/plain"
+  # #166 hermetic carrier: the redscan/renice arms resolve deployed features
+  # through the REAL oc-features, whose default REPO is $HOME/opencrabs — a
+  # LIVE `git fetch` to GitHub per arm (~7 s each here, the #105 stall class on
+  # a network hiccup, non-hermetic by construction). The fixture below carries
+  # the live yml's features default, and oc-features' env-pinned defaults
+  # (OC_CARRIER_REPO) point resolution at it. Production callers pass nothing
+  # and keep $HOME/opencrabs; --repo/--ref still override everything.
+  local _carrier_src="$T/carrier" _carrier_bare="$T/carrier.git"
+  git init -q -b main "$_carrier_src" || return 1
+  git -C "$_carrier_src" config user.email t@t; git -C "$_carrier_src" config user.name t
+  mkdir -p "$_carrier_src/.github/workflows"
+  cat > "$_carrier_src/.github/workflows/quick-build-linux.yml" <<'CYML'
+name: quick-build-linux
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: full 40-char sha
+        required: true
+      features:
+        description: 'Cargo feature set passed to --features (comma-separated)'
+        required: false
+        default: 'telegram,code-graph,browser,eval'
+      fork_version:
+        description: fork version
+        required: false
+        default: 'main'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+CYML
+  git -C "$_carrier_src" add -A; git -C "$_carrier_src" commit -qm carrier
+  git init -q --bare -b main "$_carrier_bare"
+  git -C "$_carrier_src" remote add origin "$_carrier_bare"
+  git -C "$_carrier_src" push -q origin "HEAD:refs/heads/ci/quick-build-linux"
+  git -C "$_carrier_src" fetch -q origin
+  export OC_CARRIER_REPO="$_carrier_src"
 
   # 1. usage (no mode) -> exit 1
   "$SELF_BIN" >/dev/null 2>&1; check_rc "usage-no-mode" $? 1
