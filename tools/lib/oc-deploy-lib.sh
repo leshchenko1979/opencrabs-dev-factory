@@ -175,34 +175,31 @@ lineage_next_step() { # <verdict> <prev> <sha> <twin>
 # only one implementation.
 CARRIER_TOOL_PATH() { echo "${OC_DEPLOY_CARRIER:-$(cd "$(dirname "$0")" && pwd)/oc-features}"; }
 
-# carrier_features [--repo P] [--ref B] [--no-fetch] -> prints the set
+# carrier_features [--repo P] [--ref B] -> prints the set
 carrier_features() {
-  local repo="" ref="" fet=1 tool out hrc errf
+  local repo="" ref="" tool out hrc errf
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) repo="${2:-}"; shift ;;
       --ref)  ref="${2:-}";  shift ;;
-      --fetch) fet=1 ;;
-      --no-fetch) fet=0 ;;
       *) die 1 "features: unknown arg: $1" ;;
     esac
     shift || true
   done
   tool="$(CARRIER_TOOL_PATH)"
   local args=()
-  [ "$fet" -eq 1 ] && args+=(--fetch)
   [ -n "$repo" ] && args+=(--repo "$repo")
   [ -n "$ref" ]  && args+=(--ref "$ref")
-  # The helper's OWN rc is preserved (3 = carrier yml unfetchable, 4 = no
+  # The helper's OWN rc is preserved (3 = carrier yml unreadable, 4 = no
   # features input): collapsing both into a generic 2 would destroy the
-  # distinction a caller scripts on — "unfetchable" is retryable, "no features
+  # distinction a caller scripts on — "unreadable" is retryable, "no features
   # input" is not.
   errf="$(mktemp "${TMPDIR:-/tmp}/.oc-deploy-carrier-err.XXXXXX")" || errf=""
   out="$("$tool" "${args[@]}" 2>"$errf")"; hrc=$?
   if [ -n "$errf" ]; then [ -s "$errf" ] && cat "$errf" >&2; rm -f "$errf"; fi
-  # The helper's OWN rc is PRESERVED (3 = carrier yml unfetchable, 4 = no
+  # The helper's OWN rc is PRESERVED (3 = carrier yml unreadable, 4 = no
   # features input): collapsing both into a generic 2 would destroy the
-  # distinction a caller scripts on — "unfetchable" is retryable, "no features
+  # distinction a caller scripts on — "unreadable" is retryable, "no features
   # input" is not. The CALLER decides its own rc family: the ship path keeps
   # its documented rc 2, the `features` verb passes the helper's rc through.
   if [ "$hrc" -ne 0 ]; then
@@ -216,7 +213,7 @@ carrier_features() {
   printf '%s\n' "$out"
 }
 
-features_run() { # [--repo P] [--ref B] [--no-fetch]
+features_run() { # [--repo P] [--ref B]
   carrier_features "$@" || exit $?
 }
 
@@ -997,7 +994,7 @@ while [ $# -gt 0 ]; do
     # exits 0 before the carrier read or any network call. The selftest drives
     # THIS; a re-implementation in the test would prove nothing.
     --resolve-priority) PRIORITY_PROBE=1 ;;
-    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] [--no-fetch] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
+    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
     *)          die 1 "unknown arg: $1" ;;
   esac
   shift || true
@@ -1103,7 +1100,7 @@ if [ -z "$FEATURES" ]; then
       # T-5: the SAME helper the `features` verb uses — one reader, one value.
       # The ship path keeps its OWN rc family (2 — the usage/validation family
       # its callers script on); only the READER is shared, not the rc.
-      FEATURES="$(carrier_features --fetch)" \
+      FEATURES="$(carrier_features)" \
         || die 2 "carrier features read FAILED — aborting, no silent fallback set"
       shadow_log features-resolve "-" "$FEATURES" "carrier-default"
       ;;

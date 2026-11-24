@@ -219,7 +219,13 @@ FSTUB
   # the live yml's features default, and oc-features' env-pinned defaults
   # (OC_CARRIER_REPO) point resolution at it. Production callers pass nothing
   # and keep $HOME/opencrabs; --repo/--ref still override everything.
-  local _carrier_src="$T/carrier" _carrier_bare="$T/carrier.git"
+  #
+  # #168 cut 2: the read is REMOTE now, so a local bare remote cannot serve it
+  # any more — the fixture's origin is a GITHUB-SHAPED slug and the read itself
+  # is served by a `gh` stub through oc-features' OC_CARRIER_GH seam. That is
+  # strictly more hermetic than the local fetch it replaces: no network, no
+  # git object store to keep in sync, and the same yml bytes.
+  local _carrier_src="$T/carrier"
   git init -q -b main "$_carrier_src" || return 1
   git -C "$_carrier_src" config user.email t@t; git -C "$_carrier_src" config user.name t
   mkdir -p "$_carrier_src/.github/workflows"
@@ -244,11 +250,10 @@ jobs:
     runs-on: ubuntu-latest
 CYML
   git -C "$_carrier_src" add -A; git -C "$_carrier_src" commit -qm carrier
-  git init -q --bare -b main "$_carrier_bare"
-  git -C "$_carrier_src" remote add origin "$_carrier_bare"
-  git -C "$_carrier_src" push -q origin "HEAD:refs/heads/ci/quick-build-linux"
-  git -C "$_carrier_src" fetch -q origin
-  export OC_CARRIER_REPO="$_carrier_src"
+  git -C "$_carrier_src" remote add origin git@github.com:fixture/carrier.git
+  printf '#!/usr/bin/env bash\ncat "%s/.github/workflows/quick-build-linux.yml"\n' "$_carrier_src" > "$T/bin/gh-carrier"
+  chmod +x "$T/bin/gh-carrier"
+  export OC_CARRIER_REPO="$_carrier_src" OC_CARRIER_GH="$T/bin/gh-carrier"
 
   # 1. usage (no mode) -> exit 1
   "$SELF_BIN" >/dev/null 2>&1; check_rc "usage-no-mode" $? 1
@@ -2131,28 +2136,34 @@ OCPY
   out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-multi" "$SELF_BIN" features 2>&1)"; rc=$?
   check_rc "features-rc0" "$rc" 0
   check_has "features-prints-the-set" "$out" "telegram,browser"
-  # same value as the helper itself, read in the same run — with the SAME
-  # flags the acceptance names (`oc-features --fetch`)
-  helper_out="$("$SD/tools/carrier-multi" --fetch 2>/dev/null)"
+  # same value as the helper itself, read in the same run with the SAME argv
+  # (empty: the helper takes no fetch flag since #168 cut 2)
+  helper_out="$("$SD/tools/carrier-multi" 2>/dev/null)"
   if [ "$out" = "$helper_out" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: features value != helper value"; fi
 
   # an arg-echoing stub: it REPORTS what the verb forwarded, so the
   # transparency of the wrapper is asserted, not assumed
-  printf '#!/usr/bin/env bash\necho "args:$*\"\necho telegram\n' > "$SD/tools/carrier-args"; chmod +x "$SD/tools/carrier-args"
+  printf '#!/usr/bin/env bash\nprintf "args:[%%s]\\n" "$*"\necho telegram\n' > "$SD/tools/carrier-args"; chmod +x "$SD/tools/carrier-args"
 
-  # the DEFAULT is --fetch: the verb asks the carrier for a FRESH default, the
-  # same read the ship path performs
+  # #168 cut 2: there is NO fetch flag any more — the carrier yml is read
+  # REMOTELY, one code path, so there is no freshness choice left to forward.
+  # The verb must add NOTHING it was not given: an EMPTY argv is asserted
+  # EXACTLY, so a reintroduced implicit flag reddens here rather than shipping.
   out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features 2>&1)"
-  check_has "features-default-fetches" "$out" "args:--fetch"
+  check_has "features-forwards-no-implicit-flag" "$out" "args:[]"
 
   # --repo is forwarded (the verb is a transparent wrapper, not a second reader)
   out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features --repo /tmp/somewhere 2>&1)"
   check_has "features-forwards-repo" "$out" "--repo /tmp/somewhere"
 
-  # --no-fetch reaches the helper (the fetch flag is not silently dropped)
-  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features --no-fetch 2>&1)"
-  check_has "features-no-fetch-drops-fetch" "$out" "args:"
-  if grep -q -- "--fetch" <<<"$out"; then fail=$((fail+1)); echo "SELFTEST FAIL: features --no-fetch still passed --fetch"; else pass=$((pass+1)); fi
+  # The DELETED flags are refused, never silently accepted: a caller still
+  # passing --fetch/--no-fetch gets a loud rc 1 naming the flag, so a stale
+  # invocation fails visibly instead of quietly doing nothing.
+  for _dead in --fetch --no-fetch; do
+    out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features "$_dead" 2>&1)"; rc=$?
+    check_rc "features-refuses${_dead//-/}" "$rc" 1
+    check_has "features-refuses${_dead//-}-names-flag" "$out" "unknown arg"
+  done
 
   # A carrier read FAILURE aborts loudly — never a silent fallback set.
   out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-fail" "$SELF_BIN" features 2>&1)"; rc=$?
@@ -2179,14 +2190,27 @@ OCPY
   # the [c] bracket keeps the guard's OWN pattern from matching itself
   # T5-bis: "this file" is now the SPLIT (lib + four tools), so the guard counts
   # over all five — a second reader anywhere in the split is still a second reader.
+  # #168 cut 2: the guard counted a FLAG SPELLING (`--fetch`), so deleting the
+  # flag would have made it vacuous — it now counts INVOCATIONS, which survive
+  # any flag change: the helper is EXECUTED on exactly one line (the reader's)
+  # and `carrier_features` is CALLED from exactly two (the features_run wrapper
+  # and the ship path's default resolution). Both are structural, not textual.
   _SPLIT_FILES="$SRC_LIB $SRC_BUILD $SRC_SWAP $SRC_FANOUT $SRC_STATUS"
-  n_direct="$(grep -hc -- '"\$CARRIER_TOOL" --fetc[h]' $_SPLIT_FILES 2>/dev/null | awk '{s+=$1} END{print s+0}')"
-  n_reader="$(grep -hc -- 'carrier_features --fetc[h]' $_SPLIT_FILES 2>/dev/null | awk '{s+=$1} END{print s+0}')"
-  if [ "$n_direct" -eq 0 ] && [ "$n_reader" -eq 1 ]; then
+  _cf_calls() { grep -h 'carrier_features' "$@" 2>/dev/null | grep -v '^[[:space:]]*#' | grep -v 'carrier_features() {' | wc -l | tr -d ' '; }
+  _cf_exec()  { grep -h -- '"\$tool" "\${args' "$@" 2>/dev/null | wc -l | tr -d ' '; }
+  n_reader="$(_cf_calls $_SPLIT_FILES)"
+  n_exec="$(_cf_exec $_SPLIT_FILES)"
+  if [ "$n_reader" -eq 2 ] && [ "$n_exec" -eq 1 ]; then
     pass=$((pass+1))
   else
-    fail=$((fail+1)); echo "SELFTEST FAIL: one-reader guard broken (direct carrier calls=$n_direct want 0, ship-path reader calls=$n_reader want 1)"
+    fail=$((fail+1)); echo "SELFTEST FAIL: one-reader guard broken (carrier_features calls=$n_reader want 2, helper exec sites=$n_exec want 1)"
   fi
+  # POSITIVE CONTROL (AGENTS rule 7): a guard that reads 0 because its pattern
+  # matches nothing is indistinguishable from a clean tree. A synthetic second
+  # reader appended to a COPY must move BOTH counts, else the guard is dead.
+  printf 'x="$(carrier_features)"\n' > "$T/extra-reader.sh"
+  if [ "$(_cf_calls $_SPLIT_FILES "$T/extra-reader.sh")" -eq 3 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: one-reader guard control did not move (a second reader would pass unnoticed)"; fi
+  rm -f "$T/extra-reader.sh"
 
   # ---------------------------------------------------------------- #124 --
   # 23. THE RECEIPT LEG'S FALSE POSITIVE (#124). The pre-fix leg posted
