@@ -785,7 +785,7 @@ while [ $# -gt 0 ]; do
     # exits 0 before the carrier read or any network call. The selftest drives
     # THIS; a re-implementation in the test would prove nothing.
     --resolve-priority) PRIORITY_PROBE=1 ;;
-    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
+    -h|--help)  echo "usage: the single oc-deploy dispatcher is retired — the ship stage is split: oc-ship, oc-build, oc-swap, oc-status, oc-fanout, oc-features; run <tool> --help for its verbs (recover-receipt is an oc-status mode; contributors are retired — use oc-attrib --contributors)"; exit 0 ;;
     *)          die 1 "unknown arg: $1" ;;
   esac
   shift || true

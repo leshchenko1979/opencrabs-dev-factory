@@ -195,7 +195,7 @@ case "$MODE" in
         die 2 "OC_DEPLOY_GATE=wrong-checkout: not inside a git repository (cwd=$PWD) — ship pushes objects from the CWD repo, so run it from the fork checkout: cd $FORK_DIR"
       fi
       if [ -d "$FORK_DIR" ] && git -C "$FORK_DIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
-        die 2 "OC_DEPLOY_GATE=wrong-checkout: $SHA is not an object in the CWD repo ($CWD_TOP) but IS present in $FORK_DIR — ship pushes objects out of the CWD repo, so this is the wrong directory, not a phantom sha. Re-run: cd $FORK_DIR && oc-deploy ship --sha $SHA"
+        die 2 "OC_DEPLOY_GATE=wrong-checkout: $SHA is not an object in the CWD repo ($CWD_TOP) but IS present in $FORK_DIR — ship pushes objects out of the CWD repo, so this is the wrong directory, not a phantom sha. Re-run: cd $FORK_DIR && oc-ship --sha $SHA"
       fi
       die 1 "sha not found in this repo (phantom?): $SHA — pass --sha <real commit sha>"
     fi
