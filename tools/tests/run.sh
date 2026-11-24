@@ -2606,6 +2606,41 @@ section "oc-ledger confirm + derive_by"
 
 section "oc-ledger lock budget (#619)"
 if tool oc-ledger; then
+  # ---- (#171) THE BATTERY'S PUSH PATH MUST NEVER REACH THE REAL REMOTE -----
+  # _git_state_commit_now's #524 tail calls push_backlog_if_due "$SKILL_DIR"
+  # skill, and SKILL_DIR DEFAULTS to the tree this battery runs in (oc-ledger
+  # :194, `cd "$_OC_DIR/.."`). The #95 legs below hand the tool a git STATE dir
+  # ($GB), so that tail IS reached -- and when the tree carries >=10 unpushed
+  # commits, or ONE older than OC_LEDGER_PUSH_MAX_AGE (1800s), push_mirror
+  # pushes the current branch to `origin`. Measured 2026-11-24: a clone whose
+  # origin was a local bare repo standing in for GitHub, carrying ONE 2020-dated
+  # unpushed commit, had that remote's refs/heads/main moved onto it BY THIS
+  # SECTION -- i.e. a test run PUBLISHED a lane's unpublished work.
+  # The seam is OC_SKILL_DIR, which already exists (:194) -- no production
+  # switch was added. Every stamp below that can reach the tail is handed a
+  # SENTINEL skill repo whose origin is a bare repo under this test's temp root,
+  # so the push path stays EXERCISED (asserted below, never skipped) and can
+  # only ever land there. The real origin is then read from two angles: its
+  # remote-tracking refs (which a successful `git push` MOVES -- the repro above
+  # moved origin/main) and `git ls-remote` before vs after.
+  _ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
+  _RO_TR0="$(git -C "$_ROOT" for-each-ref --format='%(refname) %(objectname)' refs/remotes/origin 2>/dev/null)"
+  _RO_TR0D="$(printf '%s' "$_RO_TR0" | md5sum | cut -d' ' -f1)"
+  _RO_RL0="$(timeout 10 git -C "$_ROOT" ls-remote origin 2>/dev/null)"; _RO_RC0=$?
+  _RO_RL0D="$(printf '%s' "$_RO_RL0" | md5sum | cut -d' ' -f1)"
+  SK="$(mktemp -d)"
+  git init -q --bare "$SK/origin.git" 2>/dev/null
+  git -C "$SK/origin.git" symbolic-ref HEAD refs/heads/main 2>/dev/null
+  git init -q "$SK/skill" 2>/dev/null
+  # the fixture branch must be `main` (git init's default here is `master`), or
+  # the assertions below would read a ref the push never created.
+  git -C "$SK/skill" symbolic-ref HEAD refs/heads/main 2>/dev/null
+  git -C "$SK/skill" config user.email sa@sb; git -C "$SK/skill" config user.name sa
+  git -C "$SK/skill" config commit.gpgsign false
+  echo sentinel > "$SK/skill/f"; git -C "$SK/skill" add f
+  git -C "$SK/skill" commit -q -m "sentinel base"
+  git -C "$SK/skill" remote add origin "$SK/origin.git"
+  git -C "$SK/skill" push -q -u origin HEAD 2>/dev/null
   # (#619) The lock waiter budget must be DERIVED from the holder worst case, which
   # the two in-lock network pushes dominate. This leg is BEHAVIOURAL, not a grep: a
   # grep for OC_LEDGER_LOCK_WAIT self-matches the leg that contains it, which is the
@@ -2645,10 +2680,10 @@ if tool oc-ledger; then
   printf '{"workers":[],"events":[]}' > "$GB/l.json"
   printf '#!/bin/sh\nsleep 3\n' > "$GB/.git/hooks/pre-commit"; chmod +x "$GB/.git/hooks/pre-commit"
   git -C "$GB" add l.json 2>/dev/null; git -C "$GB" -c user.email=t@t -c user.name=t commit -q -m init 2>/dev/null
-  OC_LEDGER_GIT_TAIL_WAIT=20 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
+  OC_LEDGER_GIT_TAIL_WAIT=20 OC_SKILL_DIR="$SK/skill" OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
     stamp note "slow-tail holder" --by "hq probe" >/dev/null 2>&1 &
   SLP=$!; sleep 1
-  O3="$(OC_LEDGER_LOCK_WAIT=1 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
+  O3="$(OC_LEDGER_LOCK_WAIT=1 OC_SKILL_DIR="$SK/skill" OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
     stamp note "concurrent appender" --by "hq probe" 2>&1)"; R3=$?
   [ "$R3" -eq 0 ] && ok "#95: a 3s git tail does NOT block a concurrent appender (rc 0)" \
     || bad "#95: concurrent appender blocked by the git tail (rc $R3): $(printf '%s' "$O3" | head -1)"
@@ -2659,6 +2694,42 @@ if tool oc-ledger; then
   # bare test() dies on null, which would make this leg pass on an EMPTY ledger.
   [ "$(jq -r '[.events[]? | select((.what // "") | test("slow-tail holder"))] | length' "$GB/l.json" 2>/dev/null)" -ge 1 ] \
     && ok "#95: the slow-tail holder's row is durable" || bad "#95: slow-tail holder's row is MISSING"
+  # ---- (#171) the hermetic seam is LOAD-BEARING, and the real origin is read --
+  # A leg that only asserted "nothing reached the real origin" would also pass if
+  # the push tail were never reached at all, so this forces ONE push through the
+  # same invocation shape the #95 legs use and reads BOTH ends. It runs against a
+  # fresh hook-free state repo (not $GB) so the 3s pre-commit hook is not paid a
+  # third time.
+  printf 'probe\n' > "$SK/skill/g"; git -C "$SK/skill" add g
+  git -C "$SK/skill" commit -q -m "sentinel probe"
+  _SKST="$SK/state"; git init -q "$_SKST" 2>/dev/null
+  printf '{"workers":[],"events":[]}' > "$_SKST/l.json"
+  git -C "$_SKST" add l.json 2>/dev/null
+  git -C "$_SKST" -c user.email=t@t -c user.name=t commit -q -m base 2>/dev/null
+  _SK0="$(git -C "$SK/origin.git" rev-parse refs/heads/main 2>/dev/null)"
+  OC_TOOLS_NOLOG=1 OC_LEDGER="$_SKST/l.json" OC_SKILL_DIR="$SK/skill" OC_LEDGER_PUSH_MIN=1 \
+    "$TOOLS_DIR/state/oc-ledger" stamp note "push-hazard probe" --by "hq probe" >/dev/null 2>&1
+  chk "#171: a test-repo push LANDS in the sentinel origin (the tail is exercised, not skipped)" \
+    "$(git -C "$SK/skill" rev-parse HEAD 2>/dev/null)" "$(git -C "$SK/origin.git" rev-parse refs/heads/main 2>/dev/null)"
+  [ "$(git -C "$SK/origin.git" rev-parse refs/heads/main 2>/dev/null)" != "$_SK0" ] \
+    && ok "#171: control -- the sentinel origin's ref MOVED, so the leg above is not vacuous" \
+    || bad "#171: control -- sentinel origin unmoved; the leg above proves nothing"
+  # THE REAL ORIGIN RECEIVED NOTHING. Two observables: the remote-tracking refs
+  # (md5 of `for-each-ref refs/remotes/origin`, which a successful push updates)
+  # and the ls-remote listing (md5, bounded at 10s; an unreachable origin fails
+  # identically twice, which is still "unchanged" and never a silent pass --
+  # the rc pair is printed in the leg's own description).
+  if git -C "$_ROOT" remote get-url origin >/dev/null 2>&1; then
+    _RO_TR1="$(git -C "$_ROOT" for-each-ref --format='%(refname) %(objectname)' refs/remotes/origin 2>/dev/null)"
+    chk "#171: real origin's remote-tracking refs unchanged (md5 of refs/remotes/origin)" \
+      "$_RO_TR0D" "$(printf '%s' "$_RO_TR1" | md5sum | cut -d' ' -f1)"
+    _RO_RL1="$(timeout 10 git -C "$_ROOT" ls-remote origin 2>/dev/null)"; _RO_RC1=$?
+    chk "#171: git ls-remote on the real origin identical before/after (md5; rc $_RO_RC0 then $_RO_RC1)" \
+      "$_RO_RL0D" "$(printf '%s' "$_RO_RL1" | md5sum | cut -d' ' -f1)"
+  else
+    note "       | #171 SKIP: $_ROOT has no origin -- no real remote reachable from here"
+  fi
+  rm -rf "$SK"
   rm -rf "$GB"
   rm -rf "$LB"
 fi
