@@ -2,7 +2,7 @@
 name: opencrabs-dev
 description: >
   OpenCrabs source ops (~/opencrabs): roles EDITOR (fork issues, per-task
-  worktrees, CI gate (pr-checks), signed commits, push + sha hand-off, oc-deploy ship,
+  worktrees, CI gate (pr-checks), signed commits, push + sha hand-off, oc-build ship,
   smoke-test-on-notify), HQ (skill set + worker ledger),
   TRIAGE (interrupt lane: fix routing, enforcement),
   TOOLSMITH (CLI tool lane: owns tools/ — makes and fixes the CLI tools every other role uses),
@@ -50,7 +50,7 @@ Ask the operator which role this session employs before doing anything:
 
 | Role | Owns | Procedure file |
 |------|------|----------------|
-| **EDITOR** | Commits + error fixes: claim issue → worktree → code → CI gate → sign → push → ff-merge into fork `main` → `oc-deploy ship` → smoke on notify | `editor.md` |
+| **EDITOR** | Commits + error fixes: claim issue → worktree → code → CI gate → sign → push → ff-merge into fork `main` → `oc-build ship` → smoke on notify | `editor.md` |
 | **HQ** | Skill set maintenance, worker ledger, Duty 4 worker polls, Duty 6 periodic lens reviews — count derived from the catalog at gate time (details in `hq.md` and `review-lenses.md`) | `hq.md` |
 | **TRIAGE** | Intake & hygiene: issue assignment, repo hygiene patrols, rebase/merge execution delegated from HQ, upstream lifecycle tracking (delta watch, PR census, dependency tracking folded from Harvester v0.4.176) | `triage.md` |
 | **TOOLSMITH** | CLI tools author & maintainer: owns `tools/` code, test battery stewardship, direct recipient of tool quirks/defects (v0.4.176) | `toolsmith.md` |
@@ -59,12 +59,12 @@ Ask the operator which role this session employs before doing anything:
 Roles **DO NOT intersect**:
 
 - The Editor NEVER installs/swaps binaries, NEVER restarts daemons, NEVER dispatches
-  BUILD runs — shipping goes through `oc-deploy ship` (S3). Build triggers: §Hard rules
+  BUILD runs — shipping goes through `oc-build ship` (S3). Build triggers: §Hard rules
   (A3 ruling 2026-08-29); the Phase-7 step-2c pr-checks dispatch is a lint/test gate,
   not a build trigger.
 - Hand-off point: the Editor produces (branch pushed AND fast-forwarded into fork
-  `main` + reported shas); `oc-deploy ship` takes it from there (dispatch → poll
-  → swap-execute, consent eliminated 2026-08-28). If the run is RED, `oc-deploy`
+  `main` + reported shas); `oc-build ship` takes it from there (dispatch → poll
+  → swap-execute, consent eliminated 2026-08-28). If the run is RED, `oc-build`
   reports evidence and stops — fixing code is always Editor work.
 No lane settles protocol disputes — rulings are HQ Duty 5.
 
@@ -127,7 +127,7 @@ Editors live in a Telegram forum group: one topic = one editor = one live sessio
   runtime prompt/session context — no lookup tool needed (correction
   2026-08-25); the post-swap fan-out takes notification targets from these
   trailers (`oc-attrib`; `oc-contributors` RETIRED v0.4.72 — E2 #1, subset of oc-attrib, zero live callers).
-- After a healthy swap the fan-out is MECHANICAL: `oc-deploy fanout`
+- After a healthy swap the fan-out is MECHANICAL: `oc-fanout fanout`
   (auto-fired at the `swap_execute` tail since v0.4.37,
   [#24](https://github.com/leshchenko1979/opencrabs/issues/24)) attributes the
   shipped range and notifies each contributing editor — an editor's job on
@@ -136,7 +136,7 @@ Editors live in a Telegram forum group: one topic = one editor = one live sessio
   §Fan-out legs (re-homed v0.4.80, lens B F4).
 - Editors own testing THEIR features on notification: SMOKE TESTS against the
   swapped binary running on this box (the cargo ban itself = editor.md §Box law, one
-  statement). Failures funnel back through blame attribution (`oc-deploy fanout`
+  statement). Failures funnel back through blame attribution (`oc-fanout fanout`
   above), which asks the guilty editors for fixes.
 - Separation holds inside the loop: the fan-out notifies + attributes but NEVER
   fixes code; Editors fix + re-push but NEVER attribute others' failures.
@@ -173,8 +173,8 @@ to another session, another role's topic, the forum General area, an unrelated c
 | Answers | does my feature WORK for a user right now? | is the code correct by analysis standards? | is the feature actually INSIDE the artifact we are about to deploy? |
 | What | behavioral drive of ONE shipped feature | compile/run verification: cargo fmt, clippy, cargo test | static markers: binary strings/symbols, sha256 identity vs artifact, source-tree grep |
 | Where | live `opencrabs-ops` unit, its real surfaces (Telegram, cron, MCP) | GitHub Actions ONLY — the CI gate (`pr-checks.yml`; upstream's own checks on PRs). Carrier build COMPILES the artifact but runs NO test leg (removed 2026-08-31, `e71dba58`) | this box, against the DOWNLOADED artifact + its source tree — nothing running |
-| When | after a swap notify (`editor-smoke.md`) | pre-flight gate before PRs/ff-merge (Phase 7 step 2c) — `pr-checks.yml` is the ONLY CODE-TESTS locus | pre-swap, every cycle (`oc-deploy` swap path) |
-| Who | owning Editor | Editor dispatches the gate and reads conclusions; `oc-deploy` reads build conclusions | `oc-deploy` swap path |
+| When | after a swap notify (`editor-smoke.md`) | pre-flight gate before PRs/ff-merge (Phase 7 step 2c) — `pr-checks.yml` is the ONLY CODE-TESTS locus | pre-swap, every cycle (`oc-swap` swap path) |
+| Who | owning Editor | Editor dispatches the gate and reads conclusions; `oc-build` reads build conclusions | `oc-swap` swap path |
 | Toolchain | none — local cargo FORBIDDEN in any form (binaries disabled 2026-08-28; editor.md §Box law) | CI's own — never local | `strings`, `sha256sum`, `git grep` — none compile anything |
 | Evidence | one line: drove X, observed Y (+ run id / sha) | job/step conclusions read via API | marker found/not-found + checksum line in baseline.json |
 | On FAIL | issue FIRST, then evidence to the HQ lane (`session_notify`) | fix before merge / PR | NO swap — feature missing from build; regression stated plainly |
@@ -288,7 +288,7 @@ Upstream movement is WATCHED and ABSORBED on a schedule per the matrix below:
   **READ a relation with `gh issue view <N> --json parent,subIssues,blockedBy,blocking` — NEVER the issue object's `.parent` projection.** `gh api ... --jq '.parent.number'` returns a confident **null for every issue**, since the REST issue object omits the field; the same call returns a real title, so the null reads as "no parent". A recorded false negative defeated a GUARD that skipped on "already parented" — a guard and a verifier need the same authority (`war-stories.md`, brain dir).
 - Restart scope: **`opencrabs-ops` ONLY.** The `family` and default-profile daemons require Alexey's explicit approval EVERY time. Exception (v0.4.71, lens B2 #3; sanctioned v0.4.59 #47): HQ may mechanically restart the `opencrabs-family.service` SIDECAR (journal-sequence verified) — never the default-profile daemon.
 - Never trust watcher exit codes alone — read the run's own `conclusion` via API.
-- BUILD TRIGGERS = exactly TWO, NO exceptions (v0.4.3, S3-rewired 2026-08-28; A3 owner ruling 2026-08-29): an editor's `oc-deploy ship --sha <full-sha>` background task, or Alexey's word. No other dispatch — the direct PR-head dispatch is retired (superseded by `oc-gate`; ORDER gate 3 containment rejects any sha outside fork `main` anyway). All builds serialize under single-flight.
+- BUILD TRIGGERS = exactly TWO, NO exceptions (v0.4.3, S3-rewired 2026-08-28; A3 owner ruling 2026-08-29): an editor's `oc-build ship --sha <full-sha>` background task, or Alexey's word. No other dispatch — the direct PR-head dispatch is retired (superseded by `oc-gate`; ORDER gate 3 containment rejects any sha outside fork `main` anyway). All builds serialize under single-flight.
 
 ## Shared war stories (why these rules exist)
 

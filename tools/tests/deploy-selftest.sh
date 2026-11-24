@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy-selftest.sh — the BODY of `oc-deploy selftest`, moved VERBATIM.
+# deploy-selftest.sh — the BODY of the deploy suite, moved VERBATIM.
 #
 # SOURCED, never executed: `selftest()` (tools/lib/oc-deploy-lib.sh) is a thin
 # wrapper that `.`-sources this file. It must stay SOURCED because the body
@@ -9,9 +9,15 @@
 #
 # T5-bis (four-way split): the suite is ONE suite and it still covers all four
 # stages, so `selftest()` first loads the four tools' functions into this shell
-# (oc_deploy_load_funcs) and every child below goes through the DISPATCHER,
-# tools/ship/oc-deploy. Nothing about the CHECKS changed — only the paths that
-# pin SOURCE SHAPE (SRC_*) and the sandbox tree in 10f-ter.
+# (oc_deploy_load_funcs) and every child below invokes the tool that OWNS its
+# verb — `oc-build` (ship/features), `oc-swap` (swap-execute), `oc-fanout`
+# (fanout), `oc-status` (poll/status/watch). Until factory #168 cut 5 those
+# children went through the `oc-deploy` dispatcher; it is deleted, so the suite
+# names the owner directly. Entry point: `oc-build --selftest` (any stage tool
+# answers it, since `selftest()` lives in the shared library).
+#
+# Nothing about the CHECKS changed — only the paths that pin SOURCE SHAPE
+# (SRC_*) and the sandbox tree in 10f-ter.
 #
 # WHY IT LIVES HERE: the tool was 5,011 lines, 2,186 of them selftest fixture.
 # Extraction is verifiable by PASS COUNT: the battery's deploy-selftest section
@@ -39,11 +45,26 @@
   export OC_SWAP_IN_UNIT_CGROUP=0
   local SD="$T/state"
   mkdir -p "$SD/tools" "$SD/backups" "$T/bin"
-  # T5-bis: the children below must go through the DISPATCHER whatever arm ran
-  # this suite (the suite is one suite and every arm can run it), so the entry
-  # point is RESOLVED here, never inherited from $0.
-  local SELF_BIN="${1:-$OC_TOOLS_DIR/ship/oc-deploy}"   # v0.4.38: absolute, so a re-exec after cd into tmp can still resolve it
-  local SELF_DIR; SELF_DIR="$(dirname "$SELF_BIN")"
+  # #168 cut 5: the DISPATCHER is gone, so the children below name the tool that
+  # OWNS each verb. This is deliberately NOT a router function: a leg that called
+  # a shim could pass while the file that owns the behaviour was broken, which is
+  # the defect the earlier cuts removed from the 21a-21e and recover-receipt legs.
+  # `selftest()` therefore receives NO argv (the `--selftest` arm calls it bare),
+  # so nothing here may read `$1` — the old `${1:-...}` default silently took the
+  # FLAG as the binary path and reddened 378 legs the moment a stage tool ran the
+  # suite (measured: oc-build --selftest -> 142 pass / 378 fail before this fix).
+  # Absolute, so a re-exec after cd into tmp can still resolve them.
+  local BUILD_BIN="$OC_TOOLS_DIR/ship/oc-build" SWAP_BIN="$OC_TOOLS_DIR/ship/oc-swap" \
+        FANOUT_BIN="$OC_TOOLS_DIR/ship/oc-fanout" STATUS_BIN="$OC_TOOLS_DIR/ship/oc-status"
+  # #168 cut 5: `lineage-check` left the library for its own tool, so the 21a-21e
+  # legs go to it DIRECTLY. They used to run through the dispatcher, which made
+  # them pass on a shim while the tool they claimed to cover could be broken —
+  # the leg must name the file that owns the verdict.
+  local LV_BIN="$OC_TOOLS_DIR/harvest/oc-verify-lineage"
+  # #168 cut 5: `recover-receipt` left the library for a MODE of oc-status, so
+  # its legs name that tool directly. Reached through the dispatcher they would
+  # pass on the shim and prove nothing about the file that owns the repair.
+  local RR_BIN="$OC_TOOLS_DIR/ship/oc-status"
   # T5-bis: the split moved code out of the one file the source-shape guards
   # below used to grep. Each such guard reads the file that OWNS what it pins.
   local SRC_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh" SRC_BUILD="$OC_TOOLS_DIR/ship/oc-build"
@@ -255,31 +276,35 @@ CYML
   chmod +x "$T/bin/gh-carrier"
   export OC_CARRIER_REPO="$_carrier_src" OC_CARRIER_GH="$T/bin/gh-carrier"
 
-  # 1. usage (no mode) -> exit 1
-  "$SELF_BIN" >/dev/null 2>&1; check_rc "usage-no-mode" $? 1
+  # 1. usage (no verb) -> exit 1. This was the dispatcher's contract; with the
+  #    dispatcher gone the rc-1 usage shape is asserted on the tool that carries
+  #    it (oc-status), NOT on a router that no longer exists. oc-build answers
+  #    rc 2 here by design (a bare `oc-build` is a ship attempt missing --sha),
+  #    so naming it would assert the wrong contract.
+  "$STATUS_BIN" >/dev/null 2>&1; check_rc "usage-no-mode" $? 1
   # 2. unknown arg -> exit 1
-  "$SELF_BIN" ship --bogus >/dev/null 2>&1; check_rc "unknown-arg" $? 1
+  "$BUILD_BIN" ship --bogus >/dev/null 2>&1; check_rc "unknown-arg" $? 1
   # 3. kill file -> exit 9 even for valid mode
   mkdir -p "$T/kills"; printf x > "$T/kills/oc-deploy.kill"
-  OC_DEPLOY_STATE_DIR="$T/kills" "$SELF_BIN" poll >/dev/null 2>&1; check_rc "kill-file" $? 9
-  # 3b. contributors RETIRED (v0.4.91, lens E-2): loud deprecation rc 1, points at oc-attrib
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_ATTRIB="$SELF_DIR/state/oc-attrib" \
-    "$SELF_BIN" contributors main 2>&1)"; rc=$?
-  check_rc "contributors-retired-rc" $rc 1
-  check_has "contributors-retired-notice" "$out" "RETIRED"
-  check_has "contributors-retired-pointer" "$out" "oc-attrib"
-  "$SELF_BIN" contributors >/dev/null 2>&1; check_rc "contributors-usage" $? 1
+  OC_DEPLOY_STATE_DIR="$T/kills" "$STATUS_BIN" poll >/dev/null 2>&1; check_rc "kill-file" $? 9
+  # 3b. the `contributors` verb is DELETED, not retired (#168 cut 5). The three
+  #     legs that used to live here asserted the deprecation NOTICE — a test that
+  #     keeps a verb alive to print a message about itself. `oc-attrib
+  #     --contributors` is the one shape and has its own legs. The last survivor
+  #     of the old arm was this rc-1 leg, which passed only because an unknown
+  #     verb is usage — i.e. it asserted the ABSENCE of a verb it named, on a
+  #     router. Nothing left to name.
   # 4. ship PLAN mode: no mutation, PLAN lines, shadow entry, carrier-default features
   # 4-no-sha (Duty-6 lens F task 3): ship WITHOUT --sha must refuse rc2 —
   # no implicit CWD-HEAD adoption (wrong-directory ship pushes unintended sha).
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship 2>&1)"; check_rc "ship-no-sha-refused" $? 2
+    "$BUILD_BIN" ship 2>&1)"; check_rc "ship-no-sha-refused" $? 2
   check_has "ship-no-sha-msg" "$out" "ship requires --sha"
   check_has "ship-no-sha-gate-token" "$out" "OC_DEPLOY_GATE=missing-sha"   # C-A2
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
   check_rc "ship-plan-rc" $rc 0
   local SHIP_PLAN_OUT="$out"   # keep for 4b's plan-complete check (phantom cases clobber $out)
   check_has "ship-plan-lines" "$out" "would: git push"
@@ -290,7 +315,7 @@ CYML
   local PHANTOM="4c0115ba9aa052f5cfeda01383c0d20be9e2392e"
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$PHANTOM" 2>&1)"; check_rc "ship-phantom-sha" $? 1
+    "$BUILD_BIN" ship --sha "$PHANTOM" 2>&1)"; check_rc "ship-phantom-sha" $? 1
   check_has "ship-phantom-msg" "$out" "sha not found in this repo"
   grep -q "PLAN: ship" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: phantom sha produced plan lines"; } || pass=$((pass+1))
   # 4a-wrong-cwd (#73): a REAL sha absent from the CWD repo is a DIRECTORY
@@ -302,7 +327,7 @@ CYML
   # refs/oc-deploy/main into it.
   out="$(cd "$T/foreign" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
   check_rc "ship-wrong-cwd-rc" $rc 2
   check_has "ship-wrong-cwd-gate" "$out" "OC_DEPLOY_GATE=wrong-checkout"
   check_has "ship-wrong-cwd-names-cwd" "$out" "$T/foreign"
@@ -314,31 +339,31 @@ CYML
   # the arm above passes on a tool that refuses every ship from anywhere.
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
   check_rc "ship-wrong-cwd-control-rc" $rc 0
   check_has "ship-wrong-cwd-control-plan" "$out" "would: git push"
   # 4a-no-repo (#73): a cwd with no git at all gets its own refusal — "not found
   # in this repo" is a lie when there is no repo.
   out="$(cd "$T/plain" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
   check_rc "ship-no-repo-rc" $rc 2
   check_has "ship-no-repo-gate" "$out" "not inside a git repository"
   # F-1 fusion (v0.4.97): plan-mode ship with --wait refuses (nothing to poll);
   # non-integer --wait dies 1 at validation.
-  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git"     OC_DEPLOY_CARRIER="$SD/tools/carrier"     "$SELF_BIN" ship --sha "$SHA2" --wait 30 2>&1)"; check_rc "ship-wait-refused" $? 2
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git"     OC_DEPLOY_CARRIER="$SD/tools/carrier"     "$BUILD_BIN" ship --sha "$SHA2" --wait 30 2>&1)"; check_rc "ship-wait-refused" $? 2
   check_has "ship-wait-msg" "$out" "--wait on ship requires --execute"
   # C-A2 (lens C2 A2): rc-2 gate deaths carry machine-readable OC_DEPLOY_GATE
   # tokens — the retry loop branches on the token, not prose (>=10 manual
   # ship->validate->ship cycles in tools.log motivated this).
   check_has "ship-wait-gate-token" "$out" "OC_DEPLOY_GATE=wait-plan-mode"
-  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git"     OC_DEPLOY_CARRIER="$SD/tools/carrier"     "$SELF_BIN" ship --sha "$SHA2" --notify-session aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 2>&1)"; check_rc "ship-notify-refused" $? 2
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git"     OC_DEPLOY_CARRIER="$SD/tools/carrier"     "$BUILD_BIN" ship --sha "$SHA2" --notify-session aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 2>&1)"; check_rc "ship-notify-refused" $? 2
   check_has "ship-notify-msg" "$out" "--notify-session is poll-mode only"
   check_has "ship-notify-gate-token" "$out" "OC_DEPLOY_GATE=notify-poll-only"
   # 4b. carrier read FAIL -> ship aborts (KERNEL D2: no silent fallback set)
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier-fail" \
-    "$SELF_BIN" ship --sha "$SHA2" >/dev/null 2>&1); check_rc "carrier-fail-aborts" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" >/dev/null 2>&1); check_rc "carrier-fail-aborts" $? 2
   check_has "ship-plan-complete" "$SHIP_PLAN_OUT" "plan complete"
   if [ "$(git -C "$T/remote.git" rev-parse main)" != "$SHA2" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: plan mode mutated remote"; fi
   grep -q "ship-plan" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-plan shadow row"; }
@@ -348,19 +373,19 @@ CYML
   printf '{"prev_sha":"0000000000000000000000000000000000000000","features":"telegram,code-graph"}' > "$SD/deployed.meta.json"
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; check_rc "featdef-adopt-rc" $? 0
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; check_rc "featdef-adopt-rc" $? 0
   check_has "featdef-adopt-line" "$out" "adopting deployed set (FEATURE-DEFAULT)"
   check_has "featdef-adopt-features" "$out" "features=telegram,code-graph"
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --features telegram 2>&1)"; check_rc "featdef-mismatch-rc" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --features telegram 2>&1)"; check_rc "featdef-mismatch-rc" $? 2
   check_has "featdef-mismatch-msg" "$out" "refusing pre-dispatch"
   grep -q "features-mismatch-refused" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no features-mismatch-refused shadow row"; }
   grep -q "PLAN: ship" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: mismatch reached plan lines"; } || pass=$((pass+1))
   # matching explicit set passes the gate (order-insensitive compare)
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --features code-graph,telegram 2>&1)"; check_rc "featdef-match-reorder-rc" $? 0
+    "$BUILD_BIN" ship --sha "$SHA2" --features code-graph,telegram 2>&1)"; check_rc "featdef-match-reorder-rc" $? 0
   # 4d. #108 (2026-11-20, toolsmith): the pre-dispatch gate is DROP-ONLY,
   # mirroring the features-compat gate in swap_execute() that it precedes.
   # A carrier default or an explicit --features that ADDS a feature over the
@@ -372,7 +397,7 @@ CYML
   # (a) POSITIVE CONTROL: an explicit superset proceeds and reaches the plan
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
-    "$SELF_BIN" ship --sha "$SHA2" --features telegram,code-graph,eval 2>&1)"; check_rc "featadd-explicit-rc" $? 0
+    "$BUILD_BIN" ship --sha "$SHA2" --features telegram,code-graph,eval 2>&1)"; check_rc "featadd-explicit-rc" $? 0
   check_has "featadd-explicit-line" "$out" "adding feature(s) eval"
   check_has "featadd-explicit-features" "$out" "features=telegram,code-graph,eval"
   grep -q "features-add-adopted:eval" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no features-add-adopted shadow row"; }
@@ -380,20 +405,20 @@ CYML
   # weakened by the addition fix)
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
-    "$SELF_BIN" ship --sha "$SHA2" --features telegram 2>&1)"; check_rc "featadd-subset-rc" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --features telegram 2>&1)"; check_rc "featadd-subset-rc" $? 2
   check_has "featadd-subset-msg" "$out" "DROPS deployed feature(s): code-graph"
   # (c) --allow-features-drop is honoured PRE-DISPATCH, not only at the swap gate
   # — a deliberate drop must not be refused one stage before the stage permitting it
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
-    "$SELF_BIN" ship --sha "$SHA2" --features telegram --allow-features-drop 2>&1)"; check_rc "featdrop-allowed-rc" $? 0
+    "$BUILD_BIN" ship --sha "$SHA2" --features telegram --allow-features-drop 2>&1)"; check_rc "featdrop-allowed-rc" $? 0
   check_has "featdrop-allowed-line" "$out" "dropping deployed feature(s) code-graph deliberately"
   # (d) OMITTED --features adopts the carrier SUPERSET — NOT rewritten back to
   # the deployed set. That rewrite was the defect: it made the carrier default
   # structurally unable to add a feature, so `eval` could never reach the binary.
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier-superset" \
-    "$SELF_BIN" ship --sha "$SHA2" 2>&1)"; check_rc "featadd-default-rc" $? 0
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; check_rc "featadd-default-rc" $? 0
   check_has "featadd-default-features" "$out" "features=telegram,code-graph,eval"
   rm -f "$SD/tools/carrier-superset"   # restore pre-case state for later sections
   rm -f "$SD/deployed.meta.json"   # restore pre-case state for later sections
@@ -404,7 +429,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" >/dev/null 2>&1); check_rc "ship-plan-nonff" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" >/dev/null 2>&1); check_rc "ship-plan-nonff" $? 2
 
   # 5b. ship execute non-FF with conflict -> exit 5 (rebase-conflict)
   git -C "$T/repo" checkout -qb div5b HEAD~1
@@ -412,7 +437,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-nonff-conflict-rc" $rc 5
   check_has "ship-nonff-conflict-token" "$out" "OC_DEPLOY_GATE=rebase-conflict"
 
@@ -422,7 +447,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-nonff-autorebase-rc" $rc 0
   check_has "ship-nonff-autorebase-msg" "$out" "auto-rebased"
 
@@ -469,7 +494,7 @@ CYML
   git -C "$T/r704" fetch -q "$T/r704.git" "+$TIP_B:refs/heads/clobber2" 2>/dev/null || true   # FETCH_HEAD = TIP_B
   out="$(cd "$T/r704" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/r704.git" \
     OC_DEPLOY_FETCH=/bin/true OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$TIP_C" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$TIP_C" 2>&1)"; rc=$?
   check_rc "704-ffok-under-clobber-rc" $rc 0
   check_has "704-tip-from-ref" "$out" "fork main tip = $TIP_C"
   check_has "704-ffok-under-clobber-msg" "$out" "FF ok"
@@ -480,7 +505,7 @@ CYML
   git -C "$T/r704" update-ref refs/oc-deploy/main "$TIP_D"
   out="$(cd "$T/r704" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/r704.git" \
     OC_DEPLOY_FETCH=/bin/true OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$TIP_C" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$TIP_C" 2>&1)"; rc=$?
   check_rc "704-foreign-tip-refused-rc" $rc 2
   check_has "704-foreign-tip-gate-token" "$out" "OC_DEPLOY_GATE=tip-not-fork-main"
   grep -q "auto-rebase\|rebase-needed" <<<"$out" && { fail=$((fail+1)); echo "SELFTEST FAIL: #704 reached the rebase path with a foreign tip"; } || pass=$((pass+1))
@@ -490,7 +515,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD~1:refs/heads/main   # back to c1
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "ship-exec-rc" $rc 0
   check_has "ship-exec-gates" "$out" "4/4 PASS"
   check_has "ship-exec-dispatch" "$out" "dispatched carrier run"
@@ -505,7 +530,7 @@ CYML
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-success \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
   check_rc "shipwait-green-rc" $rc 0
   check_has "shipwait-green-line" "$out" "SHIP-WAIT: run 555 GREEN"
   grep -q "ship-wait-green:555" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-wait-green shadow row"; }
@@ -513,7 +538,7 @@ CYML
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-failure \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
   check_rc "shipwait-red-rc" $rc 6
   check_has "shipwait-red-line" "$out" "terminal-failure"
   grep -q "ship-wait-red:555:failure" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-wait-red shadow row"; }
@@ -521,7 +546,7 @@ CYML
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=in_progress \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; rc=$?
   check_rc "shipwait-timeout-rc" $rc 5
   check_has "shipwait-timeout-line" "$out" "never reached a terminal state"
   grep -q "ship-wait-timeout" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no ship-wait-timeout shadow row"; }
@@ -530,12 +555,12 @@ CYML
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="9999999999999999999999999999999999999999" OC_TEST_SHIPWAIT_CONCL=completed-success \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; check_rc "shipwait-wrongsha-rc" $? 5
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; check_rc "shipwait-wrongsha-rc" $? 5
   rm -f "$T/shipwait-flag"
   # 7. ship execute gate-fail -> exit 2 (validator stub exits 2; push is no-op)
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-fail" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute >/dev/null 2>&1); check_rc "ship-gate-fail" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute >/dev/null 2>&1); check_rc "ship-gate-fail" $? 2
   grep -q "gate-fail" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no gate-fail shadow row"; }
 
   # 7b. #355 GATE-BEFORE-LAND: the push leg refuses an ungated landing.
@@ -547,7 +572,7 @@ CYML
   rm -f "$SD/oc-deploy-shadow.log"
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
   check_rc "gate-missing-refused-rc" $rc 2
   check_has "gate-missing-refused-token" "$out" "OC_DEPLOY_GATE=gate-missing"
   [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$R_TIP_BEFORE"  ]\
@@ -555,7 +580,7 @@ CYML
 
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --gated-run 444 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --gated-run 444 2>&1)"; rc=$?
   check_rc "gate-inflight-refused-rc" $rc 2
   check_has "gate-inflight-refused-token" "$out" "OC_DEPLOY_GATE=gate-inflight"
   [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$R_TIP_BEFORE"  ]\
@@ -563,23 +588,23 @@ CYML
 
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --gated-run 888 >/dev/null 2>&1); check_rc "gate-red-refused-rc" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --gated-run 888 >/dev/null 2>&1); check_rc "gate-red-refused-rc" $? 2
 
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --gated-run 777 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --gated-run 777 2>&1)"; rc=$?
   check_rc "gate-green-allowed-rc" $rc 0
   [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$SHA2"  ]\
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: gate-green-did-push: a GREEN-gated landing did NOT reach remote main"; }
 
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "selftest: exercising the audited escape hatch" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "selftest: exercising the audited escape hatch" 2>&1)"; rc=$?
   check_rc "gate-override-allowed-rc" $rc 0
   check_has "gate-override-is-loud" "$out" "UNGATED PUSH OVERRIDE"
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "" >/dev/null 2>&1); check_rc "gate-override-needs-justification-rc" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "" >/dev/null 2>&1); check_rc "gate-override-needs-justification-rc" $? 2
 
   if [ "$R_TIP_ORIG" != "none" ]; then
     git -C "$T/repo" push -q -f "$T/remote.git" "$R_TIP_ORIG:refs/heads/main" 2>/dev/null || true
@@ -587,7 +612,7 @@ CYML
   rm -f "$SD/oc-deploy-shadow.log"
   # 8. poll plan mode at S0: swap LOCKED, sha decoded from the build job name
   #    (jobs[0] here is an ORDER gates job with NO sha at all — nothing decodes)
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" "$SELF_BIN" poll 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" "$STATUS_BIN" poll 2>&1)"; rc=$?
   check_rc "poll-plan-rc" $rc 0
   check_has "poll-decodes-sha" "$out" "built sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   check_has "poll-swap-locked" "$out" "swap LOCKED"
@@ -601,7 +626,7 @@ CYML
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh-api-flaky" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_TEST_API_COUNTER="$T/api-counter-a" OC_TEST_API_FAIL_N=2 \
     OC_DEPLOY_POLL_API_TRIES=3 OC_DEPLOY_POLL_API_BACKOFF=0 \
-    "$SELF_BIN" poll --wait 60 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --wait 60 2>&1)"; rc=$?
   check_rc "poll-api-blip-tolerated-rc" $rc 0
   check_has "poll-api-blip-recovers" "$out" "built sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   # 8c. NEGATIVE CONTROL — and the reason this fix is not a silent green. An
@@ -611,7 +636,7 @@ CYML
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh-api-flaky" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_TEST_API_COUNTER="$T/api-counter-b" \
     OC_DEPLOY_POLL_API_TRIES=3 OC_DEPLOY_POLL_API_BACKOFF=0 \
-    "$SELF_BIN" poll --wait 0 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --wait 0 2>&1)"; rc=$?
   check_rc "poll-api-dead-still-red-rc" $rc 2
   # 8d. gh's own words survive. The old `2>/dev/null` discarded them, so the
   #     message named a cause nobody had measured.
@@ -626,7 +651,7 @@ CYML
   # 10. poll at S2, --execute -> HANDOFF to launch stub (Phase A
   #     exits pre-bounce); backup listed explicitly in the plan line
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" "$STATUS_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-handoff-rc" $rc 0
   check_has "poll-handoff" "$out" "HANDOFF"
   check_has "poll-plan-backup" "$out" "backup"
@@ -652,7 +677,7 @@ CYML
   L_BEFORE="$(grep -c 'swap-execute' "$T/launch.log" 2>/dev/null || true)"; L_BEFORE="${L_BEFORE:-0}"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_SWAP_INFLIGHT_LISTER="$SD/inflight-live" OC_SWAP_LAUNCH="$SD/launch" \
-    "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-inflight-rc" $rc 0
   check_has "poll-inflight-msg" "$out" "already in flight"
   L_AFTER="$(grep -c 'swap-execute' "$T/launch.log" 2>/dev/null || true)"; L_AFTER="${L_AFTER:-0}"
@@ -662,7 +687,7 @@ CYML
   printf '#!/usr/bin/env bash\necho oc-swap-bbbbbbbb-1790817190.service\n' > "$SD/inflight-other"; chmod +x "$SD/inflight-other"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_SWAP_INFLIGHT_LISTER="$SD/inflight-other" OC_SWAP_LAUNCH="$SD/launch" \
-    "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-inflight-other-rc" $rc 0
   check_has "poll-inflight-other-handoff" "$out" "HANDOFF"
   # 10a-bus. #48 defect 3: the handoff PROBES the user bus BEFORE arming.
@@ -673,7 +698,7 @@ CYML
   mkdir -p "$T/busbin"; : > "$T/bus.log"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 1\n' "$T/bus.log" > "$T/busbin/systemd-run"; chmod +x "$T/busbin/systemd-run"
   out="$(PATH="$T/busbin:$PATH" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_SWAP_INFLIGHT_LISTER=/bin/true "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    OC_SWAP_INFLIGHT_LISTER=/bin/true "$STATUS_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-bus-unreachable-rc" $rc 4
   check_has "poll-bus-unreachable-names-bus" "$out" "user bus unreachable"
   check_has "poll-bus-unreachable-says-nothing-touched" "$out" "nothing was touched"
@@ -686,7 +711,7 @@ CYML
   : > "$T/bus.log"
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$T/bus.log" > "$T/busbin/systemd-run"; chmod +x "$T/busbin/systemd-run"
   out="$(PATH="$T/busbin:$PATH" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_SWAP_INFLIGHT_LISTER=/bin/true "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    OC_SWAP_INFLIGHT_LISTER=/bin/true "$STATUS_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-bus-reachable-rc" $rc 0
   check_has "poll-bus-reachable-handoff" "$out" "HANDOFF"
   grep -q -- "--unit=" "$T/bus.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #48 probe passed but no handoff unit was armed"; }
@@ -695,7 +720,7 @@ CYML
   #      must still proceed through the named stub.
   printf '#!/usr/bin/env bash\nexit 1\n' > "$T/busbin/systemd-run"; chmod +x "$T/busbin/systemd-run"
   out="$(PATH="$T/busbin:$PATH" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" "$SELF_BIN" poll --execute 2>&1)"; rc=$?
+    OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" "$STATUS_BIN" poll --execute 2>&1)"; rc=$?
   check_rc "poll-bus-probe-skipped-on-override-rc" $rc 0
   check_has "poll-bus-probe-skipped-on-override-handoff" "$out" "HANDOFF"
 
@@ -704,7 +729,7 @@ CYML
   : > "$T/notify.log"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_NOFANOUT=1 OC_DEPLOY_POLL_INTERVAL=0 OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" poll --wait 1 --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --wait 1 --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
   check_rc "poll-wait-timeout-rc" $rc 5
   check_has "poll-wait-timeout-msg" "$out" "timed out"
   grep -q "timed out" "$T/notify.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: poll --wait timeout did not notify session"; }
@@ -723,25 +748,25 @@ NSTUB2
   export FLAKY_LOG="$T/notify-flaky.log"; : > "$FLAKY_LOG"; rm -f "$FLAKY_LOG.count"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_NOFANOUT=1 OC_DEPLOY_POLL_INTERVAL=0 OC_DEPLOY_NOTIFY="$SD/notify-flaky" \
-    "$SELF_BIN" poll --wait 1 --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --wait 1 --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
   check_rc "poll-flaky-wake-rc" $rc 5
   case "$out" in *"wake FAILED"*) fail=$((fail+1)); echo "SELFTEST FAIL: refused wake not recovered by --interrupt retry";; *) pass=$((pass+1));; esac
   [ "$(wc -l < "$FLAKY_LOG")" -eq 2 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: expected exactly 2 verb calls (refusal + interrupt retry), got $(wc -l < "$FLAKY_LOG")"; }
   [ "$(sed -n 2p "$FLAKY_LOG" | grep -c -- '--interrupt')" -eq 1 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: second verb call lacks --interrupt"; }
   # 10c. C-#2: --wait 0 keeps the classic single-pass "nothing to do" rc 0
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_DEPLOY_NOFANOUT=1 "$SELF_BIN" poll --wait 0 2>&1)"; rc=$?
+    OC_DEPLOY_NOFANOUT=1 "$STATUS_BIN" poll --wait 0 2>&1)"; rc=$?
   check_rc "poll-wait0-rc" $rc 0
   check_has "poll-wait0-noop" "$out" "nothing to do"
   # 10e. #63 (v0.4.79): stale FIRST run skipped, older decodable run wins
   out="$(OC_TEST_STALE_FIRST=1 OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_DEPLOY_NOFANOUT=1 "$SELF_BIN" poll --wait 0 2>&1)"; rc=$?
+    OC_DEPLOY_NOFANOUT=1 "$STATUS_BIN" poll --wait 0 2>&1)"; rc=$?
   check_rc "poll-stale-first-rc" $rc 0
   check_has "poll-stale-skip-note" "$out" "skip run 999"
   check_has "poll-stale-picks-111" "$out" "nothing to do: aaaaaaaa"
   # 10f. #63 family (v0.4.79): fanout decode-fail -> rc 3, marked, idempotent on retry
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" fanout --run 998 2>&1)"; rc=$?
+    "$FANOUT_BIN" fanout --run 998 2>&1)"; rc=$?
   check_rc "fanout-decode-fail-rc" $rc 3
   # (#932 criterion 2, half A) The GENUINELY-undecodable run must read as a fact
   # about the RUN: rc 3, marked, and the text must NOT mention the decoder library
@@ -752,7 +777,7 @@ NSTUB2
   check_has "fanout-decode-fail-says-run" "$out" "no job name decodes"
   case "$out" in *oc-embed.sh*) fail=$((fail+1)); echo "SELFTEST FAIL: #932 criterion 2 -- the undecodable-RUN arm names the decoder library, so its text no longer differs from the missing-library arm";; *) pass=$((pass+1));; esac
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" fanout --run 998 2>&1)"; rc=$?
+    "$FANOUT_BIN" fanout --run 998 2>&1)"; rc=$?
   check_rc "fanout-998-retry-rc" $rc 0
   check_has "fanout-998-retry-idempotent" "$out" "reason=done"
   # 10f-bis. #84: an UNREADABLE jobs list is TRANSIENT — rc 3 unchanged (the
@@ -763,7 +788,7 @@ NSTUB2
   # Without 10f still passing, "never marks" would pass vacuously.
   : > "$T/gh84.log"
   out="$(GH_LOG="$T/gh84.log" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" fanout --run 997 2>&1)"; rc=$?
+    "$FANOUT_BIN" fanout --run 997 2>&1)"; rc=$?
   check_rc "fanout-unreadable-rc" $rc 3
   check_has "fanout-unreadable-note" "$out" "cannot READ the jobs list"
   if jq -e '.runs["997"]' "$SD/fanout.state" >/dev/null 2>&1; then
@@ -773,7 +798,7 @@ NSTUB2
   fi
   n1="$(grep -c 'actions/runs/997/jobs' "$T/gh84.log" 2>/dev/null || true)"
   out="$(GH_LOG="$T/gh84.log" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" fanout --run 997 2>&1)"; rc=$?
+    "$FANOUT_BIN" fanout --run 997 2>&1)"; rc=$?
   check_rc "fanout-unreadable-retry-rc" $rc 3
   n2="$(grep -c 'actions/runs/997/jobs' "$T/gh84.log" 2>/dev/null || true)"
   [ "${n2:-0}" -gt "${n1:-0}" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #84 the retry did not re-read the jobs list (n1=${n1:-0} n2=${n2:-0}) — it was answered idempotent"; }
@@ -790,11 +815,10 @@ NSTUB2
   # idempotence guard would answer first.
   local ND="$T/noembed"
   mkdir -p "$ND/tools/lib" "$ND/tools/ship"
-  cp "$SELF_BIN" "$ND/tools/ship/oc-deploy"
-  # T5-bis: oc-deploy is a DISPATCHER now, so the sandbox tree needs the four
-  # stage tools and the shared body too — otherwise the child dies on a missing
-  # file and this arm stops being about the missing DECODER. oc-embed.sh is the
-  # ONE library deliberately left out of this tree.
+  # #168 cut 5: the sandbox needs the stage tools and the shared body, not a
+  # dispatcher — the child below IS oc-fanout, the tool that owns the decoder
+  # call. oc-embed.sh is the ONE library deliberately left out of this tree, so
+  # a missing decoder stays the only difference between it and the real tree.
   cp "$OC_TOOLS_DIR"/ship/oc-build "$OC_TOOLS_DIR"/ship/oc-swap \
      "$OC_TOOLS_DIR"/ship/oc-fanout "$OC_TOOLS_DIR"/ship/oc-status "$ND/tools/ship/"
   cp "$OC_TOOLS_DIR/lib/oc-deploy-lib.sh" "$ND/tools/lib/" 2>/dev/null || true
@@ -807,7 +831,7 @@ NSTUB2
   # is not, because that is the first call oc_decode_job_sha_any is needed for.
   : > "$T/gh995.log"
   out="$(GH_LOG="$T/gh995.log" OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$ND/tools/ship/oc-deploy" fanout --run 995 2>&1)"; rc=$?
+    "$ND/tools/ship/oc-fanout" fanout --run 995 2>&1)"; rc=$?
   check_rc "fanout-noembed-rc" $rc 2
   check_has "fanout-noembed-names-lib" "$out" "oc-embed.sh"
   check_has "fanout-noembed-not-an-absent-sha" "$out" "NOT marked done"
@@ -860,7 +884,7 @@ NSTUB2
   #      (`ORDER gates (<40-hex>)`, no comma) at jobs[0] and the build job at
   #      jobs[1] — the GREEN run is FOUND (built sha decoded), never skipped
   out="$(OC_TEST_GATES_FIRST=1 OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    OC_DEPLOY_NOFANOUT=1 "$SELF_BIN" poll --wait 0 2>&1)"; rc=$?
+    OC_DEPLOY_NOFANOUT=1 "$STATUS_BIN" poll --wait 0 2>&1)"; rc=$?
   check_rc "poll-gates-first-rc" $rc 0
   check_has "poll-gates-first-found" "$out" "built sha=dddddddddddddddddddddddddddddddddddddddd"
   check_has "poll-gates-first-run-id" "$out" "run=334"
@@ -870,7 +894,7 @@ NSTUB2
   : > "$T/notify.log"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_DEPLOY_NOFANOUT=1 OC_SWAP_INFLIGHT_LISTER=/bin/true OC_SWAP_LAUNCH="$SD/launch" OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" poll --execute --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
+    "$STATUS_BIN" poll --execute --notify-session aaaaaaaa-1111-2222-3333-444444444444 2>&1)"; rc=$?
   check_rc "poll-wait-handoff-rc" $rc 0
   grep -q "HANDOFF" "$T/notify.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: handoff did not notify session"; }
   : > "$T/notify.log"   # drill case 11 asserts a CLEAN notify log — restore it
@@ -884,7 +908,7 @@ NSTUB2
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_A2A_URL="" \
     OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    "$SWAP_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --run 111 --features telegram --drill 2>&1)"; rc=$?
   check_rc "drill-rc" $rc 0
   check_has "drill-verdict" "$out" "DRILL COMPLETE"
@@ -909,7 +933,7 @@ NSTUB2
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_A2A_URL="" \
     OC_SWAP_ROLLBACK_FAIL=1 OC_SWAP_SETTLE=0 OC_SWAP_TRIES=1 \
     OC_DEPLOY_NOTIFY="$SD/notify" \
-    "$SELF_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    "$SWAP_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --run 113 --features telegram --drill 2>&1)"; rc=$?
   check_rc "drill-rollbackfail-rc" $rc 0
   check_has "drill-rollbackfail-echo" "$out" "MANUAL RECOVERY REQUIRED"
@@ -970,7 +994,7 @@ NSTUB2
   # 13. swap-execute below S2 -> exit 4 (stage gate)
   printf '{"meta":{"oc_deploy_stage":"S1"}}' > "$SD/workers-ledger.json"
   OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_TARGET="$T/bin/oc-fake" \
-    "$SELF_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    "$SWAP_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --run 111 --drill >/dev/null 2>&1; check_rc "swap-stage-gate" $? 4
   # 13b. double-execution guard: deployed.sha == --sha -> exit 2, no install
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD/workers-ledger.json"
@@ -979,7 +1003,7 @@ NSTUB2
   OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_TARGET="$T/bin/oc-fake" \
     OC_SWAP_BACKUP_DIR="$SD/backups" OC_SWAP_RESTART_CMD=true \
     OC_SWAP_ACTIVE_CMD="echo active" OC_SWAP_SKIP_PROC=1 OC_A2A_URL="" \
-    "$SELF_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    "$SWAP_BIN" swap-execute --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     --run 112 --features telegram --drill >/dev/null 2>&1
   check_rc "swap-double-guard" $? 2
   [ "$(cat "$SD/deployed.sha")" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ] \
@@ -989,7 +1013,7 @@ NSTUB2
   # 14. watchdog: CLEAN when fork main tip == deployed.sha
   local WTIP; WTIP="$(git -C "$T/remote.git" rev-parse main)"
   printf '%s\n' "$WTIP" > "$SD/deployed.sha"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" "$SELF_BIN" watch 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" "$STATUS_BIN" watch 2>&1)"; rc=$?
   check_rc "watch-clean-rc" $rc 0
   check_has "watch-clean-line" "$out" "WATCH-CLEAN"
   # 15. watchdog: ALERT on a stray commit pushed outside the pipeline
@@ -1000,11 +1024,11 @@ NSTUB2
   # 20. status subcommand: read-only deployment / daemon summary
   printf '{"sha":"1111111111111111111111111111111111111111","ts":"2026-09-11T12:00:00Z","stage":"S3","features":"telegram,code-graph","run_id":999,"target_host":"local"}\n' > "$SD/deployed.meta.json"
   printf '1111111111111111111111111111111111111111\n' > "$SD/deployed.sha"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-text-rc" $rc 0
   check_has "status-text-sha" "$out" "Deployed SHA:    1111111111111111111111111111111111111111"
 
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status --json 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status --json 2>&1)"; rc=$?
   check_rc "status-json-rc" $rc 0
   check_has "status-json-sha" "$out" '"sha": "1111111111111111111111111111111111111111"'
   check_has "status-json-features" "$out" '"features": "telegram,code-graph"'
@@ -1016,19 +1040,19 @@ NSTUB2
   # The stub PID must be ALIVE (this shell) — the emitter only prints the PID
   # line when the process exists, and a dead stub would read as "stopped".
   _st_live_pid=$$
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo $_st_live_pid" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo $_st_live_pid" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-pid-source-rc" $rc 0
   check_has "status-pid-from-unit" "$out" "  PID:             $_st_live_pid"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo $_st_live_pid" "$SELF_BIN" status --json 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo $_st_live_pid" "$STATUS_BIN" status --json 2>&1)"; rc=$?
   check_rc "status-json-pid-source-rc" $rc 0
   check_has "status-json-pid-from-unit" "$out" "\"pid\": $_st_live_pid"
   # An inactive unit reports MainPID=0, and `kill -0 0` SUCCEEDS (it targets
   # the caller's own process group) — so an unguarded PID 0 would render as
   # "running" with a garbage uptime. This must read as stopped/null.
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo 0" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo 0" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-pid-zero-rc" $rc 0
   check_has "status-pid-zero-stopped" "$out" "  Status:          stopped"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo 0" "$SELF_BIN" status --json 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_SWAP_PID_CMD="echo 0" "$STATUS_BIN" status --json 2>&1)"; rc=$?
   check_has "status-json-pid-zero-null" "$out" '"pid": null'
 
   # 20b. #746: the documented rc 1 was UNREACHABLE — status_run() ended in an
@@ -1041,31 +1065,31 @@ NSTUB2
   # redden there.
   printf '{"sha":"2222222222222222222222222222222222222222","stage":"S3"}\n' > "$SD/deployed.meta.json"
   printf '3333333333333333333333333333333333333333\n' > "$SD/deployed.sha"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-mismatch-rc" $rc 1
   rm -f "$SD/deployed.sha"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-unswapped-meta-only-rc" $rc 1
   rm -f "$SD/deployed.meta.json"
   printf '3333333333333333333333333333333333333333\n' > "$SD/deployed.sha"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-unswapped-marker-only-rc" $rc 1
   rm -f "$SD/deployed.sha" "$SD/deployed.meta.json"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status 2>&1)"; rc=$?
   check_rc "status-nothing-deployed-rc" $rc 0
-  out="$(OC_DEPLOY_STATE_DIR="$SD" "$SELF_BIN" status --bogus 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" "$STATUS_BIN" status --bogus 2>&1)"; rc=$?
   check_rc "status-unknown-arg-rc" $rc 2
   # restore the matching pair the later watch legs read
   printf '{"sha":"1111111111111111111111111111111111111111","ts":"2026-09-11T12:00:00Z","stage":"S3","features":"telegram,code-graph","run_id":999,"target_host":"local"}\n' > "$SD/deployed.meta.json"
   printf '1111111111111111111111111111111111111111\n' > "$SD/deployed.sha"
 
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_GH="$SD/gh" "$SELF_BIN" watch 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_GH="$SD/gh" "$STATUS_BIN" watch 2>&1)"; rc=$?
   check_rc "watch-alert-rc" $rc 2
   check_has "watch-alert-line" "$out" "WATCH-ALERT"
   grep -q "ALERT:stray" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no watch alert shadow row"; }
   # 16. watchdog: a sha this tool dispatched IS covered (shadow log)
   printf '2026-01-01T00:00:00Z\tship\t%s\ttelegram\tdispatched\tstage=S3\n' "$(git -C "$T/remote.git" rev-parse main)" >> "$SD/oc-deploy-shadow.log"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" "$SELF_BIN" watch 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" "$STATUS_BIN" watch 2>&1)"; rc=$?
   check_rc "watch-covered-rc" $rc 0
   check_has "watch-covered-line" "$out" "WATCH-CLEAN"
 
@@ -1073,10 +1097,10 @@ NSTUB2
   # upstream fixture: rc 0 = clean, rc 1 = present (advisory).
   printf '#!/usr/bin/env bash\necho "BASE abc1234"\nexit 0\n' > "$SD/delta-stub-clean"; chmod +x "$SD/delta-stub-clean"
   printf '#!/usr/bin/env bash\necho "BASE abc1234"\necho "AHEAD 2"\nexit 1\n' > "$SD/delta-stub-ahead"; chmod +x "$SD/delta-stub-ahead"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_DELTA_TOOL="$SD/delta-stub-clean" "$SELF_BIN" watch --with-delta 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_DELTA_TOOL="$SD/delta-stub-clean" "$STATUS_BIN" watch --with-delta 2>&1)"; rc=$?
   check_rc "watch-delta-clean-rc" $rc 0
   check_has "watch-delta-prefix" "$out" "DELTA: BASE abc1234"
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_DELTA_TOOL="$SD/delta-stub-ahead" "$SELF_BIN" watch --with-delta 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_DELTA_TOOL="$SD/delta-stub-ahead" "$STATUS_BIN" watch --with-delta 2>&1)"; rc=$?
   check_rc "watch-delta-ahead-rc-stays-0" $rc 0
   check_has "watch-delta-ahead-line" "$out" "DELTA: AHEAD 2"
 
@@ -1087,7 +1111,7 @@ NSTUB2
   git -C "$T/repo" checkout -qB watchtest2 FETCH_HEAD
   git -C "$T/repo" commit -q --allow-empty -m "stray again"
   git -C "$T/repo" push -q "$T/remote.git" HEAD:refs/heads/main
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_DELTA_TOOL="$SD/delta-stub-ahead" "$SELF_BIN" watch --with-delta 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_DELTA_TOOL="$SD/delta-stub-ahead" "$STATUS_BIN" watch --with-delta 2>&1)"; rc=$?
   check_rc "watch-delta-trip-wins-rc" $rc 2
   check_has "watch-delta-trip-alert" "$out" "WATCH-ALERT"
   check_has "watch-delta-trip-delta-ran" "$out" "DELTA: AHEAD 2"
@@ -1099,7 +1123,7 @@ NSTUB2
   chmod +x "$SD/tools/attrib-stub"
   : > "$NOTIFY_LOG"  # shim created in stubs section; cleared per-case
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 222 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 222 2>&1)"; rc=$?
   check_rc "fanout-green-rc" $rc 0
   check_has "fanout-green-counts" "$out" "notified=1 skipped=1"
   grep -q "aaaaaaaa-1111" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: live uuid not notified"; }
@@ -1118,23 +1142,23 @@ NSTUB2
   # 17b. idempotent re-run: no new notify calls
   local NL1; NL1="$(wc -l < "$NOTIFY_LOG")"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 222 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 222 2>&1)"; rc=$?
   check_rc "fanout-idempotent-rc" $rc 0
   check_has "fanout-idempotent-line" "$out" "reason=done"
   [ "$(wc -l < "$NOTIFY_LOG")" = "$NL1" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: re-run sent new notifies"; }
   # 17c. GREEN run not yet deployed -> noop, NOT marked done
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 333 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 333 2>&1)"; rc=$?
   check_rc "fanout-notdeployed-rc" $rc 0
   check_has "fanout-notdeployed-line" "$out" "not deployed yet"
   jq -e '.runs["333"]' "$SD/fanout.state" >/dev/null 2>&1 && { fail=$((fail+1)); echo "SELFTEST FAIL: not-deployed run marked done"; } || pass=$((pass+1))
   # 17d. non-terminal run -> rc 4
   OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" \
-    "$SELF_BIN" fanout --run 444 >/dev/null 2>&1; check_rc "fanout-noterminal" $? 4
+    "$FANOUT_BIN" fanout --run 444 >/dev/null 2>&1; check_rc "fanout-noterminal" $? 4
   # 17e. dry-run: counts but never calls the verb, never marks done
   local NL2; NL2="$(wc -l < "$NOTIFY_LOG")"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 555 --dry-run 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 555 --dry-run 2>&1)"; rc=$?
   check_rc "fanout-dry-rc" $rc 0
   check_has "fanout-dry-counts" "$out" "notified=2 skipped=0"   # verb never consulted in dry-run: dead uuids count as notified
   [ "$(wc -l < "$NOTIFY_LOG")" = "$NL2" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: dry-run called the verb"; }
@@ -1144,7 +1168,7 @@ NSTUB2
   printf '#!/usr/bin/env bash\necho "oc-attrib: bad range" >&2\nexit 5\n' > "$SD/tools/attrib-stub-fail"
   chmod +x "$SD/tools/attrib-stub-fail"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub-fail" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 790 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 790 2>&1)"; rc=$?
   check_rc "fanout-attrib-fail-rc" $rc 3
   check_has "fanout-attrib-fail-names-rc" "$out" "rc=5"
   FJAF="$(ls -t "$SD/oc-deploy/journal/"fanout-790-*.jsonl 2>/dev/null | head -1)"
@@ -1158,7 +1182,7 @@ NSTUB2
   chmod +x "$SD/tools/attrib-stub-empty"
   local NL3; NL3="$(wc -l < "$NOTIFY_LOG")"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub-empty" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 791 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 791 2>&1)"; rc=$?
   check_rc "fanout-empty-attrib-rc" $rc 0
   check_has "fanout-empty-attrib-line" "$out" "no novel commits in range"
   check_has "fanout-empty-attrib-end" "$out" "notified=0 skipped=0"
@@ -1186,7 +1210,7 @@ Issue-Ref: #101"
   printf '%s\n' "$RHEAD1" > "$SD/red-head"
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc1" OC_DEPLOY_REMOTE="$T/red1.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 666 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 666 2>&1)"; rc=$?
   check_rc "fanout-red-rc" $rc 0
   check_has "fanout-red-counts" "$out" "notified=1 skipped=0 unowned=0"
   grep -q "cccccccc-1111" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: culprit not notified"; }
@@ -1216,7 +1240,7 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
   printf '%s\n' "$(git -C "$T/redw2" rev-parse HEAD)" > "$SD/red-head"
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc2" OC_DEPLOY_REMOTE="$T/red2.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 670 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 670 2>&1)"; rc=$?
   check_rc "fanout-suspect-rc" $rc 0
   check_has "fanout-suspect-counts" "$out" "notified=2 skipped=0 unowned=0"
   grep -q "suspect cc" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no suspect-role notify"; }
@@ -1235,7 +1259,7 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
   printf '%s\n' "$(git -C "$T/redw3" rev-parse HEAD)" > "$SD/red-head"
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc3" OC_DEPLOY_REMOTE="$T/red3.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 667 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 667 2>&1)"; rc=$?
   check_rc "fanout-unowned-rc" $rc 0
   check_has "fanout-unowned-counts" "$out" "notified=0 skipped=0 unowned=1"
   [ ! -s "$NOTIFY_LOG" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: unowned commit notified someone"; }
@@ -1252,7 +1276,7 @@ Session-Id: 99999999-8888-7777-6666-555555555555"
   printf '%s\n' "$(git -C "$T/redc4" rev-parse HEAD)" > "$SD/red-head"
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc4" OC_DEPLOY_REMOTE="$T/red4.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 668 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 668 2>&1)"; rc=$?
   check_rc "fanout-nosite-rc" $rc 0
   grep -q "99999999-8888" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: fallback did not notify range session"; }
   grep -q "HUMAN-FLAG" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: fallback text missing HUMAN-FLAG"; }
@@ -1271,7 +1295,7 @@ Session-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
   printf '%s\n' "$(git -C "$T/redw5" rev-parse HEAD)" > "$SD/red-head"
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc5" OC_DEPLOY_REMOTE="$T/red5.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$SELF_BIN" fanout --run 669 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 669 2>&1)"; rc=$?
   check_rc "fanout-deadculprit-rc" $rc 0
   check_has "fanout-deadculprit-counts" "$out" "notified=0 skipped=1 unowned=0"
   grep '"step":"skip"' "$(ls "$SD/oc-deploy/journal/"fanout-669-*.jsonl | head -1)" | grep -q '"reason":"dead"' \
@@ -1314,7 +1338,7 @@ NSTUB3
   # reason (see the 17k wiring leg).
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
     OC_DEPLOY_NOTIFY="$SD/notify-transient" OC_DEPLOY_NOTIFY_RETRY_BUDGET=20 OC_DEPLOY_NOTIFY_RETRY_INTERVAL=0 \
-    "$SELF_BIN" fanout --run 774 2>&1)"; rc=$?
+    "$FANOUT_BIN" fanout --run 774 2>&1)"; rc=$?
   check_rc "fanout-transient-retry-rc" $rc 0
   _tjl="$(ls "$SD/oc-deploy/journal/"fanout-774-*.jsonl 2>/dev/null | head -1)"
   if grep -qE '"retried":[12]' "$_tjl"; then
@@ -1366,7 +1390,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_SEAL="$SD2/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD2/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    "$SWAP_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --run 777 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "wire-green-rc" $rc 0
   check_has "wire-green-complete" "$out" "SWAP COMPLETE"
@@ -1399,7 +1423,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
     OC_DEPLOY_SEAL="$SD3/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD3/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    "$SWAP_BIN" swap-execute --sha bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --run 777 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "wire-nofanout-rc" $rc 0
   check_has "wire-nofanout-complete" "$out" "SWAP COMPLETE"
@@ -1426,7 +1450,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
     OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
+    "$SWAP_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 881 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featdrop-refused-rc" $rc 4
   check_has "featdrop-refused-msg" "$out" "features-compat gate"
@@ -1441,7 +1465,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
     OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
+    "$SWAP_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 882 --features telegram --allow-features-drop --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featdrop-allowed-rc" $rc 0
   check_has "featdrop-allowed-complete" "$out" "SWAP COMPLETE"
@@ -1455,7 +1479,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
     OC_DEPLOY_SEAL="$SD5/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD5/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
+    "$SWAP_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
     --run 883 --features telegram,code-graph,voice --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "featadd-passes-rc" $rc 0
   # 17r-17u. #766 fork-release publish tail (design fork#766, owner-approved
@@ -1485,7 +1509,7 @@ NSTUB3
     OC_DEPLOY_SEAL="$SD7/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD7/tools/ship/oc-verify-artifact" \
     OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_NOPUBLISH="${5:-0}" \
     OC_TEST_REL_EXISTS="${3:-}" OC_TEST_REL_FAIL="${4:-}" OC_TEST_REL_CAPTURE="$RELCAP/in" \
-    "$SELF_BIN" swap-execute --sha "$1" --run "$2" --features telegram --artifact-dir "$T/art" 2>&1
+    "$SWAP_BIN" swap-execute --sha "$1" --run "$2" --features telegram --artifact-dir "$T/art" 2>&1
   }
   # 17r. create path: neither tag exists -> BOTH releases created; name carries
   #      <upstream-version>+fork.<cycle> (0.5.4 from Cargo.toml, 352 from baseline).
@@ -1560,7 +1584,7 @@ NSTUB3
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
     OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_TEST_CARRIER_FORK_VERSION=1 \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "72-dispatch-rc" $rc 0
   # Dispatch runs BEFORE the seal, so it must inject the cycle the seal WILL write (352+1).
   check_has "72-dispatch-echo" "$out" "carrier fork_version=0.5.4+fork.353"
@@ -1583,7 +1607,7 @@ NSTUB3
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD7" OC_DEPLOY_REPO="$T/crepo" \
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
     OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "72-transition-rc" $rc 0
   grep -q 'fork_version=' "$GH_LOG" \
     && { fail=$((fail+1)); echo "SELFTEST FAIL: #72 passed fork_version to a carrier that does not declare it (422 on every ship)"; } || pass=$((pass+1))
@@ -1596,7 +1620,7 @@ NSTUB3
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
     OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_TEST_CARRIER_YML_FAIL=1 \
-    "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "72-undecidable-rc" $rc 2
   check_has "72-undecidable-msg" "$out" "refusing to dispatch blind"
   grep -q 'workflow run' "$GH_LOG" \
@@ -1630,7 +1654,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
+    "$SWAP_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 778 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "sidecar-green-rc" $rc 0
   check_has "sidecar-complete" "$out" "SWAP COMPLETE"
@@ -1651,7 +1675,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
+    "$SWAP_BIN" swap-execute --sha cccccccccccccccccccccccccccccccccccccccc \
     --run 779 --features telegram --artifact-dir "$T/art" 2>&1)"; rc=$?
   check_rc "sidecar-guard-rc" $rc 0
   N_SC="$(grep -h '"step":"sidecar-sync"' "$SD4"/oc-deploy/journal/*.jsonl 2>/dev/null | grep -c 'drill-or-sandbox-or-disabled')"
@@ -1668,7 +1692,7 @@ NSTUB3
     OC_A2A_URL="" OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_GH="$SD/gh" \
     OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_REPO="$T/crepo" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_SEAL="$SD4/tools/ship/oc-seal" OC_DEPLOY_ARTVERIFY="$SD4/tools/ship/oc-verify-artifact" \
-    "$SELF_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
+    "$SWAP_BIN" swap-execute --sha dddddddddddddddddddddddddddddddddddddddd \
     --run 780 --features telegram --artifact-dir "$T/art" >/dev/null 2>&1
   N_SC2="$(grep -h '"step":"sidecar-sync"' "$SD4"/oc-deploy/journal/*.jsonl 2>/dev/null | grep -c 'drill-or-sandbox-or-disabled')"
   [ "$N_SC2" -ge 2 ] \
@@ -1681,7 +1705,7 @@ NSTUB3
   printf '%s\n' "$(git -C "$T/redw1" rev-parse HEAD)" > "$SD/red-head"
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc1" OC_DEPLOY_REMOTE="$T/red1.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" "$SELF_BIN" poll 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" "$STATUS_BIN" poll 2>&1)"; rc=$?
   check_rc "poll-redscan-rc" $rc 0
   check_has "poll-redscan-line" "$out" "RED scan: run=888"
   check_has "poll-redscan-notified" "$out" "notified=1"
@@ -1697,7 +1721,7 @@ NSTUB3
   : > "$NOTIFY_LOG"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc1" OC_DEPLOY_REMOTE="$T/red1.git" \
     OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    "$ND/tools/ship/oc-deploy" fanout --run 676 2>&1)"; rc=$?
+    "$ND/tools/ship/oc-fanout" fanout --run 676 2>&1)"; rc=$?
   check_rc "noembed-red-attrs-rc" $rc 0
   check_has "noembed-red-warns" "$out" "oc-embed.sh"
   case "$out" in
@@ -1709,7 +1733,7 @@ NSTUB3
   local NJ1 NJ2 NEWJ
   NJ1="$(ls "$SD/oc-deploy/journal/"fanout-888-*.jsonl 2>/dev/null | wc -l)"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc1" OC_DEPLOY_REMOTE="$T/red1.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" "$SELF_BIN" poll 2>&1)"; rc=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" "$STATUS_BIN" poll 2>&1)"; rc=$?
   check_rc "poll-redscan-idem-rc" $rc 0
   check_has "poll-redscan-idem" "$out" "reason=done"
   # issue #42: every invocation journals its outcome — the no-op re-run writes
@@ -1734,9 +1758,9 @@ NSTUB
   chmod +x "$SD/notify-slow"
   local FOUTA FOUTB PA PB RCA RCB
   OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify-slow" "$SELF_BIN" fanout --run 789 >"$T/fanout-a.out" 2>&1 & PA=$!
+    OC_DEPLOY_NOTIFY="$SD/notify-slow" "$FANOUT_BIN" fanout --run 789 >"$T/fanout-a.out" 2>&1 & PA=$!
   OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify-slow" "$SELF_BIN" fanout --run 789 >"$T/fanout-b.out" 2>&1 & PB=$!
+    OC_DEPLOY_NOTIFY="$SD/notify-slow" "$FANOUT_BIN" fanout --run 789 >"$T/fanout-b.out" 2>&1 & PB=$!
   wait "$PA"; RCA=$?
   wait "$PB"; RCB=$?
   FOUTA="$T/fanout-a.out"; FOUTB="$T/fanout-b.out"
@@ -1797,37 +1821,37 @@ NSTUB
   [ "$(git -C "$LREPO" show "$LDEP" | git patch-id --stable | awk '{print $1}')" \
     = "$(git -C "$LREPO" show "$LREW" | git patch-id --stable | awk '{print $1}')" ] \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage fixture broken — twin patch-ids differ"; }
-  # 21a. lineage-check verb: monotonic accept (fast path)
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LREW" --sha "$LNEW" 2>&1)"; rc=$?
+  # 21a. oc-verify-lineage: monotonic accept (fast path)
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LREW" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-monotonic-rc" $rc 0
   grep -qE '^verdict: +monotonic$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check monotonic verdict wrong: $out"; }
-  # 21b. lineage-check verb: rewritten accept, twin named
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" 2>&1)"; rc=$?
+  # 21b. oc-verify-lineage: rewritten accept, twin named
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-rewritten-rc" $rc 0
   grep -qE '^verdict: +rewritten$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check rewritten verdict wrong: $out"; }
   check_has "lineage-check-rewritten-twin" "$out" "rewritten_twin:    $LREW"
   # 21b-json. machine-readable shape (reporters/lanes key on this)
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" --json 2>&1)"; rc=$?
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" --json 2>&1)"; rc=$?
   check_rc "lineage-check-json-rc" $rc 0
   printf '%s' "$out" | jq -e --arg t "$LREW" '.verdict=="rewritten" and .rewritten_twin==$t' >/dev/null 2>&1 \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check --json wrong: $out"; }
-  # 21c. lineage-check verb: genuinely absent change -> rc 2
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LSTALE" --sha "$LNEW" 2>&1)"; rc=$?
+  # 21c. oc-verify-lineage: genuinely absent change -> rc 2
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LSTALE" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-absent-rc" $rc 2
   grep -qE '^verdict: +absent$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check absent verdict wrong: $out"; }
   # 21d. NEGATIVE CONTROL: a rewrite whose content CHANGED is still refused —
   #      this is what proves acceptance keys on patch CONTENT, not on "some
   #      commit exists in the range"
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEG" 2>&1)"; rc=$?
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LDEP" --sha "$LNEG" 2>&1)"; rc=$?
   check_rc "lineage-check-negctrl-rc" $rc 2
   grep -qE '^verdict: +absent$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: tampered rewrite NOT refused (patch-id not content-sensitive): $out"; }
   # 21e. unknown (object not in this repo) is SKIPPED, not refused — preserves
   #      the pre-v0.4.151 "if both exist" behaviour
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --sha "$LNEW" 2>&1)"; rc=$?
+  out="$("$LV_BIN" --repo "$LREPO" --prev deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-unknown-rc" $rc 2
   grep -qE '^verdict: +unknown$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check unknown verdict wrong: $out"; }
@@ -1852,7 +1876,7 @@ NSTUB
       OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" OC_DEPLOY_NOFANOUT=1 \
       OC_DEPLOY_REPO="$LREPO" OC_DEPLOY_SEAL="$SD6/tools/ship/oc-seal" \
       OC_DEPLOY_ARTVERIFY="$SD6/tools/ship/oc-verify-artifact" \
-      "$SELF_BIN" swap-execute --sha "$sha" --run 777 --features telegram \
+      "$SWAP_BIN" swap-execute --sha "$sha" --run 777 --features telegram \
       --artifact-dir "$T/art" "$@" 2>"$T/lin.err")"
     LRC=$?
     LERR="$(cat "$T/lin.err")"
@@ -1896,7 +1920,7 @@ NSTUB
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: override not journaled with justification+actor"; }
   check_has "swap-lineage-override-warning" "$LERR" "OVERRIDDEN"
   # 21j. the override flag cannot be used bare — a missing justification dies rc 2
-  OC_DEPLOY_STATE_DIR="$SD6" "$SELF_BIN" swap-execute --sha "$LNEW" --run 778 \
+  OC_DEPLOY_STATE_DIR="$SD6" "$SWAP_BIN" swap-execute --sha "$LNEW" --run 778 \
     --allow-rewritten-lineage >/dev/null 2>"$T/lin.err"; rc=$?
   check_rc "swap-lineage-override-nojust-rc" $rc 2
   check_has "swap-lineage-override-nojust-token" "$(cat "$T/lin.err")" "OC_DEPLOY_GATE=override-needs-justification"
@@ -1965,7 +1989,7 @@ EOS
       OC_DEPLOY_REPO="$LREPO" OC_DEPLOY_SEAL="$sdir/tools/ship/oc-seal" \
       OC_DEPLOY_ARTVERIFY="$sdir/tools/ship/oc-verify-artifact" \
       OC_SWAP_IN_UNIT_CGROUP=1 OC_SWAP_DETACH_CMD="setsid -w" OC_SWAP_DETACHED="$det" \
-      setsid "$T/cgwrap.sh" "$SELF_BIN" swap-execute --sha "$sha" --run 790 \
+      setsid "$T/cgwrap.sh" "$SWAP_BIN" swap-execute --sha "$sha" --run 790 \
       --features telegram --artifact-dir "$T/art" "$@" 2>"$T/cg.err" )"
     CRC=$?
     CERR="$(cat "$T/cg.err" 2>/dev/null)"
@@ -2001,12 +2025,12 @@ EOS
   # 22c. recover-receipt repairs the truncated swap: exactly one row, idempotent
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD7/workers-ledger.json"
   printf '%s\n' "$LNEW" > "$SD7/deployed.sha"
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
   check_rc "recover-rc" $CRC 0
   check_has "recover-verdict" "$COUT" "row stamped"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD7/workers-ledger.json" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: recover-receipt did not stamp exactly one row"; }
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
   check_rc "recover-idempotent-rc" $CRC 0
   check_has "recover-idempotent-msg" "$COUT" "idempotent no-op"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD7/workers-ledger.json" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
@@ -2014,13 +2038,13 @@ EOS
   # 22d. REFUSAL: journal sha != current deployed.sha -> rc 2, nothing written
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD8/workers-ledger.json"
   printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' > "$SD8/deployed.sha"
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
   check_rc "recover-refuse-rc" $CRC 2
   check_has "recover-refuse-msg" "$COUT" "superseded"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD8/workers-ledger.json" 2>/dev/null)" = 0 ] && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: recover-receipt stamped despite the sha mismatch"; }
   # 22e. --historical records the superseded swap rather than refusing outright
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$SELF_BIN" recover-receipt --journal "$NEG_JF" --historical 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$RR_BIN" recover-receipt --journal "$NEG_JF" --historical 2>&1)"; CRC=$?
   check_rc "recover-historical-rc" $CRC 0
   check_has "recover-historical-kw" "$COUT" "SUPERSEDED"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD8/workers-ledger.json" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
@@ -2045,16 +2069,16 @@ EOS
   #      (ii) a selector matching several journals prefers one carrying a receipt
   #           step, because that PROVES the run completed - the honest verdict is
   #           "nothing to recover", not "never installed"
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --run 999999999 --dry-run 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --run 999999999 --dry-run 2>&1)"; CRC=$?
   check_rc "recover-selector-nomatch-rc" $CRC 2
   check_has "recover-selector-nomatch-msg" "$COUT" "NO journal"
   case "$COUT" in *".jsonl"*) fail=$((fail+1)); echo "SELFTEST FAIL: recover-selector-nomatch fell back to a journal" ;; *) pass=$((pass+1)) ;; esac
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --sha deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --sha deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"; CRC=$?
   check_rc "recover-selector-nomatch-sha-rc" $CRC 2
   # several journals share run 790 here (one complete, two truncated): the complete
   # one must win, so the verdict is the honest "swap completed" - the exact
   # inversion of the reported false negative.
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --run 790 --dry-run 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --run 790 --dry-run 2>&1)"; CRC=$?
   check_rc "recover-selector-prefers-complete-rc" $CRC 0
   check_has "recover-selector-prefers-complete-msg" "$COUT" "already carries a receipt step"
   # 18. structural guard: the fanout lock NAME must be ignorable by the repo.
@@ -2089,7 +2113,7 @@ OCPY
   # and, worse, a `nice=19` assertion passes for the wrong reason. #76 measured
   # exactly that failure: a mutant that never renices read 19 and the control
   # called it success.
-  rc=0; out="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; exec "$0" ship --resolve-priority' "$SELF_BIN" 2>&1)" || rc=$?
+  rc=0; out="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; exec "$0" ship --resolve-priority' "$BUILD_BIN" 2>&1)" || rc=$?
   check_rc "priority-default-rc0" "$rc" 0
   check_has "priority-default-class-low" "$out" "priority=low"
   check_has "priority-default-nice-19" "$out" "nice=19"
@@ -2102,7 +2126,7 @@ OCPY
 
   # `normal` must really leave the process alone, asserted from a 0 baseline so
   # "did nothing" is distinguishable from "inherited 0".
-  rc=0; out="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; exec "$0" ship --priority normal --resolve-priority' "$SELF_BIN" 2>&1)" || rc=$?
+  rc=0; out="$(bash -c 'renice -n 0 -p $$ >/dev/null 2>&1 || :; exec "$0" ship --priority normal --resolve-priority' "$BUILD_BIN" 2>&1)" || rc=$?
   check_rc "priority-normal-rc0" "$rc" 0
   check_has "priority-normal-class" "$out" "priority=normal"
   check_has "priority-normal-nice-0" "$out" "nice=0"
@@ -2111,20 +2135,20 @@ OCPY
 
   # A typo is refused, never silently treated as `normal`: an accepted-but-inert
   # flag is indistinguishable from an honoured one.
-  rc=0; out="$("$SELF_BIN" ship --priority hig --resolve-priority 2>&1)" || rc=$?
+  rc=0; out="$("$BUILD_BIN" ship --priority hig --resolve-priority 2>&1)" || rc=$?
   check_rc "priority-bad-value-rc2" "$rc" 2
   # The rc alone is NOT sufficient here: an unvalidated `--priority` also exits 2,
   # downstream, on the missing-`--sha` usage die. Measured: the neutered mutant
   # returns rc 2 for that unrelated reason, so an rc-only leg passes on a tool
   # with no validation at all. The diagnostic is the discriminator.
-  rc=0; out="$("$SELF_BIN" ship --priority 2>&1)" || rc=$?
+  rc=0; out="$("$BUILD_BIN" ship --priority 2>&1)" || rc=$?
   check_rc "priority-missing-value-rc2" "$rc" 2
   check_has "priority-missing-value-names-the-flag" "$out" "--priority needs"
 
   # The class must reach the OPERATOR: the stderr line prints on every non-probe
   # invocation, so a lane reading a deploy log can classify the run without
   # re-deriving it from argv.
-  rc=0; out="$(renice -n 0 -p $$ >/dev/null 2>&1 || :; "$SELF_BIN" ship 2>&1)" || rc=$?
+  rc=0; out="$(renice -n 0 -p $$ >/dev/null 2>&1 || :; "$BUILD_BIN" ship 2>&1)" || rc=$?
   check_has "priority-stderr-names-class" "$out" "priority=low (nice=19"
 
   # T-5: `oc-deploy features` is the DOCUMENTED entry; the standalone helper is
@@ -2133,7 +2157,7 @@ OCPY
   #     commands, one value, and a lane asking the helper directly could get a
   #     value the ship path disagreed with).
   printf '#!/usr/bin/env bash\necho telegram,browser\n' > "$SD/tools/carrier-multi"; chmod +x "$SD/tools/carrier-multi"
-  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-multi" "$SELF_BIN" features 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-multi" "$BUILD_BIN" features 2>&1)"; rc=$?
   check_rc "features-rc0" "$rc" 0
   check_has "features-prints-the-set" "$out" "telegram,browser"
   # same value as the helper itself, read in the same run with the SAME argv
@@ -2149,34 +2173,34 @@ OCPY
   # REMOTELY, one code path, so there is no freshness choice left to forward.
   # The verb must add NOTHING it was not given: an EMPTY argv is asserted
   # EXACTLY, so a reintroduced implicit flag reddens here rather than shipping.
-  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features 2>&1)"
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$BUILD_BIN" features 2>&1)"
   check_has "features-forwards-no-implicit-flag" "$out" "args:[]"
 
   # --repo is forwarded (the verb is a transparent wrapper, not a second reader)
-  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features --repo /tmp/somewhere 2>&1)"
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$BUILD_BIN" features --repo /tmp/somewhere 2>&1)"
   check_has "features-forwards-repo" "$out" "--repo /tmp/somewhere"
 
   # The DELETED flags are refused, never silently accepted: a caller still
   # passing --fetch/--no-fetch gets a loud rc 1 naming the flag, so a stale
   # invocation fails visibly instead of quietly doing nothing.
   for _dead in --fetch --no-fetch; do
-    out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$SELF_BIN" features "$_dead" 2>&1)"; rc=$?
+    out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-args" "$BUILD_BIN" features "$_dead" 2>&1)"; rc=$?
     check_rc "features-refuses${_dead//-/}" "$rc" 1
     check_has "features-refuses${_dead//-}-names-flag" "$out" "unknown arg"
   done
 
   # A carrier read FAILURE aborts loudly — never a silent fallback set.
-  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-fail" "$SELF_BIN" features 2>&1)"; rc=$?
+  out="$(OC_DEPLOY_CARRIER="$SD/tools/carrier-fail" "$BUILD_BIN" features 2>&1)"; rc=$?
   check_rc "features-carrier-fail-rc" "$rc" 3
   check_has "features-carrier-fail-names-tool" "$out" "carrier features read FAILED"
 
   # An unknown flag is refused (rc 1), never ignored.
-  out="$("$SELF_BIN" features --zzz-bogus 2>&1)"; rc=$?
+  out="$("$BUILD_BIN" features --zzz-bogus 2>&1)"; rc=$?
   check_rc "features-unknown-arg-rc1" "$rc" 1
   check_has "features-unknown-arg-names-flag" "$out" "unknown arg"
 
   # The usage line lists the verb (a verb nobody can discover is not a verb).
-  out="$("$SELF_BIN" --help 2>&1)"
+  out="$("$BUILD_BIN" --help 2>&1)"
   check_has "features-in-usage" "$out" "features [--repo P]"
 
   # T-5 ONE-READER guard. The behavioural legs above prove the VERB works; they
@@ -2409,7 +2433,7 @@ U156EOF
   check_rc "156e-empty-what-rc2" "$?" 2
   OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stamp "" "swap-result empty-actor probe" swap-result >/dev/null 2>&1
   check_rc "156e-empty-actor-rc0" "$?" 0
-  grep -q 'unattributed oc-deploy' "$SD156/events.jsonl" \
+  grep -q '(unattributed)' "$SD156/events.jsonl" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156e empty actor did not stamp an explicit unattributed row"; }
   # 156f — the row is visible to the LEDGER's own reader (the acceptance
   #        shape: `oc-ledger events` sees what deploy stamped).
@@ -2453,7 +2477,7 @@ U156EOF
   #     cgroup negative control produced ($NEG_JF, stops at marker-write with
   #     deployed_sha=$LNEW), so the row is a REAL reconstruction.
   printf '%s\n' "$LNEW" > "$SDG/deployed.sha"
-  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
   check_rc "156g-recover-rc" "$GRC" 0
   check_has "156g-recover-verdict" "$GOUT" "row stamped"
   jq -e --arg s "sha=$LNEW" 'select(.kind=="swap-result" and (.what|contains($s)))' "$SDG/events.jsonl" >/dev/null 2>&1 \
@@ -2461,7 +2485,7 @@ U156EOF
   # (4) idempotence is read off the RECORD too: a re-run must be a no-op, and
   #     pre-fix the raw-jq read against the absent legacy view answered 0 rows,
   #     so the second run stamped a DUPLICATE.
-  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
   check_rc "156g-recover-idempotent-rc" "$GRC" 0
   check_has "156g-recover-idempotent-msg" "$GOUT" "idempotent no-op"
   [ "$(jq -s '[.[]|select(.kind=="swap-result")]|length' "$SDG/events.jsonl" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
@@ -2487,7 +2511,7 @@ U156EOF
   printf '{"n":1,"t":"2026-11-01T00:00:00Z","by":"seed","kind":"note","what":"seed row"}\n' > "$SDH/events.jsonl"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}\n' > "$SDH/workers-ledger.json"
   printf '%s\n' "$LNEW" > "$SDH/deployed.sha"
-  GOUT="$(OC_DEPLOY_STATE_DIR="$SDH" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDH" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
   check_rc "156h-recover-rc" "$GRC" 0
   # POSITIVE CONTROL: the row must exist SOMEWHERE. Without it the subset test
   # below passes vacuously on a path that wrote nothing anywhere at all.
@@ -2509,6 +2533,6 @@ U156EOF
     pass=$((pass+1))
   fi
 
-  echo "oc-deploy selftest: $pass pass, $fail fail"
+  echo "deploy selftest: $pass pass, $fail fail"
   rm -rf "$T"
   [ "$fail" = 0 ]

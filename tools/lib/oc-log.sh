@@ -32,7 +32,7 @@
 # aggregate.
 #
 # Suppression: the invocation IS a selftest -- either the `--selftest` FLAG or
-# the bare `selftest` SUBCOMMAND (oc-deploy dispatches both from one case arm),
+# the bare `selftest` SUBCOMMAND (each tool dispatches both from one case arm),
 # see oc_is_selftest() below -- or OC_TOOLS_NOLOG=1 (the battery sets this so
 # suites stay silent). A bare-subcommand selftest used to slip the flag-only
 # predicate and log every fixture child it spawned into the PRODUCTION log.
@@ -47,7 +47,8 @@ OC_LOG_START=""
 
 # oc_is_selftest -- TRUE when this invocation is the tool's own selftest.
 # M2-21 (2026-09-12, toolsmith): the `--selftest` FLAG is not the only spelling --
-# oc-deploy dispatches `--selftest|selftest) selftest "$@" ;;` as ONE case arm, and
+# the (now-retired) `oc-deploy` dispatched `--selftest|selftest) selftest "$@" ;;` as ONE
+# case arm, and
 # the bare SUBCOMMAND slipped the flag-only predicate. Consequence: OC_TOOLS_NOLOG
 # was never exported, so every fixture child the selftest spawned was logged to the
 # PRODUCTION tools.log -- six fixture shas across two weeks (08-31 -> 09-12) that
@@ -74,7 +75,7 @@ OC_LOG_START=""
 # other tool now logs normally. Battery section 00d holds this list EQUAL to the
 # real set of arms in both directions, and its negative control (the env hook
 # below) proves the arm is what suppresses the row.
-OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-deploy oc-ledger oc-poll oc-roster oc-watcher-audit "
+OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-ledger oc-poll oc-roster oc-watcher-audit "
 OC_LOG_BARE_SELFTEST_TOOLS="${OC_LOG_BARE_SELFTEST_TOOLS:-$OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT}"
 oc_is_selftest() {
   case " $OC_LOG_ARGS " in
@@ -152,7 +153,7 @@ OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601?
 #                        1 = refused/vetting-failed   — refusal, not an answer
 #   oc-smoke             1 = "Smoke FAIL"              — writes a ledger row, closes
 #   oc-seal        1 = bare noop                 — keep the guard strict
-#   oc-verify-job / oc-verify-order / oc-pr-atomicity / oc-deploy /
+#   oc-verify-job / oc-verify-order / oc-pr-atomicity /
 #   oc-verify-artifact   1 = legacy USAGE code         — exempting it hides a
 #                                                        real usage bug
 OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-audit-ship:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-t5-sweep:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "

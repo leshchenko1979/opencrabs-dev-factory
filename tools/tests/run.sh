@@ -91,7 +91,7 @@ _CAP_PTR="${OC_BATTERY_CAPTURE_POINTER:-/tmp/oc-battery-capture.current}"
 note()  { printf '%s\n' "$*"; }
 
 # ---- oc-snap mirror reap on the EXIT path (factory #53) ----------------------
-# The tools this battery invokes (oc-deploy, oc-smoke, oc-verify-job, oc-gate)
+# The tools this battery invokes (oc-build, oc-smoke, oc-verify-job, oc-gate)
 # each create a /tmp/oc-snap-* mirror through oc_snap_guard, and NOTHING reaped
 # them when the run ended. Measured 2026-10-20: one 392-leg run left 126 mirrors
 # totalling 2.0 GB with zero live owner pids, on a root filesystem at 84%.
@@ -918,8 +918,9 @@ DEMO
   OC_TOOLS_NOLOG=1 OC_TOOLS_LOG="$L" "$d/oc-demo" 3
   [ "$(wc -l < "$L")" -eq 2 ] && ok "OC_TOOLS_NOLOG=1 suppresses" || bad "env suppression failed"
   # M2-21 (2026-09-12): the BARE `selftest` SUBCOMMAND must suppress too.
-  # oc-deploy:2976 dispatches `--selftest|selftest) selftest "$@" ;;` as ONE
-  # case arm, so a flag-only predicate let a bare-subcommand selftest log every
+  # oc-deploy:2976 used to dispatch `--selftest|selftest) selftest "$@" ;;` as
+  # ONE case arm (#168 cut 5 deleted that file and the combined arm with it), so
+  # a flag-only predicate let a bare-subcommand selftest log every
   # fixture child it spawned into the PRODUCTION tools.log -- 93 rows per run,
   # six phantom shas across two weeks, read back by oc-audit-ship as ORPHANED
   # dispatches (rc=1, gating `oc-ledger commit-pending`).
@@ -1467,7 +1468,7 @@ if [ -f "$TOOLS_DIR/lib/oc-embed.sh" ]; then
   # The REAL post-refactor shapes, verbatim from run 35612234852. BOTH carry a
   # slash and a 40-hex, and only ONE is decodable — the decoder needs the COMMA
   # after the sha, because an embed is `(<sha>, <features>)`. That asymmetry is
-  # load-bearing: `run_built_sha` (oc-deploy:1874-1882) takes the FIRST job name
+  # load-bearing: `run_built_sha` (tools/lib/oc-deploy-lib.sh) takes the FIRST job name
   # that DECODES, so the ORDER-gates job must NOT decode or the ship lane would
   # read the gate as the build.
   out="$(oc_decode_job_embed "ship / Linux amd64 (5140b36a0d8b2015eeea27ecbe18a46cc7d6e0c8, telegram,code-graph,browser)")"
@@ -1985,7 +1986,7 @@ Session-Id: 22222222-2222-2222-2222-222222222222"
   [ "$NN" = "$RAW" ] && ok "#407 --no-novel is byte-identical to RAW" || bad "#407 --no-novel != RAW"
   # an ALL-REPLAYED tip — nothing but a re-sha'd original plus an empty commit,
   # against a baseline that already carries both — must yield ZERO rows at rc 0.
-  # This is the case oc-deploy's fan-out has to read as "nothing to notify"
+  # This is the case oc-fanout's fan-out has to read as "nothing to notify"
   # rather than as an attrib breakdown (issue #407 instance B).
   git -C "$d" checkout -q -b tip2 "$B0"
   git -C "$d" cherry-pick "$TWIN" >/dev/null 2>&1 || bad "#407 fixture: tip2 cherry-pick failed"
@@ -2054,17 +2055,19 @@ fi
 
 # ---- 9i. oc-watchdog-check — RETIRED v0.4.65 (lens E A1: pure passthrough to oc-deploy watch) ----
 
-# ---- 9k. oc-deploy contributors + fanout (issue #24) -------------------------
+# ---- 9k. oc-fanout + attribution (issue #24) --------------------------------
 # Black-box battery checks for the #24 mechanical notify fan-out, invoking the
 # ABSOLUTE tool path (selftest re-invokes via $0 — a different code path):
-# contributors over the REAL oc-attrib; GREEN leg with a dead-session skip;
-# RED leg blame attribution over a real git fixture; idempotence; usage rc.
+# GREEN leg with a dead-session skip; RED leg blame attribution over a real git
+# fixture; idempotence; usage rc.
 # Stubs are heredocs: the original printf form corrupted the JSON quotes
 # (bash printf eats \" in the format string) and silently rc-3'd the GREEN
 # leg. Suspect cc / unowned / zero-site fallback / dry-run / drill
-# suppression are covered by the full oc-deploy --selftest in section 10.
-section "oc-deploy contributors + fanout (#24)"
-if tool oc-deploy; then
+# suppression are covered by the full deploy selftest in section 10.
+# #168 cut 5: this section named `oc-deploy fanout` through the dispatcher; the
+# fan-out verb is owned by `oc-fanout`, so the legs name that file directly.
+section "oc-fanout + attribution (#24)"
+if tool oc-fanout; then
   d="$(mktemp -d)"; SD="$d/state"; mkdir -p "$SD/tools"
   # contributors: real oc-attrib over a trailer fixture -> uuid + issue + sha7
   git init -q -b main "$d/crepo"
@@ -2076,15 +2079,11 @@ if tool oc-deploy; then
 Session-Id: 99999999-8888-7777-6666-555555555555
 Issue-Ref: #77"
   CTIP="$(git -C "$d/crepo" rev-parse HEAD)"
-  # contributors verb RETIRED (v0.4.91, lens E-2): loud deprecation rc 1, points at oc-attrib.
-  # The working TSV projection is covered by oc-attrib --contributors (single shape now).
-  OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_ATTRIB="$TOOLS_DIR/state/oc-attrib" \
-    "$TOOLS_DIR/ship/oc-deploy" contributors "$CBASE..$CTIP" --repo "$d/crepo" 2>&1)"; rck=$?
-  if [ "$rck" -eq 1 ] && case "$OUTK" in *"RETIRED"*"oc-attrib"*) true ;; *) false ;; esac; then
-    ok "contributors: retired verb -> rc1 + loud oc-attrib pointer"
-  else
-    bad "contributors retired (rc=$rck, want 1 + RETIRED + oc-attrib pointer)"
-  fi
+  # contributors verb DELETED (#168 cut 5). It had been a loud RETIRED stub since
+  # v0.4.91 and this leg asserted the stub — a test that guards a deprecation
+  # notice for a verb nobody calls keeps the verb alive for free. The working TSV
+  # projection was always oc-attrib --contributors, and THAT is what section 12
+  # covers; there is no second shape to assert.
   # gh stub: run 222 GREEN (built sha cccc...) + run 666 RED (head from red-head)
   cat > "$SD/gh" <<'GHSTUB'
 #!/usr/bin/env bash
@@ -2116,7 +2115,7 @@ NOTIFYSHIM
   chmod +x "$SD/notify"
   : > "$d/notify.log"
   OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-deploy" fanout --run 222 2>&1)"; rck=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-fanout" fanout --run 222 2>&1)"; rck=$?
   if [ "$rck" -eq 0 ] && case "$OUTK" in *"notified=1 skipped=1"*) true ;; *) false ;; esac; then
     ok "fanout GREEN: notified=1 skipped=1"
   else
@@ -2127,7 +2126,7 @@ NOTIFYSHIM
   jq -e '.runs["222"]' "$SD/fanout.state" >/dev/null 2>&1 && ok "fanout GREEN: state marked" || bad "fanout GREEN: state unmarked"
   grep -q '"reason":"dead"' "$SD"/oc-deploy/journal/fanout-222-*.jsonl 2>/dev/null && ok "dead uuid: skip journaled" || bad "dead uuid: no skip journal line"
   OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-deploy" fanout --run 222 2>&1)"; rck=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-fanout" fanout --run 222 2>&1)"; rck=$?
   [ "$rck" -eq 0 ] && case "$OUTK" in *"reason=done"*) true ;; *) false ;; esac \
     && ok "fanout idempotent rerun: reason=done" || bad "fanout idempotent rerun (rc=$rck)"
   # RED leg: culprit commit (trailer cccccccc-1111) blamed at bad.txt:3
@@ -2145,7 +2144,7 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
   git -C "$d/redw1" push -q "$d/red1.git" HEAD
   git -C "$d/redw1" rev-parse HEAD > "$SD/red-head"
   OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$d/redc1" OC_DEPLOY_REMOTE="$d/red1.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-deploy" fanout --run 666 2>&1)"; rck=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-fanout" fanout --run 666 2>&1)"; rck=$?
   if [ "$rck" -eq 0 ] && case "$OUTK" in *"notified=1 skipped=0 unowned=0"*) true ;; *) false ;; esac; then
     ok "fanout RED: blamed culprit notified=1"
   else
@@ -2159,44 +2158,53 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
     bad "fanout RED: attributed line missing/wrong"
   fi
   jq -e '.runs["666"].notified == 1' "$SD/fanout.state" >/dev/null 2>&1 && ok "fanout RED: state marked" || bad "fanout RED: state unmarked"
-  OUTK="$(OC_DEPLOY_STATE_DIR="$SD" "$TOOLS_DIR/ship/oc-deploy" fanout 2>&1)"; rck=$?
+  OUTK="$(OC_DEPLOY_STATE_DIR="$SD" "$TOOLS_DIR/ship/oc-fanout" fanout 2>&1)"; rck=$?
   [ "$rck" -eq 2 ] && ok "fanout without --run -> 2 (usage)" || bad "fanout usage (rc=$rck, want 2)"
   rm -rf "$d"
 fi
 
-# ---- 10. oc-deploy -----------------------------------------------------------
+# ---- 10. deploy stage tools (oc-build / oc-status) ---------------------------
 # Regression pinned here (2026-08-27): after a diverged remote round-trip, the
 # non-FF fetch refspec silently rejected the update and the ref-first fallback
 # resurrected a STALE refs/oc-deploy/main — FF check saw a ghost "rebase needed".
-section "oc-deploy"
+# #168 cut 5: the `oc-deploy` dispatcher is DELETED, so this section names the
+# tool that OWNS each verb — `oc-build` (ship) and `oc-status` (poll/usage).
+# The legs are unchanged in substance: they were always about the deploy path,
+# never about the router, and a leg that went through a router would now be
+# testing a file that does not exist.
+section "deploy stage tools"
 # M2-21 (2026-09-12) e2e: the selftest must be LOG-HERMETIC BY CONSTRUCTION,
-# not by argv shape. Run the BARE subcommand -- the spelling that slipped the
-# flag-only predicate -- with OC_TOOLS_LOG pointed at a temp file and require
-# ZERO rows. Pre-fix this wrote 93 rows of fixture dispatches; oc-audit-ship
-# read six of them back as ORPHANED and rc=1'd a gate that fronts
+# not by argv shape. With OC_TOOLS_LOG pointed at a temp file, require ZERO
+# rows. Pre-fix this wrote 93 rows of fixture dispatches; oc-audit-ship read
+# six of them back as ORPHANED and rc=1'd a gate that fronts
 # `oc-ledger commit-pending`. OC_TOOLS_NOLOG=0 is REQUIRED: the battery exports
 # it as 1 globally (run.sh:21), which would make this assertion vacuous.
+# The BARE spelling this leg used to exercise died with the dispatcher (it was
+# the `--selftest|selftest)` combined arm, and no stage tool carries a bare arm
+# — section 00d holds the declared bare-arm list EQUAL to the real one, which is
+# how the removal stays honest). The hermeticity claim is the durable half and
+# it is asserted on the documented entry, `oc-build --selftest`.
 LSE="$(mktemp -d)/selftest.log"
-run_capture "oc-deploy selftest (bare subcommand)" \
+run_capture "oc-build selftest (log hermeticity)" \
   env OC_TOOLS_NOLOG=0 OC_DEPLOY_STATE_DIR="$(mktemp -d)" OC_TOOLS_LOG="$LSE" \
-     "$TOOLS_DIR/ship/oc-deploy" selftest
+     "$TOOLS_DIR/ship/oc-build" --selftest
 if [ -s "$LSE" ]; then
-  bad "bare selftest leaked $(wc -l < "$LSE") row(s) into OC_TOOLS_LOG (M2-21)"
+  bad "selftest leaked $(wc -l < "$LSE") row(s) into OC_TOOLS_LOG (M2-21)"
 else
-  ok "bare selftest is log-hermetic: 0 rows (M2-21)"
+  ok "selftest is log-hermetic: 0 rows (M2-21)"
 fi
-if tool oc-deploy; then
-  "$TOOLS_DIR/ship/oc-deploy" >/dev/null 2>&1; [ $? -eq 1 ] && ok "no args -> 1 (usage)" || bad "no args -> expected 1"
-  "$TOOLS_DIR/ship/oc-deploy" --bogus >/dev/null 2>&1; [ $? -eq 1 ] && ok "unknown arg -> 1" || bad "unknown arg -> expected 1"
+if tool oc-status; then
+  "$TOOLS_DIR/ship/oc-status" >/dev/null 2>&1; [ $? -eq 1 ] && ok "no args -> 1 (usage)" || bad "no args -> expected 1"
+  "$TOOLS_DIR/ship/oc-status" --bogus >/dev/null 2>&1; [ $? -eq 1 ] && ok "unknown arg -> 1" || bad "unknown arg -> expected 1"
   d="$(mktemp -d)"; printf x > "$d/oc-deploy.kill"
-  OC_DEPLOY_STATE_DIR="$d" "$TOOLS_DIR/ship/oc-deploy" poll >/dev/null 2>&1
+  OC_DEPLOY_STATE_DIR="$d" "$TOOLS_DIR/ship/oc-status" poll >/dev/null 2>&1
   [ $? -eq 9 ] && ok "kill file -> 9 (real-mode brake)" || bad "kill file -> expected 9"
   # Duty-6 lens F task 5: --wait validated BEFORE any RED-scan side effects —
   # bad --wait dies rc1 with no fanout/state writes (the kill-file brake sits at
   # the TOP of every real-mode arm, so poll with kill file + bad --wait -> 9,
   # not 1; contract fix ec4706bd moved it there from before arg parsing).
   d2="$(mktemp -d)"
-  OC_DEPLOY_STATE_DIR="$d2" OC_DEPLOY_GH=/bin/false "$TOOLS_DIR/ship/oc-deploy" poll --wait abc >/dev/null 2>&1
+  OC_DEPLOY_STATE_DIR="$d2" OC_DEPLOY_GH=/bin/false "$TOOLS_DIR/ship/oc-status" poll --wait abc >/dev/null 2>&1
   [ $? -eq 1 ] && ok "poll bad --wait -> 1 before side effects" || bad "poll bad --wait -> expected 1"
   [ "$(ls -A "$d2" 2>/dev/null)" = "oc-deploy-shadow.log" ] && ok "poll bad --wait: no state writes beyond shadow log" || bad "poll bad --wait wrote state: $(ls "$d2")"
   rm -rf "$d2"
@@ -2221,7 +2229,7 @@ esac
 GHEOF
   chmod +x "$d3/gh"
   OC_DEPLOY_STATE_DIR="$SD3" OC_DEPLOY_GH="$d3/gh" OC_DEPLOY_NOFANOUT=1 OC_DEPLOY_POLL_INTERVAL=1 \
-    "$TOOLS_DIR/ship/oc-deploy" poll --wait 2 --sha "$PEN_SHA" --execute --features telegram >/dev/null 2>&1
+    "$TOOLS_DIR/ship/oc-status" poll --wait 2 --sha "$PEN_SHA" --execute --features telegram >/dev/null 2>&1
   RC3=$?
   grep -q "nothing new" "$d3"/oc-deploy-shadow.log 2>/dev/null && MISSED=1 || MISSED=0
   [ "$RC3" != 5 ] && [ "$MISSED" = 0 ] && ok "poll --sha pending: dispatched-sha GREEN never reports 'already deployed'" || bad "poll --sha pending: rc=$RC3 missed=$MISSED"
@@ -2241,16 +2249,16 @@ GHEOF
   git -C "$d/repo" push -q "$d/remote.git" HEAD~1:refs/heads/main
   (cd "$d/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$d/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val" OC_DEPLOY_GH="$SD/gh" \
-    "$TOOLS_DIR/ship/oc-deploy" ship --sha "$SHA2" --features telegram >/dev/null 2>&1)
+    "$TOOLS_DIR/ship/oc-build" ship --sha "$SHA2" --features telegram >/dev/null 2>&1)
   git -C "$d/repo" checkout -qb div HEAD~1
   echo div > "$d/repo/f3"; git -C "$d/repo" add f3; git -C "$d/repo" commit -qm div
   git -C "$d/repo" push -q -f "$d/remote.git" HEAD:refs/heads/main
   (cd "$d/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$d/remote.git" \
-    "$TOOLS_DIR/ship/oc-deploy" ship --sha "$SHA2" --features telegram >/dev/null 2>&1)
+    "$TOOLS_DIR/ship/oc-build" ship --sha "$SHA2" --features telegram >/dev/null 2>&1)
   git -C "$d/repo" checkout -q -B main "$SHA2"
   git -C "$d/repo" push -q -f "$d/remote.git" main~1:refs/heads/main
   OUT2="$(cd "$d/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$d/remote.git" \
-    OC_DEPLOY_VALIDATE="$SD/tools/val" OC_DEPLOY_GH="$SD/gh" "$TOOLS_DIR/ship/oc-deploy" ship --sha "$SHA2" --features telegram 2>&1)"; rc=$?
+    OC_DEPLOY_VALIDATE="$SD/tools/val" OC_DEPLOY_GH="$SD/gh" "$TOOLS_DIR/ship/oc-build" ship --sha "$SHA2" --features telegram 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ] && case "$OUT2" in *"FF ok"*) true ;; *) false ;; esac; then
     ok "stale pinned ref: FF ok after diverge/restore round-trip"
   else
@@ -2991,7 +2999,7 @@ for desc, lane in (
 # The binding must still be live in the shipped file: the surface owner outranks
 # a verbose editor on its own issue. Delete ROLE_DOMAINS and this goes red.
 lane_owner = {"uuid": "e4", "is_busy": False, "class": "ACTIVE",
-              "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy)",
+              "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-fanout)",
               "raw": {"role": "toolsmith"}}
 lane_verbose = {"uuid": "e5", "is_busy": False, "class": "ACTIVE",
                 "feature": "harvest upstream port census sweep notify queue delivery router cli exec",
@@ -3623,14 +3631,14 @@ cp "$TOOLS_DIR/lib/oc-root.sh" "$RT/tools/audit/probe.sh"
 # file moves the comparison with it instead of silently comparing nothing.
 # The 3 LOGIC lines are compared byte-identically; the trailing `TOOLS_DIR=`
 # assignment is asserted by pattern, because tools legitimately annotate it with
-# their own comment (oc-deploy carries a Duty-6 note there). Comparing all four
+# their own comment (oc-build carries a Duty-6 note there). Comparing all four
 # byte-for-byte would redden on a comment, which is not the arm set F-L2 is about.
 DOC="$RT/doc.txt"
 sed -n '/^# USAGE/,/^#   TOOLS_DIR=/p' "$TOOLS_DIR/lib/oc-root.sh" \
   | sed 's/^#   //' | grep -E '^(_oc_r=|if \[ "\$\(basename|if \[ -f "\$_oc_r)' > "$DOC"
 CALLER="$RT/caller.txt"
 grep -E '^(_oc_r=|if \[ "\$\(basename|if \[ -f "\$_oc_r)' \
-  "$TOOLS_DIR/ship/oc-deploy" | head -3 > "$CALLER"
+  "$TOOLS_DIR/ship/oc-build" | head -3 > "$CALLER"
 if [ -s "$DOC" ] && cmp -s "$DOC" "$CALLER"; then
   ok "oc-root: documented bootstrap == a real caller's ($(wc -l < "$DOC" | tr -d ' ') logic lines, byte-identical)"
 else
@@ -4283,7 +4291,7 @@ fi
 # sweep for the second time in this battery.
 EP_DYN=0
 EP_STARVED=0
-for rel in state/oc-ledger ship/oc-deploy harvest/oc-gate audit/oc-lint-laws \
+for rel in state/oc-ledger ship/oc-build harvest/oc-gate audit/oc-lint-laws \
            smoke/oc-smoke git/oc-commit issue/oc-issue-scope notify/oc-ping-proof \
            tests/run.sh; do
   t="$TOOLS_DIR/$rel"

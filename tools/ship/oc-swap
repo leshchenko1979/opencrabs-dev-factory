@@ -34,7 +34,7 @@
 #     exists at all.
 # Keep this paragraph: without it the next reader re-derives the same phantom.
 #
-# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-swap row).
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (the oc-swap row).
 # =============================================================================
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
@@ -87,7 +87,7 @@ swap_ensure_detached() { # re-exec outside the bounce cgroup (argv from ORIG_ARG
   [ "${OC_SWAP_IN_UNIT_CGROUP:-auto}" = "0" ] && return 0  # test/selftest hook: disabled
   swap_in_bounce_cgroup || return 0
   local cmd="${OC_SWAP_DETACH_CMD:-systemd-run --user --scope --collect}"
-  echo "oc-deploy: swap-execute is INSIDE ${OC_SWAP_UNIT:-opencrabs-ops.service}'s cgroup — the step-8 bounce would SIGKILL it before the receipt/fanout/ledger steps (v0.4.153 silent-ledger defect). Re-executing outside the unit via: $cmd" >&2
+  echo "$OC_DEPLOY_PROG: swap-execute is INSIDE ${OC_SWAP_UNIT:-opencrabs-ops.service}'s cgroup — the step-8 bounce would SIGKILL it before the receipt/fanout/ledger steps (v0.4.153 silent-ledger defect). Re-executing outside the unit via: $cmd" >&2
   OC_SWAP_DETACHED=1 exec $cmd "$SELF" "$MODE" "${ORIG_ARGS[@]}"
 }
 
@@ -233,7 +233,7 @@ swap_execute() {
   local BASE_DIR; BASE_DIR="$(dirname "$(readlink -f "$LEDGER")")"
   local BASELINE="$BASE_DIR/baseline.json" ORDERS="$BASE_DIR/orders.json"
 
-  echo "oc-deploy swap-execute: sha=$SHA run=$RUN_ID features=$FEATURES drill=$DRILL stage=$STAGE"
+  echo "$OC_DEPLOY_PROG swap-execute: sha=$SHA run=$RUN_ID features=$FEATURES drill=$DRILL stage=$STAGE"
   echo "journal: $JF"
 
   # --- 1. auto-swap authorization (owner 2026-08-28 18:50Z: consent process
@@ -320,7 +320,7 @@ swap_execute() {
     fi
     if [ "$FEAT_DROP" = 0 ] && [ -n "$DEP_FEAT" ] && [ "$DEP_FEAT" != "$FEATURES" ]; then
       jline guard 0 "$(jq -cn --arg s "$SHA" --arg d "$DEP_FEAT" --arg f "$FEATURES" '{reason:"same-sha-redeploy-feature-change", deployed_features:$d, new_features:$f}')"
-      echo "oc-deploy: same-sha redeploy with feature change ($DEP_FEAT -> $FEATURES) — proceeding"
+      echo "$OC_DEPLOY_PROG: same-sha redeploy with feature change ($DEP_FEAT -> $FEATURES) — proceeding"
     else
       jline guard 2 "$(jq -cn --arg s "$SHA" --arg d "$DEP_FEAT" --arg f "$FEATURES" '{reason:"already-deployed", deployed_sha:$s, deployed_features:$d, requested_features:$f}')"
       die 2 "swap-execute: $SHA is ALREADY the deployed sha — refusing double execution (if intentional, correct markers manually)"
@@ -343,21 +343,21 @@ swap_execute() {
       rewritten)
         jline guard 0 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" --arg t "$LV_TWIN" \
           '{reason:"rewrite-equivalent-swap", current_deployed:$p, incoming_sha:$s, rewritten_twin:$t}')"
-        echo "oc-deploy: deployed sha $PREV_SHA was orphaned by a rewrite; its change is preserved as $LV_TWIN in the incoming lineage — accepting" >&2
+        echo "$OC_DEPLOY_PROG: deployed sha $PREV_SHA was orphaned by a rewrite; its change is preserved as $LV_TWIN in the incoming lineage — accepting" >&2
         ;;
       absent)
         if [ "$ALLOW_REWRITTEN_LINEAGE" = 1 ]; then
           jline guard 0 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" --arg j "$RW_JUSTIFY" --arg a "$RW_ACTOR" \
             '{reason:"rewritten-lineage-override", current_deployed:$p, incoming_sha:$s, justification:$j, actor:$a}')"
-          echo "oc-deploy: WARNING — swap guard OVERRIDDEN via --allow-rewritten-lineage (actor=$RW_ACTOR): $RW_JUSTIFY" >&2
+          echo "$OC_DEPLOY_PROG: WARNING — swap guard OVERRIDDEN via --allow-rewritten-lineage (actor=$RW_ACTOR): $RW_JUSTIFY" >&2
         else
           jline guard 2 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" '{reason:"non-monotonic-swap", current_deployed:$p, incoming_sha:$s}')"
           echo "OC_DEPLOY_SWAP_GUARD=stale-build" >&2
-          die 2 "swap-execute: incoming sha $SHA does not carry deployed sha $PREV_SHA — refusing stale binary overwrite (diagnose: oc-deploy lineage-check --prev $PREV_SHA --sha $SHA)"
+          die 2 "swap-execute: incoming sha $SHA does not carry deployed sha $PREV_SHA — refusing stale binary overwrite (diagnose: oc-verify-lineage --prev $PREV_SHA --sha $SHA)"
         fi
         ;;
       unknown)
-        echo "oc-deploy: lineage guard SKIPPED — $PREV_SHA or $SHA is not an object in $LV_REPO (cannot judge)" >&2 ;;
+        echo "$OC_DEPLOY_PROG: lineage guard SKIPPED — $PREV_SHA or $SHA is not an object in $LV_REPO (cannot judge)" >&2 ;;
     esac
   fi
 
@@ -410,7 +410,7 @@ swap_execute() {
   post_verify "$EXPECTED" "$SHA" 1
   if [ "$PV_MATCH" = 1 ]; then
     jline post-verify 0 "$PV_DETAIL"
-    local BY_LBL="oc-deploy swap-execute"; [ "$DRILL" = "1" ] && BY_LBL="oc-deploy swap-execute DRILL"
+    local BY_LBL="oc-swap swap-execute"; [ "$DRILL" = "1" ] && BY_LBL="oc-swap swap-execute DRILL"
     if [ "$DRILL" = "1" ]; then
       # drill with a match means the deliberately-wrong expected matched —
       # impossible by construction; treat as drill anomaly
@@ -422,7 +422,7 @@ swap_execute() {
       die 2 "drill anomaly: post-verify matched a deliberately wrong expected sha"
     fi
     sidecar_sync "$EXPECTED" "$DRILL"
-      A2A_RC=1; a2a_notify_retry "[oc-deploy PHASE B RECEIPT] DEPLOYED sha=$SHA run=$RUN_ID — post-verify match, markers written, backup $BAK. Journal: $JF" && A2A_RC=0
+      A2A_RC=1; a2a_notify_retry "[oc-swap PHASE B RECEIPT] DEPLOYED sha=$SHA run=$RUN_ID — post-verify match, markers written, backup $BAK. Journal: $JF" && A2A_RC=0
     jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" --argjson tp "$RECEIPT_TOPIC" --arg o "${A2A_OUTCOME:-none}" --arg w "${A2A_WHY:-}" '{topics:[$tp], a2a_accepted:($a==0), a2a_outcome:$o, a2a_why:$w, note:"stamp follows fanout (issue #24 wiring)"}')"
     # --- GREEN fan-out (issue #24 wiring): notify contributor sessions of the
     #     live swap. Fires AFTER receipt seal + marker writes (design §5) and
@@ -435,7 +435,7 @@ swap_execute() {
       FO_OUT="$( ( fanout_run "$RUN_ID" 0 ) 2>&1 )" || FO_RC=$?
       FO_NOTE="rc=$FO_RC"
       jline fanout "$FO_RC" "{\"run\":\"$RUN_ID\"}"   # lens F HIGH-2 (v0.4.79): fanout rc in the swap journal — stderr-only surfacing was a silent-loss path
-      [ "$FO_RC" = 0 ] || { echo "oc-deploy: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-deploy fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
+      [ "$FO_RC" = 0 ] || { echo "$OC_DEPLOY_PROG: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-deploy fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
     fi
     # --- #766 fork release publish tail — LOGGED AND TOLERATED ----------------
     # Publishes the just-verified binary as fork release assets (design:
@@ -449,7 +449,7 @@ swap_execute() {
       ( publish_fork_release "$SHA" "$RUN_ID" "$FEATURES" "$BIN" "$WORKDIR" ) || PUB_RC=$?
       PUB_NOTE="rc=$PUB_RC"
       jline publish "$PUB_RC" "$(jq -cn --argjson r "$PUB_RC" '{rc:$r, issue:"#766", nonfatal:true, rolling_tag:"fork-latest"}')"
-      [ "$PUB_RC" = 0 ] || echo "oc-deploy: fork release publish rc=$PUB_RC — swap STANDS (#766 leg is non-fatal)" >&2
+      [ "$PUB_RC" = 0 ] || echo "$OC_DEPLOY_PROG: fork release publish rc=$PUB_RC — swap STANDS (#766 leg is non-fatal)" >&2
     fi
     ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?}; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE publish=$PUB_NOTE" "swap-result"
     shadow_log swap "$SHA" "$FEATURES" "deployed"
@@ -460,7 +460,7 @@ swap_execute() {
 
   # --- 10. AUTO-ROLLBACK --- (F-H1, v0.4.78: every restore leg rc-captured;
   #     the journal records what ACTUALLY happened — never an unconditional 0)
-  echo "oc-deploy: post-verify FAILED — auto-rollback engaged (backup $BAK)" >&2
+  echo "$OC_DEPLOY_PROG: post-verify FAILED — auto-rollback engaged (backup $BAK)" >&2
   RB_FAIL=0
   cp "$BAK" "$SWAP_TARGET.new" && chmod +x "$SWAP_TARGET.new" && mv -f "$SWAP_TARGET.new" "$SWAP_TARGET" || RB_FAIL=1
   # restore markers + baseline + orders to pre-swap truth (each leg rc-checked)
@@ -471,7 +471,7 @@ swap_execute() {
   [ "${OC_SWAP_ROLLBACK_FAIL:-0}" = 1 ] && RB_FAIL=1   # test-only hook (F-H1 selftest 11b): force the failed-restore branch
   if [ "$RB_FAIL" = 1 ]; then
     jline rollback 1 "$(jq -cn --arg b "$BAK" --arg s "$BAK_SHA" --arg r "post-verify mismatch after bounce" '{restored_backup:$b, restored_sha256:$s, reason:$r, restore_failed:true, error:"restore leg failed — binary state UNVERIFIED, manual recovery required"}')"
-    echo "oc-deploy: ROLLBACK RESTORE FAILED — journal records rc=1; backup $BAK; MANUAL RECOVERY REQUIRED" >&2
+    echo "$OC_DEPLOY_PROG: ROLLBACK RESTORE FAILED — journal records rc=1; backup $BAK; MANUAL RECOVERY REQUIRED" >&2
   else
     jline rollback 0 "$(jq -cn --arg b "$BAK" --arg s "$BAK_SHA" --arg r "post-verify mismatch after bounce" '{restored_backup:$b, restored_sha256:$s, reason:$r, also_restored:"deployed.sha+meta+baseline+orders"}')"
   fi
@@ -480,13 +480,13 @@ swap_execute() {
   jline restart "$RRC2" "$(jq -cn --arg u "opencrabs-ops.service" --argjson e "$RRC2" '{note:"post-rollback restart", unit:$u, systemd_run_exit:$e}')"
   post_verify "$BAK_SHA" "$PREV_SHA" "$HAD_META"
   jline post-verify "$([ "$PV_MATCH" = 1 ] && echo 0 || echo 1)" "$PV_DETAIL"
-  local BY_LBL2="oc-deploy swap-execute"; [ "$DRILL" = "1" ] && BY_LBL2="oc-deploy swap-execute DRILL"
+  local BY_LBL2="oc-swap swap-execute"; [ "$DRILL" = "1" ] && BY_LBL2="oc-swap swap-execute DRILL"
   if [ "$RB_FAIL" = 1 ]; then
     ledger_stamp "$BY_LBL2" "swap-result ROLLBACK-FAILED sha=$SHA run=$RUN_ID: post-verify mismatch after bounce (seq8 exit=1); restore leg FAILED — binary state UNVERIFIED, manual recovery required (backup $BAK); journal=$JF" "swap-result"
   else
     ledger_stamp "$BY_LBL2" "swap-result ROLLED_BACK sha=$SHA run=$RUN_ID: post-verify mismatch after bounce (seq8 exit=1); backup $BAK restored + re-verified match=$([ "$PV_MATCH" = 1 ] && echo true || echo false); markers+baseline restored; journal=$JF" "swap-result"
   fi
-  A2A_RC=1; a2a_notify_retry "[oc-deploy PHASE B] ROLLBACK sha=$SHA run=$RUN_ID — post-verify failed after bounce, backup restored, re-verify match=$([ "$PV_MATCH" = 1 ] && echo true || echo false). DRILL=$DRILL. Journal: $JF" && A2A_RC=0
+  A2A_RC=1; a2a_notify_retry "[oc-swap PHASE B] ROLLBACK sha=$SHA run=$RUN_ID — post-verify failed after bounce, backup restored, re-verify match=$([ "$PV_MATCH" = 1 ] && echo true || echo false). DRILL=$DRILL. Journal: $JF" && A2A_RC=0
   jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" --arg o "${A2A_OUTCOME:-none}" --arg w "${A2A_WHY:-}" '{result:"rolled-back", a2a_accepted:($a==0), a2a_outcome:$o, a2a_why:$w}')"
   shadow_log swap "$SHA" "$FEATURES" "rolled-back"
   if [ "$DRILL" = "1" ]; then
@@ -504,7 +504,7 @@ swap_execute() {
 # ============================================================================
 # SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
 # `OC_DEPLOY_FUNCS_ONLY=1 . oc-swap` defines the functions above and RETURNS
-# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# here. That is how `oc-build --selftest` gets all four tools' functions into
 # ONE shell without re-running a prologue: no second tools-log row, no second
 # mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
 # invocation never sets the variable, so the test is false and `return` never
@@ -538,7 +538,7 @@ oc_deploy_load_funcs oc-fanout
 
 # The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
 # and it is reachable from every arm: selftest() loads the other tools' functions
-# through the hook above. `oc-deploy --selftest` is the documented spelling.
+# through the hook above. `oc-build --selftest` is the documented spelling.
 
 usage() {
   cat <<'USAGE'
@@ -564,7 +564,7 @@ USAGE
 MODE="swap-execute"
 case "${1:-}" in
   swap-execute) shift ;;
-  --selftest)   selftest "$@"; exit $? ;;
+  --selftest)   selftest; exit $? ;;   # #168 cut 5: BARE — the suite takes no argv (a flag here reached `$1`)
   -h|--help)    usage; exit 0 ;;
   '')           : ;;   # no flags: the arm's own validation answers (rc 1)
   -*)           : ;;   # flag-first spelling: `oc-swap --sha S --run R`

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
 # oc-audit-ship — C6 (lens C, Duty-6 2026-08-31): dispatch-WITHOUT-swap alarm.
-# Scans the unified tools.log for SUCCESSFUL ship dispatches (oc-deploy
+# Scans the unified tools.log for SUCCESSFUL ship dispatches (oc-build
 # "ship --sha <sha> ... --execute", exit 0) and pairs each against swap
 # evidence: a swap journal (swap-<sha>*.jsonl with a step:"auto-swap" line)
-# in the oc-deploy journal dir, or the deployed.sha marker matching the sha.
+# in the oc-deploy journal dir (an A5 state path — the dir name predates the
+# #168 cut-5 split and is NOT renamed), or the deployed.sha marker matching it.
 # Closes the orphaned-GREEN-ship class (3 live instances 2026-08-31): a
 # dispatch-only rc=0 exit can never again read as a shipped build — absence
 # of a swap row for the sha is alarmable from the log alone.
@@ -109,6 +110,25 @@ EOF
   sed -i "1i 2026-08-29T16:44:18Z stamp rogue-writer action=ledger-append outcome=ok n=1325" "$d/tools.log"
   "$SELF" --log "$d/tools.log" --journal-dir "$d/journal" >/dev/null 2>/dev/null
   [ $? -eq 1 ] || { echo "selftest: rogue line truncated scan into false clean" >&2; exit 1; }
+  # ---- #168 cut 5: the ship verb's rows are written by oc-build ----------
+  # The dispatcher is deleted, so every NEW dispatch row says
+  # "tool":"oc-build". A scan keyed to the old name alone would return an
+  # empty set and print "clean" -- the orphaned-GREEN-ship class this tool
+  # exists to catch would go DARK, and dark looks exactly like clean. The
+  # log is append-only, so the OLD name must keep matching too: one leg per
+  # name, each with a real orphan, so neither can rot alone.
+  OLD4="$(date -u -d '7 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+  for _tn in oc-build oc-deploy; do
+    printf '{"ts":"%s","tool":"%s","actor":"a1","args":"ship --sha 9999999aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --features telegram --execute","exit":0,"secs":5.0,"extra":{}}\n' "$OLD4" "$_tn" > "$d/tools4.log"
+    "$SELF" --log "$d/tools4.log" --journal-dir "$d/journal" >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "selftest: a dispatch row logged by $_tn was NOT scanned (the orphan class goes dark)" >&2; exit 1; }
+  done
+  # NEGATIVE CONTROL: a row from a tool that never dispatches a build must
+  # still be ignored -- the widened filter must not match everything.
+  printf '{"ts":"%s","tool":"oc-ledger","actor":"a1","args":"ship --sha 9999999aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --features telegram --execute","exit":0,"secs":5.0,"extra":{}}\n' "$OLD4" > "$d/tools4.log"
+  "$SELF" --log "$d/tools4.log" --journal-dir "$d/journal" >/dev/null 2>&1
+  [ $? -eq 0 ] || { echo "selftest: CONTROL DEAD -- an oc-ledger row was treated as a ship dispatch" >&2; exit 1; }
+
   # ---- carrier build-outcome leg (task 15, fork #420) --------------------
   # A RED carrier build DISCHARGES the dispatch (no artifact was ever
   # produced, so nothing was left unshipped): SUPERSEDED-BUILD-FAILED at
@@ -178,7 +198,11 @@ NOW="$(date -u +%s)"
 ORPHANS=0
 
 # successful dispatch rows within the window (single-pass extraction)
-jq -r --arg since "$SINCE_ISO" 'select(.tool=="oc-deploy" and .exit==0 and .ts >= $since)
+# #168 cut 5: ship rows are written by oc-build now, but the log is
+# APPEND-ONLY history -- every row before the split says `oc-deploy`. Both
+# names must match or the scan silently finds ZERO dispatches and the whole
+# orphaned-GREEN-ship class this tool exists to catch goes dark.
+jq -r --arg since "$SINCE_ISO" 'select((.tool=="oc-build" or .tool=="oc-deploy") and .exit==0 and .ts >= $since)
   | select(.args | startswith("ship --sha ")) | select(.args | contains("--execute"))
   | [(.args | capture("^ship --sha (?<sha>[0-9a-f]{7,40})").sha), .ts] | @tsv' \
   "$JSON_LOG" 2>/dev/null | while IFS=$'\t' read -r sha ts; do

@@ -250,7 +250,7 @@ Rules:
   - **Zero error / warning suppression:** No `#[allow(dead_code)]` or `#[allow(unused)]` duct tape. Unused code must be deleted.
   - **`ONTOLOGY.md` synchronization:** If a change introduces, renames, or retires a concept, update `src/docs/reference/ONTOLOGY.md` in the same PR.
 
-- **BUILD TRIGGERS = exactly TWO, no exceptions:** Canonical law lives in `SKILL.md §Hard rules` (`oc-deploy ship` or owner word; CI gate = `oc-gate`).
+- **BUILD TRIGGERS = exactly TWO, no exceptions:** Canonical law lives in `SKILL.md §Hard rules` (`oc-build ship` or owner word; CI gate = `oc-gate`).
 - **PR-BASE-PRE-OPEN (v0.4.71, Duty-4 P6):** an upstream PR head is a harvest
   branch off `adolfousier/main` — NEVER a fork-main-based branch; base +
   atomicity check runs BEFORE the PR opens (a post-open atomicity FALSE
@@ -295,7 +295,7 @@ harvested commits. When a PR is not mergeable, route by BLOCKER CLASS:
 
 | Blocker | Who acts | Action |
 |---|---|---|
-| fmt/clippy/test failure in THIS feature's files | Owning editor (notified with log evidence via the mechanical post-swap fan-out — `oc-deploy fanout`) | **PR-freeze check first (v0.4.93):** fixes on a FILED PR only when CI failure exists at push time or maintainer asks. Otherwise frozen. If valid: fresh worktree off the PR head → fix → Phase 5 gate (pr-checks) + conflict-quality gate → signed push to the head |
+| fmt/clippy/test failure in THIS feature's files | Owning editor (notified with log evidence via the mechanical post-swap fan-out — `oc-fanout fanout`) | **PR-freeze check first (v0.4.93):** fixes on a FILED PR only when CI failure exists at push time or maintainer asks. Otherwise frozen. If valid: fresh worktree off the PR head → fix → Phase 5 gate (pr-checks) + conflict-quality gate → signed push to the head |
 | Merge conflicts with new upstream `main` | **Maintainer (v0.4.93)** | **DO NOT rebase/force-push the filed PR** — PR-freeze law. Conflict resolution on a filed PR is the maintainer's side (he merges locally, fixes on top, pushes, comments). HARVEST action: NONE beyond a factual comment ONLY if the maintainer asks; pre-filing, 2-fresh governs |
 | Prerequisite unharvested (feature depends on fork-only changes from another issue) | **HARVEST / Triage (v0.4.174; Harvester RETIRED v0.4.176)** | **Explicit dependency notice permitted (v0.4.174 Dependent Upstream PRs Law)**: Allowed to file PR B while prerequisite PR A is pending, provided PR description states: `Depends on #<PR_A> (do not merge before #<PR_A>)`. Maintainer merges in chronological sequence. Alternatively, automated harvest pipeline holds PR B until PR A merges. |
 | PRE-EXISTING upstream red (base fails in files we never touched) | ❌ NO editor pings — our code is innocent | housekeeping-PR candidate: issue filed + ledger-registered first (v0.3.8), Alexey decides |

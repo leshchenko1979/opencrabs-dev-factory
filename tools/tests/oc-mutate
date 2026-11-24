@@ -35,8 +35,8 @@
 #
 # OPTIONS
 #   --selftest-arg A  argv for the selftest (default: --selftest). Five tools
-#                     take a bare subcommand instead: oc-commit, oc-deploy,
-#                     oc-ledger, oc-roster, oc-watcher-audit — pass 'selftest'.
+#                     take a bare subcommand instead: oc-commit, oc-ledger,
+#                     oc-poll, oc-roster, oc-watcher-audit — pass 'selftest'.
 #   --timeout SEC     per-suite timeout (default: 1800)
 #   --tools-src DIR   tools tree to copy (default: this checkout's tools/)
 #   --no-stamp        do not write the ledger receipt

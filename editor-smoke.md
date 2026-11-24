@@ -8,7 +8,7 @@
 
 ## Phase 6 — Smoke Verification (oc-smoke)
 
-A post-swap notify announcing a new binary (mechanical fan-out — `oc-deploy
+A post-swap notify announcing a new binary (mechanical fan-out — `oc-fanout
 fanout`, [#24](https://github.com/leshchenko1979/opencrabs/issues/24) LIVE
 since v0.4.37; `[session-notify from=<uuid>]` header) means your
 commits are in it — prove the FEATURE works. This phase produces SMOKE TEST
@@ -109,7 +109,7 @@ here, on the load path of the role that actually produces smoke evidence, is the
 
 - **SMOKE TEST** is the ONLY evidence that may back an upstream PR approval
   request (hard rule + `harvest.md` Phase 7 step 0).
-- **EXECUTION SANITY SIGNAL** — the swap-path `--version` run (`oc-deploy` swap
+- **EXECUTION SANITY SIGNAL** — the swap-path `--version` run (`oc-swap` swap
   path; archived anchor: `tools/archive/compiler.md` Step 3) — is NONE of the three kinds: it proves only "this file is a
   runnable opencrabs binary". Not behavioral, not analytical, not presence
   evidence; never cite it as any kind of test result.

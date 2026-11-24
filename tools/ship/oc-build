@@ -10,7 +10,8 @@
 # four unrelated jobs (dispatch a build, install a binary on the host, notify
 # contributors, report state). Owner order (plan task T5-bis) split it four
 # ways so a change to one stage stops dragging the other three through review.
-# oc-deploy is now a DISPATCHER: it routes the verb and execs the tool below.
+# There is NO dispatcher in front of these tools since #168 cut 5: each one is
+# invoked directly, and `oc-build --help` lists only its own verbs.
 #
 # WHAT MOVED HERE, VERBATIM (byte-slices of oc-deploy@5f81c599):
 #   gate_verdict_for_run, oc_deploy_same_patch          (source 110-151)
@@ -19,7 +20,7 @@
 # carrier reader, the argv loop, the priority apply and the features
 # resolution are SHARED and live in tools/lib/oc-deploy-lib.sh.
 #
-# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-build row).
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (the oc-build row).
 # =============================================================================
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
@@ -80,7 +81,7 @@ oc_deploy_same_patch() {
 # ============================================================================
 # SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
 # `OC_DEPLOY_FUNCS_ONLY=1 . oc-build` defines the functions above and RETURNS
-# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# here. That is how `oc-build --selftest` gets all four tools' functions into
 # ONE shell without re-running a prologue: no second tools-log row, no second
 # mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
 # invocation never sets the variable, so the test is false and `return` never
@@ -113,7 +114,7 @@ oc_deploy_load_funcs oc-fanout oc-status
 
 # The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
 # and it is reachable from every arm: selftest() loads the other tools' functions
-# through the hook above. `oc-deploy --selftest` is the documented spelling.
+# through the hook above. `oc-build --selftest` is the documented spelling.
 
 usage() {
   cat <<'USAGE'
@@ -128,7 +129,7 @@ usage: oc-build ship [--sha S] [--features F] [--execute] [--gated-run ID]
 Build/land leg of the four-way oc-deploy split: resolve the carrier feature set,
 refuse an ungated landing (#355), rebase-if-needed, push, dispatch the carrier
 workflow, and optionally bounded-poll the run it just dispatched (--wait N).
-Everything else lives in a sibling tool — `oc-deploy --help` lists all verbs.
+Everything else lives in a sibling tool — see `oc-swap`, `oc-fanout`, `oc-status`.
 
 Exit codes: 0 ok/plan | 1 usage | 2 rebase/gate/push/features fail | 5 --wait
 timeout | 9 kill file.  Full contract: tools/docs/RC-CONTRACT.md
@@ -139,7 +140,7 @@ MODE="ship"
 case "${1:-}" in
   ship)       shift ;;
   features)   shift; features_run "$@"; exit $? ;;
-  --selftest) selftest "$@"; exit $? ;;
+  --selftest) selftest; exit $? ;;   # #168 cut 5: BARE — the suite takes no argv (a flag here reached `$1`)
   -h|--help)  usage; exit 0 ;;
   '')         : ;;   # no flags: the ship arm's own validation answers (rc 2)
   -*)         : ;;   # flag-first spelling: `oc-build --sha S`
@@ -194,7 +195,7 @@ case "$MODE" in
         die 2 "OC_DEPLOY_GATE=wrong-checkout: not inside a git repository (cwd=$PWD) — ship pushes objects from the CWD repo, so run it from the fork checkout: cd $FORK_DIR"
       fi
       if [ -d "$FORK_DIR" ] && git -C "$FORK_DIR" cat-file -e "$SHA^{commit}" 2>/dev/null; then
-        die 2 "OC_DEPLOY_GATE=wrong-checkout: $SHA is not an object in the CWD repo ($CWD_TOP) but IS present in $FORK_DIR — ship pushes objects out of the CWD repo, so this is the wrong directory, not a phantom sha. Re-run: cd $FORK_DIR && oc-deploy ship --sha $SHA"
+        die 2 "OC_DEPLOY_GATE=wrong-checkout: $SHA is not an object in the CWD repo ($CWD_TOP) but IS present in $FORK_DIR — ship pushes objects out of the CWD repo, so this is the wrong directory, not a phantom sha. Re-run: cd $FORK_DIR && oc-ship --sha $SHA"
       fi
       die 1 "sha not found in this repo (phantom?): $SHA — pass --sha <real commit sha>"
     fi
@@ -228,7 +229,7 @@ case "$MODE" in
         die 2 "OC_DEPLOY_GATE=rebase-needed: $SHA does not fast-forward main ($MAIN_TIP)"
       fi
       # In-tool auto-rebase on non-FF (v0.4.145)
-      echo "oc-deploy: non-fast-forward detected (main=$MAIN_TIP, sha=$SHA) — attempting in-tool auto-rebase..." >&2
+      echo "$OC_DEPLOY_PROG: non-fast-forward detected (main=$MAIN_TIP, sha=$SHA) — attempting in-tool auto-rebase..." >&2
       PRE_REBASE_REF="$(git symbolic-ref --short -q HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null)"
       set +e
       REBASE_OUT="$(git rebase "$MAIN_TIP" "$SHA" 2>&1)"
@@ -239,7 +240,7 @@ case "$MODE" in
         git rebase --abort >/dev/null 2>&1 || true
         [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
         shadow_log ship "$SHA" "$FEATURES" "rebase-conflict"
-        echo "oc-deploy: REBASE_CONFLICT — automatic rebase failed with merge conflicts:" >&2
+        echo "$OC_DEPLOY_PROG: REBASE_CONFLICT — automatic rebase failed with merge conflicts:" >&2
         if [ -n "$CONFLICTS" ]; then
           printf '  %s\n' $CONFLICTS >&2
         else
@@ -256,11 +257,11 @@ case "$MODE" in
       if [ "$AUDIT_RC" -ne 0 ]; then
         [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
         shadow_log ship "$SHA" "$FEATURES" "rebase-audit-failed"
-        echo "oc-deploy: REBASE_AUDIT_FAILED — oc-rebase-safety audit found dropped/changed hunks:" >&2
+        echo "$OC_DEPLOY_PROG: REBASE_AUDIT_FAILED — oc-rebase-safety audit found dropped/changed hunks:" >&2
         printf '%s\n' "$AUDIT_OUT" >&2
         die 5 "OC_DEPLOY_GATE=rebase-audit-failed: auto-rebase lost edits, manual re-gate required"
       fi
-      echo "oc-deploy: REBASE_CLEAN — auto-rebased $SHA -> $NEW_SHA (zero lost edits verified by oc-rebase-safety audit)" >&2
+      echo "$OC_DEPLOY_PROG: REBASE_CLEAN — auto-rebased $SHA -> $NEW_SHA (zero lost edits verified by oc-rebase-safety audit)" >&2
       shadow_log ship "$SHA" "$FEATURES" "auto-rebased:$NEW_SHA"
       SHA="$NEW_SHA"
     fi
@@ -291,7 +292,7 @@ case "$MODE" in
         *)
           if [ "$ALLOW_UNGATED" = 1 ]; then
             shadow_log ship "$SHA" "$FEATURES" "ungated-push-override:$GATE_STATE"
-            echo "oc-deploy: UNGATED PUSH OVERRIDE ($GATE_STATE, gate=$GATE_SRC) — allowed by --allow-ungated-push: $UNGATED_JUSTIFY (actor ${RW_ACTOR})" >&2
+            echo "$OC_DEPLOY_PROG: UNGATED PUSH OVERRIDE ($GATE_STATE, gate=$GATE_SRC) — allowed by --allow-ungated-push: $UNGATED_JUSTIFY (actor ${RW_ACTOR})" >&2
           else
             shadow_log ship "$SHA" "$FEATURES" "gate-blocked:$GATE_STATE"
             die 2 "OC_DEPLOY_GATE=gate-$GATE_STATE: refusing to push $SHA to refs/heads/main — gate=$GATE_SRC, verdict=$GATE_STATE. Land only a GREEN-gated sha (--gated-run <id> / --gated-sha <sha>, the oc-ship contract). If the landing is genuinely justified, override explicitly and audibly: --allow-ungated-push \"<justification>\"."
@@ -303,7 +304,7 @@ case "$MODE" in
           PUSH_OK=1; break
         fi
         if [ "$PUSH_ATTEMPT" -eq 1 ]; then
-          echo "oc-deploy: push failed (concurrent update) — fetching latest main and retrying auto-rebase in 3s..." >&2
+          echo "$OC_DEPLOY_PROG: push failed (concurrent update) — fetching latest main and retrying auto-rebase in 3s..." >&2
           sleep 3
           FETCH_BIN="${OC_DEPLOY_FETCH:-git}"
           "$FETCH_BIN" fetch -q "$REMOTE" +refs/heads/main:refs/oc-deploy/main 2>/dev/null \
@@ -324,7 +325,7 @@ case "$MODE" in
               git rebase --abort >/dev/null 2>&1 || true
               [ -n "$PRE_REBASE_REF" ] && git checkout -q "$PRE_REBASE_REF" >/dev/null 2>&1 || true
               shadow_log ship "$SHA" "$FEATURES" "rebase-conflict"
-              echo "oc-deploy: REBASE_CONFLICT — automatic rebase failed with merge conflicts:" >&2
+              echo "$OC_DEPLOY_PROG: REBASE_CONFLICT — automatic rebase failed with merge conflicts:" >&2
               [ -n "$CONFLICTS" ] && printf '  %s\n' $CONFLICTS >&2
               die 5 "OC_DEPLOY_GATE=rebase-conflict: manual conflict resolution required"
             fi
@@ -339,7 +340,7 @@ case "$MODE" in
               shadow_log ship "$SHA" "$FEATURES" "rebase-audit-failed"
               die 5 "OC_DEPLOY_GATE=rebase-audit-failed: auto-rebase lost edits, manual re-gate required"
             fi
-            echo "oc-deploy: REBASE_CLEAN — auto-rebased $SHA -> $NEW_SHA" >&2
+            echo "$OC_DEPLOY_PROG: REBASE_CLEAN — auto-rebased $SHA -> $NEW_SHA" >&2
             shadow_log ship "$SHA" "$FEATURES" "auto-rebased:$NEW_SHA"
             SHA="$NEW_SHA"
           fi
@@ -370,7 +371,7 @@ case "$MODE" in
         0) FORK_VERSION="$(_fork_release_name "$SHA" 1)"   # dispatch precedes the seal: inject cycle+1
            FV_ARGS=(-f "fork_version=$FORK_VERSION")
            echo "carrier fork_version=$FORK_VERSION" ;;
-        1) echo "oc-deploy: NOTE — carrier $WF@$CARRIER_REF declares no fork_version input; dispatching without it (the binary reports the bare upstream version until the carrier ships the input, #72)" >&2 ;;
+        1) echo "$OC_DEPLOY_PROG: NOTE — carrier $WF@$CARRIER_REF declares no fork_version input; dispatching without it (the binary reports the bare upstream version until the carrier ships the input, #72)" >&2 ;;
         *) # An unreadable contract is NOT a negative answer: the two ways of
            # guessing are a hard 422 on every ship (passing an undeclared input)
            # and a silent re-download loop (omitting a declared one). Refuse.
@@ -405,7 +406,7 @@ case "$MODE" in
             if [ "$CAND_SHA" = "$SHA" ]; then
               : # exact match
             elif [ -n "$CAND_SHA" ] && git -C "${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}" merge-base --is-ancestor "$SHA" "$CAND_SHA" 2>/dev/null; then
-              echo "oc-deploy ship-wait: candidate run $CANDID built descendant $CAND_SHA (contains our sha $SHA — coalesced run)" >&2
+              echo "$OC_DEPLOY_PROG ship-wait: candidate run $CANDID built descendant $CAND_SHA (contains our sha $SHA — coalesced run)" >&2
             else
               continue
             fi
@@ -426,7 +427,7 @@ case "$MODE" in
                 die 6 "SHIP-WAIT: run $RID terminal-$CONCL within --wait ${WAIT_SECS}s — RED, no swap leg"
                 ;;
               queued|in_progress|waiting|pending) : ;;   # keep polling
-              *) echo "oc-deploy ship-wait: odd run status '$CONCL' — keep polling until deadline" >&2 ;;
+              *) echo "$OC_DEPLOY_PROG ship-wait: odd run status '$CONCL' — keep polling until deadline" >&2 ;;
             esac
           fi
           [ "$(date +%s)" -lt "$SW_DEADLINE" ] || {

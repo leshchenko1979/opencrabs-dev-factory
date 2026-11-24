@@ -5,7 +5,7 @@
 #   tools/ is structured by KIND: the oc-* fleet executables at the top level,
 #   with lib/ tests/ archive/ docs/ instruments/ as subdirs. A tool that derives
 #   its own directory with `dirname "$0"` breaks the moment it is grouped into a
-#   subdir — and so does every sibling reach built on it ($TOOLS_DIR/ship/oc-deploy,
+#   subdir — and so does every sibling reach built on it ($TOOLS_DIR/ship/oc-build,
 #   $TOOLS_DIR/lib/oc-log.sh), which is why the grouping step is gated on this
 #   resolver existing first.
 #

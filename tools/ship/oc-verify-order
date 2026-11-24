@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # oc-verify-order — validate a build sha before dispatch (invoked from
-# oc-deploy ship; 4 gates: shape, existence, containment, signature).
+# oc-build ship; 4 gates: shape, existence, containment, signature).
 #
 #   An ORDER is a full-40 source_ref sha the editor just fast-forward-merged
 #   into fork main. Every claim below is verified LIVE against the remote at

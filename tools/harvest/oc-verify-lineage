@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-verify-lineage — REBASE-AWARE swap guard: does the INCOMING build still
+# carry the DEPLOYED change? (factory #168 cut 5: was `oc-deploy lineage-check`)
+#
+# The pre-v0.4.151 guard tested ancestry only, so after every fork-main rewrite
+# it refused EVERY legitimate forward swap — fleet-blocking (reported
+# 2026-09-12). The verdict is therefore three-tier, and the middle tier is the
+# whole point:
+#
+#   monotonic  PREV is an ancestor of SHA                        -> accept
+#   rewritten  PREV is orphaned, but a commit in BASE..SHA carries the SAME
+#              patch-id (identical change, new sha)               -> accept
+#              (the twin sha is printed: the evidence, not a claim)
+#   absent     both objects exist and PREV's change is genuinely NOT in SHA's
+#              lineage (a real stale/delayed build)              -> REFUSE
+#   unknown    one of the objects is not in this repo — cannot judge
+#              (preserves the pre-v0.4.151 "if both exist" behaviour)
+#
+# READ-ONLY: `git cat-file`, `merge-base --is-ancestor`, `log -p` + `patch-id`.
+# It never fetches, merges, pushes, rebases or writes a marker — the SWAP is
+# what mutates, and it runs its own inline copy of this verdict before it
+# touches prod (oc-swap's LINEAGE GUARD). This tool exists so a lane can ask
+# the same question WITHOUT arming a swap.
+#
+# Usage:
+#   oc-verify-lineage [--prev SHA] [--sha SHA] [--repo P] [--json]
+#   oc-verify-lineage --help
+#
+#   --prev  deployed sha to judge against   (default: $STATE_DIR/deployed.sha)
+#   --sha   incoming sha                    (default: git -C <repo> rev-parse HEAD)
+#   --repo  repo to judge in                (default: $OC_DEPLOY_REPO, else
+#                                            ${HOME}/opencrabs)
+#   --json  one JSON object on stdout: {verdict, current_deployed, incoming_sha,
+#           rewritten_twin, repo}
+#
+# Exit: 0 monotonic|rewritten (safe to swap) | 1 usage (bad flag, or no --prev
+#       and no deployed.sha, or an unresolvable --sha) | 2 absent|unknown
+#       (DO NOT swap) — a VERDICT, not an error. Full contract:
+#       tools/docs/RC-CONTRACT.md
+# =============================================================================
+# --- oc-snap guard: run from an immutable mirror (fork #167; tools/lib/oc-snap.sh)
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+_OC_SNAP="$OC_TOOLS_DIR/lib/oc-snap.sh"
+if [ -f "$_OC_SNAP" ]; then . "$_OC_SNAP"; oc_snap_guard "$0" "$@"; fi
+
+set -u
+set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
+_OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-verify-lineage" "$@"; else oc_log_finish() { :; }; fi
+# The shared deploy body: state paths (deployed.sha, the kill files) plus the
+# lineage_verdict / lineage_next_step predicates. ONE copy of the verdict, so
+# this tool and oc-swap's inline guard can never disagree about a sha.
+_OC_DEPLOY_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
+if [ -f "$_OC_DEPLOY_LIB" ]; then
+  . "$_OC_DEPLOY_LIB"
+else
+  printf 'oc-verify-lineage: %s missing (broken LOCAL TOOL TREE, not a test result)\n' "$_OC_DEPLOY_LIB" >&2
+  exit 2   # (#932 discipline) a box fault, never a silent 0 or a bare 127
+fi
+trap 'oc_log_finish $?' EXIT
+
+usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's
+  # LEGACY rc 1 on STDERR (kept from `lineage-check` so existing callers see the
+  # same code), so only the STREAM is selected here, never the rc.
+  local fd=2
+  [ "${1:-1}" = 0 ] && fd=1
+  echo "Usage: oc-verify-lineage [--prev SHA] [--sha SHA] [--repo P] [--json]" >&$fd
+  echo "Exit: 0 monotonic|rewritten (safe to swap) | 1 usage | 2 absent|unknown (DO NOT swap)" >&$fd
+}
+
+REPO="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
+PREV=""
+SHA=""
+JSON=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prev) PREV="${2:-}"; shift ;;
+    --sha)  SHA="${2:-}";  shift ;;
+    --repo) REPO="${2:-}"; shift ;;
+    --json) JSON=1 ;;
+    -h|--help) usage 0; exit 0 ;;
+    *) usage; echo "oc-verify-lineage: unknown arg: $1" >&2; exit 1 ;;
+  esac
+  shift || true
+done
+
+# Defaults, each from its OWN source, and each miss NAMED. A silent empty prev
+# would make `git merge-base --is-ancestor ""` answer 1 and the tool would call
+# a healthy swap "absent" — the false-negative this guard exists to avoid.
+[ -n "$PREV" ] || PREV="$(cat "$DEPLOYED" 2>/dev/null || true)"
+[ -n "$SHA" ]  || SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+[ -n "$PREV" ] || die 1 "no deployed sha in $DEPLOYED — pass --prev"
+[ -n "$SHA" ]  || die 1 "cannot resolve --sha in $REPO — pass it explicitly"
+
+OUT="$(lineage_verdict "$REPO" "$PREV" "$SHA")"
+KIND="${OUT%% *}"; TWIN="${OUT#* }"
+
+if [ "$JSON" = 1 ]; then
+  jq -cn --arg v "$KIND" --arg p "$PREV" --arg s "$SHA" --arg t "$TWIN" --arg r "$REPO" \
+    '{verdict:$v, current_deployed:$p, incoming_sha:$s, rewritten_twin:$t, repo:$r}'
+else
+  echo "repo:              $REPO"
+  echo "current_deployed:  $PREV"
+  echo "incoming_sha:      $SHA"
+  echo "verdict:           $KIND"
+  [ "$KIND" = "rewritten" ] && echo "rewritten_twin:    $TWIN"
+  lineage_next_step "$KIND" "$PREV" "$SHA" "$TWIN"
+fi
+
+case "$KIND" in monotonic|rewritten) exit 0 ;; *) exit 2 ;; esac

@@ -414,7 +414,7 @@ AFFINITY_KEYWORDS = {
 # Role-owned domains (fork #342, Design I step 18 -- sufficiency leg). A lane's
 # registered feature string is free prose and need not name the surface it OWNS,
 # so affinity keyed on keywords alone is one-sided: the toolsmith feature reads
-# "owns tools/ CLI (oc-ledger, oc-deploy, ...)", which contains none of the four
+# "owns tools/ CLI (oc-ledger, oc-fanout, ...)", which contains none of the four
 # tools/ tokens, so the lane never gained the domain its own issues carry and
 # scored 23 against an editor's 63. Binding the domain to the ROLE closes that
 # asymmetry at its source, instead of padding the keyword list until prose
@@ -3097,7 +3097,7 @@ def run_selftest():
     }
     lane_toolsmith = {
         "uuid": "lane-toolsmith", "class": "ACTIVE", "is_busy": False,
-        "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy, oc-gate)",
+        "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-fanout, oc-gate)",
         "raw": {"role": "toolsmith"},
     }
     lane_editor_verbose = {
@@ -3281,7 +3281,10 @@ def run_selftest():
     # live specimens: #530 names `oc-start` as the VICTIM of a false defect report
     # ("false defect against oc-start") and won +70 -> 93; #418 names
     # `oc-deploy fanout` as a CONSUMER of a contract ("The consumers of this
-    # contract are mechanical fan-out tooling (`oc-deploy fanout`, #24)"). Frames
+    # contract are mechanical fan-out tooling (`oc-deploy fanout`, #24)"). The
+    # fixture names `oc-fanout` since #168 cut 5 deleted the dispatcher: the
+    # claim test resolves the token ON DISK, so the retired name made the
+    # CONSUMER leg pass VACUOUSLY and its control FAIL. Frames
     # are MIRRORED from oc-issue-scope:377-404 (analogy #387, victim #678, negation
     # #605); only the CONSUMER frame is new here (#418). Each negative leg is
     # paired with a SUBJECT control, so a guard that simply stopped matching --
@@ -3298,10 +3301,10 @@ def run_selftest():
                 "not claim the domain",
                 "tools" not in detect_issue_domains(
                     {"title": "", "body": "The consumers of this contract are "
-                                          "mechanical fan-out tooling (oc-deploy fanout, #24)"}))
+                                          "mechanical fan-out tooling (oc-fanout fanout, #24)"}))
     assert_true("#27 CONSUMER control: the same tool as the SUBJECT still claims",
                 "tools" in detect_issue_domains(
-                    {"title": "", "body": "oc-deploy fanout writes the wrong journal row"}))
+                    {"title": "", "body": "oc-fanout fanout writes the wrong journal row"}))
     assert_true("#27 ANALOGY: a tool named only as an analogy's sibling does not "
                 "claim the domain",
                 "tools" not in detect_issue_domains(
@@ -3380,7 +3383,7 @@ def run_selftest():
                      "streaming-guard #105 transfer: rebase+gate feat/streaming-empty-finish-guard",
                      "#92 demoted-host guard",
                      "#438 local half - skill curation (compaction signal / token bound / mechanical shed)",
-                     "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy, oc-gate)"):
+                     "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-fanout, oc-gate)"):
         assert_true("#546: prose feature %r does NOT arm the bash domain" % _generic[:38],
                     "bash" not in _domains_for_text(_generic))
     for _shell in ("bash tool env carries no session identity",

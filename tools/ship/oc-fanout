@@ -16,7 +16,7 @@
 # Nothing was rewritten and no rc was re-mapped. The A2A receipt helper, the
 # journal, the ledger stamp and the argv loop are SHARED (tools/lib/).
 #
-# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-fanout row).
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (the oc-fanout row).
 # =============================================================================
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
@@ -101,7 +101,7 @@ notify_session() { # $1=uuid $2=title $3=text -> verb rc (0 delivered)
       "${_OC_NOTIFY_LIB:-lib/oc-notify.sh}" >&2
     return 4
   fi
-  oc_notify_session "$NOTIFY_CMD" "$NOTIFY_PROFILE" "oc-deploy fan-out" "$1" "$2" "$3"
+  oc_notify_session "$NOTIFY_CMD" "$NOTIFY_PROFILE" "oc-fanout" "$1" "$2" "$3"
 }
 
 fanout_mark_done() { # $1=run $2=verdict $3=notified $4=skipped $5=unowned
@@ -324,7 +324,7 @@ green_leg() { # $1=run id $2=built sha — one notify per contributing session
   title="post-swap: ${bsha:0:8} live"
   while IFS= read -r uuid; do
     [ -n "$uuid" ] || continue
-    text="oc-deploy fan-out: run $run built ${bsha:0:8} is DEPLOYED (features=$feat, range $range). Your commits landed in this ship — please smoke-test your part on the live box. (issue #24 mechanical notify)"
+    text="oc-fanout: run $run built ${bsha:0:8} is DEPLOYED (features=$feat, range $range). Your commits landed in this ship — please smoke-test your part on the live box. (issue #24 mechanical notify)"
     notify_one "$uuid" contributor "$title" "$text" "$run"
   done <<< "$sessions"
 }
@@ -352,7 +352,7 @@ red_leg() { # $1=run id $2=run json — RED blame attribution + suspect cc (issu
     # zero-site fallback: every session in the run range + HUMAN-FLAG
     jline attributed 0 "{\"run\":\"$run\",\"owner\":\"-\",\"blamed\":[],\"suspect\":[],\"fallback\":\"no-sites\"}"
     title="CI RED: run $run — human review needed"
-    text="oc-deploy fan-out: run $run FAILED with no parseable file:line annotations (HUMAN-FLAG). Sessions active in range ${range:0:19}…: $(git -C "$REPO_DIR" log --format='%b' "$range" 2>/dev/null | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | LC_ALL=C sort -u | paste -sd' ' -). Blame attribution impossible from annotations — inspect the run manually. (issue #24 mechanical notify)"
+    text="oc-fanout: run $run FAILED with no parseable file:line annotations (HUMAN-FLAG). Sessions active in range ${range:0:19}…: $(git -C "$REPO_DIR" log --format='%b' "$range" 2>/dev/null | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | LC_ALL=C sort -u | paste -sd' ' -). Blame attribution impossible from annotations — inspect the run manually. (issue #24 mechanical notify)"
     while IFS= read -r uuid; do
       [ -n "$uuid" ] || continue
       notify_one "$uuid" contributor "$title" "$text" "$run"
@@ -399,14 +399,14 @@ red_leg() { # $1=run id $2=run json — RED blame attribution + suspect cc (issu
     if [ "${tot:-0}" -gt 10 ] 2>/dev/null; then cap="$cap (+$((tot-10)) more — full list in journal)"; fi
     cs="$(jq -r --arg u "$uuid" '.[$u].commits | unique | join(", ")' <<< "$blamed_json")"
     title="CI RED: run $run — your commits are blamed"
-    text="oc-deploy fan-out: run $run FAILED. git blame at head points at your commit(s) $cs for: $cap. Fix-forward or respond in your lane. (issue #24 mechanical notify)"
+    text="oc-fanout: run $run FAILED. git blame at head points at your commit(s) $cs for: $cap. Fix-forward or respond in your lane. (issue #24 mechanical notify)"
     notify_one "$uuid" blamed "$title" "$text" "$run"
   done <<< "$(jq -r 'keys[]' <<< "$blamed_json")"
   while IFS= read -r uuid; do
     [ -n "$uuid" ] || continue
     fs="$(jq -r --arg u "$uuid" '.[$u] | unique | join(", ")' <<< "$suspect_json")"
     title="CI RED: run $run — suspect cc"
-    text="oc-deploy fan-out: run $run FAILED. Blame points elsewhere, but your commits touched the blamed file(s): $fs. cc only — no action needed unless the culprit is unreachable. (issue #24 mechanical notify)"
+    text="oc-fanout: run $run FAILED. Blame points elsewhere, but your commits touched the blamed file(s): $fs. cc only — no action needed unless the culprit is unreachable. (issue #24 mechanical notify)"
     notify_one "$uuid" suspect "$title" "$text" "$run"
   done <<< "$(jq -r 'keys[]' <<< "$suspect_json")"
   return 0
@@ -474,7 +474,7 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
     # one arm must not narrow another. The fatal refusal is the success arm below,
     # which is the first point that genuinely needs oc_decode_job_sha_any.
     jline fanout-start 2 "{\"run\":\"$run\",\"warning\":\"built-sha-no-embed-lib\"}"
-    printf '%s\n' "oc-deploy: WARNING — the embed decoder library is MISSING from this checkout (restore tools/lib/oc-embed.sh). A SUCCESS run will be REFUSED with rc 2 before any job name is evaluated; a RED run still attributes normally (#932)" >&2
+    printf '%s\n' "$OC_DEPLOY_PROG: WARNING — the embed decoder library is MISSING from this checkout (restore tools/lib/oc-embed.sh). A SUCCESS run will be REFUSED with rc 2 before any job name is evaluated; a RED run still attributes normally (#932)" >&2
   fi
   runjson="$("$GH" api "repos/$FORK/actions/runs/$run" 2>/dev/null)" \
     || { jline fanout-start 3 "{\"run\":\"$run\",\"error\":\"gh-api-fail\"}"; die 3 "fanout: gh api run fetch failed for $run"; }
@@ -536,7 +536,7 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
 # ============================================================================
 # SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
 # `OC_DEPLOY_FUNCS_ONLY=1 . oc-fanout` defines the functions above and RETURNS
-# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# here. That is how `oc-build --selftest` gets all four tools' functions into
 # ONE shell without re-running a prologue: no second tools-log row, no second
 # mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
 # invocation never sets the variable, so the test is false and `return` never
@@ -561,7 +561,7 @@ trap 'oc_log_finish $?' EXIT
 
 # The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
 # and it is reachable from every arm: selftest() loads the other tools' functions
-# through the hook above. `oc-deploy --selftest` is the documented spelling.
+# through the hook above. `oc-build --selftest` is the documented spelling.
 
 usage() {
   cat <<'USAGE'
@@ -585,7 +585,7 @@ USAGE
 MODE="fanout"
 case "${1:-}" in
   fanout)     shift ;;
-  --selftest) selftest "$@"; exit $? ;;
+  --selftest) selftest; exit $? ;;   # #168 cut 5: BARE — the suite takes no argv (a flag here reached `$1`)
   -h|--help)  usage; exit 0 ;;
   '')         : ;;   # no flags: the arm's own validation answers (rc 2)
   -*)         : ;;   # flag-first spelling: `oc-fanout --run R`

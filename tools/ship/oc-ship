@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # oc-ship — single-invocation orchestrator: CI gate → issue-log → ff-merge
-# into fork main → oc-deploy ship → oc-deploy poll until SWAPPED.
+# into fork main → oc-build ship → oc-status poll until SWAPPED.
 #
 # Owner GO 2026-09-09 16:16Z ("Go" on the 5→swapped design). Scope ends at
 # SWAPPED: smoke (Phase 6b) and owner approval (Phase 7) stay OUTSIDE — the
@@ -100,9 +100,9 @@
 #   checkout — a LINKED WORKTREE is accepted, #69; dirty checkout; or $BRANCH absent
 #   from the fork remote. Lane fix, NEVER infra) · 4 GATE-RED / CARRIER-RED
 #   (structured verdict) · 6 dispatch/poll infra, incl. a lineage-guard refusal
-#   (rebase-aware: re-run; diagnose with `oc-deploy lineage-check`) · 7 gate still
+#   (rebase-aware: re-run; diagnose with `oc-verify-lineage`) · 7 gate still
 #   IN FLIGHT — do NOT re-dispatch, re-run with --gated-run <id> · 8 SHIP-WAIT-TIMEOUT
-#   — the build is still RUNNING, resume with `oc-deploy poll --execute` · 9
+#   — the build is still RUNNING, resume with `oc-status poll --execute` · 9
 #   SHIP-LOCK-TIMEOUT — another chain holds the landing lock; wait or raise
 #   SHIP_LOCK_TIMEOUT / OC_SHIPCHAIN_LOCK_WAIT.
 #   5 — EIGHT distinguishable causes, each a LANE fix; the message and journal name
@@ -112,7 +112,7 @@
 #                         carry-forward — the gated sha will NOT survive
 #     ALREADY-LANDED      nothing to land; do NOT re-gate
 #     TIP-MOVED           tip != --sha (rebase+force-push mid-gate); re-gate
-#     REBASE-GATE         oc-deploy's own auto-rebase refused; same fix as NON-FF
+#     REBASE-GATE         oc-build's own auto-rebase refused; same fix as NON-FF
 #     LOCAL-MAIN-AHEAD    the checkout's main is ahead of origin/main — wait for the
 #                         owning lane; `merge --ff-only` is a silent no-op here
 #     LOCAL-MAIN-DIVERGED both sides moved; settle with the owner of the ahead commits
@@ -145,7 +145,11 @@
 #   OC_SHIPCHAIN_NO_DOCS_SKIP=1  force the LEG1 gate even for a docs-only sha
 #                    (test/debug hook — the skip is AUTO-DETECTED, never
 #                    lane-declared; see the #20 note at leg 1)
-#   OC_DEPLOY_BIN    default tools/ship/oc-deploy
+#   OC_DEPLOY_BIN    overrides BOTH stage-tool paths below (one fake answering
+#                    ship/poll/status is what the selftest fixtures need). Its
+#                    per-verb defaults are oc-build (LEG4 ship) and oc-status
+#                    (LEG5 poll/status) — since factory #168 cut 5 there is no
+#                    `oc-deploy` dispatcher to point at.
 #   OC_ISSUELOG_BIN  default tools/issue/oc-issue-log
 #   OC_FORK_REPO     default ~/opencrabs (the fork checkout; a LINKED WORKTREE is
 #                    accepted — #69. The chain still redirects to the MAIN worktree
@@ -233,7 +237,7 @@ chain_remedy() { # $1 = exit code
     5) printf '%s' "an rc 5 the chain did not classify, so its own message is unavailable -- and rc 5 covers EIGHT causes with OPPOSITE remedies (ALREADY-LANDED says do NOT re-gate; STALE-LOCAL-MAIN, LOCAL-MAIN-AHEAD and LOCAL-MAIN-DIVERGED say do NOT rebase; NON-FF says rebase). Read the journal line that names the LEG3 cause before acting; a blind rebase here rewrites a possibly correct gated tip and burns the gate." ;;
     6) printf '%s' "INFRASTRUCTURE, not a gate -- the wrapped tool's own message is in the journal, so read THAT line; naming a gate cannot fix a dead user bus, a failed handoff or a refused swap. Fix the cause, then resume the leg the journal names. The chain re-arms this class ONLY when the gate was never dispatched (GATE_RUN_ID empty), so seeing this wake means either an external action had already happened or the re-arm budget is spent -- do NOT re-dispatch a gate that already ran." ;;
     7) printf '%s' "the gate is still IN FLIGHT -- wait for the run, then re-arm with --gated-run <id>. Re-dispatching burns a second full gate cycle for the same answer." ;;
-    8) printf '%s' "the carrier build did not reach a terminal state inside the LEG4 --wait budget -- do NOT re-dispatch it; wait, then resume with: oc-deploy poll --sha <sha> --execute --wait <sec>." ;;
+    8) printf '%s' "the carrier build did not reach a terminal state inside the LEG4 --wait budget -- do NOT re-dispatch it; wait, then resume with: oc-status poll --sha <sha> --execute --wait <sec>." ;;
     9) printf '%s' "the landing lock was held for the whole queue budget -- this is NOT infra and the gate is NOT broken. The chain ALREADY re-armed itself for this class before it woke you (budget OC_SHIPCHAIN_REARM_MAX, default 2), so a holder still holding after that many waits is worth inspecting rather than waiting a third time: check who owns the lock, or raise SHIP_LOCK_TIMEOUT / OC_SHIPCHAIN_LOCK_WAIT for the next run." ;;
     *) printf '%s' "re-read the chain journal for the failing leg -- the cause is in its last lines, not in a flag." ;;
   esac
@@ -258,7 +262,7 @@ chain_remedy() { # $1 = exit code
 #   "gate resume failed"                 a run was LIVE, being resumed
 #   "gate rc=5 but no run id on stdout"  a run existed, we cannot name it
 #   "gate infra rc=6"                    prchecks CANCELLED-superseded
-#   "ship infra rc=..."                  LEG4 build, oc-deploy touched it
+#   "ship infra rc=..."                  LEG4 build, oc-build touched it
 #   "swap poll failed rc=..."            swap
 #   "swap not confirmed after 12 polls"  swap
 #
@@ -627,7 +631,14 @@ fi
 # reading the global deployed.sha marker as a per-run receipt.
 SWAPPED=0
 PRCHECKS_BIN="${OC_PRCHECKS_BIN:-$TOOLS_DIR/harvest/oc-gate}"
-DEPLOY_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-deploy}"
+# #168 cut 5: the dispatcher is GONE, so LEG4 and LEG5 name their OWN tools.
+# ONE env override (`OC_DEPLOY_BIN`) still drives both, because the fixtures need
+# a single fake that answers all three verbs (ship / poll / status) and splitting
+# the hook would have meant ~40 fixture edits for no gain in coverage. The name
+# keeps its `OC_DEPLOY_` prefix deliberately (decision A5: state paths and env
+# names stay, or a rebuilt box loses the hook).
+BUILD_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-build}"
+STATUS_BIN="${OC_DEPLOY_BIN:-$TOOLS_DIR/ship/oc-status}"
 ISSUELOG_BIN="${OC_ISSUELOG_BIN:-$TOOLS_DIR/issue/oc-issue-log}"
 FORK_REPO="${OC_FORK_REPO:-$HOME/opencrabs}"
 GH_BIN="${OC_GH:-gh}"
@@ -689,7 +700,7 @@ GATE_CARRIED_FORWARD=""
 GATE_SKIPPED_DOCS=""
 # #355: the run that gated THIS sha, resolved on the dispatch path too (it was
 # previously parsed only inside the rc=5 resume loop), so LEG4 can name its
-# gate to oc-deploy instead of landing silently.
+# gate to oc-build instead of landing silently.
 GATE_RUN_ID="${GATE_RUN_ID:-}"
 # #92: the superseder prchecks NAMED on a CANCELLED-superseded gate. Empty
 # unless LEG1 captured one, so every other rc-6 exit keeps its old answer.
@@ -1215,8 +1226,8 @@ journal() {
     # --by fallback (#19, 2026-09-12): an anonymous ledger row is REFUSED by
     # oc-ledger now. ship_chain_default_actor() has already tried to derive the
     # real lane from the --sha Session-Id trailer; when even that fails, the
-    # honest actor is the TOOL, not an anonymous row (precedent: oc-deploy
-    # stamps `--by "oc-deploy recover-receipt"`). This keeps the chain's ledger
+    # honest actor is the TOOL, not an anonymous row (precedent: oc-status
+    # stamps `--by "oc-status recover-receipt"`). This keeps the chain's ledger
     # trail intact instead of trading it for a loud journal failure.
     out="$("$TOOLS_DIR/state/oc-ledger" stamp shipchain "$line" --by "${OC_ACTOR:-oc-ship}" 2>&1)" || rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -2080,8 +2091,8 @@ fi
 # ---- #755: SIGNATURE pre-check (pure git, BEFORE the ff-merge) -------------
 # upstream-merge-runbook.md (HQ ruling 2026-09-26, §Swap-head signature) states
 # the chain pre-checks SIGNATURE before LEG3's merge so a bad trailer never
-# strands main. The ORDER validator (oc-verify-order) runs INSIDE oc-deploy
-# at LEG4 — AFTER this merge — and oc-deploy is push-then-validate by design
+# strands main. The ORDER validator (oc-verify-order) runs INSIDE oc-build
+# at LEG4 — AFTER this merge — and oc-build is push-then-validate by design
 # (`git push` then `die 2 ORDER gates failed post-push`), so a shape fault
 # landed main at an ungated tip and only THEN refused (measured 2026-09-26,
 # lane 63d775f9: `Session-Id: editor <uuid>` — the ledger's `--by` form written
@@ -2180,16 +2191,16 @@ journal "LEG3 ff-merge ok fork-main=$MERGED"
 
 # ---- no-self-ping guard ----------------------------------------------------
 # The calling lane invoked this tool and is awake — any session-notify fired by
-# a sub-tool would wake the SAME session mid-turn (self-ping). oc-deploy's wake
+# a sub-tool would wake the SAME session mid-turn (self-ping). oc-build's wake
 # path is --notify-session (poll-mode, opt-in): never pass it. Enforce at env
 # level too so any inherited NOTIFY_SESSION cannot leak into children.
 unset NOTIFY_SESSION || true
 
 # ---- leg 4: ship -----------------------------------------------------------
-journal "LEG4 ship start (oc-deploy ship --execute --wait $WAIT)"
+journal "LEG4 ship start (oc-build ship --execute --wait $WAIT)"
 set +e
 # #355 GATE-BEFORE-LAND: hand ship the gate this chain is landing under.
-# `oc-deploy ship` refuses to push an ungated sha to fork main — the bypass
+# `oc-build ship` refuses to push an ungated sha to fork main — the bypass
 # that put a non-compiling commit on the tip (2026-09-18, ee4f6797a) and made
 # every lane inherit a BASE-FAULT. An ARRAY, never a string: an unquoted
 # expansion would split the justification's words and leave literal quotes.
@@ -2210,14 +2221,14 @@ else
   GATE_ARGS+=(--allow-ungated-push "LEG1 returned GREEN but this chain could not resolve the gate run id from prchecks stdout")
 fi
 journal "LEG4 gate carried into ship: ${GATE_ARGS[*]}"
-SHIP_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" ship --sha "$SHA" --execute --wait "$WAIT" "${GATE_ARGS[@]}" 2>&1)"
+SHIP_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$BUILD_BIN" ship --sha "$SHA" --execute --wait "$WAIT" "${GATE_ARGS[@]}" 2>&1)"
 SHIP_RC=$?
 set -e
 echo "$SHIP_OUT" | tail -5
 # rc mapping follows tools/docs/RC-CONTRACT.md (the sole rc register), read live
-# 2026-09-18: `oc-deploy ship --execute --wait` exits 0 GREEN / 5 non-terminal
+# 2026-09-18: `oc-build ship --execute --wait` exits 0 GREEN / 5 non-terminal
 # / 6 terminal-RED. Two defects fixed here (#336):
-#  (a) the old arm mapped rc 3 -> "carrier RED". oc-deploy does NOT exit 3
+#  (a) the old arm mapped rc 3 -> "carrier RED". oc-build does NOT exit 3
 #      from the ship verb at all (its only `die 3` calls live in `fanout`; the
 #      ship verb body exits 0/2/5/6 only), so that arm was DEAD CODE whose
 #      label was a lie — a REAL carrier RED (rc 6) fell through to the INFRA
@@ -2225,7 +2236,7 @@ echo "$SHIP_OUT" | tail -5
 #  (b) rc 5 was folded into INFRA as well, but rc 5 is the WAIT-TIMEOUT: the
 #      run is still building and the lane's next move is to WAIT, not to go
 #      hunting for an infra fault.
-# rc 5 is NOT exclusively a timeout: oc-deploy ship also dies 5 when its own
+# rc 5 is NOT exclusively a timeout: oc-build ship also dies 5 when its own
 # in-tool auto-rebase refuses the push (OC_DEPLOY_GATE=rebase-conflict /
 # rebase-audit-failed). That is a LANE fix of the same class as NON-FF, so it
 # keeps rc 5 — only a genuine budget expiry gets rc 8.
@@ -2241,26 +2252,26 @@ case "$SHIP_RC" in
     esac
     if [ -n "$REBASE_CAUSE" ]; then
       journal "LEG4 ship REBASE-GATE $REBASE_CAUSE"
-      die "REBASE-GATE ($REBASE_CAUSE): oc-deploy's in-tool auto-rebase refused the push — rebase $BRANCH onto fork main (verify with oc-rebase-safety audit), then re-run: oc-ship --sha $SHA --branch $BRANCH" 5
+      die "REBASE-GATE ($REBASE_CAUSE): oc-build's in-tool auto-rebase refused the push — rebase $BRANCH onto fork main (verify with oc-rebase-safety audit), then re-run: oc-ship --sha $SHA --branch $BRANCH" 5
     fi
     journal "LEG4 ship WAIT-TIMEOUT (${WAIT}s budget exhausted)"
-    die "SHIP-WAIT-TIMEOUT: the carrier build did not reach a terminal state within the LEG4 --wait budget (${WAIT}s). The run is still BUILDING — do NOT re-dispatch it. Wait for it, then resume with: oc-deploy poll --sha $SHA --execute --wait <sec>  (or re-run the chain with a larger --wait)" 8 ;;
+    die "SHIP-WAIT-TIMEOUT: the carrier build did not reach a terminal state within the LEG4 --wait budget (${WAIT}s). The run is still BUILDING — do NOT re-dispatch it. Wait for it, then resume with: oc-status poll --sha $SHA --execute --wait <sec>  (or re-run the chain with a larger --wait)" 8 ;;
   *)
     # #355: a gate refusal is a CHAIN BOOKKEEPING fault, not infra. Without
     # this arm it fell to the INFRA death below and sent the lane hunting a
     # phantom infrastructure problem.
     case "$SHIP_OUT" in
       *OC_DEPLOY_GATE=gate-missing*|*OC_DEPLOY_GATE=gate-inflight*|*OC_DEPLOY_GATE=gate-red*|*OC_DEPLOY_GATE=gate-mismatch*)
-        journal "LEG4 ship GATE-NOT-GREEN (oc-deploy refused the ungated landing)"
-        die "GATE-NOT-GREEN: oc-deploy refused to land $SHA — the gate carried into ship was missing, in flight, or not green. This is a chain bookkeeping fault, NOT infra: re-run naming the run that gated this sha, oc-ship --sha $SHA --branch $BRANCH --gated-run <id>." 4 ;;
+        journal "LEG4 ship GATE-NOT-GREEN (oc-build refused the ungated landing)"
+        die "GATE-NOT-GREEN: oc-build refused to land $SHA — the gate carried into ship was missing, in flight, or not green. This is a chain bookkeeping fault, NOT infra: re-run naming the run that gated this sha, oc-ship --sha $SHA --branch $BRANCH --gated-run <id>." 4 ;;
       *OC_DEPLOY_GATE=order-gate-failed*)
-        # #756: oc-deploy's post-push ORDER validator (oc-verify-order:
+        # #756: oc-build's post-push ORDER validator (oc-verify-order:
         # SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA AFTER the push.
         # Before this arm the producer emitted no token, so the fault fell to
         # the INFRA catch-all below and sent the lane hunting a broken
         # component instead of its own commit.
-        journal "LEG4 ship ORDER-GATE-FAILED (oc-deploy's post-push ORDER validator rejected $SHA)"
-        die "ORDER-GATE-FAILED: oc-deploy's post-push ORDER validator (SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA after the push — the sha is now on fork main but ungated. This is a chain bookkeeping fault, NOT infra: run oc-verify-order --repo <fork> --ledger <ledger> $SHA to read which gate failed, fix the branch (re-sign / rebase so it is contained in fork main), then re-run: oc-ship --sha <new-sha> --branch $BRANCH" 4 ;;
+        journal "LEG4 ship ORDER-GATE-FAILED (oc-build's post-push ORDER validator rejected $SHA)"
+        die "ORDER-GATE-FAILED: oc-build's post-push ORDER validator (SHAPE/EXISTENCE/CONTAINMENT/SIGNATURE) rejected $SHA after the push — the sha is now on fork main but ungated. This is a chain bookkeeping fault, NOT infra: run oc-verify-order --repo <fork> --ledger <ledger> $SHA to read which gate failed, fix the branch (re-sign / rebase so it is contained in fork main), then re-run: oc-ship --sha <new-sha> --branch $BRANCH" 4 ;;
     esac
     journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
 esac
@@ -2268,7 +2279,7 @@ esac
 # ---- leg 5: swap confirmation ---------------------------------------------
 # THE PREDICATE IS THE MARKER, NOT A STDOUT TOKEN (defect fix 2026-09-12,
 # editor 462181e9 report, receipted live). This loop scanned the poll's
-# stdout for `*SWAPPED*` — a token oc-deploy has NEVER emitted: a
+# stdout for `*SWAPPED*` — a token oc-build has NEVER emitted: a
 # case-sensitive sweep of the whole tool returns ZERO occurrences (only
 # comments and JSON fixtures carrying swapped_at/auto-swap; the uppercase
 # hits are variable names such as SWAP_TARGET). `poll --execute` hands off
@@ -2281,7 +2292,7 @@ esac
 # fake-deploy stub DID print the token: the fixture was more permissive
 # than the real tool and encoded the bug away.
 # The authoritative signal is the deployed.sha marker, read through
-# oc-deploy's own read-only `status --json`.
+# oc-status's own read-only `status --json`.
 # leg5_host_state: one line of LOCAL evidence for a LEG5 failure (#85). Every
 # read is local (marker files + sha256 of the installed binary), so it stays
 # available exactly when the API is what broke. A LEG5 RED used to carry only
@@ -2303,47 +2314,47 @@ leg5_host_state() {
     "${dep:-<absent>}" "$bin" "${hash:-<unreadable>}" "$verdict"
 }
 
-journal "LEG5 swap poll start (oc-deploy poll --execute)"
+journal "LEG5 swap poll start (oc-status poll --execute)"
 SWAPPED=0
 CUR_DEPLOYED=""
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   set +e
-  POLL_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" poll --execute 2>&1)"
+  POLL_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$STATUS_BIN" poll --execute 2>&1)"
   POLL_RC=$?
   set -e
   # #48 defect 3: surface the WRAPPED tool's own diagnosis. The old message
   # compressed every poll failure into "swap poll failed", so a handoff refusal
-  # that had already named its cause (`oc-deploy: user bus unreachable ...`) read
-  # as an anonymous infra fault and the lane hunted infrastructure. oc-deploy
+  # that had already named its cause (`oc-status: user bus unreachable ...`) read
+  # as an anonymous infra fault and the lane hunted infrastructure. oc-status
   # prints its cause on stderr, and POLL_OUT captures both streams.
   [ "$POLL_RC" = "0" ] || {
     journal "LEG5 poll rc=$POLL_RC"
-    # #85 residual (HQ, 2026-11-19): this read only the FIRST `oc-deploy:`-prefixed
+    # #85 residual (HQ, 2026-11-19): this read only the FIRST `oc-status:`-prefixed
     # line, so a run reporting two causes showed one and the hint was chosen off
     # that one string. The prefix is shared with WARNINGs, so line one need not
-    # name a cause at all — a `oc-deploy: WARNING: ...` ahead of the fatal line
+    # name a cause at all — an `oc-status: WARNING: ...` ahead of the fatal line
     # would leave the API hint unreachable however plainly line two reported it,
     # and the operator would never see line two. Collect them ALL: show them all,
     # and match the hint against the whole SET, because #85's rule is that a hint
     # may only name a cause the tool actually reported — and "actually reported"
     # is the set, never its first line.
-    POLL_CAUSES="$(printf '%s\n' "$POLL_OUT" | sed -n 's/^oc-deploy: //p')"
+    POLL_CAUSES="$(printf '%s\n' "$POLL_OUT" | sed -n 's/^oc-status: //p')"
     POLL_CAUSE_ALL="$(printf '%s\n' "$POLL_CAUSES" | awk 'NF{printf "%s%s", sep, $0; sep=" | "}')"
-    # #85: rc=2 is oc-deploy's "could not read the API" verdict. The bus hint
+    # #85: rc=2 is oc-status's "could not read the API" verdict. The bus hint
     # below was offered for EVERY poll failure, so a gh-api blip read as an
     # infrastructure fault and the lane went hunting a user bus that was fine.
     # A hint is a hypothesis about a cause; it may only name a cause the tool
     # actually reported.
     case "$POLL_RC:$POLL_CAUSE_ALL" in
       2:*"gh api"*|2:*"API"*)
-        HINT="the API was unreadable, not the ship — re-run: oc-deploy poll --execute" ;;
+        HINT="the API was unreadable, not the ship — re-run: oc-status poll --execute" ;;
       *)
-        HINT="resume via: oc-deploy poll --execute from a shell that HAS the user bus (a chain armed as a system unit does not)" ;;
+        HINT="resume via: oc-status poll --execute from a shell that HAS the user bus (a chain armed as a system unit does not)" ;;
     esac
-    die "swap poll failed rc=$POLL_RC — oc-deploy's own diagnosis: ${POLL_CAUSE_ALL:-none on stdout} — $(leg5_host_state) — $HINT" 6
+    die "swap poll failed rc=$POLL_RC — oc-status's own diagnosis: ${POLL_CAUSE_ALL:-none on stdout} — $(leg5_host_state) — $HINT" 6
   }
   set +e
-  ST_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$DEPLOY_BIN" status --json 2>/dev/null)"
+  ST_OUT="$(cd "$FORK_REPO" && OC_TOOLS_NOLOG=1 NOTIFY_SESSION= "$STATUS_BIN" status --json 2>/dev/null)"
   set -e
   # The sed range scopes the match to the `deployed` object, so a future
   # sibling sha field cannot satisfy the check by accident.
@@ -2353,7 +2364,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
 done
 if [ "$SWAPPED" != "1" ]; then
   journal "LEG5 swap NOT confirmed after 12 polls (deployed=${CUR_DEPLOYED:-none} expected=$SHA)"
-  die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA — $(leg5_host_state) — inspect via: oc-deploy status" 6
+  die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA — $(leg5_host_state) — inspect via: oc-status status" 6
 fi
 journal "DONE SWAPPED sha=$SHA"
 echo "SHIP-CHAIN $CHAIN: SWAPPED sha=$SHA gate=$SHIP_GATE_MODE"

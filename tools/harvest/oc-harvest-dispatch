@@ -190,7 +190,7 @@ def swap_suffix_start_cached(repo_path, swaps):
 
 def range_patch_ids(repo_path, base_sha, tip_sha):
     # Yield (patch_id, commit_sha) for every non-merge commit introduced by base..tip.
-    # Same primitive shape oc-deploy's rebase-aware swap guard uses to pair a rewritten
+    # Same primitive shape oc-build's rebase-aware guard uses to pair a rewritten
     # commit with its twin.
     rng = f'{base_sha}..{tip_sha}' if base_sha else tip_sha
     res = subprocess.run(['git', '-C', repo_path, 'log', '-p', '--no-merges',
@@ -443,7 +443,7 @@ def get_patch_id(commit, repo_path):
         return None
     # --stable is REQUIRED: the default (unstable) hash is sensitive to file order, so on
     # any multi-file diff it disagrees with the --stable ids range_patch_ids() produces and
-    # every twin lookup silently misses (#276). Same mode oc-deploy's rebase guard uses.
+    # every twin lookup silently misses (#276). Same mode oc-build's rebase guard uses.
     p = subprocess.run(['git', 'patch-id', '--stable'], input=out, text=True, capture_output=True)
     if p.returncode == 0 and p.stdout:
         return p.stdout.strip().split()[0]

@@ -21,7 +21,7 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 | `war-stories.md` | Incident histories behind the hard rules — **lives in the BRAIN dir (`~/.opencrabs/profiles/ops/`), NOT in this tree**; load with `load_brain_file` (disclosed from SKILL.md, v0.4.80) |
 | `fleet-directives.md` | Binding owner directives that apply to EVERY lane — the `[LANE]` cross-role law + a residual of cross-cutting rulings, with a pointer table to the role/topic file that owns scoped law. Re-homed from ops AGENTS.md/MEMORY.md, 2026-09-02; split 2026-09-18 |
 | `upstream-merge-runbook.md` | Procedure for the REBASE sync model: gates, roles, conflict classes, migration-union rule |
-| `s2-swap-journal-spec.md` | Journal vocabulary spec for the oc-deploy swap leg |
+| `s2-swap-journal-spec.md` | Journal vocabulary spec for the `oc-swap` swap leg |
 | `session-notify.md` | `session_notify` TOOL mechanics — split from SKILL.md v0.4.262 (the delivery LAW stays in fleet-directives) |
 | `environment.md` | Shared environment facts for `~/opencrabs` — split from SKILL.md v0.4.262 |
 | `CHANGELOG.md` | Version history, **newest entry FIRST** |
@@ -38,22 +38,22 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 
 | Role | State | Runs |
 |---|---|---|
-| **EDITOR** | live | Fork issues, per-task worktrees, CI gates, signed commits, `oc-deploy ship` |
+| **EDITOR** | live | Fork issues, per-task worktrees, CI gates, signed commits, `oc-build ship` |
 | **HQ** | live | Worker ledger, duty cadence, multi-lens code/structure reviews, direct directive proposals |
 | **TRIAGE** | live (v0.4.86 carve-out) | Issue assignment, repo hygiene patrols, rebase/merge execution, upstream lifecycle tracking (folded from Harvester v0.4.176) |
 | **TOOLSMITH** | live (v0.4.87 carve-out) | Owns `tools/` CODE — makes and fixes the CLI tools every other role uses, direct recipient of tool quirks/defects (v0.4.176) |
-| **COMPILER** | **RETIRED 2026-08-28** (S3 cutover) | duties absorbed by `tools/ship/oc-deploy` (ship / poll / swap-execute) |
+| **COMPILER** | **RETIRED 2026-08-28** (S3 cutover) | duties absorbed by `tools/ship/oc-build` (ship) + `oc-status` (poll) + `oc-swap` (swap-execute) |
 
 ## Tool fleet (quick index)
 
 Full register with rc codes lives in **`tools/docs/RC-CONTRACT.md`** — that file is the source of truth (v0.4.79; SKILL.md carries purpose rows only).
 Highlights:
 
-- `oc-deploy` — ship / poll (fused `--wait N` bounded poll, v0.4.100) / swap-execute / fanout
+- `oc-build` — ship; `oc-status` — poll (fused `--wait N` bounded poll, v0.4.100) / status / watch / recover-receipt; `oc-swap` — swap-execute; `oc-fanout` — fanout (the old `oc-deploy` dispatcher is DELETED, #168 cut 5)
 - `oc-ledger` — worker ledger: claims, `claims` verb, sync, version stamps, cadence
 - `oc-gate` — CI-wait on `pr-checks.yml` (poll, resume-before-dispatch, lane gates; `--notify` is RETIRED)
-- `oc-notify.sh` (tools/lib) — shared wake/notify contract (sourced by `oc-deploy`; also an executable CLI wrapper for cross-session chaining)
-- `oc-attrib` — Session-Id attribution; `--contributors` is the single contributors shape (oc-deploy contributors retired v0.4.90)
+- `oc-notify.sh` (tools/lib) — shared wake/notify contract (sourced by the deploy stage tools; also an executable CLI wrapper for cross-session chaining)
+- `oc-attrib` — Session-Id attribution; `--contributors` is the single contributors shape (the old `oc-deploy contributors` verb was retired v0.4.90 and deleted #168 cut 5)
 - `oc-commit` / `oc-issue-log` — signed commits + tracked-issue receipts
 - `oc-seal` — order rows (QUEUED…VOID lifecycle)
 - `tests/run.sh` — run everything: `bash tools/tests/run.sh`

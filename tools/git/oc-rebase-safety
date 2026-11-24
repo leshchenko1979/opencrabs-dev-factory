@@ -134,8 +134,8 @@ cmd_overlap() {
     # misled two lanes (6630dc9a flagged it; 462181e9 nearly filed a false
     # collision) on a real overlap of ZERO. The logic is correct and stays; the
     # LABEL was the defect. Name the list for what it is and say outright that
-    # it is not an intersection. Nothing parses this stdout (the one consumer,
-    # oc-deploy, calls `audit`), so the shape is free to change.
+    # it is not an intersection. Nothing parses this stdout (the consumers,
+    # oc-build and oc-ship, call `audit`), so the shape is free to change.
     if [ "$conservative" = "1" ]; then
       echo "MAIN-SHIFT (not an overlap — merge-changed set unknown for a single-parent HEAD):"
       echo "$inter" | sed 's/^/  /'
