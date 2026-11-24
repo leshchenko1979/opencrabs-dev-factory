@@ -429,15 +429,25 @@ if [ -z "${BATTERY_IN_CHUNK:-}" ] && [ -z "${BATTERY_CGROUP_ISOLATED:-}" ] && [ 
     note "battery: WARNING: could not create a transient scope -- running in ${_oc_cg} unisolated (#720)"
   fi
 fi
-# ---- ONE per-run TEST_TMPDIR root (factory #171, step 4) --------------------
+# ---- ONE per-run TEST_TMPDIR root (factory #171, steps 4+7) ------------------
 # WHY: the battery scattered its scratch across /tmp, which on this box is
 # /dev/sda1 -- a 58G ext4 at 87% full -- while /dev/shm is a 2.0G tmpfs at 1%.
 # Every `mktemp` the battery makes (70 call sites in this file, plus the
 # selftests' own) and every one of the ~33 oc-snap mirrors (4.7 MB each after
 # the excludes, tools/lib/oc-snap.sh) landed there, paying real disk I/O for
-# data whose whole life is one run. ONE root per run -- on tmpfs when it fits --
-# exported as TMPDIR and OC_SNAP_ROOT removes both populations from the disk and
-# gives the EXIT path exactly one thing to delete.
+# data whose whole life is one run. ONE root per run -- exported as TMPDIR and
+# OC_SNAP_ROOT -- gives both populations one owner and the EXIT path exactly one
+# thing to delete.
+#
+# WHERE THE ROOT LIVES IS A MEASURED DECISION, NOT A DEFAULT (#171 step 7).
+# A/B on the git-heavy selftests (deploy + ship + issue-dispatch, solo and
+# sequential, 3 samples per arm, 2026-11-24): disk median 350.4 s vs tmpfs
+# median 346.0 s = a 1.26% gain, pass counts equal 16/16 in both arms. The keep
+# bar set before measuring was >=10%, so the tmpfs default was REVERTED: the
+# root defaults to DISK and tmpfs is opt-in via OC_BATTERY_SHM_DIR. The gain is
+# real but inside the noise of this box's variable load (mean load1 1.74 vs
+# 2.15), and /dev/shm is 2 GB shared with everything else -- not worth owning
+# by default for 4 seconds in 350.
 #
 # Placement is load-bearing TWICE:
 #   * AFTER the cgroup block above, because that block `exec`s this script: a
@@ -452,18 +462,21 @@ fi
 #     root -- see the comment in the lock block itself.
 #
 # Env knobs:
-#   OC_BATTERY_TEST_TMPDIR  force the root (the A/B arm pins /tmp with this)
-#   OC_BATTERY_SHM_DIR      tmpfs candidate (default /dev/shm)
-#   OC_BATTERY_SHM_MIN_MB   free-space floor before tmpfs is used. Set from the
-#                           MEASURED peak, not a guess: `du -sm` sampled at 5 Hz
-#                           while the heaviest sections ran solo (2026-11-24,
-#                           #171) read 47 MB for section 10 (oc-deploy) and 13 MB
-#                           for section 18 (oc-ship); 50 MB is the worst figure
-#                           seen (two copies of section 10 sharing one root by
-#                           accident). 1.5x the worst peak -> 75 MB. The floor is
-#                           what protects a lane that runs --jobs N, where N
-#                           sections' fixtures coexist: raise it if you raise N.
-_oc_bt_shm_dir="${OC_BATTERY_SHM_DIR:-/dev/shm}"
+#   OC_BATTERY_TEST_TMPDIR  force the root (the A/B arms pin a path with this)
+#   OC_BATTERY_SHM_DIR      tmpfs candidate. UNSET BY DEFAULT = disk root; set
+#                           it (e.g. /dev/shm) to opt into tmpfs
+#   OC_BATTERY_SHM_MIN_MB   free-space floor before a tmpfs candidate is used.
+#                           Only consulted when OC_BATTERY_SHM_DIR is set. Set
+#                           from the MEASURED peak, not a guess: `du -sm` sampled
+#                           at 5 Hz while the heaviest sections ran solo
+#                           (2026-11-24, #171) read 47 MB for section 10
+#                           (oc-deploy) and 13 MB for section 18 (oc-ship); 50 MB
+#                           is the worst figure seen (two copies of section 10
+#                           sharing one root by accident). 1.5x the worst peak ->
+#                           75 MB. The floor is what protects a lane that runs
+#                           --jobs N, where N sections' fixtures coexist: raise
+#                           it if you raise N.
+_oc_bt_shm_dir="${OC_BATTERY_SHM_DIR:-}"
 _oc_bt_shm_min_mb="${OC_BATTERY_SHM_MIN_MB:-75}"
 case "$_oc_bt_shm_min_mb" in ''|*[!0-9]*) _oc_bt_shm_min_mb=75 ;; esac
 _oc_bt_root=""
@@ -555,18 +568,22 @@ else
   # Only the top-level run sweeps dead roots; N parallel --chunk children each
   # scanning /dev/shm would be N concurrent rm -rf walks of the same directory.
   [ -z "${BATTERY_IN_CHUNK:-}" ] && _battery_reap_test_tmpdirs
-  _oc_bt_free="$(_oc_bt_free_mb "$_oc_bt_shm_dir")"
-  case "${_oc_bt_free:-}" in ''|*[!0-9]*) _oc_bt_free=0 ;; esac
-  if [ -d "$_oc_bt_shm_dir" ] && [ -n "$(_oc_bt_tmpfs_mp "$_oc_bt_shm_dir")" ] \
-     && [ "$_oc_bt_free" -ge "$_oc_bt_shm_min_mb" ]; then
-    _oc_bt_root="$_oc_bt_shm_dir/oc-battery-$$"
-    mkdir -p "$_oc_bt_root" 2>/dev/null || _oc_bt_root=""
+  # tmpfs is OPT-IN (#171 step 7): with no OC_BATTERY_SHM_DIR the disk branch
+  # below is taken without probing /dev/shm at all.
+  if [ -n "$_oc_bt_shm_dir" ] && [ -d "$_oc_bt_shm_dir" ] \
+     && [ -n "$(_oc_bt_tmpfs_mp "$_oc_bt_shm_dir")" ]; then
+    _oc_bt_free="$(_oc_bt_free_mb "$_oc_bt_shm_dir")"
+    case "${_oc_bt_free:-}" in ''|*[!0-9]*) _oc_bt_free=0 ;; esac
+    if [ "$_oc_bt_free" -ge "$_oc_bt_shm_min_mb" ]; then
+      _oc_bt_root="$_oc_bt_shm_dir/oc-battery-$$"
+      mkdir -p "$_oc_bt_root" 2>/dev/null || _oc_bt_root=""
+    fi
   fi
   if [ -z "$_oc_bt_root" ]; then
-    # tmpfs unavailable or too small: a plain disk root, still one per run. The
-    # pid rides in the name so an operator can attribute a leftover to its run;
-    # it is not reaped by _battery_reap_test_tmpdirs (that population is the
-    # /dev/shm one, whose names are exactly oc-battery-<pid>).
+    # No opt-in, or the tmpfs candidate is unavailable or below its floor: a
+    # plain disk root, still one per run. The pid rides in the name so an
+    # operator can attribute a leftover to its run, and the reaper above parses
+    # both shapes (`<pid>` for tmpfs, `<pid>.<rand>` for mktemp).
     _oc_bt_root="$(mktemp -d "${TMPDIR:-/tmp}/oc-battery-$$.XXXXXX" 2>/dev/null)" || _oc_bt_root=""
   fi
 fi
@@ -5413,18 +5430,42 @@ esac
 [ -d "$_s92_root" ] \
   && bad "#171: the run left its scratch root behind on a clean exit ($_s92_root)" \
   || ok "the run removes its scratch root on exit (#171)"
-# (d) LIVE: the tmpfs floor is REAL, not decorative. An impossible floor must
-#     fall back off /dev/shm -- otherwise the knob is a comment. TMPDIR is
-#     cleared here too: inside a chunk child it names the parent's root (on
-#     /dev/shm), so the DISK fallback would be created inside /dev/shm and the
-#     leg would read the parent's choice instead of the floor's.
-_s92_o2="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
-  OC_BATTERY_LOCK="$_s92_d/lk2" OC_BATTERY_SHM_MIN_MB=999999999 \
+# (d) LIVE: the tmpfs branch and its floor are REAL, not decorative -- THREE legs.
+#     The DEFAULT root is DISK (#171 step 7), so a bare "not /dev/shm" check
+#     would pass vacuously and prove nothing. Leg 1 is the POSITIVE CONTROL:
+#     opt in to /dev/shm with a satisfiable floor and the run MUST choose it --
+#     without it, leg 2 cannot tell a working floor from a branch that never
+#     runs. TMPDIR is cleared in all three: inside a chunk child it names the
+#     parent's root, which would mask the choice under test.
+if [ -d /dev/shm ] && [ -n "$(_oc_bt_tmpfs_mp /dev/shm)" ]; then
+  _s92_o1="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+    OC_BATTERY_LOCK="$_s92_d/lk2a" OC_BATTERY_SHM_DIR=/dev/shm OC_BATTERY_SHM_MIN_MB=1 \
+    bash "$_s92_self" --resolve-jobs 2>&1)"
+  case "$_s92_o1" in
+    *"battery scratch root: /dev/shm/oc-battery-"*) ok "CONTROL: opting in to /dev/shm puts the root on tmpfs (#171)" ;;
+    *) bad "#171: CONTROL FAILED -- OC_BATTERY_SHM_DIR=/dev/shm with a satisfiable floor did not choose tmpfs, so the floor leg proves nothing ($(printf '%s' "$_s92_o1" | grep -m1 'scratch root' || echo 'no root line'))" ;;
+  esac
+  _s92_o2="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+    OC_BATTERY_LOCK="$_s92_d/lk2b" OC_BATTERY_SHM_DIR=/dev/shm OC_BATTERY_SHM_MIN_MB=999999999 \
+    bash "$_s92_self" --resolve-jobs 2>&1)"
+  case "$_s92_o2" in
+    *"battery scratch root: /dev/shm/"*) bad "#171: OC_BATTERY_SHM_MIN_MB=999999999 still chose /dev/shm -- the floor is not consulted" ;;
+    *"battery scratch root: "*) ok "OC_BATTERY_SHM_MIN_MB is honoured: an impossible floor falls back off /dev/shm (#171)" ;;
+    *) bad "#171: the fallback run announced no scratch root at all" ;;
+  esac
+else
+  note "#171: /dev/shm is not tmpfs here -- the tmpfs-branch legs (control + floor) are NOT exercised on this box"
+fi
+# (d2) DEFAULT: with no opt-in at all the root is on DISK. This is the shipped
+#      default and the A/B verdict -- 1.26% median gain against a 10% keep bar
+#      (#171 step 7), so a /dev/shm default here is a regression of the decision.
+_s92_o3="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR -u OC_BATTERY_SHM_DIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+  OC_BATTERY_LOCK="$_s92_d/lk2c" \
   bash "$_s92_self" --resolve-jobs 2>&1)"
-case "$_s92_o2" in
-  *"battery scratch root: /dev/shm/"*) bad "#171: OC_BATTERY_SHM_MIN_MB=999999999 still chose /dev/shm -- the floor is not consulted" ;;
-  *"battery scratch root: "*) ok "OC_BATTERY_SHM_MIN_MB is honoured: an impossible floor falls back off /dev/shm (#171)" ;;
-  *) bad "#171: the fallback run announced no scratch root at all" ;;
+case "$_s92_o3" in
+  *"battery scratch root: /dev/shm/"*) bad "#171: the DEFAULT root is /dev/shm -- step 7's A/B measured 1.26% against a 10% bar, so the tmpfs default must stay reverted (opt-in via OC_BATTERY_SHM_DIR)" ;;
+  *"battery scratch root: "*) ok "the DEFAULT scratch root is on disk; tmpfs is opt-in (#171 A/B: 1.26% < 10% keep bar)" ;;
+  *) bad "#171: the default run announced no scratch root at all" ;;
 esac
 # (e) OWNERSHIP: a run that INHERITS a root must use it and must NOT delete it.
 #     The root is exported, so a --chunk child (and any nested run.sh, e.g. the
