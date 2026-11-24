@@ -100,7 +100,7 @@
 #   checkout — a LINKED WORKTREE is accepted, #69; dirty checkout; or $BRANCH absent
 #   from the fork remote. Lane fix, NEVER infra) · 4 GATE-RED / CARRIER-RED
 #   (structured verdict) · 6 dispatch/poll infra, incl. a lineage-guard refusal
-#   (rebase-aware: re-run; diagnose with `oc-deploy lineage-check`) · 7 gate still
+#   (rebase-aware: re-run; diagnose with `oc-verify-lineage`) · 7 gate still
 #   IN FLIGHT — do NOT re-dispatch, re-run with --gated-run <id> · 8 SHIP-WAIT-TIMEOUT
 #   — the build is still RUNNING, resume with `oc-deploy poll --execute` · 9
 #   SHIP-LOCK-TIMEOUT — another chain holds the landing lock; wait or raise

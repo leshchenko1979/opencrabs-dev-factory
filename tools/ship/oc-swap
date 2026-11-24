@@ -353,7 +353,7 @@ swap_execute() {
         else
           jline guard 2 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" '{reason:"non-monotonic-swap", current_deployed:$p, incoming_sha:$s}')"
           echo "OC_DEPLOY_SWAP_GUARD=stale-build" >&2
-          die 2 "swap-execute: incoming sha $SHA does not carry deployed sha $PREV_SHA — refusing stale binary overwrite (diagnose: oc-deploy lineage-check --prev $PREV_SHA --sha $SHA)"
+          die 2 "swap-execute: incoming sha $SHA does not carry deployed sha $PREV_SHA — refusing stale binary overwrite (diagnose: oc-verify-lineage --prev $PREV_SHA --sha $SHA)"
         fi
         ;;
       unknown)

@@ -159,7 +159,8 @@ lineage_verdict() { # <repo> <prev_sha> <sha>
   return 0
 }
 
-# Post-rewrite runbook line, shared by the guard and the lineage-check verb.
+# Post-rewrite runbook line, shared by the swap's inline guard and
+# tools/harvest/oc-verify-lineage (the read-only verb, #168 cut 5).
 lineage_next_step() { # <verdict> <prev> <sha> <twin>
   case "$1" in
     monotonic) echo "next: proceed — the incoming build is a descendant of the deployed sha." ;;
@@ -228,41 +229,17 @@ features_run() { # [--repo P] [--ref B]
 }
 
 # ----------------------------------------------------------------------------
-# lineage-check verb body (moved verbatim: 371-383)
+# lineage-check — MOVED OUT of the library (factory #168 cut 5).
 # ----------------------------------------------------------------------------
-lineage_check_run() { # [--prev P] [--sha S] [--repo R] [--json]
-  local repo="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}" prev="" sha="" json=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --prev) prev="${2:-}"; shift ;;
-      --sha)  sha="${2:-}";  shift ;;
-      --repo) repo="${2:-}"; shift ;;
-      --json) json=1 ;;
-      *) die 1 "lineage-check: unknown arg: $1" ;;
-    esac
-    shift || true
-  done
-  [ -n "$prev" ] || prev="$(cat "$DEPLOYED" 2>/dev/null || true)"
-  [ -n "$sha" ]  || sha="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-  [ -n "$prev" ] || die 1 "lineage-check: no deployed sha (pass --prev)"
-  [ -n "$sha" ]  || die 1 "lineage-check: cannot resolve --sha (pass it explicitly)"
-  local out kind twin
-  out="$(lineage_verdict "$repo" "$prev" "$sha")"
-  kind="${out%% *}"; twin="${out#* }"
-  if [ "$json" = 1 ]; then
-    jq -cn --arg v "$kind" --arg p "$prev" --arg s "$sha" --arg t "$twin" --arg r "$repo" \
-      '{verdict:$v, current_deployed:$p, incoming_sha:$s, rewritten_twin:$t, repo:$r}'
-  else
-    echo "repo:              $repo"
-    echo "current_deployed:  $prev"
-    echo "incoming_sha:      $sha"
-    echo "verdict:           $kind"
-    [ "$kind" = "rewritten" ] && echo "rewritten_twin:    $twin"
-    lineage_next_step "$kind" "$prev" "$sha" "$twin"
-  fi
-  case "$kind" in monotonic|rewritten) return 0 ;; *) return 2 ;; esac
-}
-
+# The verb body now lives in its own tool, tools/harvest/oc-verify-lineage,
+# because it was never shared: the dispatcher was its ONLY caller, and the
+# SWAP does not call it — oc-swap runs `lineage_verdict` inline (see the guard
+# at its step 6). A library function with one caller, in a file every stage
+# sources, is the drift surface the cut exists to remove: two spellings of
+# one question, and a lane that grepped the lib could not tell which one the
+# ship path actually used. The PREDICATE stays here (lineage_verdict /
+# lineage_next_step above), so the tool and the inline guard still cannot
+# disagree about a sha — only the ARGUMENT PARSING and the OUTPUT moved.
 # ----------------------------------------------------------------------------
 # receipt recovery (moved verbatim: 404-583)
 # ----------------------------------------------------------------------------
@@ -1005,7 +982,7 @@ while [ $# -gt 0 ]; do
     # exits 0 before the carrier read or any network call. The selftest drives
     # THIS; a re-implementation in the test would prove nothing.
     --resolve-priority) PRIORITY_PROBE=1 ;;
-    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | lineage-check [--prev P] [--sha S] [--repo R] [--json] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
+    -h|--help)  echo "usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID] [--gated-sha SHA] [--allow-ungated-push \"<justification>\"] [--allow-features-drop] [--priority low|normal] [--resolve-priority] | poll [--execute] [--wait N] [--notify-session UUID] | swap-execute --sha S --run R [--features F] [--artifact-dir D] [--drill] [--allow-features-drop] [--allow-rewritten-lineage \"<justification>\" [--actor A]] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json] | features [--repo P] [--ref B] | watch [--with-delta] | status [--json] | fanout --run R [--dry-run] | --selftest  (contributors RETIRED — use oc-attrib --contributors)"; exit 0 ;;
     *)          die 1 "unknown arg: $1" ;;
   esac
   shift || true

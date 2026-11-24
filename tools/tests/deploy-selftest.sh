@@ -43,6 +43,11 @@
   # this suite (the suite is one suite and every arm can run it), so the entry
   # point is RESOLVED here, never inherited from $0.
   local SELF_BIN="${1:-$OC_TOOLS_DIR/ship/oc-deploy}"   # v0.4.38: absolute, so a re-exec after cd into tmp can still resolve it
+  # #168 cut 5: `lineage-check` left the library for its own tool, so the 21a-21e
+  # legs go to it DIRECTLY. They used to run through the dispatcher, which made
+  # them pass on a shim while the tool they claimed to cover could be broken —
+  # the leg must name the file that owns the verdict.
+  local LV_BIN="$OC_TOOLS_DIR/harvest/oc-verify-lineage"
   local SELF_DIR; SELF_DIR="$(dirname "$SELF_BIN")"
   # T5-bis: the split moved code out of the one file the source-shape guards
   # below used to grep. Each such guard reads the file that OWNS what it pins.
@@ -1797,37 +1802,37 @@ NSTUB
   [ "$(git -C "$LREPO" show "$LDEP" | git patch-id --stable | awk '{print $1}')" \
     = "$(git -C "$LREPO" show "$LREW" | git patch-id --stable | awk '{print $1}')" ] \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage fixture broken — twin patch-ids differ"; }
-  # 21a. lineage-check verb: monotonic accept (fast path)
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LREW" --sha "$LNEW" 2>&1)"; rc=$?
+  # 21a. oc-verify-lineage: monotonic accept (fast path)
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LREW" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-monotonic-rc" $rc 0
   grep -qE '^verdict: +monotonic$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check monotonic verdict wrong: $out"; }
-  # 21b. lineage-check verb: rewritten accept, twin named
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" 2>&1)"; rc=$?
+  # 21b. oc-verify-lineage: rewritten accept, twin named
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-rewritten-rc" $rc 0
   grep -qE '^verdict: +rewritten$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check rewritten verdict wrong: $out"; }
   check_has "lineage-check-rewritten-twin" "$out" "rewritten_twin:    $LREW"
   # 21b-json. machine-readable shape (reporters/lanes key on this)
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" --json 2>&1)"; rc=$?
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LDEP" --sha "$LNEW" --json 2>&1)"; rc=$?
   check_rc "lineage-check-json-rc" $rc 0
   printf '%s' "$out" | jq -e --arg t "$LREW" '.verdict=="rewritten" and .rewritten_twin==$t' >/dev/null 2>&1 \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check --json wrong: $out"; }
-  # 21c. lineage-check verb: genuinely absent change -> rc 2
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LSTALE" --sha "$LNEW" 2>&1)"; rc=$?
+  # 21c. oc-verify-lineage: genuinely absent change -> rc 2
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LSTALE" --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-absent-rc" $rc 2
   grep -qE '^verdict: +absent$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check absent verdict wrong: $out"; }
   # 21d. NEGATIVE CONTROL: a rewrite whose content CHANGED is still refused —
   #      this is what proves acceptance keys on patch CONTENT, not on "some
   #      commit exists in the range"
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev "$LDEP" --sha "$LNEG" 2>&1)"; rc=$?
+  out="$("$LV_BIN" --repo "$LREPO" --prev "$LDEP" --sha "$LNEG" 2>&1)"; rc=$?
   check_rc "lineage-check-negctrl-rc" $rc 2
   grep -qE '^verdict: +absent$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: tampered rewrite NOT refused (patch-id not content-sensitive): $out"; }
   # 21e. unknown (object not in this repo) is SKIPPED, not refused — preserves
   #      the pre-v0.4.151 "if both exist" behaviour
-  out="$("$SELF_BIN" lineage-check --repo "$LREPO" --prev deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --sha "$LNEW" 2>&1)"; rc=$?
+  out="$("$LV_BIN" --repo "$LREPO" --prev deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --sha "$LNEW" 2>&1)"; rc=$?
   check_rc "lineage-check-unknown-rc" $rc 2
   grep -qE '^verdict: +unknown$' <<< "$out" && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: lineage-check unknown verdict wrong: $out"; }

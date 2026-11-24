@@ -101,7 +101,8 @@ set -uo pipefail
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-deploy" "$@"; else oc_log_finish() { :; }; fi
 # The dispatcher sources the shared body for the verbs it answers IN-PROCESS
-# (contributors, lineage-check, recover-receipt, --selftest) and for `die`.
+# (contributors, recover-receipt, --selftest) and for `die`. lineage-check is no
+# longer one of them: #168 cut 5 moved it to tools/harvest/oc-verify-lineage.
 _OC_DEPLOY_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
 if [ -f "$_OC_DEPLOY_LIB" ]; then
   . "$_OC_DEPLOY_LIB"
@@ -138,7 +139,8 @@ the tool that owns that stage:
   swap-execute            -> tools/ship/oc-swap      (install on the host)
   fanout                  -> tools/ship/oc-fanout    (notify contributors)
   poll, status, watch     -> tools/ship/oc-status    (read state, hand off)
-  lineage-check, recover-receipt, contributors
+  lineage-check           -> tools/harvest/oc-verify-lineage (read-only guard)
+  recover-receipt, contributors
                           -> in-process (tools/lib/oc-deploy-lib.sh)
 
 Every spelling that worked before the split still works here; the argv is passed
@@ -163,7 +165,10 @@ case "$MODE" in
   # Verbs whose body lives in the shared library: no stage to route to, so the
   # dispatcher calls them in-process, exactly where it used to.
   contributors)      contributors_run "$@"; exit $? ;;      # RETIRED (v0.4.91)
-  lineage-check)     lineage_check_run "$@"; exit $? ;;
+  # #168 cut 5: lineage-check is a REAL TOOL now (tools/harvest/oc-verify-lineage),
+  # not a library function, so it is exec'd like every other stage. The alias stays
+  # for one cut so the documented spelling keeps working; it dies with this file.
+  lineage-check)     exec "$OC_TOOLS_DIR/harvest/oc-verify-lineage" "$@" ;;
   recover-receipt)   recover_receipt_run "$@"; exit $? ;;
   --selftest|selftest) selftest "$@"; exit $? ;;
   -h|--help)         usage; exit 0 ;;
