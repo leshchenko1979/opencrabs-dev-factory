@@ -112,8 +112,64 @@ _battery_reap_mirrors() {
   return 0
 }
 trap '_battery_reap_mirrors' EXIT
-ok()    { PASS=$((PASS+1)); note "  ok   - $*"; }
-bad()   { FAIL=$((FAIL+1)); note "  FAIL - $*"; if [ -n "${FAIL_LOG:-}" ]; then printf '  FAIL - %s\n' "$*" >> "$FAIL_LOG"; fi; }
+# ---- opt-in per-check timing (OC_BATTERY_CHECK_TIMING=1) --------------------
+# The receipt times 71 SECTIONS and nothing inside them, so a slow CASE is
+# invisible: the 28.48s live oc-roster walk removed in #164 was found by strace,
+# never by a timing the harness emitted. #165 could instrument only the Python
+# dispatch selftest, because that is where its assert_true lives; every leg of
+# THIS battery funnels through ok()/bad(), so one stamp here covers the fleet.
+# Opt-in: the default transcript stays byte-identical for the battery and every
+# log parser (parallel mode re-counts rows by the '^  ok ' prefix, which the
+# suffix never disturbs because it is appended AFTER the description).
+BATTERY_CHECK_TIMING=0
+[ "${OC_BATTERY_CHECK_TIMING:-0}" = "1" ] && BATTERY_CHECK_TIMING=1
+BATTERY_CHECK_N=0
+BATTERY_CHECK_T0=0
+BATTERY_CHECK_SUM_MS=0
+BATTERY_CHECK_TSV=""
+BATTERY_CHECK_SUFFIX=""
+_battery_check_stamp() { # $1 = ok|FAIL, $2 = description; sets BATTERY_CHECK_SUFFIX
+  BATTERY_CHECK_SUFFIX=""
+  [ "$BATTERY_CHECK_TIMING" = "1" ] || return 0
+  local _now _d
+  _now="$(( $(date +%s%N) / 1000000 ))"
+  if [ "$BATTERY_CHECK_T0" -gt 0 ]; then _d=$(( _now - BATTERY_CHECK_T0 )); else _d=0; fi
+  BATTERY_CHECK_T0="$_now"
+  BATTERY_CHECK_N=$(( BATTERY_CHECK_N + 1 ))
+  BATTERY_CHECK_SUM_MS=$(( BATTERY_CHECK_SUM_MS + _d ))
+  if [ -z "$BATTERY_CHECK_TSV" ]; then
+    BATTERY_CHECK_TSV="$(mktemp -t oc-battery-checks.XXXXXX)" || BATTERY_CHECK_TSV=""
+  fi
+  [ -n "$BATTERY_CHECK_TSV" ] && printf '%s\t%s\t%s\t%s\n' \
+    "$BATTERY_CHECK_N" "$_d" "$1" "$2" >> "$BATTERY_CHECK_TSV"
+  BATTERY_CHECK_SUFFIX=" [${_d} ms]"
+  return 0
+}
+battery_check_lines() {
+  [ "$BATTERY_CHECK_TIMING" = "1" ] || return 0
+  [ -s "${BATTERY_CHECK_TSV:-}" ] || return 0
+  note "  checks: ${BATTERY_CHECK_N} legs, ${BATTERY_CHECK_SUM_MS} ms attributed (OC_BATTERY_CHECK_TIMING=1)"
+  python3 - "$BATTERY_CHECK_TSV" <<'OC_CHECK_SHOW' 2>/dev/null || return 0
+import sys
+rows = []
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    p = line.rstrip("\n").split("\t")
+    if len(p) < 4:
+        continue
+    try:
+        n = int(p[0]); ms = int(p[1])
+    except ValueError:
+        continue
+    rows.append((n, ms, p[2], p[3]))
+rows.sort(key=lambda r: -r[1])
+print("  slowest checks:")
+for n, ms, kind, desc in rows[:15]:
+    print("    #%d %8d ms  %s %s" % (n, ms, kind, desc))
+OC_CHECK_SHOW
+  return 0
+}
+ok()    { PASS=$((PASS+1)); _battery_check_stamp ok "$*"; note "  ok   - $*$BATTERY_CHECK_SUFFIX"; }
+bad()   { FAIL=$((FAIL+1)); _battery_check_stamp FAIL "$*"; note "  FAIL - $*$BATTERY_CHECK_SUFFIX"; if [ -n "${FAIL_LOG:-}" ]; then printf '  FAIL - %s\n' "$*" >> "$FAIL_LOG"; fi; }
 # (#120) `chk <desc> <want> <got>`. Called at :2105-2106 since the #525 legs
 # were written, and DEFINED NOWHERE until now -- so both calls printed
 # "chk: command not found" and asserted nothing, while the section reported
@@ -734,6 +790,7 @@ emit_summary() {
   note "=============================="
   note "  PASS: $PASS   FAIL: $FAIL   (receipt: tools/tests/battery-last.json = $verdict, mode: $BATTERY_MODE${BATTERY_PIDS_CAP_NOTE:+, pids: $BATTERY_PIDS_CAP_NOTE})"
   battery_timing_lines
+  battery_check_lines
   note "=============================="
   [ "$FAIL" -eq 0 ] || note "tests FAILED (nonzero exit below)"
   return $(( FAIL > 0 ? 1 : 0 ))
@@ -5116,4 +5173,10 @@ _battery_reap_mirrors
 emit_summary
 _rc=$?
 [ "${BATTERY_SECTIONS_TMP:-0}" = "1" ] && rm -f "${BATTERY_SECTIONS_TSV:-}"
+# The per-check TSV is a debugging artifact: the summary already prints the
+# slowest 15, so the file is removed unless OC_BATTERY_KEEP_CHECKS=1 asks for
+# the full distribution (how the per-section tables in the tracker are built).
+if [ -n "${BATTERY_CHECK_TSV:-}" ] && [ "${OC_BATTERY_KEEP_CHECKS:-0}" != "1" ]; then
+  rm -f "$BATTERY_CHECK_TSV" 2>/dev/null
+fi
 exit "$_rc"
