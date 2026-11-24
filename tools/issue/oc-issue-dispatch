@@ -2828,13 +2828,26 @@ def run_selftest():
             print(f"  FAIL {tests_passed + tests_failed + 1} - {desc} (expected '{expected}', got '{actual}')")
             tests_failed += 1
 
+    # OC_SELFTEST_TIMING=1 (opt-in, default output unchanged): each check is
+    # stamped with the ms elapsed since the previous check, i.e. the work that
+    # led up to it. Slowest cases are summarised after the run.
+    timing_on = os.environ.get("OC_SELFTEST_TIMING") == "1"
+    timing_mark = [time.monotonic()]
+    timing_rows = []
+
     def assert_true(desc, condition):
         nonlocal tests_passed, tests_failed
+        now = time.monotonic()
+        elapsed_ms = int((now - timing_mark[0]) * 1000)
+        timing_mark[0] = now
+        suffix = f" [{elapsed_ms} ms]" if timing_on else ""
+        if timing_on:
+            timing_rows.append((elapsed_ms, tests_passed + tests_failed + 1, desc))
         if condition:
-            print(f"  ok {tests_passed + tests_failed + 1} - {desc}")
+            print(f"  ok {tests_passed + tests_failed + 1} - {desc}{suffix}")
             tests_passed += 1
         else:
-            print(f"  FAIL {tests_passed + tests_failed + 1} - {desc} (condition False)")
+            print(f"  FAIL {tests_passed + tests_failed + 1} - {desc} (condition False){suffix}")
             tests_failed += 1
 
     # Test 1: Wire envelope formatting and contract compliance
@@ -4955,6 +4968,10 @@ def run_selftest():
                 _by56[_u54] - _by56[_tg54] >= 20)
 
     total = tests_passed + tests_failed
+    if timing_on:
+        print(f"timing: {sum(r[0] for r in timing_rows)} ms across {len(timing_rows)} checks; slowest:")
+        for ms, num, desc in sorted(timing_rows, reverse=True)[:15]:
+            print(f"  {ms:>7} ms  #{num}  {desc}")
     print(f"selftest: {tests_passed}/{total} OK")
     return 0 if tests_failed == 0 else 1
 
