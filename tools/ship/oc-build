@@ -355,8 +355,10 @@ case "$MODE" in
         || { shadow_log ship "$SHA" "$FEATURES" "gate-fail"; die 2 "OC_DEPLOY_GATE=order-gate-failed: ORDER gates failed post-push (see validator exit code)"; }
       echo "ORDER gates 4/4 PASS ($SHA)"
       # #72: inject the fork release identity so the built binary reports the SAME
-      # string its release is named — evolve compares the two, and a divergence
-      # re-downloads forever. Gated on the carrier's OWN declaration: an undeclared
+      # string its release is named. Dispatch runs BEFORE the seal, so it injects
+      # the POST-seal cycle (cycle+1), which is the value the seal will write and
+      # publish will name. evolve compares the two, and a divergence re-downloads
+      # forever. Gated on the carrier's OWN declaration: an undeclared
       # dispatch input is a hard 422 from the API and would break EVERY ship, so a
       # carrier that has not shipped the input yet gets the old form plus a NOTE.
       FV_ARGS=()
@@ -365,7 +367,7 @@ case "$MODE" in
       FV_PROBE=0
       _carrier_declares_input fork_version || FV_PROBE=$?
       case "$FV_PROBE" in
-        0) FORK_VERSION="$(_fork_release_name "$SHA")"
+        0) FORK_VERSION="$(_fork_release_name "$SHA" 1)"   # dispatch precedes the seal: inject cycle+1
            FV_ARGS=(-f "fork_version=$FORK_VERSION")
            echo "carrier fork_version=$FORK_VERSION" ;;
         1) echo "oc-deploy: NOTE — carrier $WF@$CARRIER_REF declares no fork_version input; dispatching without it (the binary reports the bare upstream version until the carrier ships the input, #72)" >&2 ;;
@@ -438,7 +440,7 @@ case "$MODE" in
     else
       plan "would: git push $REMOTE $SHA:refs/heads/main"
       plan "would: $VALIDATE --repo $FORK --ledger <ledger> $SHA   # 4 ORDER gates vs live remote"
-      plan "would: $GH workflow run $WF --repo $FORK --ref $CARRIER_REF -f source_ref=$SHA -f features=$FEATURES -f fork_version=$(_fork_release_name "$SHA") (only if the carrier declares the input, #72)"
+      plan "would: $GH workflow run $WF --repo $FORK --ref $CARRIER_REF -f source_ref=$SHA -f features=$FEATURES -f fork_version=$(_fork_release_name "$SHA" 1) (only if the carrier declares the input, #72)"
       plan "would: shadow journal appended; fanout notifies contributors on swap"
       shadow_log ship-plan "$SHA" "$FEATURES" "planned"
       echo "plan complete — nothing executed (pass --execute to ship)"

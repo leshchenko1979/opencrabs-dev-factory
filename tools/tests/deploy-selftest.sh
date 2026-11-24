@@ -1565,10 +1565,19 @@ NSTUB3
   # 17v. #72 — the carrier dispatch carries the fork release identity, and it is
   #      the SAME string the publish leg names the release with. Both legs are
   #      driven from ONE fixture ($SD7: version 0.5.4, cycle 352), so "same by
-  #      construction" is MEASURED rather than agreed. The flag is gated on the
+  #      construction" is MEASURED rather than agreed. The stub seal never bumps
+  #      the counter, so the test simulates it between the legs (jq .cycle += 1):
+  #      dispatch injects 353 (cycle+1), publish reads 353 after the seal. The
+  #      flag is gated on the
   #      carrier's own declaration: an undeclared input is a hard 422 that would
   #      break EVERY ship, so a transition carrier must get the OLD form + a NOTE.
   local FV72="" PN72=""
+  # Positive control: the fixture's pre-seal counter is 352. Without this the
+  # dispatch expectation below could pass against a fixture that never read it.
+  local CYC72
+  CYC72="$(jq -r .cycle "$SD7/baseline.json")"
+  [ "$CYC72" = "352" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #72 fixture baseline cycle is '$CYC72', expected 352 (positive control)"; }
   : > "$GH_LOG"
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD7" OC_DEPLOY_REPO="$T/crepo" \
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
@@ -1576,11 +1585,16 @@ NSTUB3
     OC_TEST_CARRIER_FORK_VERSION=1 \
     "$SELF_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
   check_rc "72-dispatch-rc" $rc 0
-  check_has "72-dispatch-echo" "$out" "carrier fork_version=0.5.4+fork.352"
+  # Dispatch runs BEFORE the seal, so it must inject the cycle the seal WILL write (352+1).
+  check_has "72-dispatch-echo" "$out" "carrier fork_version=0.5.4+fork.353"
   FV72="$(grep -o 'fork_version=[^ ]*' "$GH_LOG" | head -1 | sed 's/^fork_version=//')"
-  [ "$FV72" = "0.5.4+fork.352" ] \
-    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #72 dispatch did not carry -f fork_version=0.5.4+fork.352 (got '${FV72:-<none>}')"; }
-  # publish leg, SAME fixture: the release title must be the identical string
+  [ "$FV72" = "0.5.4+fork.353" ] \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #72 dispatch did not carry -f fork_version=0.5.4+fork.353 (got '${FV72:-<none>}')"; }
+  # Simulate the seal between the legs (oc-swap:452 writes --cycle CYC+1; the
+  # stub seal is exit 0 and never bumps). Without this the publish leg reads the
+  # pre-seal counter and the equality below is vacuous.
+  jq '.cycle += 1' "$SD7/baseline.json" > "$SD7/baseline.json.tmp" && mv "$SD7/baseline.json.tmp" "$SD7/baseline.json"
+  # publish leg, SAME fixture, post-seal: the release title must be the identical string
   out="$(_oc766_pub e555555555555555555555555555555555555555 905 "" "")"; rc=$?
   check_rc "72-publish-rc" $rc 0
   PN72="$(grep 'release create fork-latest' "$GH_LOG" | sed -n 's/.*--title \([^ ]*\) .*/\1/p' | head -1)"

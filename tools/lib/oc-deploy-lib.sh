@@ -800,8 +800,16 @@ contributors_run() { # RETIRED: use oc-attrib --contributors
 # release named fork.430 reports an update forever and re-downloads in a loop.
 # Therefore VER/CYC are derived HERE, once, and both legs call this. Never
 # compute them a second time inline — that is exactly how the two diverge.
-_fork_release_name() { # $1=sha -> "<upstream-version>+fork.<cycle>"
-  local sha="${1:-}" repo base_dir baseline ver cyc
+# The legs differ ONLY by the offset, because the seal bumps the counter between
+# them: dispatch runs BEFORE the seal, so it injects cycle+1 (offset 1), the
+# value the seal is about to write; publish runs AFTER it, so the counter already
+# holds that value and it reads cycle as-is (offset 0). Dispatch injecting the
+# pre-seal cycle (offset 0) is the #72 off-by-one: the binary says fork.N while
+# the release is named fork.N+1, and evolve re-downloads forever.
+_fork_release_name() { # $1=sha $2=offset (default 0) -> "<upstream-version>+fork.<cycle+offset>"
+  # offset 0 = read AFTER the seal (publish leg: the counter already names this deploy).
+  # offset 1 = read BEFORE the seal (dispatch leg: the seal will write cycle+1).
+  local sha="${1:-}" offset="${2:-0}" repo base_dir baseline ver cyc
   repo="${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}"
   base_dir="$(dirname "$(readlink -f "$LEDGER" 2>/dev/null || echo "$LEDGER")")"
   baseline="$base_dir/baseline.json"
@@ -811,7 +819,7 @@ _fork_release_name() { # $1=sha -> "<upstream-version>+fork.<cycle>"
   [ -n "$ver" ] || ver="0.0.0"
   cyc="$(jq -r '.cycle // 0' "$baseline" 2>/dev/null || true)"
   [ -n "$cyc" ] || cyc=0
-  printf '%s+fork.%s\n' "$ver" "$cyc"
+  printf '%s+fork.%s\n' "$ver" "$((cyc + offset))"
 }
 
 # Does the carrier workflow on the carrier ref DECLARE this dispatch input?
