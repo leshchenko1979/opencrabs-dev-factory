@@ -48,7 +48,10 @@
   # them pass on a shim while the tool they claimed to cover could be broken —
   # the leg must name the file that owns the verdict.
   local LV_BIN="$OC_TOOLS_DIR/harvest/oc-verify-lineage"
-  local SELF_DIR; SELF_DIR="$(dirname "$SELF_BIN")"
+  # #168 cut 5: `recover-receipt` left the library for a MODE of oc-status, so
+  # its legs name that tool directly. Reached through the dispatcher they would
+  # pass on the shim and prove nothing about the file that owns the repair.
+  local RR_BIN="$OC_TOOLS_DIR/ship/oc-status"
   # T5-bis: the split moved code out of the one file the source-shape guards
   # below used to grep. Each such guard reads the file that OWNS what it pins.
   local SRC_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh" SRC_BUILD="$OC_TOOLS_DIR/ship/oc-build"
@@ -267,12 +270,10 @@ CYML
   # 3. kill file -> exit 9 even for valid mode
   mkdir -p "$T/kills"; printf x > "$T/kills/oc-deploy.kill"
   OC_DEPLOY_STATE_DIR="$T/kills" "$SELF_BIN" poll >/dev/null 2>&1; check_rc "kill-file" $? 9
-  # 3b. contributors RETIRED (v0.4.91, lens E-2): loud deprecation rc 1, points at oc-attrib
-  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_ATTRIB="$SELF_DIR/state/oc-attrib" \
-    "$SELF_BIN" contributors main 2>&1)"; rc=$?
-  check_rc "contributors-retired-rc" $rc 1
-  check_has "contributors-retired-notice" "$out" "RETIRED"
-  check_has "contributors-retired-pointer" "$out" "oc-attrib"
+  # 3b. the `contributors` verb is DELETED, not retired (#168 cut 5). The three
+  #     legs that used to live here asserted the deprecation NOTICE — a test that
+  #     keeps a verb alive to print a message about itself. `oc-attrib
+  #     --contributors` is the one shape and has its own legs.
   "$SELF_BIN" contributors >/dev/null 2>&1; check_rc "contributors-usage" $? 1
   # 4. ship PLAN mode: no mutation, PLAN lines, shadow entry, carrier-default features
   # 4-no-sha (Duty-6 lens F task 3): ship WITHOUT --sha must refuse rc2 —
@@ -2006,12 +2007,12 @@ EOS
   # 22c. recover-receipt repairs the truncated swap: exactly one row, idempotent
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD7/workers-ledger.json"
   printf '%s\n' "$LNEW" > "$SD7/deployed.sha"
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
   check_rc "recover-rc" $CRC 0
   check_has "recover-verdict" "$COUT" "row stamped"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD7/workers-ledger.json" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: recover-receipt did not stamp exactly one row"; }
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
   check_rc "recover-idempotent-rc" $CRC 0
   check_has "recover-idempotent-msg" "$COUT" "idempotent no-op"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD7/workers-ledger.json" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
@@ -2019,13 +2020,13 @@ EOS
   # 22d. REFUSAL: journal sha != current deployed.sha -> rc 2, nothing written
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}' > "$SD8/workers-ledger.json"
   printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' > "$SD8/deployed.sha"
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; CRC=$?
   check_rc "recover-refuse-rc" $CRC 2
   check_has "recover-refuse-msg" "$COUT" "superseded"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD8/workers-ledger.json" 2>/dev/null)" = 0 ] && pass=$((pass+1)) \
     || { fail=$((fail+1)); echo "SELFTEST FAIL: recover-receipt stamped despite the sha mismatch"; }
   # 22e. --historical records the superseded swap rather than refusing outright
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$SELF_BIN" recover-receipt --journal "$NEG_JF" --historical 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD8" "$RR_BIN" recover-receipt --journal "$NEG_JF" --historical 2>&1)"; CRC=$?
   check_rc "recover-historical-rc" $CRC 0
   check_has "recover-historical-kw" "$COUT" "SUPERSEDED"
   [ "$(jq '[.events[]|select(.kind=="swap-result")]|length' "$SD8/workers-ledger.json" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
@@ -2050,16 +2051,16 @@ EOS
   #      (ii) a selector matching several journals prefers one carrying a receipt
   #           step, because that PROVES the run completed - the honest verdict is
   #           "nothing to recover", not "never installed"
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --run 999999999 --dry-run 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --run 999999999 --dry-run 2>&1)"; CRC=$?
   check_rc "recover-selector-nomatch-rc" $CRC 2
   check_has "recover-selector-nomatch-msg" "$COUT" "NO journal"
   case "$COUT" in *".jsonl"*) fail=$((fail+1)); echo "SELFTEST FAIL: recover-selector-nomatch fell back to a journal" ;; *) pass=$((pass+1)) ;; esac
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --sha deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --sha deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --dry-run 2>&1)"; CRC=$?
   check_rc "recover-selector-nomatch-sha-rc" $CRC 2
   # several journals share run 790 here (one complete, two truncated): the complete
   # one must win, so the verdict is the honest "swap completed" - the exact
   # inversion of the reported false negative.
-  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$SELF_BIN" recover-receipt --run 790 --dry-run 2>&1)"; CRC=$?
+  COUT="$(OC_DEPLOY_STATE_DIR="$SD7" "$RR_BIN" recover-receipt --run 790 --dry-run 2>&1)"; CRC=$?
   check_rc "recover-selector-prefers-complete-rc" $CRC 0
   check_has "recover-selector-prefers-complete-msg" "$COUT" "already carries a receipt step"
   # 18. structural guard: the fanout lock NAME must be ignorable by the repo.
@@ -2458,7 +2459,7 @@ U156EOF
   #     cgroup negative control produced ($NEG_JF, stops at marker-write with
   #     deployed_sha=$LNEW), so the row is a REAL reconstruction.
   printf '%s\n' "$LNEW" > "$SDG/deployed.sha"
-  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
   check_rc "156g-recover-rc" "$GRC" 0
   check_has "156g-recover-verdict" "$GOUT" "row stamped"
   jq -e --arg s "sha=$LNEW" 'select(.kind=="swap-result" and (.what|contains($s)))' "$SDG/events.jsonl" >/dev/null 2>&1 \
@@ -2466,7 +2467,7 @@ U156EOF
   # (4) idempotence is read off the RECORD too: a re-run must be a no-op, and
   #     pre-fix the raw-jq read against the absent legacy view answered 0 rows,
   #     so the second run stamped a DUPLICATE.
-  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDG" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
   check_rc "156g-recover-idempotent-rc" "$GRC" 0
   check_has "156g-recover-idempotent-msg" "$GOUT" "idempotent no-op"
   [ "$(jq -s '[.[]|select(.kind=="swap-result")]|length' "$SDG/events.jsonl" 2>/dev/null)" = 1 ] && pass=$((pass+1)) \
@@ -2492,7 +2493,7 @@ U156EOF
   printf '{"n":1,"t":"2026-11-01T00:00:00Z","by":"seed","kind":"note","what":"seed row"}\n' > "$SDH/events.jsonl"
   printf '{"meta":{"oc_deploy_stage":"S2"},"events":[]}\n' > "$SDH/workers-ledger.json"
   printf '%s\n' "$LNEW" > "$SDH/deployed.sha"
-  GOUT="$(OC_DEPLOY_STATE_DIR="$SDH" "$SELF_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
+  GOUT="$(OC_DEPLOY_STATE_DIR="$SDH" "$RR_BIN" recover-receipt --journal "$NEG_JF" 2>&1)"; GRC=$?
   check_rc "156h-recover-rc" "$GRC" 0
   # POSITIVE CONTROL: the row must exist SOMEWHERE. Without it the subset test
   # below passes vacuously on a path that wrote nothing anywhere at all.

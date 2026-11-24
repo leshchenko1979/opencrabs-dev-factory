@@ -101,8 +101,9 @@ set -uo pipefail
 _OC_LIB="$OC_TOOLS_DIR/lib/oc-log.sh"   # unified tools log (D0, 2026-08-28)
 if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-deploy" "$@"; else oc_log_finish() { :; }; fi
 # The dispatcher sources the shared body for the verbs it answers IN-PROCESS
-# (contributors, recover-receipt, --selftest) and for `die`. lineage-check is no
-# longer one of them: #168 cut 5 moved it to tools/harvest/oc-verify-lineage.
+# (--selftest) and for `die`. lineage-check and recover-receipt are no longer
+# among them: #168 cut 5 moved them to tools/harvest/oc-verify-lineage and
+# `oc-status recover-receipt`.
 _OC_DEPLOY_LIB="$OC_TOOLS_DIR/lib/oc-deploy-lib.sh"
 if [ -f "$_OC_DEPLOY_LIB" ]; then
   . "$_OC_DEPLOY_LIB"
@@ -140,16 +141,14 @@ the tool that owns that stage:
   fanout                  -> tools/ship/oc-fanout    (notify contributors)
   poll, status, watch     -> tools/ship/oc-status    (read state, hand off)
   lineage-check           -> tools/harvest/oc-verify-lineage (read-only guard)
-  recover-receipt, contributors
-                          -> in-process (tools/lib/oc-deploy-lib.sh)
+  recover-receipt         -> tools/ship/oc-status    (repair the ledger evidence)
 
 Every spelling that worked before the split still works here; the argv is passed
 through unchanged, and the tool's rc is the process rc (exec, never a wrapper).
 
 Exit codes: 0 ok/noop | 1 usage | 2 rebase/gate/push/verify/rollback fail or
 watch stray | 3 retired (was consent) | 4 stage gate / launch fail | 5 poll
---wait timeout (C-#2) | 9 kill file.  (contributors RETIRED — use
-oc-attrib --contributors.)  Full contract: tools/docs/RC-CONTRACT.md
+--wait timeout (C-#2) | 9 kill file.  Full contract: tools/docs/RC-CONTRACT.md
 USAGE
 }
 
@@ -164,15 +163,15 @@ case "$MODE" in
   poll|status|watch) TOOL=oc-status ;;
   # Verbs whose body lives in the shared library: no stage to route to, so the
   # dispatcher calls them in-process, exactly where it used to.
-  contributors)      contributors_run "$@"; exit $? ;;      # RETIRED (v0.4.91)
-  # #168 cut 5: lineage-check is a REAL TOOL now (tools/harvest/oc-verify-lineage),
-  # not a library function, so it is exec'd like every other stage. The alias stays
-  # for one cut so the documented spelling keeps working; it dies with this file.
+  # #168 cut 5: lineage-check and recover-receipt are REAL TOOLS now
+  # (tools/harvest/oc-verify-lineage, `oc-status recover-receipt`), not library
+  # functions, so they are exec'd like every other stage. The aliases stay for
+  # one cut so the documented spellings keep working; they die with this file.
   lineage-check)     exec "$OC_TOOLS_DIR/harvest/oc-verify-lineage" "$@" ;;
-  recover-receipt)   recover_receipt_run "$@"; exit $? ;;
+  recover-receipt)   exec "$OC_TOOLS_DIR/ship/oc-status" recover-receipt "$@" ;;
   --selftest|selftest) selftest "$@"; exit $? ;;
   -h|--help)         usage; exit 0 ;;
-  *)                 usage >&2; die 1 "usage: oc-deploy <verb> [flags] — verbs: ship | poll | swap-execute | fanout | watch | status | lineage-check | recover-receipt | features | --selftest (contributors RETIRED — use oc-attrib --contributors)" ;;
+  *)                 usage >&2; die 1 "usage: oc-deploy <verb> [flags] — verbs: ship | poll | swap-execute | fanout | watch | status | lineage-check | recover-receipt | features | --selftest" ;;
 esac
 # Hand the ORIGINAL argv to the owning tool, verb included, and EXEC so its rc
 # is this process's rc and no second tools-log row is written for the hop.

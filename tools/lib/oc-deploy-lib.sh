@@ -241,199 +241,15 @@ features_run() { # [--repo P] [--ref B]
 # lineage_next_step above), so the tool and the inline guard still cannot
 # disagree about a sha — only the ARGUMENT PARSING and the OUTPUT moved.
 # ----------------------------------------------------------------------------
-# receipt recovery (moved verbatim: 404-583)
+# recover-receipt — MOVED OUT of the library (factory #168 cut 5).
 # ----------------------------------------------------------------------------
-# ------------------------------------------ receipt recovery (v0.4.153) --
-# A swap launched INSIDE the unit it bounces is SIGKILLed at step 8 (the
-# restart), so steps 9-12 never run and NO swap-result ledger row is written:
-# the host is swapped, the ledger is silent — a false-negative audit trail
-# (lane 2fbfb2f8, 2026-09-12; journal swap-acb8e205-1789199968-2602580.jsonl
-# stops at seq 7 marker-write while the daemon really did bounce onto the new
-# binary). The v0.4.153 cgroup self-detach fixes the CAUSE; this verb repairs
-# the EVIDENCE for a swap already truncated, idempotently.
-#
-# It stamps ONLY when every guard holds, reading the journal alone (a crash is
-# reconstructable from the journal by design):
-#   - install exit=0 AND marker-write exit=0  -> the swap is REAL
-#   - NO receipt step                         -> it was truncated (else: done)
-#   - deployed.sha still == the journal sha   -> not superseded by a later swap
-#   - no swap-result ledger row quoting sha+run -> idempotent, never double-stamp
-# Fan-out is deliberately NOT replayed here (use `oc-deploy fanout --run <id>`):
-# fanout has its own done-marker and a replay would re-notify contributors.
-# rc: 0 = handled (recovered, or correctly nothing to do) · 2 = refused (the journal
-# does not describe a recoverable real swap) — a caller scripting recovery can tell
-# "done" from "needs attention".
-recover_receipt_run() { # [--journal PATH] [--run R] [--sha S] [--dry-run] [--json]
-  local jf="" run="" sha="" dry=0 json=0 cand hist=0
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --journal) jf="${2:-}"; shift ;;
-      --run)     run="${2:-}"; shift ;;
-      --sha)     sha="${2:-}"; shift ;;
-      --dry-run) dry=1 ;;
-      --json)    json=1 ;;
-      --historical) hist=1 ;;   # sha no longer == deployed.sha: record as a superseded swap
-      *) die 1 "recover-receipt: unknown arg: $1" ;;
-    esac
-    shift || true
-  done
-  if [ -z "$jf" ] && { [ -n "$run" ] || [ -n "$sha" ]; }; then
-    # SELECTOR MODE (v0.4.157): --run/--sha MUST select the journal they name.
-    # Pre-v0.4.157 both were parsed and then silently DROPPED - with no --journal
-    # the code fell through to the default branch, took the newest truncated
-    # journal regardless of the selectors, and echoed the caller's --run beside a
-    # journal belonging to a DIFFERENT run. Observed live 2026-09-12 (lane
-    # 2fbfb2f8): `--run 34685906807` resolved to a 4-seq journal of run
-    # 34683445854 and returned rc 0 "the swap never installed" - a false negative
-    # for a swap that had COMPLETED and was deployed. That is precisely the state
-    # that tempts a re-run of a live swap, the failure this verb exists to stop.
-    # A selector that cannot be satisfied REFUSES; it never falls back to a default.
-    local matches="" m cand2 mrun2 msha2 what="--run ${run:-<none>} --sha ${sha:-<none>}"
-    for cand2 in $(ls -1t "$JOURNAL_DIR"/swap-*.jsonl 2>/dev/null); do
-      mrun2="$(jq -rs '[.[]|select(.step=="auto-swap")][-1].run_id // empty' "$cand2" 2>/dev/null)"
-      msha2="$(jq -rs '[.[]|select(.step=="marker-write")][-1].deployed_sha // empty' "$cand2" 2>/dev/null)"
-      if [ -n "$run" ] && [ "$mrun2" != "$run" ]; then continue; fi
-      if [ -n "$sha" ]; then
-        case "$msha2" in "$sha"*) : ;; *) continue ;; esac
-      fi
-      matches="$matches$cand2
-"
-    done
-    matches="$(printf '%s' "$matches" | sed '/^$/d')"
-    # NB: count with `grep -c .`, NOT `wc -l` — $( ) strips the trailing newline,
-    # so wc -l undercounts by one (2 matches reads as 1, 1 match reads as 0).
-    local nmatch; nmatch="$(printf '%s\n' "$matches" | grep -c . || true)"
-    if [ "$nmatch" = 0 ]; then
-      if [ "$json" = 1 ]; then
-        echo "{\"recoverable\":false,\"reason\":\"no journal matches $what\"}"
-      else
-        echo "recover-receipt: NO journal in $JOURNAL_DIR matches $what" >&2
-        echo "  refusing - a selector that matches nothing must never fall back to the newest journal." >&2
-        echo "  pass --journal <path> to name one explicitly." >&2
-      fi
-      return 2
-    fi
-    jf=""
-    if [ "$nmatch" = 1 ]; then
-      jf="$matches"
-    else
-      # Several journals share the selector - one run can journal more than once
-      # (a direct attempt plus a detached one; observed live: run 34683445854 has
-      # a 4-seq truncated journal AND an 11-seq complete one).
-      # A journal carrying a receipt step PROVES that run completed, and its row
-      # was stamped by that very run. So a complete match wins outright: the
-      # honest verdict is "nothing to recover". Picking the receipt-less sibling
-      # instead would answer "the swap never installed" for a run that plainly
-      # did - the same false-negative shape this selector fix exists to kill.
-      local cpl="" c3
-      for c3 in $matches; do
-        [ "$(jq -s '[.[]|select(.step=="receipt")]|length' "$c3" 2>/dev/null || echo 0)" != 0 ] && cpl="$cpl$c3
-"
-      done
-      cpl="$(printf '%s' "$cpl" | sed '/^$/d')"
-      local ncpl; ncpl="$(printf '%s\n' "$cpl" | grep -c . || true)"
-      if [ "$ncpl" -ge 1 ]; then
-        jf="$(printf '%s' "$cpl" | head -1)"   # newest complete match
-      else
-        # no match completed: every one is a truncated candidate, so the choice
-        # is genuinely ambiguous - refuse and name them rather than guess.
-        echo "recover-receipt: AMBIGUOUS - $nmatch journals match $what, none with a receipt step:" >&2
-        printf '%s\n' "$matches" | sed 's/^/    /' >&2
-        die 2 "recover-receipt: name one with --journal"
-      fi
-    fi
-  fi
-  if [ -z "$jf" ]; then
-    # default: the newest journal that LACKS a receipt step — i.e. the actionable
-    # truncated one. A journal that carries receipt is complete and not our job.
-    for cand in $(ls -1t "$JOURNAL_DIR"/swap-*.jsonl 2>/dev/null); do
-      [ "$(jq -s '[.[]|select(.step=="receipt")]|length' "$cand" 2>/dev/null || echo 1)" = 0 ] && { jf="$cand"; break; }
-    done
-    if [ -z "$jf" ]; then
-      [ "$json" = 1 ] && echo '{"recoverable":false,"reason":"no truncated journal found"}' \
-        || echo "recover-receipt: no truncated journal in $JOURNAL_DIR — every swap carries a receipt step"
-      return 0
-    fi
-  fi
-  [ -f "$jf" ] || die 1 "recover-receipt: journal not found: $jf"
-  # v0.4.157 belt-and-braces: never echo a selector the chosen journal does not
-  # carry. The selection above filters on exactly these fields, so a mismatch
-  # here means the selection logic broke - refuse rather than report a run id
-  # belonging to a different journal (the 2fbfb2f8 false-negative shape).
-  if [ -n "$run" ] || [ -n "$sha" ]; then
-    local vrun vsha
-    vrun="$(jq -rs '[.[]|select(.step=="auto-swap")][-1].run_id // empty' "$jf" 2>/dev/null)"
-    vsha="$(jq -rs '[.[]|select(.step=="marker-write")][-1].deployed_sha // empty' "$jf" 2>/dev/null)"
-    [ -z "$run" ] || [ "$vrun" = "$run" ] || die 2 "recover-receipt: selector mismatch - --run $run but $jf carries run=${vrun:-<none>}"
-    if [ -n "$sha" ]; then
-      case "$vsha" in "$sha"*) : ;; *) die 2 "recover-receipt: selector mismatch - --sha $sha but $jf carries sha=${vsha:-<none>}" ;; esac
-    fi
-  fi
-
-  local has_install has_marker has_receipt jsha jrun
-  has_install="$(jq -s '[.[]|select(.step=="install" and .exit==0)]|length' "$jf" 2>/dev/null || echo 0)"
-  has_marker="$(jq -s '[.[]|select(.step=="marker-write" and .exit==0)]|length' "$jf" 2>/dev/null || echo 0)"
-  has_receipt="$(jq -s '[.[]|select(.step=="receipt")]|length' "$jf" 2>/dev/null || echo 0)"
-  jsha="$(jq -rs '[.[]|select(.step=="marker-write")][-1].deployed_sha // empty' "$jf" 2>/dev/null)"
-  jrun="$(jq -rs '[.[]|select(.step=="auto-swap")][-1].run_id // empty' "$jf" 2>/dev/null)"
-  [ -n "$run" ] || run="$jrun"
-  [ -n "$sha" ] || sha="$jsha"
-
-  local cur existing reason="" ok=1 superseded=0 refuse=0
-  cur="$(cat "$DEPLOYED" 2>/dev/null || echo MISSING)"
-  if [ "$has_receipt" != 0 ]; then reason="journal already carries a receipt step — swap completed, nothing to recover"; ok=0
-  elif [ "$has_install" = 0 ]; then reason="journal has no install exit=0 — the swap never installed; refusing to stamp"; ok=0; refuse=2
-  elif [ "$has_marker" = 0 ]; then reason="journal has no marker-write exit=0 — markers never written; refusing to stamp"; ok=0; refuse=2
-  elif [ -z "$sha" ]; then reason="journal names no deployed sha (and --sha not given) — cannot judge"; ok=0; refuse=2
-  elif [ "$cur" != "$sha" ]; then
-    if [ "$hist" = 1 ]; then superseded=1
-    else reason="deployed.sha ($cur) != journal sha ($sha) — a later swap superseded this one; refusing to stamp (pass --historical to record it as a superseded swap)"; ok=0; refuse=2
-    fi
-  fi
-  if [ "$ok" = 1 ]; then
-    # #156: read through the LEDGER's own reader, never raw-jq on $LEDGER. In
-    # JSONL mode $LEDGER names the legacy view file the record abandoned, so a
-    # raw read answers "no row" for a row that IS in events.jsonl — and the
-    # consequence is a SECOND stamp for the same swap, the exact duplicate this
-    # check exists to prevent. `events --json` resolves through ledger_load (the
-    # one reader). --n is widened because that verb's default window is the
-    # newest 20 rows and an older swap-result row would otherwise read absent;
-    # the `|| true` / empty->0 degrade is the pre-#156 one, kept deliberately
-    # (the stamp path itself fails loudly if the ledger is truly unreadable).
-    local _rr_rows
-    _rr_rows="$(OC_LEDGER="$LEDGER" "$LEDGER_TOOL" events --json --kind swap-result --n 1000000 2>/dev/null || true)"
-    existing="$(printf '%s' "${_rr_rows:-[]}" | jq -r --arg s "sha=$sha" --arg r "run=$run" \
-      '[.[]|select((.what|contains($s)) and (.what|contains($r)))]|length' 2>/dev/null || echo 0)"
-    [ -n "$existing" ] || existing=0
-    [ "$existing" = 0 ] || { reason="ledger already carries a swap-result row for sha=$sha run=$run — idempotent no-op"; ok=0; }
-  fi
-
-  if [ "$json" = 1 ]; then
-    jq -cn --arg j "$jf" --arg s "$sha" --arg r "$run" --arg c "$cur" --arg why "$reason" \
-      --argjson ok "$([ "$ok" = 1 ] && echo true || echo false)" \
-      '{journal:$j, sha:$s, run:$r, deployed_sha:$c, recoverable:$ok, reason:$why}'
-  else
-    echo "journal:      $jf"
-    echo "sha:          ${sha:-<none>}"
-    echo "run:          ${run:-<none>}"
-    echo "deployed.sha: $cur"
-  fi
-  if [ "$ok" != 1 ]; then
-    [ "$json" = 1 ] || echo "verdict:      not recovered — $reason"
-    return $refuse
-  fi
-  if [ "$dry" = 1 ]; then
-    [ "$json" = 1 ] || echo "verdict:      RECOVERABLE (dry-run — no stamp written)"
-    return 0
-  fi
-  local kw="RECOVERED" note=""
-  [ "$superseded" = 1 ] && { kw="SUPERSEDED"; note=" (superseded by a later swap — deployed.sha is now $cur)"; }
-  ledger_stamp "oc-deploy recover-receipt" \
-    "swap-result $kw sha=$sha run=$run: install(exit=0)+marker-write(exit=0) present but the receipt step was lost to a truncated run; row reconstructed post-hoc from journal=$jf$note (v0.4.153 cgroup-kill defect)" \
-    "swap-result"
-  [ "$json" = 1 ] || echo "verdict:      $kw — swap-result row stamped"
-  return 0
-}
+# The body now lives in tools/ship/oc-status, the tool that OWNS the read/handoff
+# half of the split, and is reached as `oc-status recover-receipt`. It was never
+# shared: the retired dispatcher was its only caller, so keeping it here put 195
+# lines of journal-archaeology in a file every stage sources and no stage used.
+# What stays here is what a SWAP writes and this verb READS: the journal dir, the
+# deployed marker, `ledger_stamp` and the ledger reader. The repair and the write
+# it repairs therefore still share one definition of where the evidence lives.
 
 # ----------------------------------------------------------------------------
 # stage reader + shadow log (moved verbatim: 585-590)
@@ -750,19 +566,6 @@ a2a_notify_retry() { # $1=text — retry up to OC_A2A_TRIES (default 6), sleepin
     n=$((n+1)); [ "$n" -ge "$max" ] && return 1
     if [ "$s" -gt 0 ]; then sleep "$s"; fi
   done
-}
-
-# ----------------------------------------------------------------------------
-# contributors RETIRED (v0.4.91) (moved verbatim: 871-880)
-# ----------------------------------------------------------------------------
-# ----------------------------------------- contributors RETIRED (v0.4.91) --
-# Lens E-2 (v0.4.90 retired the VERB in docs; v0.4.91 retires it in code):
-# single shape is `oc-attrib --contributors`. Loud deprecation — not silent
-# removal — so lanes keyed on the old verb are pointed at the replacement.
-contributors_run() { # RETIRED: use oc-attrib --contributors
-  echo "oc-deploy contributors: RETIRED (v0.4.91, lens E-2) — verb-duplicate of oc-attrib" >&2
-  echo "  use: $ATTRIB --repo <path> --contributors (--range <old>..<new> | --deployed) [--ledger <f>]" >&2
-  die 1 "contributors: retired verb — see the oc-attrib command above"
 }
 
 # ----------------------------------------------------------------------------

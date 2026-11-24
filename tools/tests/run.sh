@@ -2076,15 +2076,11 @@ if tool oc-deploy; then
 Session-Id: 99999999-8888-7777-6666-555555555555
 Issue-Ref: #77"
   CTIP="$(git -C "$d/crepo" rev-parse HEAD)"
-  # contributors verb RETIRED (v0.4.91, lens E-2): loud deprecation rc 1, points at oc-attrib.
-  # The working TSV projection is covered by oc-attrib --contributors (single shape now).
-  OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_ATTRIB="$TOOLS_DIR/state/oc-attrib" \
-    "$TOOLS_DIR/ship/oc-deploy" contributors "$CBASE..$CTIP" --repo "$d/crepo" 2>&1)"; rck=$?
-  if [ "$rck" -eq 1 ] && case "$OUTK" in *"RETIRED"*"oc-attrib"*) true ;; *) false ;; esac; then
-    ok "contributors: retired verb -> rc1 + loud oc-attrib pointer"
-  else
-    bad "contributors retired (rc=$rck, want 1 + RETIRED + oc-attrib pointer)"
-  fi
+  # contributors verb DELETED (#168 cut 5). It had been a loud RETIRED stub since
+  # v0.4.91 and this leg asserted the stub — a test that guards a deprecation
+  # notice for a verb nobody calls keeps the verb alive for free. The working TSV
+  # projection was always oc-attrib --contributors, and THAT is what section 12
+  # covers; there is no second shape to assert.
   # gh stub: run 222 GREEN (built sha cccc...) + run 666 RED (head from red-head)
   cat > "$SD/gh" <<'GHSTUB'
 #!/usr/bin/env bash

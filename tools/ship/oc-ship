@@ -1215,8 +1215,8 @@ journal() {
     # --by fallback (#19, 2026-09-12): an anonymous ledger row is REFUSED by
     # oc-ledger now. ship_chain_default_actor() has already tried to derive the
     # real lane from the --sha Session-Id trailer; when even that fails, the
-    # honest actor is the TOOL, not an anonymous row (precedent: oc-deploy
-    # stamps `--by "oc-deploy recover-receipt"`). This keeps the chain's ledger
+    # honest actor is the TOOL, not an anonymous row (precedent: oc-status
+    # stamps `--by "oc-status recover-receipt"`). This keeps the chain's ledger
     # trail intact instead of trading it for a loud journal failure.
     out="$("$TOOLS_DIR/state/oc-ledger" stamp shipchain "$line" --by "${OC_ACTOR:-oc-ship}" 2>&1)" || rc=$?
     if [ "$rc" -ne 0 ]; then
