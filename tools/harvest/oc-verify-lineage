@@ -64,8 +64,8 @@ fi
 trap 'oc_log_finish $?' EXIT
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's
-  # LEGACY rc 1 on STDERR (it inherits `oc-deploy lineage-check`'s register row),
-  # so only the STREAM is selected here, never the rc.
+  # LEGACY rc 1 on STDERR (kept from `lineage-check` so existing callers see the
+  # same code), so only the STREAM is selected here, never the rc.
   local fd=2
   [ "${1:-1}" = 0 ] && fd=1
   echo "Usage: oc-verify-lineage [--prev SHA] [--sha SHA] [--repo P] [--json]" >&$fd

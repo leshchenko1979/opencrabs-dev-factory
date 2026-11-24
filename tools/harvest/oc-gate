@@ -195,7 +195,7 @@ CHECKPOINT_FILE=""
 # The gate proves tested_sha (adopted job-name pin), carrier ref+head, run id,
 # per-job conclusions and the failing steps it already parses for tiebreaks.
 # Until this existed that identity lived only in the tools.log row and on
-# stdout, so `oc-deploy ship` had nothing on disk to BIND an artifact to — the
+# stdout, so the ship verb had nothing on disk to BIND an artifact to — the
 # swap could name any sha and no receipt contradicted it.
 # FAIL CLOSED on an empty pin: an unpinned run's tested_sha is UNCONFIRMED, and
 # a receipt naming a sha the gate never verified is worse than none — a consumer

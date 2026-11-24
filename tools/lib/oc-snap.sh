@@ -186,8 +186,8 @@ oc_snap_guard() {
 # would overwrite ours. The health sweep calls this too; it is idempotent.
 #
 # A mirror is named oc-snap-<tool>-<pid>, where <pid> is the TOP-LEVEL guard
-# process. That process forks children (e.g. oc-deploy poll,
-# oc-features) which inherit the mirror path in their argv but
+# process. That process forks children (e.g. oc-status poll,
+# oc-build features) which inherit the mirror path in their argv but
 # carry their OWN pids -- so a dead name-pid does NOT prove the mirror is
 # unused. Both conditions must hold before removal:
 #   (1) the name pid is gone, AND

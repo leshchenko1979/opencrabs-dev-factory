@@ -145,7 +145,7 @@
 #   restart` tears the cgroup down and SIGKILLs the wave MID-FLIGHT — the
 #   survivors got their briefs, the rest never heard, and nothing reported the
 #   truncation. The wave re-execs under a transient scope OUTSIDE the unit
-#   before taking its lock, exactly as oc-deploy does for the swap itself.
+#   before taking its lock, exactly as the swap leg does for its own detach.
 #
 # Exit codes: 0 all sent/skipped-clean · 2 usage/validation · 3 ledger/manifest
 #             unavailable · 4 partial send failures (receipts say which) ·
@@ -192,7 +192,7 @@ die() { echo "oc-notify-fanout: $*" >&2; exit "${2:-2}"; }
 # simply stopped.
 # Fix: re-exec under a transient scope outside the bounce cgroup BEFORE the wave
 # lock is taken, so a re-entry can never self-deadlock on a held lock (the same
-# pre-lock ordering oc-deploy uses for its own detach).
+# pre-lock ordering the swap leg uses for its own detach).
 # Overrides: OC_FANOUT_UNIT (default opencrabs-ops.service) ·
 # OC_FANOUT_IN_UNIT_CGROUP (auto|1|0 — test hook; auto inspects /proc/self/cgroup)
 # OC_FANOUT_DETACH_CMD (default `systemd-run --user --scope --collect`; MUST BLOCK
