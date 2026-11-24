@@ -207,7 +207,7 @@ if [ -n "$ADD_ORDER" ] || [ -n "$MARK_ORDER" ] || [ -n "$PURGE_ORDER" ]; then
       # F2 (lens F, v0.4.72): NO hardcoded feature default — the carrier yml is
       # the single source of truth (SKILL.md §Shared environment facts);
       # resolve via oc-features,
-      # abort loudly on read failure (same law as oc-deploy ship).
+      # abort loudly on read failure (same law as oc-build ship).
       ADD_ORDER_FEAT="$("$OC_TOOLS_DIR/ship/oc-features" 2>/dev/null)" \
         || fail 3 "--order-features unset and oc-features failed — pass --order-features explicitly"
       [ -n "$ADD_ORDER_FEAT" ] || fail 3 "oc-features returned an empty feature set"

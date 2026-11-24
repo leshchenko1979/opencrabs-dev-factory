@@ -173,7 +173,7 @@ lineage_next_step() { # <verdict> <prev> <sha> <twin>
 # ----------------------------------------------------------------------------
 # carrier features — ONE reader, ONE value (T-5) (moved verbatim: 313-369)
 # ----------------------------------------------------------------------------
-# T-5 (2026-11-20): ONE value, ONE entry. `oc-deploy features` is the
+# T-5 (2026-11-20): ONE value, ONE entry. `oc-build features` is the
 # DOCUMENTED way to ask "what feature set does the carrier define"; the
 # standalone oc-features is an INTERNAL helper behind it. Before this,
 # the live journal carried 660 direct oc-features invocations against
@@ -528,8 +528,8 @@ a2a_notify() { # $1=text ; exit 0 ONLY on a parsed delivered/queued outcome
   local body rc payload
   payload="$(jq -cn --arg sid "$uuid" --arg t "$1" \
     '{jsonrpc:"2.0", id:1, method:"session/notify",
-      params:{session_id:$sid, message:$t, title:"oc-deploy PHASE B RECEIPT",
-              sender:"oc-deploy swap"}}')" || { A2A_WHY="payload build failed"; return 1; }
+      params:{session_id:$sid, message:$t, title:"oc-swap PHASE B RECEIPT",
+              sender:"oc-swap"}}')" || { A2A_WHY="payload build failed"; return 1; }
   # Body CAPTURED, never discarded — that discard is defect 2.
   body="$("$A2A_CURL" -sS --max-time 15 -X POST "$A2A_URL" \
           -H 'Content-Type: application/json' -d "$payload" 2>&1)"; rc=$?

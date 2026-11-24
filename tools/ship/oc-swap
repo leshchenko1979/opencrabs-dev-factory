@@ -34,7 +34,7 @@
 #     exists at all.
 # Keep this paragraph: without it the next reader re-derives the same phantom.
 #
-# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-swap row).
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (the oc-swap row).
 # =============================================================================
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
@@ -410,7 +410,7 @@ swap_execute() {
   post_verify "$EXPECTED" "$SHA" 1
   if [ "$PV_MATCH" = 1 ]; then
     jline post-verify 0 "$PV_DETAIL"
-    local BY_LBL="oc-deploy swap-execute"; [ "$DRILL" = "1" ] && BY_LBL="oc-deploy swap-execute DRILL"
+    local BY_LBL="oc-swap swap-execute"; [ "$DRILL" = "1" ] && BY_LBL="oc-swap swap-execute DRILL"
     if [ "$DRILL" = "1" ]; then
       # drill with a match means the deliberately-wrong expected matched —
       # impossible by construction; treat as drill anomaly
@@ -422,7 +422,7 @@ swap_execute() {
       die 2 "drill anomaly: post-verify matched a deliberately wrong expected sha"
     fi
     sidecar_sync "$EXPECTED" "$DRILL"
-      A2A_RC=1; a2a_notify_retry "[oc-deploy PHASE B RECEIPT] DEPLOYED sha=$SHA run=$RUN_ID — post-verify match, markers written, backup $BAK. Journal: $JF" && A2A_RC=0
+      A2A_RC=1; a2a_notify_retry "[oc-swap PHASE B RECEIPT] DEPLOYED sha=$SHA run=$RUN_ID — post-verify match, markers written, backup $BAK. Journal: $JF" && A2A_RC=0
     jline receipt "$A2A_RC" "$(jq -cn --argjson a "$A2A_RC" --argjson tp "$RECEIPT_TOPIC" --arg o "${A2A_OUTCOME:-none}" --arg w "${A2A_WHY:-}" '{topics:[$tp], a2a_accepted:($a==0), a2a_outcome:$o, a2a_why:$w, note:"stamp follows fanout (issue #24 wiring)"}')"
     # --- GREEN fan-out (issue #24 wiring): notify contributor sessions of the
     #     live swap. Fires AFTER receipt seal + marker writes (design §5) and
@@ -480,7 +480,7 @@ swap_execute() {
   jline restart "$RRC2" "$(jq -cn --arg u "opencrabs-ops.service" --argjson e "$RRC2" '{note:"post-rollback restart", unit:$u, systemd_run_exit:$e}')"
   post_verify "$BAK_SHA" "$PREV_SHA" "$HAD_META"
   jline post-verify "$([ "$PV_MATCH" = 1 ] && echo 0 || echo 1)" "$PV_DETAIL"
-  local BY_LBL2="oc-deploy swap-execute"; [ "$DRILL" = "1" ] && BY_LBL2="oc-deploy swap-execute DRILL"
+  local BY_LBL2="oc-swap swap-execute"; [ "$DRILL" = "1" ] && BY_LBL2="oc-swap swap-execute DRILL"
   if [ "$RB_FAIL" = 1 ]; then
     ledger_stamp "$BY_LBL2" "swap-result ROLLBACK-FAILED sha=$SHA run=$RUN_ID: post-verify mismatch after bounce (seq8 exit=1); restore leg FAILED — binary state UNVERIFIED, manual recovery required (backup $BAK); journal=$JF" "swap-result"
   else

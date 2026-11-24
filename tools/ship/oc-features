@@ -6,7 +6,7 @@
 # owns the ONLY quick-build-linux.yml; its workflow_dispatch `features:` input
 # default IS the canonical feature set (owner build-lane directive: prod
 # builds carry the set the carrier defines). Replaces hand `grep -A2` of the
-# yml at 4 sites; oc-deploy ship resolves its --features default through this
+# yml at 4 sites; oc-build ship resolves its --features default through this
 # tool and ABORTS on read failure (never a silent fallback set).
 #
 # Usage:

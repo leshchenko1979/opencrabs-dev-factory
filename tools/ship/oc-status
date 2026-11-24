@@ -27,7 +27,7 @@
 # Nothing was rewritten and no rc was re-mapped. The config surface, stage
 # reader, shadow log, tip read and argv loop are SHARED (tools/lib/).
 #
-# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-status row).
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (the oc-status row).
 # =============================================================================
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
@@ -100,8 +100,8 @@ swap_inflight_units() { # $1 = sha8 ; one live `oc-swap-<sha8>-*.service` name p
 # ----------------------------------------------------------------------------
 # ------------------------------------------------------------------ watchdog --
 # S3 replacement for the archived tools/archive/compiler.md Step 1 WATCHDOG duty (owner
-# directive 2026-08-28 16:26Z: NO cron — oc-deploy fires often enough, so the
-# check piggybacks every ship/poll invocation; explicit run = `oc-deploy watch`).
+# directive 2026-08-28 16:26Z: NO cron — ship/poll fire often enough, so the
+# check piggybacks every ship/poll invocation; explicit run = `oc-status watch`).
 # Tripwire semantics: fork main tip must be covered by deployed.sha OR a
 # ship/swap event in this tool's own shadow log / ledger. Uncovered tip =
 # stray commits on the branch production is built from. REPORT-ONLY: the watch
@@ -133,7 +133,7 @@ watch_precheck() { # $1=tip-sha ; piggyback, report-only, never fails the host
   return 0
 }
 
-watch_run() { # explicit `oc-deploy watch [--with-delta]` ; exit 0 clean | 2 stray (report-only)
+watch_run() { # explicit `oc-status watch [--with-delta]` ; exit 0 clean | 2 stray (report-only)
   # $1 = WITH_DELTA. Merge B (v0.4.48): upstream arithmetic rides the same
   # duty call. The delta leg is READ-ONLY; its rc 1 = verdict (delta present),
   # NOT a failure — tripwire severity wins for the combined exit code.

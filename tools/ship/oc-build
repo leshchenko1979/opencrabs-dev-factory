@@ -10,7 +10,8 @@
 # four unrelated jobs (dispatch a build, install a binary on the host, notify
 # contributors, report state). Owner order (plan task T5-bis) split it four
 # ways so a change to one stage stops dragging the other three through review.
-# oc-deploy is now a DISPATCHER: it routes the verb and execs the tool below.
+# There is NO dispatcher in front of these tools since #168 cut 5: each one is
+# invoked directly, and `oc-build --help` lists only its own verbs.
 #
 # WHAT MOVED HERE, VERBATIM (byte-slices of oc-deploy@5f81c599):
 #   gate_verdict_for_run, oc_deploy_same_patch          (source 110-151)
@@ -19,7 +20,7 @@
 # carrier reader, the argv loop, the priority apply and the features
 # resolution are SHARED and live in tools/lib/oc-deploy-lib.sh.
 #
-# RC CONTRACT: tools/docs/RC-CONTRACT.md (oc-deploy row + oc-build row).
+# RC CONTRACT: tools/docs/RC-CONTRACT.md (the oc-build row).
 # =============================================================================
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
 _oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
@@ -128,7 +129,7 @@ usage: oc-build ship [--sha S] [--features F] [--execute] [--gated-run ID]
 Build/land leg of the four-way oc-deploy split: resolve the carrier feature set,
 refuse an ungated landing (#355), rebase-if-needed, push, dispatch the carrier
 workflow, and optionally bounded-poll the run it just dispatched (--wait N).
-Everything else lives in a sibling tool — `oc-deploy --help` lists all verbs.
+Everything else lives in a sibling tool — see `oc-swap`, `oc-fanout`, `oc-status`.
 
 Exit codes: 0 ok/plan | 1 usage | 2 rebase/gate/push/features fail | 5 --wait
 timeout | 9 kill file.  Full contract: tools/docs/RC-CONTRACT.md
