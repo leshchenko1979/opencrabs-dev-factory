@@ -82,10 +82,11 @@ answer requiring chat history = the reconstruction leg is not met.
 
 ## Fan-out legs (re-homed from SKILL.md §Session-notify loop, v0.4.80 — lens B F4)
 
-- After a healthy swap the fan-out extracts contributors over
-  `<prev-swapped-sha>..<verified-run-headSha>` (right edge = the run's VERIFIED
-  headSha, never "current main" — a merge landing mid-build leaves main ahead of
-  the binary), notifies each contributing editor's session
+- After a healthy swap `oc-deploy fanout --run <id>` extracts contributors over
+  the range `oc-fanout` reads as `bsha` (`tools/ship/oc-fanout:288-291`,
+  `range="${prev:-?}..${bsha}"`; right edge = that built sha, never the run
+  object's `headSha` and never "current main" — a merge landing mid-build leaves
+  main ahead of the binary), notifies each contributing editor's session
   about the new binary, then records `{sha, run_id, contributors}` to the
   baseline state file (`oc-seal`; canonical:
   `/root/.opencrabs/profiles/ops/opencrabs-dev/baseline.json`) — its `sha` is
