@@ -1,5 +1,43 @@
 # Changelog — opencrabs-dev
 
+## v0.4.334 — the dispatcher is gone: every ship verb names its own tool
+
+**What changed (law).** Batch 2 of the #168 legacy-ship-path campaign (owner
+directive 2026-11-24: *"Yes, delete. Actually, delete all legacy commands and
+legs — we need to get rid of accretion that confuses consumer agents"*):
+`tools/ship/oc-deploy` is DELETED — 180 lines, commit `3ec19758`. The verbs
+were already rehomed: `ship`/`features` → `oc-build`, `swap-execute` →
+`oc-swap`, `fanout` → `oc-fanout`, `poll`/`status`/`watch`/`recover-receipt` →
+`oc-status`, `lineage-check` → `tools/harvest/oc-verify-lineage`; the retired
+`contributors` stub arm deleted outright (`4dfc86f1`); `oc-ship` names
+`oc-build`/`oc-status` directly (`80f38518`).
+
+- `die()` names the invoking tool: `OC_DEPLOY_PROG` (`lib/oc-deploy-lib.sh`)
+  defaults to `basename $0`, so a death reads `oc-build: …` — never a router
+  the caller never invoked. No `oc-deploy: ` prefix remains in any die() path
+  (fleet-wide grep = 0). The bare-selftest log-suppression list
+  (`lib/oc-log.sh`) and the battery equality leg that pins it
+  (`tools/tests/run.sh`) edited as one pair, so the arm set and its census
+  cannot drift apart.
+- Two stale user-visible strings: the oc-build wrong-checkout die and the
+  shared parser's `--help` arm, which still printed the deleted dispatcher's
+  usage — with the removed `contributors` arm and the moved `recover-receipt`.
+- Ledger actors and notice senders name the live tool.
+- Process: all 12 batch commits re-stamped with the mandatory `Session-Id`
+  trailer (rebase, force-pushed) — post-swap fan-out attribution intact.
+
+**Kept references.** Every remaining `oc-deploy` mention is deliberate:
+`$STATE_DIR/oc-deploy/` journal paths, kill-file names, `OC_DEPLOY_*` env
+names, the `oc-deploy-lib.sh` filename, `oc-audit-ship`'s dual-name matching
+over the append-only ship log, dated evidence/ rows and CHANGELOG history.
+
+**Bundle.** PR #173, merged `17128d38` — 43 files, +916/−902.
+
+**Verification.** Battery PASS 458/0 on the final tree (receipt committed
+`7c4bd92d`; 459 pre-deletion, one fewer with the retired contributors battery
+leg gone); `oc-ship --selftest` 457/0; `oc-lint-laws` clean on merged main;
+RC-CONTRACT carries no `oc-deploy` row.
+
 ## v0.4.333 — the gate pin is named in the job, the fan-out edge is the built sha
 
 **What changed (law).** Two pointers still named instruments the ship chain had
