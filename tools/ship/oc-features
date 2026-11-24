@@ -37,7 +37,12 @@ PROG="$(basename "$0")"
 usage() { [ -n "${1:-}" ] && echo "oc-features: $1" >&2; echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest" >&2; exit 2; }   # lens C MED-2 (v0.4.79)
 help()   { echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest"; echo "Exit: 0 set printed / 2 usage / 3 carrier yml unfetchable / 4 no-features-input"; }  # C-#3: help=0
 
-REPO="$HOME/opencrabs"; REF="ci/quick-build-linux"; FETCH=0; SELFTEST=0
+# #166 hermeticity: the defaults are ENV-PINNABLE. A production caller passes
+# nothing and keeps $HOME/opencrabs; a test harness pins OC_CARRIER_REPO to a
+# local fixture so feature resolution never fetches the live repo (~7 s per
+# arm, plus the #105 stall class when the network hiccups). Explicit
+# --repo/--ref flags still win over both env and default.
+REPO="${OC_CARRIER_REPO:-$HOME/opencrabs}"; REF="${OC_CARRIER_REF:-ci/quick-build-linux}"; FETCH=0; SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift ;;
