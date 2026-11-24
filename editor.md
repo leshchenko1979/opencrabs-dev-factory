@@ -14,7 +14,7 @@ After any
 swap containing your commits you TEST what shipped (test-on-notify loop,
 Phase 6). The Editor NEVER dispatches BUILD runs (`quick-build-linux.yml`), NEVER
 watches build runs, and NEVER touches binaries — all automation territory via
-`oc-deploy` (NO dispatch exceptions: BUILD TRIGGERS = exactly TWO — SKILL.md §Hard rules).
+`oc-build ship` (NO dispatch exceptions: BUILD TRIGGERS = exactly TWO — SKILL.md §Hard rules).
 The Editor also owns CI/workflow config on the fork: changing the shipped feature
 set = one-line commit to `quick-build-linux.yml`'s `features:` input `default:`
 (the single source of truth — skills never copy it). A feature is COMPLETE only when demonstrated against the live binary with its verdict row recorded (Phase 6; `§Completion Definition`). Posting that evidence and handing the feature to the HARVEST lane — which owns the port, the upstream
@@ -157,7 +157,7 @@ Canonical descriptions + selftest contracts: `tools/docs/RC-CONTRACT.md` (full i
 | `oc-issue-sweep` | `tools/issue/oc-issue-sweep '<query>' [--fork R]` | Phase 1 uniqueness gate (fork open+closed + upstream closed) |
 | `oc-ledger` | `stamp claim --what "…"` · `ack <uuid> <0.N.N>` | Roster receipts + version ack |
 
-*Plumbing (`oc-wt`, `oc-deploy`, `oc-gate`, `oc-issue-log`, `oc-attrib`, `oc-pr-fault-scope`) is orchestrated internally by `oc-start`, `oc-ship` and `oc-smoke`.*
+*Plumbing (`oc-wt`, `oc-build`, `oc-gate`, `oc-issue-log`, `oc-attrib`, `oc-pr-fault-scope`) is orchestrated internally by `oc-start`, `oc-ship` and `oc-smoke`.*
 
 Rules that outlive any table: journal read-back after every `oc-ledger` claim/stamp (Phase 1 step 4); terminal truth = `gh run view --json conclusion`, never a tool's exit code alone; the ≥30s detached-poll floor (`fleet-directives.md §CI-wait discipline & actor attribution`).
 
@@ -329,10 +329,10 @@ A post-swap notify means your commits are in the new binary: prove the FEATURE w
 ## Red-run triage heuristics (shared core, v0.4.10)
 
 ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-08-28; now
-`oc-deploy` RED reports + HQ triage); the Editor applies the same ones in its fix round
+`oc-build` RED reports + HQ triage); the Editor applies the same ones in its fix round
 (§Phase 6-Fix). No lane uses them as a licence to fix outside its scope.
 
-- **An EMPTY read is not a NEGATIVE read** (c29 2026-11-19). A verdict is a *value*; `""`, `null` and a failed call are the *absence* of a value, and absence must fail toward RETRY or UNKNOWN — never toward RED, never toward GREEN. Any code or lane that compares a freshly-read conclusion against `success` and treats everything else as failure has converted a network blip into a verdict. The correct shape is the one `oc-ship`'s LEG5 read already uses — distinguish "read and it was not success" from "could not read", and say which. Neither marker present ⇒ UNKNOWN ⇒ stop, never health. Measured: `oc-deploy`'s LEG5 wait is UNGUARDED (empty conclusion ⇒ `ship-wait-red` + `die 6`) while `oc-ship`'s LEG5 wait is guarded — a chain stopped `rc=4 CARRIER-RED` naming run `44332662723`, which had concluded `success` at 15:20:20Z and was logged at 15:20:22Z.
+- **An EMPTY read is not a NEGATIVE read** (c29 2026-11-19). A verdict is a *value*; `""`, `null` and a failed call are the *absence* of a value, and absence must fail toward RETRY or UNKNOWN — never toward RED, never toward GREEN. Any code or lane that compares a freshly-read conclusion against `success` and treats everything else as failure has converted a network blip into a verdict. The correct shape is the one `oc-ship`'s LEG5 read already uses — distinguish "read and it was not success" from "could not read", and say which. Neither marker present ⇒ UNKNOWN ⇒ stop, never health. Measured: the pre-split monolith's LEG5 wait was UNGUARDED (empty conclusion ⇒ `ship-wait-red` + `die 6`) while `oc-ship`'s LEG5 wait is guarded — a chain stopped `rc=4 CARRIER-RED` naming run `44332662723`, which had concluded `success` at 15:20:20Z and was logged at 15:20:22Z.
 - **Daemon log timestamps are suffixed `+00:00`, never `Z`** (c29 2026-11-19). Any log sweep whose regex keys on a `Z` suffix silently returns ZERO rows and reads as a clean result. Every zero-count log sweep must be validated against a **known-positive control line from the same file** before its zero is believed. Measured: a `Z`-keyed duplicate-send sweep returned **0 rows, 0 pairs** for a day carrying **9,322** `Telegram send ok` rows; the positive control was msg pair `96574`/`96575` at `03:56:45` (the measured 81 ms double-post, #826).
 - Fix unresolved-name/import errors FIRST (E0425/E0433...) — later errors are
   usually poisoned fallout. When scopes look shifted, count brace DEPTH, not
@@ -393,7 +393,7 @@ ONE location: red-run diagnosis reads these (pre-S3: Compiler role RETIRED 2026-
 
 ## Phase 6-Fix — Fix Loop (Red Carrier Build or Failed Smoke)
 
-A RED `oc-deploy ship`/poll run or a failed smoke attributes the failure (via
+A RED `oc-build ship`/poll run or a failed smoke attributes the failure (via
 `oc-attrib` Session-Id trailers) and routes the fix to the guilty editor WITH evidence.
 Your answer is always the SAME sequence:
 

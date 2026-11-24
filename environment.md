@@ -83,7 +83,7 @@ build/carrier surface, and the daemon facts.
   passed the call. Source of these semantics: `src/brain/tools/skill_gate.rs`
   (issue #150).
 - BUILD SOURCE = fork `main`. Editors fast-forward their signed commits into
-  `leshchenko1979/opencrabs@main`; `oc-deploy ship` dispatches THAT ref — every
+  `leshchenko1979/opencrabs@main`; `oc-build ship` dispatches THAT ref — every
   artifact compiles all editors' merged changes TOGETHER (decision 2026-08-25).
   Building upstream/adolfousier refs is the exception, explicit ask only.
 - Branch NAMESPACES are reserved so any role can tell development from upstream
@@ -122,7 +122,7 @@ codegen-units=16 — carrier yml since fork 8994be14)*. Upstream #1186 (missing 
   input `features` (comma-separated). Its **`default:` in the workflow yml on the
   CARRIER branch `ci/quick-build-linux` is the SINGLE SOURCE OF TRUTH** for what we
   ship — these skill files NEVER copy the set (drift killed 2026-08-25). Read it
-  live with `tools/ship/oc-features` (the reader oc-deploy itself resolves
+  live with `tools/ship/oc-features` (the reader the ship path itself resolves
   through). Changing the pick later = one-line Editor commit to that yml's `default:` —
   skills untouched.
 - Dispatch ALWAYS passes the set explicitly: `-f features=<set>` (decision

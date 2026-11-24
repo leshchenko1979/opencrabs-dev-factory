@@ -45,7 +45,7 @@ the always-loaded router carried the notify procedure while its own mode-table b
   other callers that pass `interrupt=false` (`quiet_delivery.rs:199`,
   `a2a/handler/notify.rs:266`, `cron/scheduler.rs:1174`).
 - CLI form carries `--sender "<lane label>" --title "<topic>"` where supported
-  (oc-deploy fanout precedent) — the mechanical `from=<uuid>` header is added
+  (oc-fanout fanout precedent) — the mechanical `from=<uuid>` header is added
   on top and cannot be forged or stripped.
 - **`from` is a RETURN ADDRESS only when the sender is a LIVE SESSION (v0.4.243,
   cycle `20260922-c22`).** The identity bullet above holds for a lane-to-lane notify

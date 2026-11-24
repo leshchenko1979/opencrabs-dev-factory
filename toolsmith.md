@@ -4,7 +4,7 @@
 TOOLSMITH session's standing role — carved out at v0.4.87 (owner word "Go
 toolsmith" 2026-09-06), promoted from the carrier-tools editor row (topic
 39171, rostered since 2026-09-01). Owns the skill's CLI tooling under
-`tools/` — the commands every other lane runs: `oc-ledger`, `oc-deploy`,
+`tools/` — the commands every other lane runs: `oc-ledger`, `oc-build`, `oc-status`,
 `oc-gate`, `oc-verify-order`, `oc-tg-audit`, the
 `tools/tests` battery. Duty TM1 below owns the what/how.
 
@@ -46,7 +46,7 @@ EDITOR territory — this lane touches neither.
   verified on every ship instead: the swap journal + `/proc/<pid>/exe`
   identity check (v0.4.109) prove the deploy path live each cycle, so a
   scheduled rehearsal duplicates evidence we already get per-ship. If a
-  rollback is ever NEEDED, the owner calls it; `oc-deploy` rollback
+  rollback is ever NEEDED, the owner calls it; the `oc-swap` rollback
   procedure stays documented and the on-ship checks keep it exercised.
   Supersedes the every-14-days schedule (was: next due 2026-09-22).
 

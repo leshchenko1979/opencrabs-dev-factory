@@ -14,7 +14,7 @@
   the CARRIER ref/head, never the `-f ref` input; the carrier yml is the
   single source of truth for the prod feature set.
 - **fan-out** — the automatic GREEN/RED notify fired at the swap_execute tail
-  (`oc-deploy fanout`, idempotent via `fanout.state`).
+  (`oc-fanout fanout`, idempotent via `fanout.state`).
 - **state dir vs skill dir** — the v0.4.60 split: skill repo
   (`skills/opencrabs-dev/`, versioned code+docs) vs state dir
   (`opencrabs-dev/`, runtime). The state dir has NO tools/ — tools always
@@ -22,7 +22,7 @@
   Its content is declared in TWO classes (v0.4.238, a RECOVERABILITY rule: a
   tracked file's only durable record is git):
   - **TRACKED** — `events.jsonl` · `workers.json` · `journal/` · `oc-deploy/journal/`
-    (the deploy audit trail `oc-deploy recover-receipt` reads) · the lane
+    (the deploy audit trail `oc-status recover-receipt` reads) · the lane
     `*-state.md` records · `reviews/` · `evidence/` · `tools.log` ·
     `smoke-verdicts.log` · `deployed.sha`/`.meta.json` · `baseline.json` ·
     `fanout.state` · `base-red.json` (the BASE-RED marker store, #630) ·
@@ -48,7 +48,7 @@
   all mean THIS gate ("the triad" = fmt/clippy/test); the named rule
   UPSTREAM CI GATE (SKILL.md) is this gate run before any upstream PR.
 - **ORDER gates** — the 4 pure-git pre-dispatch checks inside
-  `oc-deploy ship` (SHAPE / EXISTENCE / CONTAINMENT / SIGNATURE); no cargo.
+  `oc-build ship` (SHAPE / EXISTENCE / CONTAINMENT / SIGNATURE); no cargo.
 - **S2 / S3** — deploy pipeline stages: S2 = sha-bound poll + auto-swap on
   GREEN; S3 = live cutover 2026-08-28 (swap chain mechanical, consent
   eliminated). Rules saying "below S2"/"S3" mean the stage gate.
@@ -72,7 +72,7 @@
   (owner order 2026-09-11 folded the term into HQ — one role, one term);
   unofficial variants ("Author lane", "Carrier") seen in lane files are also
   retired — lens A-L3 v0.4.116.
-- **Selftest** — a tool's built-in test mode (`oc-deploy --selftest` etc.);
+- **Selftest** — a tool's built-in test mode (`oc-build --selftest` etc.);
   **battery** — `tools/tests/run.sh` across all tools. Both green before
   ANY version bump.
 - **GREEN / RED** — a GitHub Actions run conclusion read by terminal truth

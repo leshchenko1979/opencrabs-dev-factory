@@ -34,7 +34,7 @@ per-commit at replay time.
 | **Triage** | step-0 roster gate, run the rebase, arbitrate replay conflicts, ledger stamps, seam adaptation dispatch, consolidated report with the per-feature decisions table (delegated owner 2026-09-11) |
 | **HQ** | oversight, process/skill updates, review of owner-gated semantic overrides — HQ does NOT execute the sync |
 | **Review lens** (one spawn) | audits each semantic pair — diff fork behavior vs upstream's, flag anything upstream's version *loses* |
-| **Editor lane** (hosting editor; TOOLSMITH builds no trees per toolsmith.md law) | runs `oc-deploy ship` on the marker commit via the `oc-deploy` lane, runs the battery — HQ never hand-builds |
+| **Editor lane** (hosting editor; TOOLSMITH builds no trees per toolsmith.md law) | runs `oc-build ship` on the marker commit via the ship lane, runs the battery — HQ never hand-builds |
 | **Harvest lane** | **owns the upstream contribution: port → CI gate → file → follow** (procedure `harvest.md`; owner order 2026-09-24 centralising harvest — editors stop at smoke evidence, Triage surfaces and counts but never ports or files). During a sync window it is unaffected for open PRs, but **pauses new branch creation** off fork main until the sync lands (stale bases). **v0.4.93:** filed upstream PRs stay FROZEN during the window — the sync does NOT trigger re-ports; conflicts on filed PRs are maintainer-side (harvest.md Phase 7 PR-freeze law) |
 | **Owner** | semantic-pair overrides |
 
@@ -51,7 +51,7 @@ per-commit at replay time.
      **PHANTOM** and excluded from the roster — a hand-assembled id can never
      enter a freeze list.
    - **Carrier chain check**: Ensure no carrier build, deploy chain, or `oc-ship` is
-     actively running (`oc-deploy status`, no `SHIP-LOCK`).
+     actively running (`oc-status status`, no `SHIP-LOCK`).
    - **Fork-main push freeze**: Enforce the freeze on pushing/fast-forwarding to fork `main`.
      Active editor lanes continue in their worktrees, but fork `main` merges are paused
      until sync cutover (Step 7 migrates any pending lane branches).
@@ -180,7 +180,7 @@ per-commit at replay time.
    `Session-Id: editor 63d775f9-…` → `editor63d775f9-…` → fail 3, ship rc 2,
    **main stranded undeployed**.
    **PRE-CHECK SIGNATURE BEFORE THE MERGE (HQ ruling 2026-09-26).** Gate 4 runs
-   inside `oc-deploy ship` — i.e. at LEG4, AFTER LEG3's `git merge --ff-only`
+   inside `oc-build ship` — i.e. at LEG4, AFTER LEG3's `git merge --ff-only`
    (`tools/ship/oc-ship`, LEG3 ff-merge) — so a signature fault strands main instead
    of refusing the merge. The check is PURE GIT (read the trailer, match the
    pattern) and costs no CI, so **the chain pre-checks SIGNATURE before LEG3's
@@ -210,7 +210,7 @@ per-commit at replay time.
     marker commit and let the swap complete (or record explicitly why it is
     deferred, with the reason). Verify with `deployed.sha` vs `origin/main`
     after the swap. **No sync step is "done" with main stranded.**
-    - **`DONE = oc-deploy ship <marker-sha> finishes carrier build, binary swapped, and deployed.sha matches origin/main.`**
+    - **`DONE = oc-build ship <marker-sha> finishes carrier build, binary swapped, and deployed.sha matches origin/main.`**
 11. Ledger stamps; auto-swap completes on GREEN carrier build.
     - **`DONE = oc-ledger sync records sync event and session_notify notifies active lanes with new base SHA.`**
 12. **Fork-only re-verification — the sync is the event that invalidates the premises a `not-upstreamable` row rests on (q48 → A / q49 → C; owner-approved design [#761](https://github.com/leshchenko1979/opencrabs/issues/761) step 3).** A force-push rewrites `origin/main`, so the one fact a fork-only declaration asserts — *upstream lacks the surface this repairs* — is exactly the fact a sync can change, and a declaration never re-read is a note, not a control. At each sync, walk every OPEN `not-upstreamable` row in `harvest-registry.json` (`manual_records`) and re-verify each of its three premises: **(a) the SURFACE** — does upstream still lack the surface the row names, resolved by the declaration-level predicate (#633 / #758), never by a by-name symbol match; **(b) the BRANCH SET** — does the row's `branches` set still exist on the fork after the rewrite; a row carrying **no `branches`** cannot have this premise verified at all, so the leg reports it as **UNCOVERED** — a declaration-completeness gap, disclosed once per run — and never as a premise that moved; **(c) the REASON** — does the recorded `reason` still hold as written. Emit a **REPORT** naming each row whose premise changed, **by its `unit`** (the register's upsert key — `manual_records` rows carry no separate `id` field), with the premise that moved; a row re-verified unchanged is stamped `verified_at` and retained.
@@ -303,7 +303,7 @@ Anything beyond a port seam → editor work.
 
 **"Rebase-port"** is the technique for PR chains only.
 
-**Builds** fire ONLY via `oc-deploy`. A direct `gh workflow run quick-build-linux.yml` from any editor is FORBIDDEN. The workflow lives ONLY on carrier branch `ci/quick-build-linux`, never on fork `main`; the dispatch `ref` input must be the FULL 40-char sha — carrier Gate 1 (SHAPE) rejects branch names and short form. Carrier runs ORDER gates (shape / existence / containment / signature — pure git verification) before the build job (`needs: gates`); containment requires the sha already on fork `main`, so the ship path = FF-push main, then dispatch via `tools/ship/oc-deploy`. The carrier build COMPILES but runs NO test leg — all-features testing lives on the PR gate, so straight-to-main hotfix shas ship untested.
+**Builds** fire ONLY via `oc-build ship`. A direct `gh workflow run quick-build-linux.yml` from any editor is FORBIDDEN. The workflow lives ONLY on carrier branch `ci/quick-build-linux`, never on fork `main`; the dispatch `ref` input must be the FULL 40-char sha — carrier Gate 1 (SHAPE) rejects branch names and short form. Carrier runs ORDER gates (shape / existence / containment / signature — pure git verification) before the build job (`needs: gates`); containment requires the sha already on fork `main`, so the ship path = FF-push main, then dispatch via `tools/ship/oc-build ship`. The carrier build COMPILES but runs NO test leg — all-features testing lives on the PR gate, so straight-to-main hotfix shas ship untested.
 
 **Ledger canonical path** = the state dir's `events.jsonl` (the RECORD) + `workers.json` (non-event state); `workers-ledger.json` is a regenerated VIEW, untracked since #149 P3 and rewritten on disk for the legacy `json.load` consumers. `OC_LEDGER` still overrides the view/lock path, `OC_DEPLOY_STATE_DIR` isolates test fixtures.
 

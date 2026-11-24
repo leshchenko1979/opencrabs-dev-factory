@@ -1,4 +1,4 @@
-# S2 swap-leg journal spec — for oc-deploy wiring (live since v0.4.62; title "(proposal)" retired lens A13 v0.4.89)
+# S2 swap-leg journal spec — for the swap-leg wiring (live since v0.4.62; title "(proposal)" retired lens A13 v0.4.89)
 
 Author: compiler lane e756b84b · 2026-08-28
 Answers: owner tool-logging law 2026-08-28 (fleet-directives.md §Tool logging rule) + HQ ledger-1264 gap list
@@ -20,10 +20,10 @@ storage BEFORE the next step begins. Applied here: a swap unreconstructable from
 ## Journal location
 
 `STATE_DIR/oc-deploy/journal/swap-<short-sha>-<epoch>.jsonl` — one file per swap attempt,
-append-only, every line fsync'd before the next step starts. (Live oc-deploy
+append-only, every line fsync'd before the next step starts. (Live `oc-swap`
 writes the 8-char short sha + an epoch suffix — the epoch disambiguates repeat
 swaps of the same sha.) STATE_DIR = the state
-dir oc-deploy already owns for `deployed.sha`.
+dir the deploy stage tools already own for `deployed.sha`.
 
 ## Line shape (one JSON object per line)
 
@@ -72,7 +72,7 @@ as an incident. No receipt post before the stamp lands.
 ## Acceptance criteria
 
 **(1) PRIMARY — behaviour after the swap:** the running unit answers as the target
-build (`oc-deploy status` matches disk) AND a live probe of the swapped feature's
+build (`oc-status status` matches disk) AND a live probe of the swapped feature's
 own path passes. A swap is not accepted on journal completeness alone.
 
 **(2) SECONDARY — reconstruction:** `kill -9` a staging swap mid-flight; from
@@ -82,7 +82,7 @@ answer requiring chat history = the reconstruction leg is not met.
 
 ## Fan-out legs (re-homed from SKILL.md §Session-notify loop, v0.4.80 — lens B F4)
 
-- After a healthy swap `oc-deploy fanout --run <id>` extracts contributors over
+- After a healthy swap `oc-fanout fanout --run <id>` extracts contributors over
   the range `oc-fanout` reads as `bsha` (`tools/ship/oc-fanout:288-291`,
   `range="${prev:-?}..${bsha}"`; right edge = that built sha, never the run
   object's `headSha` and never "current main" — a merge landing mid-build leaves
@@ -90,7 +90,7 @@ answer requiring chat history = the reconstruction leg is not met.
   about the new binary, then records `{sha, run_id, contributors}` to the
   baseline state file (`oc-seal`; canonical:
   `/root/.opencrabs/profiles/ops/opencrabs-dev/baseline.json`) — its `sha` is
-  the left edge of the next attribution range. LIVE since v0.4.37: `oc-deploy
+  the left edge of the next attribution range. LIVE since v0.4.37: `oc-fanout
   fanout --run <id>` ([#24](https://github.com/leshchenko1979/opencrabs/issues/24),
   on top of the [#23](https://github.com/leshchenko1979/opencrabs/issues/23)
   session-notify verb `49125f8c`). GREEN leg: git-range → trailers →
@@ -117,7 +117,7 @@ answer requiring chat history = the reconstruction leg is not met.
 
 ## Post-swap notify (LIVE — mechanical fan-out since 2026-08-29)
 
-Mechanics canonical: `oc-deploy fanout` — §Fan-out legs above. No manual notify steps anywhere. Ledger record path is canonical `opencrabs-dev/events.jsonl` (+ `workers.json`) — the skill-dir duplicate was deleted 2026-08-29 (v0.4.38); fix shipped FIRST, deletion second.
+Mechanics canonical: `oc-fanout fanout` — §Fan-out legs above. No manual notify steps anywhere. Ledger record path is canonical `opencrabs-dev/events.jsonl` (+ `workers.json`) — the skill-dir duplicate was deleted 2026-08-29 (v0.4.38); fix shipped FIRST, deletion second.
 
 **Fanout commit sweep excludes upstream merge ancestry (Duty-4 P-01, v0.4.133):** `oc-attrib --contributors --first-parent` strictly sweeps `--first-parent` for deployed commit attribution, preventing traversal into foreign upstream merge ancestry. Upstream sync merge commits (e.g. `8870bd40`) will NOT falsely wake completed historical editor lanes whose Session-Ids appeared in merged PRs.
 
