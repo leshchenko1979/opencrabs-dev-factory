@@ -2343,7 +2343,9 @@ STUB
   # That is fail-closed: an unset dependency can never yield a false PASS. The
   # first version of this arm asserted an ABORT and went red on green code —
   # assert the behaviour that exists, and that the bare read is disclosed.
-  { unset ACTIVE_CMD; post_verify "$_pv_sha" "$_pv_sha" 0; } 2>"$T/pv-unset.err" >/dev/null
+  # SETTLE=0 TRIES=2: this arm asserts ONE disclosed subshell abort and a
+  # fail-closed PV_MATCH=0 — the 30-try cadence is not what it measures (#166).
+  { unset ACTIVE_CMD; OC_SWAP_SETTLE=0 OC_SWAP_TRIES=2 post_verify "$_pv_sha" "$_pv_sha" 0; } 2>"$T/pv-unset.err" >/dev/null
   check_rc "142-post_verify-unset-dep-no-false-pass" "$PV_MATCH" 0
   check_has "142-post_verify-unset-dep-disclosed" "$(cat "$T/pv-unset.err")" "unbound variable"
   [ "$_ns_was" = 1 ] || set +u
