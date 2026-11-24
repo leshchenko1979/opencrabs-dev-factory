@@ -5172,7 +5172,7 @@ BATTERY_WALL_MS="$(( ($(date +%s%N) - BATTERY_T0) / 1000000 ))"
 _battery_reap_mirrors
 emit_summary
 _rc=$?
-[ "${BATTERY_SECTIONS_TMP:-0}" = "1" ] && rm -f "${BATTERY_SECTIONS_TSV:-}"
+[ "${BATTERY_SECTIONS_TMP:-0}" = "1" ] && [ "${OC_BATTERY_KEEP_CHECKS:-0}" != "1" ] && rm -f "${BATTERY_SECTIONS_TSV:-}"
 # The per-check TSV is a debugging artifact: the summary already prints the
 # slowest 15, so the file is removed unless OC_BATTERY_KEEP_CHECKS=1 asks for
 # the full distribution (how the per-section tables in the tracker are built).
