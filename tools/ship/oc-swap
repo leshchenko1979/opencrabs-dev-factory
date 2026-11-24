@@ -87,7 +87,7 @@ swap_ensure_detached() { # re-exec outside the bounce cgroup (argv from ORIG_ARG
   [ "${OC_SWAP_IN_UNIT_CGROUP:-auto}" = "0" ] && return 0  # test/selftest hook: disabled
   swap_in_bounce_cgroup || return 0
   local cmd="${OC_SWAP_DETACH_CMD:-systemd-run --user --scope --collect}"
-  echo "oc-deploy: swap-execute is INSIDE ${OC_SWAP_UNIT:-opencrabs-ops.service}'s cgroup — the step-8 bounce would SIGKILL it before the receipt/fanout/ledger steps (v0.4.153 silent-ledger defect). Re-executing outside the unit via: $cmd" >&2
+  echo "$OC_DEPLOY_PROG: swap-execute is INSIDE ${OC_SWAP_UNIT:-opencrabs-ops.service}'s cgroup — the step-8 bounce would SIGKILL it before the receipt/fanout/ledger steps (v0.4.153 silent-ledger defect). Re-executing outside the unit via: $cmd" >&2
   OC_SWAP_DETACHED=1 exec $cmd "$SELF" "$MODE" "${ORIG_ARGS[@]}"
 }
 
@@ -320,7 +320,7 @@ swap_execute() {
     fi
     if [ "$FEAT_DROP" = 0 ] && [ -n "$DEP_FEAT" ] && [ "$DEP_FEAT" != "$FEATURES" ]; then
       jline guard 0 "$(jq -cn --arg s "$SHA" --arg d "$DEP_FEAT" --arg f "$FEATURES" '{reason:"same-sha-redeploy-feature-change", deployed_features:$d, new_features:$f}')"
-      echo "oc-deploy: same-sha redeploy with feature change ($DEP_FEAT -> $FEATURES) — proceeding"
+      echo "$OC_DEPLOY_PROG: same-sha redeploy with feature change ($DEP_FEAT -> $FEATURES) — proceeding"
     else
       jline guard 2 "$(jq -cn --arg s "$SHA" --arg d "$DEP_FEAT" --arg f "$FEATURES" '{reason:"already-deployed", deployed_sha:$s, deployed_features:$d, requested_features:$f}')"
       die 2 "swap-execute: $SHA is ALREADY the deployed sha — refusing double execution (if intentional, correct markers manually)"
@@ -343,13 +343,13 @@ swap_execute() {
       rewritten)
         jline guard 0 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" --arg t "$LV_TWIN" \
           '{reason:"rewrite-equivalent-swap", current_deployed:$p, incoming_sha:$s, rewritten_twin:$t}')"
-        echo "oc-deploy: deployed sha $PREV_SHA was orphaned by a rewrite; its change is preserved as $LV_TWIN in the incoming lineage — accepting" >&2
+        echo "$OC_DEPLOY_PROG: deployed sha $PREV_SHA was orphaned by a rewrite; its change is preserved as $LV_TWIN in the incoming lineage — accepting" >&2
         ;;
       absent)
         if [ "$ALLOW_REWRITTEN_LINEAGE" = 1 ]; then
           jline guard 0 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" --arg j "$RW_JUSTIFY" --arg a "$RW_ACTOR" \
             '{reason:"rewritten-lineage-override", current_deployed:$p, incoming_sha:$s, justification:$j, actor:$a}')"
-          echo "oc-deploy: WARNING — swap guard OVERRIDDEN via --allow-rewritten-lineage (actor=$RW_ACTOR): $RW_JUSTIFY" >&2
+          echo "$OC_DEPLOY_PROG: WARNING — swap guard OVERRIDDEN via --allow-rewritten-lineage (actor=$RW_ACTOR): $RW_JUSTIFY" >&2
         else
           jline guard 2 "$(jq -cn --arg s "$SHA" --arg p "$PREV_SHA" '{reason:"non-monotonic-swap", current_deployed:$p, incoming_sha:$s}')"
           echo "OC_DEPLOY_SWAP_GUARD=stale-build" >&2
@@ -357,7 +357,7 @@ swap_execute() {
         fi
         ;;
       unknown)
-        echo "oc-deploy: lineage guard SKIPPED — $PREV_SHA or $SHA is not an object in $LV_REPO (cannot judge)" >&2 ;;
+        echo "$OC_DEPLOY_PROG: lineage guard SKIPPED — $PREV_SHA or $SHA is not an object in $LV_REPO (cannot judge)" >&2 ;;
     esac
   fi
 
@@ -435,7 +435,7 @@ swap_execute() {
       FO_OUT="$( ( fanout_run "$RUN_ID" 0 ) 2>&1 )" || FO_RC=$?
       FO_NOTE="rc=$FO_RC"
       jline fanout "$FO_RC" "{\"run\":\"$RUN_ID\"}"   # lens F HIGH-2 (v0.4.79): fanout rc in the swap journal — stderr-only surfacing was a silent-loss path
-      [ "$FO_RC" = 0 ] || { echo "oc-deploy: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-deploy fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
+      [ "$FO_RC" = 0 ] || { echo "$OC_DEPLOY_PROG: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-deploy fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
     fi
     # --- #766 fork release publish tail — LOGGED AND TOLERATED ----------------
     # Publishes the just-verified binary as fork release assets (design:
@@ -449,7 +449,7 @@ swap_execute() {
       ( publish_fork_release "$SHA" "$RUN_ID" "$FEATURES" "$BIN" "$WORKDIR" ) || PUB_RC=$?
       PUB_NOTE="rc=$PUB_RC"
       jline publish "$PUB_RC" "$(jq -cn --argjson r "$PUB_RC" '{rc:$r, issue:"#766", nonfatal:true, rolling_tag:"fork-latest"}')"
-      [ "$PUB_RC" = 0 ] || echo "oc-deploy: fork release publish rc=$PUB_RC — swap STANDS (#766 leg is non-fatal)" >&2
+      [ "$PUB_RC" = 0 ] || echo "$OC_DEPLOY_PROG: fork release publish rc=$PUB_RC — swap STANDS (#766 leg is non-fatal)" >&2
     fi
     ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?}; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE publish=$PUB_NOTE" "swap-result"
     shadow_log swap "$SHA" "$FEATURES" "deployed"
@@ -460,7 +460,7 @@ swap_execute() {
 
   # --- 10. AUTO-ROLLBACK --- (F-H1, v0.4.78: every restore leg rc-captured;
   #     the journal records what ACTUALLY happened — never an unconditional 0)
-  echo "oc-deploy: post-verify FAILED — auto-rollback engaged (backup $BAK)" >&2
+  echo "$OC_DEPLOY_PROG: post-verify FAILED — auto-rollback engaged (backup $BAK)" >&2
   RB_FAIL=0
   cp "$BAK" "$SWAP_TARGET.new" && chmod +x "$SWAP_TARGET.new" && mv -f "$SWAP_TARGET.new" "$SWAP_TARGET" || RB_FAIL=1
   # restore markers + baseline + orders to pre-swap truth (each leg rc-checked)
@@ -471,7 +471,7 @@ swap_execute() {
   [ "${OC_SWAP_ROLLBACK_FAIL:-0}" = 1 ] && RB_FAIL=1   # test-only hook (F-H1 selftest 11b): force the failed-restore branch
   if [ "$RB_FAIL" = 1 ]; then
     jline rollback 1 "$(jq -cn --arg b "$BAK" --arg s "$BAK_SHA" --arg r "post-verify mismatch after bounce" '{restored_backup:$b, restored_sha256:$s, reason:$r, restore_failed:true, error:"restore leg failed — binary state UNVERIFIED, manual recovery required"}')"
-    echo "oc-deploy: ROLLBACK RESTORE FAILED — journal records rc=1; backup $BAK; MANUAL RECOVERY REQUIRED" >&2
+    echo "$OC_DEPLOY_PROG: ROLLBACK RESTORE FAILED — journal records rc=1; backup $BAK; MANUAL RECOVERY REQUIRED" >&2
   else
     jline rollback 0 "$(jq -cn --arg b "$BAK" --arg s "$BAK_SHA" --arg r "post-verify mismatch after bounce" '{restored_backup:$b, restored_sha256:$s, reason:$r, also_restored:"deployed.sha+meta+baseline+orders"}')"
   fi

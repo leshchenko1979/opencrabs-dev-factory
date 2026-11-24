@@ -431,7 +431,7 @@ case "$MODE" in
       done
       if [ -z "$RUN_ID" ]; then
         [ "$(date +%s)" -lt "$POLL_DEADLINE" ] && { sleep "$POLL_INTERVAL"; continue; }
-        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait ${WAIT_SECS}s timed out: no decodable carrier run found" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
+        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait ${WAIT_SECS}s timed out: no decodable carrier run found" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "$OC_DEPLOY_PROG: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
         die 5 "poll: no decodable carrier runs within --wait ${WAIT_SECS}s"
       fi
       DEP="$(cat "$DEPLOYED" 2>/dev/null || echo none)"
@@ -454,10 +454,10 @@ case "$MODE" in
         if [ -n "$SHA" ] && [ "$B_SHA" = "$SHA" ]; then
           # Dispatched sha GREEN but swap didn't complete within the window —
           # a STUCK swap, never report "nothing new" (rc=5 miss family n=2003).
-          if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait STUCK: dispatched sha ${SHA:0:8} GREEN but swap not completed in ${WAIT_SECS}s (deployed=${DEP:0:8}) — SWAP PENDING, investigate" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
+          if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait STUCK: dispatched sha ${SHA:0:8} GREEN but swap not completed in ${WAIT_SECS}s (deployed=${DEP:0:8}) — SWAP PENDING, investigate" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "$OC_DEPLOY_PROG: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
           die 5 "poll --wait ${WAIT_SECS}s: dispatched sha ${SHA:0:8} GREEN but swap PENDING (stuck — deployed marker still ${DEP:0:8})"
         fi
-        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait ${WAIT_SECS}s timed out: latest green $B_SHA already deployed — nothing new to swap" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
+        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "poll --wait ${WAIT_SECS}s timed out: latest green $B_SHA already deployed — nothing new to swap" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "$OC_DEPLOY_PROG: notify-session rc=$NS_RC (wake FAILED — HQ not woken)" >&2; fi
         die 5 "poll --wait ${WAIT_SECS}s timed out: $B_SHA already deployed (nothing new)"
       fi
       plan "poll --wait: $B_SHA already deployed — next attempt in ${POLL_INTERVAL}s"
@@ -516,7 +516,7 @@ case "$MODE" in
           || { shadow_log swap "$B_SHA" "$FEATURES" "launch-fail"; die 4 "systemd-run handoff failed — nothing touched"; }
         shadow_log swap "$B_SHA" "$FEATURES" "handed-off:$UNIT"
         echo "HANDOFF: Phase B transient unit $UNIT owns the swap (sha=$B_SHA run=$RUN_ID) — poll (Phase A) exits pre-bounce by design"
-        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "HANDOFF: swap unit $UNIT owns sha=$B_SHA run=$RUN_ID (features=$FEATURES) — Phase B owns the bounce" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "oc-deploy: notify-session rc=$NS_RC (handoff wake FAILED)" >&2; fi   # C-#2 + lens C MED-1 rc capture (v0.4.79)
+        if [ -n "$NOTIFY_SESSION" ]; then NS_RC=0; notify_session "$NOTIFY_SESSION" "oc-deploy poll" "HANDOFF: swap unit $UNIT owns sha=$B_SHA run=$RUN_ID (features=$FEATURES) — Phase B owns the bounce" || NS_RC=$?; [ "$NS_RC" = 0 ] || echo "$OC_DEPLOY_PROG: notify-session rc=$NS_RC (handoff wake FAILED)" >&2; fi   # C-#2 + lens C MED-1 rc capture (v0.4.79)
         exit 0
       fi
       plan "swap path armed at stage $STAGE — pass --execute when S2 pilot authorized"

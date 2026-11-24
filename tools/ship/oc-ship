@@ -2313,21 +2313,21 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
   set -e
   # #48 defect 3: surface the WRAPPED tool's own diagnosis. The old message
   # compressed every poll failure into "swap poll failed", so a handoff refusal
-  # that had already named its cause (`oc-deploy: user bus unreachable ...`) read
+  # that had already named its cause (`oc-status: user bus unreachable ...`) read
   # as an anonymous infra fault and the lane hunted infrastructure. oc-deploy
   # prints its cause on stderr, and POLL_OUT captures both streams.
   [ "$POLL_RC" = "0" ] || {
     journal "LEG5 poll rc=$POLL_RC"
-    # #85 residual (HQ, 2026-11-19): this read only the FIRST `oc-deploy:`-prefixed
+    # #85 residual (HQ, 2026-11-19): this read only the FIRST `oc-status:`-prefixed
     # line, so a run reporting two causes showed one and the hint was chosen off
     # that one string. The prefix is shared with WARNINGs, so line one need not
-    # name a cause at all — a `oc-deploy: WARNING: ...` ahead of the fatal line
+    # name a cause at all — an `oc-status: WARNING: ...` ahead of the fatal line
     # would leave the API hint unreachable however plainly line two reported it,
     # and the operator would never see line two. Collect them ALL: show them all,
     # and match the hint against the whole SET, because #85's rule is that a hint
     # may only name a cause the tool actually reported — and "actually reported"
     # is the set, never its first line.
-    POLL_CAUSES="$(printf '%s\n' "$POLL_OUT" | sed -n 's/^oc-deploy: //p')"
+    POLL_CAUSES="$(printf '%s\n' "$POLL_OUT" | sed -n 's/^oc-status: //p')"
     POLL_CAUSE_ALL="$(printf '%s\n' "$POLL_CAUSES" | awk 'NF{printf "%s%s", sep, $0; sep=" | "}')"
     # #85: rc=2 is oc-deploy's "could not read the API" verdict. The bus hint
     # below was offered for EVERY poll failure, so a gh-api blip read as an

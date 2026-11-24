@@ -107,7 +107,17 @@ RECEIPT_TOPIC="${OC_DEPLOY_RECEIPT_TOPIC:-30220}"
 A2A_CURL="${OC_A2A_CURL:-curl}"   # test seam: stub the transport
 LAUNCH="${OC_SWAP_LAUNCH:-systemd-run --user}"
 
-die() { echo "oc-deploy: $2" >&2; exit "$1"; }
+# Cut 4 (factory #168): every message below names the tool that ACTUALLY ran,
+# never the retired `oc-deploy` dispatcher. The name is captured ONCE, at source
+# time, from $0 — which is the stage tool that sourced this file (oc-build,
+# oc-swap, oc-status, oc-fanout, oc-seal). A peer loaded by oc_deploy_load_funcs
+# returns above its own prologue and never re-sources the lib, so the first
+# capture wins and the prefix cannot drift mid-process. Before this, a consumer
+# agent running `oc-build ship` was told `oc-deploy: ...` about a tool that no
+# longer exists — the confusion the cut exists to remove.
+OC_DEPLOY_PROG="${OC_DEPLOY_PROG:-$(basename "${0:-oc-deploy}")}"
+
+die() { echo "$OC_DEPLOY_PROG: $2" >&2; exit "$1"; }
 plan() { echo "PLAN: $*"; }
 
 # ----------------------------------------------------------------------------
@@ -556,7 +566,8 @@ $(ls -1 "$BACKUP_DIR" 2>/dev/null \
 EOF
 
   if [ "$pruned" -gt 0 ]; then
-    printf 'oc-deploy: backup retention: pruned %d old backup(s), %d MB freed, kept newest %d\n' \
+    printf '%s: backup retention: pruned %d old backup(s), %d MB freed, kept newest %d\n' \
+      "$OC_DEPLOY_PROG" \
       "$pruned" "$((freed / 1048576))" "$keep" >&2
     jline backup-prune 0 "$(jq -cn --argjson n "$pruned" --argjson b "$freed" \
       --argjson keep "$keep" '{pruned:$n, bytes_freed:$b, keep:$keep}')"
@@ -613,10 +624,10 @@ EOF
 # the row's n is visible to the swap tail.
 ledger_stamp() { # $1=by  $2=what  $3=kind
   local _ls_kind="${3:-swap-result}"
-  [ "$_ls_kind" = "swap-result" ] || { echo "oc-deploy: ledger_stamp kind must be swap-result (enum write-side guard, v0.4.77)" >&2; return 2; }
-  [ -n "$2" ] || { echo "oc-deploy: ledger_stamp what must be non-empty" >&2; return 2; }
+  [ "$_ls_kind" = "swap-result" ] || { echo "$OC_DEPLOY_PROG: ledger_stamp kind must be swap-result (enum write-side guard, v0.4.77)" >&2; return 2; }
+  [ -n "$2" ] || { echo "$OC_DEPLOY_PROG: ledger_stamp what must be non-empty" >&2; return 2; }
   if [ ! -x "$LEDGER_TOOL" ]; then
-    echo "oc-deploy: ledger_stamp: ledger tool missing or not executable: $LEDGER_TOOL" >&2
+    echo "$OC_DEPLOY_PROG: ledger_stamp: ledger tool missing or not executable: $LEDGER_TOOL" >&2
     return 4
   fi
   # The old body wrote by:"" silently when the actor was empty; the ledger's
@@ -625,12 +636,12 @@ ledger_stamp() { # $1=by  $2=what  $3=kind
   # The what-text goes through a file: see the header block above (#341).
   local _ls_tmp _ls_rc
   _ls_tmp="$(mktemp "${TMPDIR:-/tmp}/oc-deploy-what.XXXXXX")" || {
-    echo "oc-deploy: ledger_stamp: cannot create a temp file for --what-file" >&2
+    echo "$OC_DEPLOY_PROG: ledger_stamp: cannot create a temp file for --what-file" >&2
     return 4
   }
   if ! printf '%s' "$2" > "$_ls_tmp"; then
     rm -f "$_ls_tmp"
-    echo "oc-deploy: ledger_stamp: cannot write the --what-file temp $_ls_tmp" >&2
+    echo "$OC_DEPLOY_PROG: ledger_stamp: cannot write the --what-file temp $_ls_tmp" >&2
     return 4
   fi
   if [ -n "$1" ]; then
@@ -1024,19 +1035,19 @@ oc_priority_apply() {  # $1 = low|normal ; sets PRIORITY_NICE/PRIORITY_IOPRIO/PR
       if renice -n 19 -p $$ >/dev/null 2>&1; then
         a="renice"
       else
-        printf '%s\n' "oc-deploy: WARNING: renice -n 19 failed -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+        printf '%s\n' "$OC_DEPLOY_PROG: WARNING: renice -n 19 failed -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
       fi
     else
-      printf '%s\n' "oc-deploy: WARNING: no renice -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
+      printf '%s\n' "$OC_DEPLOY_PROG: WARNING: no renice -- running at nice ${PRIORITY_NICE:-?} (#77)" >&2
     fi
     if command -v ionice >/dev/null 2>&1; then
       if ionice -c3 -p $$ >/dev/null 2>&1; then
         a="${a:+$a+}ionice"
       else
-        printf '%s\n' "oc-deploy: WARNING: ionice -c3 failed -- I/O priority unchanged (#77)" >&2
+        printf '%s\n' "$OC_DEPLOY_PROG: WARNING: ionice -c3 failed -- I/O priority unchanged (#77)" >&2
       fi
     else
-      printf '%s\n' "oc-deploy: WARNING: no ionice -- I/O priority unchanged (#77)" >&2
+      printf '%s\n' "$OC_DEPLOY_PROG: WARNING: no ionice -- I/O priority unchanged (#77)" >&2
     fi
     PRIORITY_APPLIED="${a:-none}"
     PRIORITY_NICE="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
@@ -1062,7 +1073,8 @@ if [ "$PRIORITY_PROBE" = "1" ]; then
     "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" "${PRIORITY_CHILD_NICE:-}"
   exit 0
 fi
-printf 'oc-deploy %s: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
+printf '%s %s: priority=%s (nice=%s ioprio=%s applied=%s)\n' \
+  "$OC_DEPLOY_PROG" \
   "$MODE" "$PRIORITY" "${PRIORITY_NICE:-}" "${PRIORITY_IOPRIO:-}" "${PRIORITY_APPLIED:-none}" >&2
 }
 
@@ -1133,15 +1145,15 @@ if [ "$MODE" = ship ] && [ -n "$FEATURES" ] && [ -f "$DEPLOYED_META" ]; then
           die 2 "OC_DEPLOY_GATE=feature-mismatch: explicit --features '$FEATURES' DROPS deployed feature(s): ${SHIP_DROP_LIST} — live binary has '$DEP_FEATS' (deployed.meta.json) — refusing pre-dispatch. Additions are fine; drops are the failure class. Pass the deployed set, or --allow-features-drop to override deliberately."
         fi
         shadow_log ship "-" "$FEATURES" "features-drop-allowed:$SHIP_DROP_LIST"
-        echo "oc-deploy: --allow-features-drop — dropping deployed feature(s) ${SHIP_DROP_LIST} deliberately (pre-dispatch gate, #108)"
+        echo "$OC_DEPLOY_PROG: --allow-features-drop — dropping deployed feature(s) ${SHIP_DROP_LIST} deliberately (pre-dispatch gate, #108)"
       else
         shadow_log ship "-" "$FEATURES" "features-default-corrected:$DEP_FEATS"
-        echo "oc-deploy: carrier default '$FEATURES' drops deployed '$DEP_FEATS' — adopting deployed set (FEATURE-DEFAULT)"
+        echo "$OC_DEPLOY_PROG: carrier default '$FEATURES' drops deployed '$DEP_FEATS' — adopting deployed set (FEATURE-DEFAULT)"
         FEATURES="$DEP_FEATS"
       fi
     elif [ -n "$SHIP_ADD_LIST" ]; then
       shadow_log ship "-" "$FEATURES" "features-add-adopted:$SHIP_ADD_LIST"
-      echo "oc-deploy: adding feature(s) ${SHIP_ADD_LIST} over deployed '$DEP_FEATS' (drop-only gate, #108)"
+      echo "$OC_DEPLOY_PROG: adding feature(s) ${SHIP_ADD_LIST} over deployed '$DEP_FEATS' (drop-only gate, #108)"
     fi
   fi
 fi

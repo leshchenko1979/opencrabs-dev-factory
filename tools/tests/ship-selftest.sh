@@ -221,13 +221,13 @@ exit 9
 EOF
   chmod +x "$T/fake-prchecks" "$T/fake-deploy"
   # #85 fixtures: two stubs that fail ONLY at the poll verb, so the chain still
-  # reaches LEG5. One reports oc-deploy's rc=2 "gh api" verdict; the other the
+  # reaches LEG5. One reports oc-status's rc=2 "gh api" verdict; the other the
   # rc=2 user-bus precondition. Both exist because the arm that matters is the
   # DISCRIMINATION: a case statement that always chose one branch would pass a
   # one-stub test either way.
   # A THIRD stub for the #85 residual (HQ, 2026-11-19): a run that reports a
-  # WARNING first and the real cause second. `oc-deploy: ` prefixes WARNINGs
-  # too (`:3889-3901`), so a first-line reader took the warning — which names
+  # WARNING first and the real cause second. `oc-status: ` prefixes WARNINGs
+  # too (the lib's priority probe), so a first-line reader took the warning — which names
   # no cause — defaulted the hint to "user bus", and never displayed line two.
   for _v in api bus warn; do
     cat > "$T/fake-deploy-$_v" <<EOF
@@ -235,12 +235,12 @@ EOF
 if [ "\$1" = "poll" ]; then
   case "$_v" in
     api)
-    echo "oc-deploy: gh api runs query failed after 3 tries within --wait 600s: HTTP 502: Bad Gateway — host: deployed.sha=\$(cat "\${OC_DEPLOY_STATE_DIR:-/tmp}/deployed.sha" 2>/dev/null || echo '<absent>') binary=/usr/local/bin/opencrabs sha256=<unreadable> (binary unreadable at /usr/local/bin/opencrabs)" >&2 ;;
+    echo "oc-status: gh api runs query failed after 3 tries within --wait 600s: HTTP 502: Bad Gateway — host: deployed.sha=\$(cat "\${OC_DEPLOY_STATE_DIR:-/tmp}/deployed.sha" 2>/dev/null || echo '<absent>') binary=/usr/local/bin/opencrabs sha256=<unreadable> (binary unreadable at /usr/local/bin/opencrabs)" >&2 ;;
     bus)
-    echo "oc-deploy: user bus unreachable — 'systemd-run --user' cannot reach the systemd user manager" >&2 ;;
+    echo "oc-status: user bus unreachable — 'systemd-run --user' cannot reach the systemd user manager" >&2 ;;
     warn)
-    echo "oc-deploy: WARNING: renice -n 0 failed: Operation not permitted (fake)" >&2
-    echo "oc-deploy: gh api runs query failed after 3 tries within --wait 600s: HTTP 502: Bad Gateway — host: deployed.sha=<absent> binary=$T/fake-swapped sha256=<unreadable>" >&2 ;;
+    echo "oc-status: WARNING: renice -n 0 failed: Operation not permitted (fake)" >&2
+    echo "oc-status: gh api runs query failed after 3 tries within --wait 600s: HTTP 502: Bad Gateway — host: deployed.sha=<absent> binary=$T/fake-swapped sha256=<unreadable>" >&2 ;;
   esac
   exit 2
 fi
@@ -349,7 +349,7 @@ EOF
                  *) ok "leg5-bus-failure-no-api-mislabel" ;; esac
 
   # 1a-ter. #85 RESIDUAL (HQ, 2026-11-19): the reader took only the FIRST
-  #   `oc-deploy: `-prefixed line. That prefix is shared with WARNINGs, so a
+  #   `oc-status: `-prefixed line. That prefix is shared with WARNINGs, so a
   #   warning printed before the fatal line occupied the slot, matched neither
   #   API pattern, defaulted the hint to "user bus", and — worse — the real
   #   cause on line two was never displayed at all. Three arms, because the fix

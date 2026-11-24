@@ -474,7 +474,7 @@ fanout_run() { # $1=run id $2=dry-run(0/1)
     # one arm must not narrow another. The fatal refusal is the success arm below,
     # which is the first point that genuinely needs oc_decode_job_sha_any.
     jline fanout-start 2 "{\"run\":\"$run\",\"warning\":\"built-sha-no-embed-lib\"}"
-    printf '%s\n' "oc-deploy: WARNING — the embed decoder library is MISSING from this checkout (restore tools/lib/oc-embed.sh). A SUCCESS run will be REFUSED with rc 2 before any job name is evaluated; a RED run still attributes normally (#932)" >&2
+    printf '%s\n' "$OC_DEPLOY_PROG: WARNING — the embed decoder library is MISSING from this checkout (restore tools/lib/oc-embed.sh). A SUCCESS run will be REFUSED with rc 2 before any job name is evaluated; a RED run still attributes normally (#932)" >&2
   fi
   runjson="$("$GH" api "repos/$FORK/actions/runs/$run" 2>/dev/null)" \
     || { jline fanout-start 3 "{\"run\":\"$run\",\"error\":\"gh-api-fail\"}"; die 3 "fanout: gh api run fetch failed for $run"; }

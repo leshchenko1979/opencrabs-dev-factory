@@ -172,5 +172,5 @@ esac
 # Hand the ORIGINAL argv to the owning tool, verb included, and EXEC so its rc
 # is this process's rc and no second tools-log row is written for the hop.
 _TOOL_PATH="$OC_TOOLS_DIR/ship/$TOOL"
-[ -x "$_TOOL_PATH" ] || die 2 "oc-deploy: $_TOOL_PATH missing (broken LOCAL TOOL TREE, not a test result)"
+[ -x "$_TOOL_PATH" ] || die 2 "$_TOOL_PATH missing (broken LOCAL TOOL TREE, not a test result)"
 exec "$_TOOL_PATH" "$MODE" "$@"
