@@ -10,18 +10,22 @@
 # tool and ABORTS on read failure (never a silent fallback set).
 #
 # Usage:
-#   ./tools/ship/oc-features [--repo ~/opencrabs] [--ref ci/quick-build-linux] [--fetch]
+#   ./tools/ship/oc-features [--repo ~/opencrabs] [--ref ci/quick-build-linux]
 #   ./tools/ship/oc-features --selftest
 #
-# Exit codes: 0 set printed · 2 usage · 3 carrier yml unfetchable ·
+# Exit codes: 0 set printed · 2 usage · 3 carrier yml unreadable ·
 #             4 no features input found / invalid shape
-# rc 3 carries a machine-readable token on stderr naming WHICH fact it is:
-#   OC_CARRIER_FETCH=timeout  the fetch exceeded OC_CARRIER_FETCH_TIMEOUT (default
-#                             120s) on both attempts — a transient network stall
-#   OC_CARRIER_FETCH=failed   the fetch returned non-zero on both attempts
-#   (neither token: the yml itself could not be read at origin/$REF)
-# factory #105: `git fetch` has NO short default timeout, so a stall inherited
-# whatever the caller allowed and ran 767.9s before aborting a ship.
+#
+# THE CARRIER YML IS READ REMOTELY — that is the ONLY source, one code path.
+#   gh api repos/<owner>/<repo>/contents/.github/workflows/quick-build-linux.yml?ref=<ref>
+# The local-fetch leg is GONE (#168 cut 2). It measured 767.9 s and 292.5 s on
+# 2026-11-19/20 and aborted ships with no carrier dispatched, while the same
+# fetch measured 7.0-7.8 s minutes later — a stall with no bound worth keeping.
+# The non-fetch path read origin/<ref> out of a local clone nothing else
+# refreshes, so a stale mirror could name a set nobody ships. `oc-gate` already
+# reads carrier workflow files this way. ANY read failure is rc 3: loud, never a
+# silent fallback to a local mirror.
+# Test seam: OC_CARRIER_GH overrides the `gh` binary (see the selftest).
 # =============================================================================
 set -u
 set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
@@ -34,20 +38,19 @@ if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-features" "$@"; el
 trap 'oc_log_finish $?' EXIT
 
 PROG="$(basename "$0")"
-usage() { [ -n "${1:-}" ] && echo "oc-features: $1" >&2; echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest" >&2; exit 2; }   # lens C MED-2 (v0.4.79)
-help()   { echo "usage: $0 [--repo <path>] [--ref <branch>] [--fetch] | --selftest"; echo "Exit: 0 set printed / 2 usage / 3 carrier yml unfetchable / 4 no-features-input"; }  # C-#3: help=0
+usage() { [ -n "${1:-}" ] && echo "oc-features: $1" >&2; echo "usage: $0 [--repo <path>] [--ref <branch>] | --selftest" >&2; exit 2; }   # lens C MED-2 (v0.4.79)
+help()   { echo "usage: $0 [--repo <path>] [--ref <branch>] | --selftest"; echo "Exit: 0 set printed / 2 usage / 3 carrier yml unreadable / 4 no-features-input"; }  # C-#3: help=0
 
 # #166 hermeticity: the defaults are ENV-PINNABLE. A production caller passes
 # nothing and keeps $HOME/opencrabs; a test harness pins OC_CARRIER_REPO to a
-# local fixture so feature resolution never fetches the live repo (~7 s per
-# arm, plus the #105 stall class when the network hiccups). Explicit
-# --repo/--ref flags still win over both env and default.
-REPO="${OC_CARRIER_REPO:-$HOME/opencrabs}"; REF="${OC_CARRIER_REF:-ci/quick-build-linux}"; FETCH=0; SELFTEST=0
+# fixture repo and OC_CARRIER_GH to a stub, so feature resolution never touches
+# the live repo or the network. Explicit --repo/--ref flags still win over both
+# env and default.
+REPO="${OC_CARRIER_REPO:-$HOME/opencrabs}"; REF="${OC_CARRIER_REF:-ci/quick-build-linux}"; SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift ;;
     --ref) REF="${2:-}"; shift ;;
-    --fetch) FETCH=1 ;;
     --selftest) SELFTEST=1 ;;
     -h|--help) help; exit 0 ;;  # C-#3
     *) usage "unknown flag: $1" ;;
@@ -82,43 +85,29 @@ extract_features_default() {
 
 valid_set() { printf '%s' "$1" | grep -Eq '^[a-z0-9_-]+(,[a-z0-9_-]+)*$'; }
 
-# factory #105 (2026-11-21): BOUNDED + RETRIED ONCE. Measured twice on
-# 2026-11-19/20, `--fetch` ran 767.9 s and 292.5 s (outer SIGTERM) and aborted a
-# ship with no carrier dispatched, while the SAME fetch measured 7.0-7.8 s
-# minutes later on the same box, same ref, no lock and no contention. A 7 s
-# operation that fails is far likelier transient than persistent, so one retry
-# buys most of the reliability; the bound is what stops a stall becoming a
-# 13-minute abort. `timeout` absent (a minimal image) fails OPEN with a warning
-# rather than refusing to run — a harness that cannot run is worse than one
-# running unbounded.
-FETCH_TIMEOUT="${OC_CARRIER_FETCH_TIMEOUT:-120}"
-case "$FETCH_TIMEOUT" in ''|*[!0-9]*) FETCH_TIMEOUT=120 ;; esac
+GH_BIN="${OC_CARRIER_GH:-gh}"   # test seam: the remote read is stubbable
 
-read_carrier() { # -> yml on stdout, rc 3 on failure
-  if [ "$FETCH" -eq 1 ]; then
-    _try=0; _rc=0
-    while [ "$_try" -lt 2 ]; do
-      _try=$((_try+1)); _rc=0
-      if command -v timeout >/dev/null 2>&1; then
-        timeout "$FETCH_TIMEOUT" git -C "$REPO" fetch -q origin "$REF" >/dev/null 2>&1 || _rc=$?
-      else
-        git -C "$REPO" fetch -q origin "$REF" >/dev/null 2>&1 || _rc=$?
-      fi
-      [ "$_rc" -eq 0 ] && break
-      # 124 is timeout(1)'s own expiry; 143 is SIGTERM from an outer bound.
-      case "$_rc" in
-        124|143) echo "$PROG: OC_CARRIER_FETCH=timeout — git fetch origin $REF exceeded ${FETCH_TIMEOUT}s in $REPO (attempt $_try/2)" >&2 ;;
-        *)       echo "$PROG: OC_CARRIER_FETCH=failed — git fetch origin $REF rc=$_rc in $REPO (attempt $_try/2)" >&2 ;;
-      esac
-      if [ "$_try" -lt 2 ]; then
-        echo "$PROG: retrying once in 3s (a 7 s fetch failing is likelier transient than persistent)" >&2
-        sleep 3
-      fi
-    done
-    [ "$_rc" -eq 0 ] || return 3
-  fi
-  git -C "$REPO" show "origin/$REF:.github/workflows/quick-build-linux.yml" 2>/dev/null \
-    || { echo "$PROG: cannot read carrier yml at origin/$REF in $REPO" >&2; return 3; }
+carrier_slug() { # owner/repo from $REPO's origin remote; rc 1 when unparseable
+  local url rest
+  url="$(git -C "$REPO" remote get-url origin 2>/dev/null)" || return 1
+  url="${url%.git}"
+  case "$url" in
+    *github.com[:/]*) rest="${url#*github.com[:/]}" ;;
+    *) return 1 ;;
+  esac
+  case "$rest" in ""|*/*/*) return 1 ;; esac   # exactly owner/repo
+  printf '%s\n' "$rest"
+}
+
+read_carrier() { # -> yml on stdout, rc 3 on failure (never a fallback read)
+  local slug out rc
+  slug="$(carrier_slug)" \
+    || { echo "$PROG: cannot derive owner/repo from the origin remote of $REPO — carrier yml unreadable (rc 3)" >&2; return 3; }
+  out="$("$GH_BIN" api -H 'Accept: application/vnd.github.raw' \
+    "repos/$slug/contents/.github/workflows/quick-build-linux.yml?ref=$REF" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] \
+    || { echo "$PROG: carrier yml unreadable at $slug@$REF ($GH_BIN api rc=$rc) — no fallback read (rc 3)" >&2; return 3; }
+  printf '%s\n' "$out"
 }
 
 if [ "$SELFTEST" -eq 1 ]; then
@@ -136,60 +125,82 @@ if [ "$SELFTEST" -eq 1 ]; then
       printf 'jobs:\n  build:\n    runs-on: ubuntu-latest\n'
     } > "$1"
   }
-  mkrepo() { # $1=dir $2=features default line
+  mk_repo() { # $1=dir — origin is a github slug, so the read must be remote
     git init -q -b main "$1" || return 1
     git -C "$1" config user.email t@t; git -C "$1" config user.name t
-    mkdir -p "$1/.github/workflows"
-    mk_yml "$1/.github/workflows/quick-build-linux.yml" "$2"
-    git -C "$1" add -A; git -C "$1" commit -qm carrier
-    git init -q --bare "$1.git"
-    git -C "$1" remote add origin "$1.git"
-    git -C "$1" push -q origin "HEAD:refs/heads/$REF"
-    git -C "$1" fetch -q origin
+    git -C "$1" remote add origin git@github.com:acme/carrier.git
   }
+  mk_fx() { # $1=ref $2=features-default line — what the REMOTE serves for that ref
+    mkdir -p "$d/fx"
+    mk_yml "$d/fx/$(printf '%s' "$1" | tr '/' '_').yml" "$2"
+  }
+  # The gh stub: serves the fixture for the ref named in the contents URL and
+  # fails for anything else. GH_FAIL=1 makes every call fail (the loud rc 3 arm).
+  cat > "$d/gh" <<'SHIM'
+#!/usr/bin/env bash
+[ "${GH_FAIL:-0}" = 1 ] && { echo "gh: fixture failure" >&2; exit 1; }
+for a in "$@"; do
+  case "$a" in
+    repos/*/contents/*)
+      ref="${a##*ref=}"
+      f="$GH_FX/$(printf '%s' "$ref" | tr '/' '_').yml"
+      [ -f "$f" ] || { echo "gh: no carrier yml for ref $ref" >&2; exit 1; }
+      cat "$f"; exit 0 ;;
+  esac
+done
+echo "gh: unexpected args: $*" >&2; exit 1
+SHIM
+  chmod +x "$d/gh"
+  export GH_FX="$d/fx" OC_CARRIER_GH="$d/gh"
   pass=0; fail=0
   chk() { if [ "$1" -eq "$2" ]; then pass=$((pass+1)); echo "selftest: $3 OK"; else fail=$((fail+1)); echo "selftest: $3 FAIL (rc=$1 want $2)"; fi }
 
-  mkrepo "$d/good" "default: 'telegram'" || exit 3
+  mk_repo "$d/good" || exit 3
+  mk_fx "$REF" "default: 'telegram'"
   OUT="$("$0" --repo "$d/good")"; chk $? 0 "valid carrier prints set"
   [ "$OUT" = "telegram" ] && { pass=$((pass+1)); echo "selftest: exact set OK"; } || { fail=$((fail+1)); echo "selftest: got '$OUT' want 'telegram'"; }
 
-  mkrepo "$d/multi" "default: 'telegram,browser'" || exit 3
-  OUT="$("$0" --repo "$d/multi")"
+  mk_fx "$REF" "default: 'telegram,browser'"
+  OUT="$("$0" --repo "$d/good")"
   [ "$OUT" = "telegram,browser" ] && { pass=$((pass+1)); echo "selftest: multi-feature set OK"; } || { fail=$((fail+1)); echo "selftest: multi got '$OUT'"; }
 
-  mkrepo "$d/nofeat" "" || exit 3
-  "$0" --repo "$d/nofeat" >/dev/null 2>&1; chk $? 4 "no features input -> 4"
+  mk_fx "other-branch" "default: 'eval'"
+  OUT="$("$0" --repo "$d/good" --ref other-branch)"
+  [ "$OUT" = "eval" ] && { pass=$((pass+1)); echo "selftest: --ref selects the ref OK"; } || { fail=$((fail+1)); echo "selftest: --ref got '$OUT'"; }
 
-  mkrepo "$d/badshape" "default: 'tele gram!'" || exit 3
-  "$0" --repo "$d/badshape" >/dev/null 2>&1; chk $? 4 "invalid shape -> 4"
+  mk_fx "$REF" ""
+  "$0" --repo "$d/good" >/dev/null 2>&1; chk $? 4 "no features input -> 4"
+
+  mk_fx "$REF" "default: 'tele gram!'"
+  "$0" --repo "$d/good" >/dev/null 2>&1; chk $? 4 "invalid shape -> 4"
 
   "$0" --repo "$d/good" --ref no-such-branch >/dev/null 2>&1; chk $? 3 "missing carrier branch -> 3"
 
-  # ---- #105: the fetch is BOUNDED and RETRIED, never unbounded -------------
-  # A shim `git` that sleeps past the bound exercises the TIMEOUT arm
-  # deterministically (no network, no black-hole host): two attempts at a 2 s
-  # bound plus one 3 s backoff must finish in ~7 s, not in the shim's 10 s each.
-  mkdir -p "$d/shim"
-  printf '#!/bin/sh\nsleep 10\n' > "$d/shim/git"; chmod +x "$d/shim/git"
-  T0=$(date +%s)
-  ERR="$(PATH="$d/shim:$PATH" OC_CARRIER_FETCH_TIMEOUT=2 "$0" --repo "$d/good" --fetch 2>&1 >/dev/null)"; RC=$?
-  T1=$(date +%s); EL=$((T1-T0))
-  chk "$RC" 3 "a stalled fetch fails as rc 3, never a hang"
-  [ "$EL" -le 15 ] && { pass=$((pass+1)); echo "selftest: the stall is BOUNDED (${EL}s, 2 s bound x2 attempts) OK"; } \
-    || { fail=$((fail+1)); echo "selftest: stall took ${EL}s -- the bound did not hold"; }
-  grep -q 'OC_CARRIER_FETCH=timeout' <<< "$ERR" \
-    && { pass=$((pass+1)); echo "selftest: a timeout is NAMED as one (OC_CARRIER_FETCH=timeout) OK"; } \
-    || { fail=$((fail+1)); echo "selftest: timeout token absent (got: $ERR)"; }
-  grep -q 'attempt 2/2' <<< "$ERR" \
-    && { pass=$((pass+1)); echo "selftest: the fetch is retried once (both attempts named) OK"; } \
-    || { fail=$((fail+1)); echo "selftest: no retry -- attempt 2/2 absent (got: $ERR)"; }
-  # Negative control: a HEALTHY fetch must NOT print a token or retry, else the
-  # legs above would pass on a tool that fails everything.
-  ERR2="$("$0" --repo "$d/good" --fetch 2>&1 >/dev/null)"; RC2=$?
-  [ "$RC2" -eq 0 ] && ! grep -q 'OC_CARRIER_FETCH' <<< "$ERR2" \
-    && { pass=$((pass+1)); echo "selftest: a healthy fetch is silent and rc 0 (negative control) OK"; } \
-    || { fail=$((fail+1)); echo "selftest: healthy fetch rc=$RC2 stderr='$ERR2'"; }
+  # ---- the read is REMOTE, and ONLY remote ---------------------------------
+  # A repo carrying a DIFFERENT set on its own refs/remotes/origin/<ref> must
+  # not be read: that ref is the stale local mirror the deleted path trusted.
+  mk_fx "$REF" "default: 'telegram'"
+  mkdir -p "$d/good/.github/workflows"
+  mk_yml "$d/good/.github/workflows/quick-build-linux.yml" "default: 'stale'"
+  git -C "$d/good" add -A >/dev/null 2>&1; git -C "$d/good" commit -qm stale >/dev/null 2>&1
+  git -C "$d/good" update-ref "refs/remotes/origin/$REF" HEAD
+  OUT="$("$0" --repo "$d/good")"
+  [ "$OUT" = "telegram" ] \
+    && { pass=$((pass+1)); echo "selftest: the local mirror is NOT read (remote wins) OK"; } \
+    || { fail=$((fail+1)); echo "selftest: read a stale local mirror -- got '$OUT' want 'telegram'"; }
+
+  # A remote-read failure is LOUD (rc 3) and never falls back to that mirror.
+  GH_FAIL=1 "$0" --repo "$d/good" >/dev/null 2>&1; chk $? 3 "remote read failure -> 3 (no fallback)"
+  ERR="$(GH_FAIL=1 "$0" --repo "$d/good" 2>&1 >/dev/null)"
+  grep -q 'carrier yml unreadable' <<< "$ERR" \
+    && { pass=$((pass+1)); echo "selftest: the read failure NAMES itself OK"; } \
+    || { fail=$((fail+1)); echo "selftest: read-failure message absent (got: $ERR)"; }
+
+  # The deleted flag is REFUSED, never silently accepted.
+  "$0" --repo "$d/good" --fetch >/dev/null 2>&1; chk $? 2 "--fetch is refused (flag deleted)"
+
+  git init -q "$d/nogit"
+  "$0" --repo "$d/nogit" >/dev/null 2>&1; chk $? 3 "no origin remote -> 3"
   "$0" --repo "$d/nope" >/dev/null 2>&1; chk $? 3 "missing repo -> 3"
 
   [ "$fail" -eq 0 ] && { echo "selftest OK ($pass checks)"; exit 0; } || { echo "selftest FAILED ($fail)" >&2; exit 1; }

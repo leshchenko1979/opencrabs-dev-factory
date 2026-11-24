@@ -127,7 +127,7 @@ usage: oc-deploy ship [--sha S] [--features F] [--execute] [--gated-run ID]
        oc-deploy lineage-check [--prev P] [--sha S] [--repo R] [--json]
        oc-deploy recover-receipt [--journal J] [--run R] [--sha S] [--dry-run]
                       [--historical] [--json]
-       oc-deploy features [--repo P] [--ref B] [--no-fetch]
+       oc-deploy features [--repo P] [--ref B]
        oc-deploy --selftest
        oc-deploy --help
 

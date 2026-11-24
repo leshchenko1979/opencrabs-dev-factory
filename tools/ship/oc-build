@@ -121,7 +121,7 @@ usage: oc-build ship [--sha S] [--features F] [--execute] [--gated-run ID]
                      [--gated-sha SHA] [--allow-ungated-push "<justification>"]
                      [--allow-features-drop] [--priority low|normal]
                      [--resolve-priority]
-       oc-build features [--repo P] [--ref B] [--no-fetch]
+       oc-build features [--repo P] [--ref B]
        oc-build --selftest
        oc-build --help
 
