@@ -62,10 +62,11 @@ Highlights:
 
 1. Edit → verify → commit (one logical change per commit, `Issue-Ref:` trailer).
 2. Battery GREEN: `bash tools/tests/run.sh` → receipt reads `PASS`.
-3. `CHANGELOG.md` gets a `## vX.Y.Z` entry (prepended at the top, newest-first).
-4. Bump `version:` in `SKILL.md`, commit, tag `vX.Y.Z`.
-5. `tools/state/oc-ledger sync --version X.Y.Z --why "..."` (gates on the battery receipt + changelog entry).
-6. Push skill mirror (main + tag); state mirror parity sweep.
+3. Bump `version:` in `SKILL.md` and write the `## vX.Y.Z` entry in `CHANGELOG.md`
+   (prepended, newest-first) in the **SAME commit** — the release note rides the bump
+   it documents, never a second commit of its own. Then tag `vX.Y.Z`.
+4. `tools/state/oc-ledger sync --version X.Y.Z --why "..."` (gates on the battery receipt + changelog entry).
+5. Push skill mirror (main + tag); state mirror parity sweep.
 
 ## Conventions
 
