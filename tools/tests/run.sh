@@ -104,6 +104,10 @@ note()  { printf '%s\n' "$*"; }
 _battery_reap_mirrors() {
   _brm_lib="$TOOLS_DIR/lib/oc-snap.sh"
   [ -f "$_brm_lib" ] || return 0
+  # STAYS ON DISK (#171): the reap marker lives in the TREE, not in the run's
+  # TEST_TMPDIR. It is per-process ($$), it is read back by this same process one
+  # line later, and a tmpfs root would put it somewhere a post-mortem cannot find
+  # after the root is deleted. oc-snap excludes .reap.* from every mirror copy.
   ( . "$_brm_lib" && oc_snap_reap ) > "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null || :
   _brm_n="$(cat "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null || printf 0)"
   rm -f "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null
@@ -792,6 +796,11 @@ fi
 # Contract: a RED run leaves $FAIL_LOG carrying the FAIL rows and their
 # continuation lines, and the receipt JSON names that path; a GREEN run REMOVES
 # any stale log, so the log's PRESENCE is itself the red signal.
+# STAYS ON DISK (#171): cross-lane, cross-run state. Chunk children APPEND to
+# this one path and the NEXT run truncates it; the receipt names it by relative
+# path for a human to tail. A per-run TMPDIR root would scatter it and make a
+# red receipt point at a file that no longer exists. Absolute, so the TMPDIR
+# export cannot move it.
 FAIL_LOG="$TOOLS_DIR/tests/battery-last-fail.log"
 FAIL_LOG_REL="tools/tests/battery-last-fail.log"
 # Only the PARENT truncates: chunk children append to this same path, and a
@@ -963,6 +972,10 @@ print("  slowest: " + "  ".join("#%d=%ds" % (k, d // 1000)
 OC_TIMING_SHOW
 }
 emit_summary() {
+  # STAYS ON DISK (#171): tools/tests/battery-last.json is ONE canonical path
+  # read by the ledger gate and by every lane -- shared, durable state, never a
+  # per-run file. Written through $TOOLS_DIR (absolute), so the TMPDIR export
+  # cannot relocate it.
   local verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
   finalize_fail_log
   battery_capture_fail_rows
@@ -2658,6 +2671,11 @@ if tool oc-smoke-evidence; then
   SED_TMP="$(mktemp -d)"
   OC_DEPLOY_STATE_DIR="$SED_TMP" "$TOOLS_DIR/smoke/oc-smoke-evidence" --append-log --unit oc-no-such-unit 2>&1 | grep -q 'NOT the canonical' && bad "bare --append-log diverged from canonical" || ok "bare --append-log -> canonical log (M2-2)"
   OC_DEPLOY_STATE_DIR="$SED_TMP" "$TOOLS_DIR/smoke/oc-smoke-evidence" --append-log smoke-verdicts.log --unit oc-no-such-unit 2>&1 | grep -q 'NOT the canonical' && bad "relative --append-log escaped STATE_DIR" || ok "relative --append-log resolves to STATE_DIR, not CWD (M2-2)"
+  # STAYS ON DISK, LITERALLY (#171): this path is an ASSERTED LITERAL -- the leg
+  # proves a foreign ABSOLUTE --append-log is announced rather than silently
+  # redirected, so it must stay a path outside the state dir. It is also outside
+  # TMPDIR, which is the point: a test that pointed it inside the run's own root
+  # would stop testing divergence. The tool creates/append it; it is tiny.
   OC_DEPLOY_STATE_DIR="$SED_TMP" "$TOOLS_DIR/smoke/oc-smoke-evidence" --append-log /tmp/oc-elsewhere.log --unit oc-no-such-unit 2>&1 | grep -q 'NOT the canonical' && ok "divergent absolute --append-log announces itself (M2-2)" || bad "divergent --append-log was silent"
   rm -rf "$SED_TMP"
 fi
