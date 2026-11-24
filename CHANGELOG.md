@@ -1,5 +1,40 @@
 # Changelog — opencrabs-dev
 
+## v0.4.333 — the gate pin is named in the job, the fan-out edge is the built sha
+
+**What changed (law).** Two pointers still named instruments the ship chain had
+already replaced, and both would send a lane to the wrong field:
+
+- `editor.md` Duty-4 P3 — the dispatch-identity check said `oc-gate` "headSha
+  adoption enforces this for its own runs". The pin is `oc_job_sha`, read over
+  the JOB NAME, and the gate writes its receipt to `journal/gate-<run>.json`
+  (`tested_sha`). `headSha` is the CARRIER head and is never the pin.
+- `s2-swap-journal-spec.md` §Fan-out legs — contributor extraction runs
+  `oc-deploy fanout --run <id>` over the range `oc-fanout` reads as `bsha`
+  (`tools/ship/oc-fanout:288-291`, `range="${prev:-?}..${bsha}"`), not over the
+  run object's `headSha` and never "current main".
+
+Both landed in one commit: `105add95` (#157, #158).
+
+**Version gap: 0.4.332 is skipped, deliberately.** `refs/tags/v0.4.332` on origin
+points at `255d6f75`, a fixture commit ("fixture A: docs+impl one commit" →
+"skill v0.4.332: oc-ledger sync — fixture A one-commit proof") reachable from no
+branch; its parent `c62c909f` is not on `HEAD` either. The number is burned by a
+test artifact, so this sync jumps 0.4.331 → 0.4.333 (`--catch-up`, recorded as
+"skipped 0.4.332"). The leaked tag is NOT deleted here — removing a remote ref is
+the owner's call. The only path in this repo that pushes `v0.4.*` tags is
+`mirror_push` (`oc-ledger:746`), which mirrors a repo's tags verbatim.
+
+**Bundle.** 31 commits since the 0.4.331 bump — the ship-chain work of #147–#166
+(`oc-gate` receipt, `oc-ship` LEG1 binding, `oc-deploy` ledger routing,
+`oc-issue-dispatch`, battery timing, selftests). `tools/**` is the Toolsmith's
+carve-out; the C8 naming leg reports them unnamed and stays WARN-only by design.
+
+**Verification.** `git diff --stat 5fd6eb8d..HEAD -- <16 LAW_FILES>` → only
+`editor.md` (1 line) and `s2-swap-journal-spec.md` (9 lines); `oc-ledger
+check-version` before the bump → `MISMATCH … CAUSE UNBUMPED-LAW`; `git ls-remote
+--tags origin` → `v0.4.332 → 255d6f75` (fixture) and no `v0.4.333`.
+
 ## v0.4.331 — the ledger's monolith leaves the tracked surface, and the law stops naming a file that is no longer the record
 
 **What changed.** `workers-ledger.json` is `git rm --cached` + `.gitignore`d in the
