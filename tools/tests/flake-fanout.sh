@@ -260,7 +260,7 @@ if [ "$exhausted" -gt 0 ] || [ "$unreported" -gt 0 ]; then
   printf '\n=== fork exhaustion (#75) ===\n'
   printf 'EXHAUSTED/UNREPORTED iterations are NOT tool reds: the scope hit pids.max=%s and\n' "$(scope_pids_max)"
   printf 'the shell was killed mid-run ("fork: Interrupted system call"). This is the\n'
-  printf 'ENVIRONMENT, not oc-deploy. Re-run with a lower -j; the cap is the ceiling.\n'
+  printf 'ENVIRONMENT, not oc-fanout. Re-run with a lower -j; the cap is the ceiling.\n'
 fi
 if [ "$fail" -gt 0 ]; then
   printf '\n=== divergences ===\n'

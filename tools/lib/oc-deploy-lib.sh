@@ -724,8 +724,8 @@ publish_fork_release() { # $1=sha $2=run_id $3=features $4=binary-path $5=artifa
 # work is still blocked, with the documented rc 9. `return 0` keeps the
 # `[ -f ] && die` idiom from tripping `set -e` on the clean path.
 kill_brake() {
-  [ -f "$KILL_FILE" ] && die 9 "KILL FILE present ($KILL_FILE) — all oc-deploy invocations abort"
-  [ -f "$KILL_FILE2" ] && die 9 "KILL FILE present ($KILL_FILE2) — all oc-deploy invocations abort"
+  [ -f "$KILL_FILE" ] && die 9 "KILL FILE present ($KILL_FILE) — all deploy invocations abort"
+  [ -f "$KILL_FILE2" ] && die 9 "KILL FILE present ($KILL_FILE2) — all deploy invocations abort"
   return 0
 }
 

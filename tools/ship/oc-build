@@ -405,7 +405,7 @@ case "$MODE" in
             if [ "$CAND_SHA" = "$SHA" ]; then
               : # exact match
             elif [ -n "$CAND_SHA" ] && git -C "${OC_DEPLOY_REPO:-${HOME:-/root}/opencrabs}" merge-base --is-ancestor "$SHA" "$CAND_SHA" 2>/dev/null; then
-              echo "oc-deploy ship-wait: candidate run $CANDID built descendant $CAND_SHA (contains our sha $SHA — coalesced run)" >&2
+              echo "$OC_DEPLOY_PROG ship-wait: candidate run $CANDID built descendant $CAND_SHA (contains our sha $SHA — coalesced run)" >&2
             else
               continue
             fi
@@ -426,7 +426,7 @@ case "$MODE" in
                 die 6 "SHIP-WAIT: run $RID terminal-$CONCL within --wait ${WAIT_SECS}s — RED, no swap leg"
                 ;;
               queued|in_progress|waiting|pending) : ;;   # keep polling
-              *) echo "oc-deploy ship-wait: odd run status '$CONCL' — keep polling until deadline" >&2 ;;
+              *) echo "$OC_DEPLOY_PROG ship-wait: odd run status '$CONCL' — keep polling until deadline" >&2 ;;
             esac
           fi
           [ "$(date +%s)" -lt "$SW_DEADLINE" ] || {

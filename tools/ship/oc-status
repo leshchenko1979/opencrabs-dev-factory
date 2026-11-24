@@ -128,7 +128,7 @@ watch_precheck() { # $1=tip-sha ; piggyback, report-only, never fails the host
     echo "WATCH-CLEAN: fork main ${1:0:8} covered ($REASON)"
   else
     shadow_log watch "$1" "-" "ALERT:stray"
-    echo "WATCH-ALERT: fork main ${1:0:8} NOT covered (deployed=$(cut -c1-8 "$DEPLOYED" 2>/dev/null || echo none)) — run 'oc-deploy watch' for the stray list"
+    echo "WATCH-ALERT: fork main ${1:0:8} NOT covered (deployed=$(cut -c1-8 "$DEPLOYED" 2>/dev/null || echo none)) — run 'oc-status watch' for the stray list"
   fi
   return 0
 }
@@ -153,7 +153,7 @@ watch_run() { # explicit `oc-deploy watch [--with-delta]` ; exit 0 clean | 2 str
         | jq -r '.commits[]? | "  \(.sha[0:8]) \(.commit.author.date) \(.commit.author.name): \(.commit.message | split("\n")[0])"' 2>/dev/null \
         || true
     fi
-    echo "report-only: attribute via Session-Id trailers; oc-deploy NEVER builds autonomously"
+    echo "report-only: attribute via Session-Id trailers; oc-status NEVER builds autonomously"
   fi
   if [ "$WITH_DELTA" = "1" ]; then
     DELTA_TOOL="${OC_DEPLOY_DELTA_TOOL:-$OC_TOOLS_DIR/harvest/oc-upstream-delta}"
@@ -374,7 +374,7 @@ status_run() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json_out=1 ;;
-      -h|--help) echo "usage: oc-deploy status [--json]"; exit 0 ;;
+      -h|--help) echo "usage: oc-status status [--json]"; exit 0 ;;
       *) die 2 "status: unknown arg: $1" ;;
     esac
     shift || true
@@ -707,7 +707,7 @@ case "$MODE" in
           # shellcheck disable=SC2086  # $LAUNCH is a command + args by design
           if ! $LAUNCH --scope --collect /bin/true >/dev/null 2>&1; then
             shadow_log swap "$B_SHA" "$FEATURES" "launch-preflight-no-user-bus"
-            die 4 "user bus unreachable — '$LAUNCH' cannot reach the systemd user manager (XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR:-<unset>}', DBUS_SESSION_BUS_ADDRESS='${DBUS_SESSION_BUS_ADDRESS:-<unset>}'), so the swap was NOT armed and nothing was touched. Resume from a shell that has the user bus: oc-deploy poll --execute (or set OC_SWAP_LAUNCH to a launcher that does not need it)."
+            die 4 "user bus unreachable — '$LAUNCH' cannot reach the systemd user manager (XDG_RUNTIME_DIR='${XDG_RUNTIME_DIR:-<unset>}', DBUS_SESSION_BUS_ADDRESS='${DBUS_SESSION_BUS_ADDRESS:-<unset>}'), so the swap was NOT armed and nothing was touched. Resume from a shell that has the user bus: oc-status poll --execute (or set OC_SWAP_LAUNCH to a launcher that does not need it)."
           fi
         fi
         UNIT="oc-swap-${B_SHA:0:8}-$(date +%s)"
