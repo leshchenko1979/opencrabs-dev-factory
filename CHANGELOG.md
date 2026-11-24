@@ -31,7 +31,15 @@ were already rehomed: `ship`/`features` → `oc-build`, `swap-execute` →
 names, the `oc-deploy-lib.sh` filename, `oc-audit-ship`'s dual-name matching
 over the append-only ship log, dated evidence/ rows and CHANGELOG history.
 
-**Bundle.** PR #173, merged `17128d38` — 43 files, +916/−902.
+**Bundle.** Everything since the v0.4.333 sync, three PRs: #169 (merge
+`4afefb85`) — perf(tools), selftest wall clock 208s→117s: `95c5a800` env-pin
+carrier repo/ref defaults, `281b4ea3` pin the pv (c) verify knobs,
+`180f6b01` drop the post-final-attempt sleep in post_verify, `f5f1ed90`
+battery receipt 459/0 at `95c5a800`; #170 — cuts 1–3: `451d31dd` dead
+skills-sidecar legs deleted from oc-swap, `b4fa5bdd` --fetch preflight leg
+deleted (carrier yml read remotely), `e3c00eaa` the separate-CHANGELOG-commit
+ritual retired; #173 (merge `17128d38`) — cuts 4–5, the batch described above
+(43 files, +916/−902).
 
 **Verification.** Battery PASS 458/0 on the final tree (receipt committed
 `7c4bd92d`; 459 pre-deletion, one fewer with the retired contributors battery
