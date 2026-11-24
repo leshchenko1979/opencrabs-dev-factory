@@ -104,11 +104,15 @@ note()  { printf '%s\n' "$*"; }
 _battery_reap_mirrors() {
   _brm_lib="$TOOLS_DIR/lib/oc-snap.sh"
   [ -f "$_brm_lib" ] || return 0
+  # STAYS ON DISK (#171): the reap marker lives in the TREE, not in the run's
+  # TEST_TMPDIR. It is per-process ($$), it is read back by this same process one
+  # line later, and a tmpfs root would put it somewhere a post-mortem cannot find
+  # after the root is deleted. oc-snap excludes .reap.* from every mirror copy.
   ( . "$_brm_lib" && oc_snap_reap ) > "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null || :
   _brm_n="$(cat "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null || printf 0)"
   rm -f "$TOOLS_DIR/tests/.reap.$$" 2>/dev/null
   case "$_brm_n" in ''|*[!0-9]*) _brm_n=0 ;; esac
-  [ "$_brm_n" -gt 0 ] && note "  reaped $_brm_n dead /tmp/oc-snap-* mirror(s)"
+  [ "$_brm_n" -gt 0 ] && note "  reaped $_brm_n dead ${OC_SNAP_ROOT:-/tmp}/oc-snap-* mirror(s)"
   return 0
 }
 trap '_battery_reap_mirrors' EXIT
@@ -425,6 +429,203 @@ if [ -z "${BATTERY_IN_CHUNK:-}" ] && [ -z "${BATTERY_CGROUP_ISOLATED:-}" ] && [ 
     note "battery: WARNING: could not create a transient scope -- running in ${_oc_cg} unisolated (#720)"
   fi
 fi
+# ---- ONE per-run TEST_TMPDIR root (factory #171, steps 4+7) ------------------
+# WHY: the battery scattered its scratch across /tmp, which on this box is
+# /dev/sda1 -- a 58G ext4 at 87% full -- while /dev/shm is a 2.0G tmpfs at 1%.
+# Every `mktemp` the battery makes (70 call sites in this file, plus the
+# selftests' own) and every one of the ~33 oc-snap mirrors (4.7 MB each after
+# the excludes, tools/lib/oc-snap.sh) landed there, paying real disk I/O for
+# data whose whole life is one run. ONE root per run -- exported as TMPDIR and
+# OC_SNAP_ROOT -- gives both populations one owner and the EXIT path exactly one
+# thing to delete.
+#
+# WHERE THE ROOT LIVES IS A MEASURED DECISION, NOT A DEFAULT (#171 step 7).
+# A/B on the git-heavy selftests (deploy + ship + issue-dispatch, solo and
+# sequential, 3 samples per arm, 2026-11-24): disk median 350.4 s vs tmpfs
+# median 346.0 s = a 1.26% gain, pass counts equal 16/16 in both arms. The keep
+# bar set before measuring was >=10%, so the tmpfs default was REVERTED: the
+# root defaults to DISK and tmpfs is opt-in via OC_BATTERY_SHM_DIR. The gain is
+# real but inside the noise of this box's variable load (mean load1 1.74 vs
+# 2.15), and /dev/shm is 2 GB shared with everything else -- not worth owning
+# by default for 4 seconds in 350.
+#
+# Placement is load-bearing TWICE:
+#   * AFTER the cgroup block above, because that block `exec`s this script: a
+#     root created before the exec would be orphaned by it (no EXIT trap runs
+#     across an exec).
+#   * BEFORE the lock block below -- and the LOCK PATH IS DELIBERATELY NOT
+#     DERIVED FROM TMPDIR. It used to default to ${TMPDIR:-/tmp}/oc-battery.lock;
+#     with TMPDIR now per-run, keeping that default would hand every concurrent
+#     lane its OWN lock and silently end mutual exclusion, while the lanes still
+#     share the one canonical tools/tests/battery-last.json. The lock therefore
+#     stays on a stable shared path (/tmp/oc-battery.lock) regardless of the
+#     root -- see the comment in the lock block itself.
+#
+# Env knobs:
+#   OC_BATTERY_TEST_TMPDIR  force the root (the A/B arms pin a path with this)
+#   OC_BATTERY_SHM_DIR      tmpfs candidate. UNSET BY DEFAULT = disk root; set
+#                           it (e.g. /dev/shm) to opt into tmpfs
+#   OC_BATTERY_SHM_MIN_MB   free-space floor before a tmpfs candidate is used.
+#                           Only consulted when OC_BATTERY_SHM_DIR is set. Set
+#                           from the MEASURED peak, not a guess: `du -sm` sampled
+#                           at 5 Hz while the heaviest sections ran solo
+#                           (2026-11-24, #171) read 47 MB for section 10
+#                           (oc-deploy) and 13 MB for section 18 (oc-ship); 50 MB
+#                           is the worst figure seen (two copies of section 10
+#                           sharing one root by accident). 1.5x the worst peak ->
+#                           75 MB. The floor is what protects a lane that runs
+#                           --jobs N, where N sections' fixtures coexist: raise
+#                           it if you raise N.
+_oc_bt_shm_dir="${OC_BATTERY_SHM_DIR:-}"
+_oc_bt_shm_min_mb="${OC_BATTERY_SHM_MIN_MB:-75}"
+case "$_oc_bt_shm_min_mb" in ''|*[!0-9]*) _oc_bt_shm_min_mb=75 ;; esac
+_oc_bt_root=""
+_oc_bt_owned=0
+# OWNERSHIP, not mere possession (#171). The root is exported, so every child
+# inherits it -- the --chunk children, and any nested run.sh invocation (the
+# section 88/89 `--resolve-jobs` probes, section 91's `--chunk 999` leg, and
+# anything a tool shells out to). If a child treated an INHERITED root as its
+# own, its EXIT trap would delete the tree its parent and siblings are still
+# using. Measured while writing this: `OC_BATTERY_TEST_TMPDIR=$R bash run.sh
+# --resolve-jobs` removed $R and the canary inside it, mid-run of the caller;
+# under --jobs N that is the tree N siblings are still filling, and section 10's
+# own capture file vanished mid-section, turning a real verdict into a
+# `FAIL - oc-deploy selftest` whose 40-line evidence window had been unlinked.
+#
+# Ownership is recorded IN THE ROOT (a `.oc-battery-owner` file naming the owner
+# pid), not in an inherited env var. An env stamp cannot distinguish "I was
+# handed a root" from "I am the one who made it", so a caller that explicitly
+# overrode OC_BATTERY_TEST_TMPDIR with a fresh directory -- the A/B arm, and
+# section 92's own legs -- would still be told it was not the owner and would
+# leak that directory. The marker is per-root, so it answers the only question
+# that matters: does THIS directory already belong to a live process?
+#   * no marker        -> nobody has claimed it: claim it, clean it up at exit
+#   * marker pid == $$ -> ours (a re-entered path): clean it up at exit
+#   * marker pid DEAD  -> the previous owner was kill -9'd: adopt and clean up
+#   * marker pid LIVE  -> an inherited root: use it, NEVER delete it
+_oc_bt_owned=0
+
+# Longest tmpfs mountpoint covering $1 (empty when nothing tmpfs covers it).
+# /proc/mounts rather than findmnt: findmnt is not guaranteed on this box, and
+# the field layout of /proc/mounts is fixed.
+_oc_bt_tmpfs_mp() {
+  awk -v t="$1" '
+    $3=="tmpfs" && ($2=="/" || t==$2 || index(t, $2 "/")==1) {
+      if (length($2) > length(b)) b=$2
+    }
+    END { if (b != "") print b }
+  ' /proc/mounts 2>/dev/null
+}
+
+_oc_bt_free_mb() { # $1 = path -> available MB (empty when unreadable)
+  df -Pm "$1" 2>/dev/null | awk 'NR==2 { print $4; exit }'
+}
+
+# Roots left behind by a run that was kill -9'd: the EXIT trap cannot run, so
+# the NEXT run clears them. Same shape as the oc-snap reap -- match the pid
+# ENCODED IN THE DIRECTORY NAME, never `pgrep -f oc-battery` (a name-wide
+# pattern would also match an unrelated command line and, worse, this run's own
+# children). A live owner pid means the root is in use and is left alone.
+_battery_reap_test_tmpdirs() {
+  # Both populations: the tmpfs roots (oc-battery-<pid>) and the DISK fallback
+  # roots (oc-battery-<pid>.<rand>, mktemp's suffix). The pid is the first
+  # dash-segment after the prefix and everything from the first dot on is
+  # mktemp's random tail, so one parse covers both shapes.
+  for _brt_root in "$_oc_bt_shm_dir" "${TMPDIR:-/tmp}"; do
+    [ -d "$_brt_root" ] || continue
+    for _brt_d in "$_brt_root"/oc-battery-*; do
+      [ -d "$_brt_d" ] || continue
+      _brt_pid="${_brt_d##*/oc-battery-}"
+      _brt_pid="${_brt_pid%%.*}"
+      case "$_brt_pid" in ''|*[!0-9]*) continue ;; esac
+      [ "$_brt_pid" = "$$" ] && continue
+      kill -0 "$_brt_pid" 2>/dev/null && continue
+      rm -rf "$_brt_d" 2>/dev/null || :
+    done
+  done
+  return 0
+}
+
+# Remove this run's root. Idempotent (the EXIT and INT/TERM paths can both reach
+# it) and a NO-OP when this process did not create the root: a --chunk child
+# inherits its parent's root through OC_BATTERY_TEST_TMPDIR and must never
+# delete the tree its siblings are still using.
+_battery_tmpdir_cleanup() {
+  [ "${_oc_bt_owned:-0}" = "1" ] || return 0
+  [ -n "${_oc_bt_root:-}" ] || return 0
+  rm -rf "$_oc_bt_root" 2>/dev/null || :
+  _oc_bt_owned=0
+  return 0
+}
+
+if [ -n "${OC_BATTERY_TEST_TMPDIR:-}" ]; then
+  # Explicit override (the A/B arm). Used even when it names /tmp. mkdir -p is
+  # safe on an inherited root: it is a no-op when the parent's tree is there and
+  # restores an empty directory if a sibling died mid-run.
+  _oc_bt_root="$OC_BATTERY_TEST_TMPDIR"
+  mkdir -p "$_oc_bt_root" 2>/dev/null || _oc_bt_root=""
+else
+  # Only the top-level run sweeps dead roots; N parallel --chunk children each
+  # scanning /dev/shm would be N concurrent rm -rf walks of the same directory.
+  [ -z "${BATTERY_IN_CHUNK:-}" ] && _battery_reap_test_tmpdirs
+  # tmpfs is OPT-IN (#171 step 7): with no OC_BATTERY_SHM_DIR the disk branch
+  # below is taken without probing /dev/shm at all.
+  if [ -n "$_oc_bt_shm_dir" ] && [ -d "$_oc_bt_shm_dir" ] \
+     && [ -n "$(_oc_bt_tmpfs_mp "$_oc_bt_shm_dir")" ]; then
+    _oc_bt_free="$(_oc_bt_free_mb "$_oc_bt_shm_dir")"
+    case "${_oc_bt_free:-}" in ''|*[!0-9]*) _oc_bt_free=0 ;; esac
+    if [ "$_oc_bt_free" -ge "$_oc_bt_shm_min_mb" ]; then
+      _oc_bt_root="$_oc_bt_shm_dir/oc-battery-$$"
+      mkdir -p "$_oc_bt_root" 2>/dev/null || _oc_bt_root=""
+    fi
+  fi
+  if [ -z "$_oc_bt_root" ]; then
+    # No opt-in, or the tmpfs candidate is unavailable or below its floor: a
+    # plain disk root, still one per run. The pid rides in the name so an
+    # operator can attribute a leftover to its run, and the reaper above parses
+    # both shapes (`<pid>` for tmpfs, `<pid>.<rand>` for mktemp).
+    _oc_bt_root="$(mktemp -d "${TMPDIR:-/tmp}/oc-battery-$$.XXXXXX" 2>/dev/null)" || _oc_bt_root=""
+  fi
+fi
+
+if [ -n "$_oc_bt_root" ]; then
+  # Claim the root (see the ownership note above). Only the claimer deletes it.
+  _oc_bt_marker="$_oc_bt_root/.oc-battery-owner"
+  _oc_bt_prev="$(cat "$_oc_bt_marker" 2>/dev/null)"
+  case "$_oc_bt_prev" in
+    ''|*[!0-9]*) _oc_bt_owned=1 ;;                       # unclaimed
+    *) if [ "$_oc_bt_prev" = "$$" ]; then
+         _oc_bt_owned=1                                  # ours already
+       elif kill -0 "$_oc_bt_prev" 2>/dev/null; then
+         _oc_bt_owned=0                                  # a LIVE parent's root
+       else
+         _oc_bt_owned=1                                  # stale: owner was kill -9'd
+       fi ;;
+  esac
+  [ "$_oc_bt_owned" = "1" ] && printf '%s\n' "$$" > "$_oc_bt_marker" 2>/dev/null
+fi
+
+if [ -n "$_oc_bt_root" ]; then
+  mkdir -p "$_oc_bt_root/oc-snap" 2>/dev/null || :
+  # Children inherit both: TMPDIR redirects every bare `mktemp` in this file and
+  # in the selftests; OC_SNAP_ROOT redirects oc_snap_guard's mirrors (and
+  # oc_snap_reap, which reads the same variable -- verified in
+  # tools/lib/oc-snap.sh: `_osr_root="${1:-${OC_SNAP_ROOT:-/tmp}}"`).
+  export TMPDIR="$_oc_bt_root"
+  export OC_BATTERY_TEST_TMPDIR="$_oc_bt_root"
+  export OC_SNAP_ROOT="$_oc_bt_root/oc-snap"
+  [ -z "${BATTERY_IN_CHUNK:-}" ] && \
+    note "  battery scratch root: $_oc_bt_root (TMPDIR + OC_SNAP_ROOT=$OC_SNAP_ROOT, pid $$, $([ "$_oc_bt_owned" = 1 ] && echo owner || echo inherited-and-left-alone))"
+  # The composite EXIT trap SUPERSEDES the reap-only one installed near the top
+  # (bash keeps one EXIT trap; that earlier line still covers an exit before this
+  # point). Reap first, then delete the root -- the other order would delete the
+  # mirrors before oc_snap_reap could count them. An INHERITED root gets the
+  # reap and NOT the delete: _battery_tmpdir_cleanup is a no-op unless this
+  # process owns the root.
+  trap '_battery_reap_mirrors; _battery_tmpdir_cleanup' EXIT
+  trap '_battery_tmpdir_cleanup; exit 130' INT
+  trap '_battery_tmpdir_cleanup; exit 143' TERM
+fi
 # >>> BATTERY LOCK BLOCK (#449/#107) -- extracted verbatim by the section 91 legs
 # ---- single-flight lock: ONE battery run at a time (#449, holder child #107) --
 # tools/tests/battery-last.json is ONE canonical path shared by every lane, and
@@ -464,7 +665,15 @@ fi
 # SIGKILL included, no trap required (verified: kill -9 the battery, then a
 # fresh `flock -n` succeeds).
 if [ -z "${BATTERY_IN_CHUNK:-}" ]; then
-  BATTERY_LOCK="${OC_BATTERY_LOCK:-${TMPDIR:-/tmp}/oc-battery.lock}"
+  # THE LOCK PATH IS NOT DERIVED FROM TMPDIR (#171). It used to be
+  # ${TMPDIR:-/tmp}/oc-battery.lock, which was the same path for every lane only
+  # because TMPDIR was the same for every lane. The per-run TEST_TMPDIR above
+  # breaks that premise: a TMPDIR-derived default would give each concurrent run
+  # its OWN lock file, so two lanes would both "acquire" and both write the one
+  # canonical tools/tests/battery-last.json -- silently, with a green transcript.
+  # Mutual exclusion is worth more than tidiness, so the default is a fixed
+  # shared path. OC_BATTERY_LOCK still overrides it (every test leg sets it).
+  BATTERY_LOCK="${OC_BATTERY_LOCK:-/tmp/oc-battery.lock}"
   BATTERY_LOCK_WAIT="${OC_BATTERY_LOCK_WAIT:-900}"
 
   # Name the holders on failure (#107 acceptance): a bare "not released" sent the
@@ -604,6 +813,11 @@ fi
 # Contract: a RED run leaves $FAIL_LOG carrying the FAIL rows and their
 # continuation lines, and the receipt JSON names that path; a GREEN run REMOVES
 # any stale log, so the log's PRESENCE is itself the red signal.
+# STAYS ON DISK (#171): cross-lane, cross-run state. Chunk children APPEND to
+# this one path and the NEXT run truncates it; the receipt names it by relative
+# path for a human to tail. A per-run TMPDIR root would scatter it and make a
+# red receipt point at a file that no longer exists. Absolute, so the TMPDIR
+# export cannot move it.
 FAIL_LOG="$TOOLS_DIR/tests/battery-last-fail.log"
 FAIL_LOG_REL="tools/tests/battery-last-fail.log"
 # Only the PARENT truncates: chunk children append to this same path, and a
@@ -775,6 +989,10 @@ print("  slowest: " + "  ".join("#%d=%ds" % (k, d // 1000)
 OC_TIMING_SHOW
 }
 emit_summary() {
+  # STAYS ON DISK (#171): tools/tests/battery-last.json is ONE canonical path
+  # read by the ledger gate and by every lane -- shared, durable state, never a
+  # per-run file. Written through $TOOLS_DIR (absolute), so the TMPDIR export
+  # cannot relocate it.
   local verdict=PASS; [ "$FAIL" -eq 0 ] || verdict=FAIL
   finalize_fail_log
   battery_capture_fail_rows
@@ -2388,6 +2606,41 @@ section "oc-ledger confirm + derive_by"
 
 section "oc-ledger lock budget (#619)"
 if tool oc-ledger; then
+  # ---- (#171) THE BATTERY'S PUSH PATH MUST NEVER REACH THE REAL REMOTE -----
+  # _git_state_commit_now's #524 tail calls push_backlog_if_due "$SKILL_DIR"
+  # skill, and SKILL_DIR DEFAULTS to the tree this battery runs in (oc-ledger
+  # :194, `cd "$_OC_DIR/.."`). The #95 legs below hand the tool a git STATE dir
+  # ($GB), so that tail IS reached -- and when the tree carries >=10 unpushed
+  # commits, or ONE older than OC_LEDGER_PUSH_MAX_AGE (1800s), push_mirror
+  # pushes the current branch to `origin`. Measured 2026-11-24: a clone whose
+  # origin was a local bare repo standing in for GitHub, carrying ONE 2020-dated
+  # unpushed commit, had that remote's refs/heads/main moved onto it BY THIS
+  # SECTION -- i.e. a test run PUBLISHED a lane's unpublished work.
+  # The seam is OC_SKILL_DIR, which already exists (:194) -- no production
+  # switch was added. Every stamp below that can reach the tail is handed a
+  # SENTINEL skill repo whose origin is a bare repo under this test's temp root,
+  # so the push path stays EXERCISED (asserted below, never skipped) and can
+  # only ever land there. The real origin is then read from two angles: its
+  # remote-tracking refs (which a successful `git push` MOVES -- the repro above
+  # moved origin/main) and `git ls-remote` before vs after.
+  _ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
+  _RO_TR0="$(git -C "$_ROOT" for-each-ref --format='%(refname) %(objectname)' refs/remotes/origin 2>/dev/null)"
+  _RO_TR0D="$(printf '%s' "$_RO_TR0" | md5sum | cut -d' ' -f1)"
+  _RO_RL0="$(timeout 10 git -C "$_ROOT" ls-remote origin 2>/dev/null)"; _RO_RC0=$?
+  _RO_RL0D="$(printf '%s' "$_RO_RL0" | md5sum | cut -d' ' -f1)"
+  SK="$(mktemp -d)"
+  git init -q --bare "$SK/origin.git" 2>/dev/null
+  git -C "$SK/origin.git" symbolic-ref HEAD refs/heads/main 2>/dev/null
+  git init -q "$SK/skill" 2>/dev/null
+  # the fixture branch must be `main` (git init's default here is `master`), or
+  # the assertions below would read a ref the push never created.
+  git -C "$SK/skill" symbolic-ref HEAD refs/heads/main 2>/dev/null
+  git -C "$SK/skill" config user.email sa@sb; git -C "$SK/skill" config user.name sa
+  git -C "$SK/skill" config commit.gpgsign false
+  echo sentinel > "$SK/skill/f"; git -C "$SK/skill" add f
+  git -C "$SK/skill" commit -q -m "sentinel base"
+  git -C "$SK/skill" remote add origin "$SK/origin.git"
+  git -C "$SK/skill" push -q -u origin HEAD 2>/dev/null
   # (#619) The lock waiter budget must be DERIVED from the holder worst case, which
   # the two in-lock network pushes dominate. This leg is BEHAVIOURAL, not a grep: a
   # grep for OC_LEDGER_LOCK_WAIT self-matches the leg that contains it, which is the
@@ -2427,10 +2680,10 @@ if tool oc-ledger; then
   printf '{"workers":[],"events":[]}' > "$GB/l.json"
   printf '#!/bin/sh\nsleep 3\n' > "$GB/.git/hooks/pre-commit"; chmod +x "$GB/.git/hooks/pre-commit"
   git -C "$GB" add l.json 2>/dev/null; git -C "$GB" -c user.email=t@t -c user.name=t commit -q -m init 2>/dev/null
-  OC_LEDGER_GIT_TAIL_WAIT=20 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
+  OC_LEDGER_GIT_TAIL_WAIT=20 OC_SKILL_DIR="$SK/skill" OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
     stamp note "slow-tail holder" --by "hq probe" >/dev/null 2>&1 &
   SLP=$!; sleep 1
-  O3="$(OC_LEDGER_LOCK_WAIT=1 OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
+  O3="$(OC_LEDGER_LOCK_WAIT=1 OC_SKILL_DIR="$SK/skill" OC_TOOLS_NOLOG=1 "$TOOLS_DIR/state/oc-ledger" --ledger "$GB/l.json" \
     stamp note "concurrent appender" --by "hq probe" 2>&1)"; R3=$?
   [ "$R3" -eq 0 ] && ok "#95: a 3s git tail does NOT block a concurrent appender (rc 0)" \
     || bad "#95: concurrent appender blocked by the git tail (rc $R3): $(printf '%s' "$O3" | head -1)"
@@ -2441,6 +2694,42 @@ if tool oc-ledger; then
   # bare test() dies on null, which would make this leg pass on an EMPTY ledger.
   [ "$(jq -r '[.events[]? | select((.what // "") | test("slow-tail holder"))] | length' "$GB/l.json" 2>/dev/null)" -ge 1 ] \
     && ok "#95: the slow-tail holder's row is durable" || bad "#95: slow-tail holder's row is MISSING"
+  # ---- (#171) the hermetic seam is LOAD-BEARING, and the real origin is read --
+  # A leg that only asserted "nothing reached the real origin" would also pass if
+  # the push tail were never reached at all, so this forces ONE push through the
+  # same invocation shape the #95 legs use and reads BOTH ends. It runs against a
+  # fresh hook-free state repo (not $GB) so the 3s pre-commit hook is not paid a
+  # third time.
+  printf 'probe\n' > "$SK/skill/g"; git -C "$SK/skill" add g
+  git -C "$SK/skill" commit -q -m "sentinel probe"
+  _SKST="$SK/state"; git init -q "$_SKST" 2>/dev/null
+  printf '{"workers":[],"events":[]}' > "$_SKST/l.json"
+  git -C "$_SKST" add l.json 2>/dev/null
+  git -C "$_SKST" -c user.email=t@t -c user.name=t commit -q -m base 2>/dev/null
+  _SK0="$(git -C "$SK/origin.git" rev-parse refs/heads/main 2>/dev/null)"
+  OC_TOOLS_NOLOG=1 OC_LEDGER="$_SKST/l.json" OC_SKILL_DIR="$SK/skill" OC_LEDGER_PUSH_MIN=1 \
+    "$TOOLS_DIR/state/oc-ledger" stamp note "push-hazard probe" --by "hq probe" >/dev/null 2>&1
+  chk "#171: a test-repo push LANDS in the sentinel origin (the tail is exercised, not skipped)" \
+    "$(git -C "$SK/skill" rev-parse HEAD 2>/dev/null)" "$(git -C "$SK/origin.git" rev-parse refs/heads/main 2>/dev/null)"
+  [ "$(git -C "$SK/origin.git" rev-parse refs/heads/main 2>/dev/null)" != "$_SK0" ] \
+    && ok "#171: control -- the sentinel origin's ref MOVED, so the leg above is not vacuous" \
+    || bad "#171: control -- sentinel origin unmoved; the leg above proves nothing"
+  # THE REAL ORIGIN RECEIVED NOTHING. Two observables: the remote-tracking refs
+  # (md5 of `for-each-ref refs/remotes/origin`, which a successful push updates)
+  # and the ls-remote listing (md5, bounded at 10s; an unreachable origin fails
+  # identically twice, which is still "unchanged" and never a silent pass --
+  # the rc pair is printed in the leg's own description).
+  if git -C "$_ROOT" remote get-url origin >/dev/null 2>&1; then
+    _RO_TR1="$(git -C "$_ROOT" for-each-ref --format='%(refname) %(objectname)' refs/remotes/origin 2>/dev/null)"
+    chk "#171: real origin's remote-tracking refs unchanged (md5 of refs/remotes/origin)" \
+      "$_RO_TR0D" "$(printf '%s' "$_RO_TR1" | md5sum | cut -d' ' -f1)"
+    _RO_RL1="$(timeout 10 git -C "$_ROOT" ls-remote origin 2>/dev/null)"; _RO_RC1=$?
+    chk "#171: git ls-remote on the real origin identical before/after (md5; rc $_RO_RC0 then $_RO_RC1)" \
+      "$_RO_RL0D" "$(printf '%s' "$_RO_RL1" | md5sum | cut -d' ' -f1)"
+  else
+    note "       | #171 SKIP: $_ROOT has no origin -- no real remote reachable from here"
+  fi
+  rm -rf "$SK"
   rm -rf "$GB"
   rm -rf "$LB"
 fi
@@ -2470,6 +2759,11 @@ if tool oc-smoke-evidence; then
   SED_TMP="$(mktemp -d)"
   OC_DEPLOY_STATE_DIR="$SED_TMP" "$TOOLS_DIR/smoke/oc-smoke-evidence" --append-log --unit oc-no-such-unit 2>&1 | grep -q 'NOT the canonical' && bad "bare --append-log diverged from canonical" || ok "bare --append-log -> canonical log (M2-2)"
   OC_DEPLOY_STATE_DIR="$SED_TMP" "$TOOLS_DIR/smoke/oc-smoke-evidence" --append-log smoke-verdicts.log --unit oc-no-such-unit 2>&1 | grep -q 'NOT the canonical' && bad "relative --append-log escaped STATE_DIR" || ok "relative --append-log resolves to STATE_DIR, not CWD (M2-2)"
+  # STAYS ON DISK, LITERALLY (#171): this path is an ASSERTED LITERAL -- the leg
+  # proves a foreign ABSOLUTE --append-log is announced rather than silently
+  # redirected, so it must stay a path outside the state dir. It is also outside
+  # TMPDIR, which is the point: a test that pointed it inside the run's own root
+  # would stop testing divergence. The tool creates/append it; it is tiny.
   OC_DEPLOY_STATE_DIR="$SED_TMP" "$TOOLS_DIR/smoke/oc-smoke-evidence" --append-log /tmp/oc-elsewhere.log --unit oc-no-such-unit 2>&1 | grep -q 'NOT the canonical' && ok "divergent absolute --append-log announces itself (M2-2)" || bad "divergent --append-log was silent"
   rm -rf "$SED_TMP"
 fi
@@ -5164,6 +5458,116 @@ else
   ok "the parallel driver waits on chunk PIDs only: terminates (${_EL_NEW}s for 6x1s at jobs=2) while the old shape hangs (#129)"
 fi
 rm -rf "$_LK91"
+
+# ---- 92. one per-run TEST_TMPDIR root; the lock stays SHARED (#171) ---------
+# The change moves the battery's scratch (every `mktemp` plus the ~33 oc-snap
+# mirrors) onto one per-run root, tmpfs when it fits. Its one correctness trap
+# is the lock: BATTERY_LOCK used to default to ${TMPDIR:-/tmp}/oc-battery.lock,
+# which was a single shared path only because TMPDIR was shared. With TMPDIR
+# per-run, a TMPDIR-derived default hands every lane its OWN lock while the
+# lanes still share tools/tests/battery-last.json -- mutual exclusion would end
+# silently, with a green transcript. Leg (a) is that trap made checkable.
+section "battery scratch root: one per-run TEST_TMPDIR, lock stays shared (#171)"
+_s92_self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+_s92_d="$(mktemp -d)"
+# (a) SOURCE: the lock default must be a FIXED path. Mutant: put ${TMPDIR:-/tmp}
+#     back into that assignment -- this reddens while every other leg stays green.
+if grep -qE '^[[:space:]]*BATTERY_LOCK="\$\{OC_BATTERY_LOCK:-/tmp/oc-battery\.lock\}"' "$_s92_self"; then
+  ok "the battery lock defaults to a FIXED shared path, never a per-run TMPDIR (#171)"
+else
+  bad "#171: the lock default is not a fixed shared path -- a per-run TMPDIR would un-serialize concurrent lanes (found: $(grep -m1 'BATTERY_LOCK="' "$_s92_self" | sed 's/^ *//'))"
+fi
+# (b) SOURCE: the root must actually redirect BOTH populations. A root that
+#     moved TMPDIR but left the mirrors on the old root would halve the win and
+#     desync the EXIT reap.
+grep -q 'export OC_SNAP_ROOT="$_oc_bt_root/oc-snap"' "$_s92_self" 2>/dev/null \
+  && grep -q 'export TMPDIR="$_oc_bt_root"' "$_s92_self" 2>/dev/null \
+  && ok "the root is exported as BOTH TMPDIR and OC_SNAP_ROOT (#171)" \
+  || bad "#171: the scratch root does not redirect TMPDIR and OC_SNAP_ROOT together -- one population would stay on the old root"
+# (c) LIVE: a run names its root and REMOVES it on exit. --resolve-jobs exits
+#     before any section, so this costs one preflight, not a battery. The probes
+#     clear OC_BATTERY_TEST_TMPDIR as well as BATTERY_IN_CHUNK: this section can
+#     be running inside a chunk child, whose prelude EXPORTED the parent's root --
+#     an inherited override would make (d) assert the parent's choice, not the
+#     floor's (measured while writing it: (d) reddened exactly that way).
+_s92_root="$_s92_d/root"
+_s92_o="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+  OC_BATTERY_LOCK="$_s92_d/lk" OC_BATTERY_TEST_TMPDIR="$_s92_root" \
+  bash "$_s92_self" --resolve-jobs 2>&1)"
+case "$_s92_o" in
+  *"battery scratch root: $_s92_root"*) ok "OC_BATTERY_TEST_TMPDIR is honoured and announced (#171)" ;;
+  *) bad "#171: the run did not adopt OC_BATTERY_TEST_TMPDIR=$_s92_root ($(printf '%s' "$_s92_o" | grep -m1 'scratch root' || echo 'no root line'))" ;;
+esac
+[ -d "$_s92_root" ] \
+  && bad "#171: the run left its scratch root behind on a clean exit ($_s92_root)" \
+  || ok "the run removes its scratch root on exit (#171)"
+# (d) LIVE: the tmpfs branch and its floor are REAL, not decorative -- THREE legs.
+#     The DEFAULT root is DISK (#171 step 7), so a bare "not /dev/shm" check
+#     would pass vacuously and prove nothing. Leg 1 is the POSITIVE CONTROL:
+#     opt in to /dev/shm with a satisfiable floor and the run MUST choose it --
+#     without it, leg 2 cannot tell a working floor from a branch that never
+#     runs. TMPDIR is cleared in all three: inside a chunk child it names the
+#     parent's root, which would mask the choice under test.
+if [ -d /dev/shm ] && [ -n "$(_oc_bt_tmpfs_mp /dev/shm)" ]; then
+  _s92_o1="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+    OC_BATTERY_LOCK="$_s92_d/lk2a" OC_BATTERY_SHM_DIR=/dev/shm OC_BATTERY_SHM_MIN_MB=1 \
+    bash "$_s92_self" --resolve-jobs 2>&1)"
+  case "$_s92_o1" in
+    *"battery scratch root: /dev/shm/oc-battery-"*) ok "CONTROL: opting in to /dev/shm puts the root on tmpfs (#171)" ;;
+    *) bad "#171: CONTROL FAILED -- OC_BATTERY_SHM_DIR=/dev/shm with a satisfiable floor did not choose tmpfs, so the floor leg proves nothing ($(printf '%s' "$_s92_o1" | grep -m1 'scratch root' || echo 'no root line'))" ;;
+  esac
+  _s92_o2="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+    OC_BATTERY_LOCK="$_s92_d/lk2b" OC_BATTERY_SHM_DIR=/dev/shm OC_BATTERY_SHM_MIN_MB=999999999 \
+    bash "$_s92_self" --resolve-jobs 2>&1)"
+  case "$_s92_o2" in
+    *"battery scratch root: /dev/shm/"*) bad "#171: OC_BATTERY_SHM_MIN_MB=999999999 still chose /dev/shm -- the floor is not consulted" ;;
+    *"battery scratch root: "*) ok "OC_BATTERY_SHM_MIN_MB is honoured: an impossible floor falls back off /dev/shm (#171)" ;;
+    *) bad "#171: the fallback run announced no scratch root at all" ;;
+  esac
+else
+  note "#171: /dev/shm is not tmpfs here -- the tmpfs-branch legs (control + floor) are NOT exercised on this box"
+fi
+# (d2) DEFAULT: with no opt-in at all the root is on DISK. This is the shipped
+#      default and the A/B verdict -- 1.26% median gain against a 10% keep bar
+#      (#171 step 7), so a /dev/shm default here is a regression of the decision.
+_s92_o3="$(env -u BATTERY_IN_CHUNK -u OC_BATTERY_TEST_TMPDIR -u TMPDIR -u OC_BATTERY_SHM_DIR OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 \
+  OC_BATTERY_LOCK="$_s92_d/lk2c" \
+  bash "$_s92_self" --resolve-jobs 2>&1)"
+case "$_s92_o3" in
+  *"battery scratch root: /dev/shm/"*) bad "#171: the DEFAULT root is /dev/shm -- step 7's A/B measured 1.26% against a 10% bar, so the tmpfs default must stay reverted (opt-in via OC_BATTERY_SHM_DIR)" ;;
+  *"battery scratch root: "*) ok "the DEFAULT scratch root is on disk; tmpfs is opt-in (#171 A/B: 1.26% < 10% keep bar)" ;;
+  *) bad "#171: the default run announced no scratch root at all" ;;
+esac
+# (e) OWNERSHIP: a run that INHERITS a root must use it and must NOT delete it.
+#     The root is exported, so a --chunk child (and any nested run.sh, e.g. the
+#     --resolve-jobs probes in sections 88/89 and section 91's --chunk 999 leg)
+#     sees OC_BATTERY_TEST_TMPDIR. Without an ownership stamp every one of them
+#     treated the parent's tree as its own and removed it at EXIT. Measured while
+#     writing this leg: `OC_BATTERY_TEST_TMPDIR=$R bash run.sh --resolve-jobs`
+#     deleted $R and a canary inside it -- under --jobs N that would delete the
+#     tree N siblings are still filling, and section 10's own capture file
+#     vanished mid-section (a `FAIL - oc-deploy selftest` whose 40-line evidence
+#     window had been unlinked).
+_s92_inh="$_s92_d/inherited"; mkdir -p "$_s92_inh"; : > "$_s92_inh/canary"
+# A LIVE owner's marker: this shell is alive for the whole leg, so a nested run
+# must read the tree as inherited and leave it alone.
+printf '%s\n' "$$" > "$_s92_inh/.oc-battery-owner"
+env -u BATTERY_IN_CHUNK -u TMPDIR OC_BATTERY_TEST_TMPDIR="$_s92_inh" \
+  OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 OC_BATTERY_LOCK="$_s92_d/lk3" \
+  bash "$_s92_self" --resolve-jobs >/dev/null 2>&1
+[ -f "$_s92_inh/canary" ] \
+  && ok "a run that INHERITS a live scratch root does not delete it (#171)" \
+  || bad "#171: a nested run deleted its parent's scratch root -- chunk children and --resolve-jobs probes would wreck a live run"
+# A DEAD owner's marker (what a kill -9 leaves): the next run must ADOPT the
+# tree, or the stale marker makes that directory immortal.
+printf '%s\n' "999999" > "$_s92_inh/.oc-battery-owner"
+env -u BATTERY_IN_CHUNK -u TMPDIR OC_BATTERY_TEST_TMPDIR="$_s92_inh" \
+  OC_BATTERY_NO_CGROUP=1 OC_BATTERY_NO_PRIORITY=1 OC_BATTERY_LOCK="$_s92_d/lk4" \
+  bash "$_s92_self" --resolve-jobs >/dev/null 2>&1
+[ -d "$_s92_inh" ] \
+  && bad "#171: a root whose owner was kill -9'd was NOT adopted and removed -- a stale marker makes it immortal" \
+  || ok "a root left by a kill -9'd owner is adopted and removed (#171)"
+rm -rf "$_s92_d"
 
 # #111: ONE receipt writer. Everything below used to be a hand-copied duplicate of
 # emit_summary() -- the same 17-field printf, already divergent in two ways: this

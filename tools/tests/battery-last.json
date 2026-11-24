@@ -1,7 +1,7 @@
 {
-  "path": "/root/opencrabs-wt/legacy-cut-batch2/tools/tests/battery-last.json",
-  "ts": "2026-11-24T18:47:45Z",
-  "pass": 458,
+  "path": "/tmp/rebase-172/tools/tests/battery-last.json",
+  "ts": "2026-11-24T19:12:39Z",
+  "pass": 471,
   "fail": 0,
   "verdict": "PASS",
   "mode": "sequential",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r6da54b40e2f64e1dac6fc33ece69e051.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r3ce73f6b6b5640c4ae15f0c7e1526cfe.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 1556163,
-  "timing": {"max_concurrency": 1, "section_count": 71, "sum_ms": 938042, "slowest": [{"n": 55, "ms": 152579, "start_ms": 1795545834877, "end_ms": 1795545987456, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 44, "ms": 130786, "start_ms": 1795545568435, "end_ms": 1795545699221, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 26, "ms": 113514, "start_ms": 1795545271366, "end_ms": 1795545384880, "title": "oc-ledger"}, {"n": 25, "ms": 110898, "start_ms": 1795545160468, "end_ms": 1795545271366, "title": "deploy stage tools"}, {"n": 28, "ms": 80086, "start_ms": 1795545388863, "end_ms": 1795545468949, "title": "oc-gate"}, {"n": 48, "ms": 44482, "start_ms": 1795545718522, "end_ms": 1795545763004, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 49, "ms": 37288, "start_ms": 1795545763004, "end_ms": 1795545800292, "title": "oc-health (hourly health & cleanliness sweep)"}, {"n": 65, "ms": 20159, "start_ms": 1795546008339, "end_ms": 1795546028498, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 31, "ms": 18020, "start_ms": 1795545484735, "end_ms": 1795545502755, "title": "oc-drift-check"}, {"n": 35, "ms": 17877, "start_ms": 1795545508655, "end_ms": 1795545526532, "title": "oc-ledger lock budget (#619)"}]}
+  "wall_ms": 1090175,
+  "timing": {"max_concurrency": 1, "section_count": 72, "sum_ms": 1089926, "slowest": [{"n": 55, "ms": 246536, "start_ms": 1795547191522, "end_ms": 1795547438058, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 44, "ms": 133636, "start_ms": 1795546934531, "end_ms": 1795547068167, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 26, "ms": 123079, "start_ms": 1795546623392, "end_ms": 1795546746471, "title": "oc-ledger"}, {"n": 25, "ms": 110934, "start_ms": 1795546512458, "end_ms": 1795546623392, "title": "deploy stage tools"}, {"n": 28, "ms": 77623, "start_ms": 1795546751274, "end_ms": 1795546828897, "title": "oc-gate"}, {"n": 48, "ms": 52444, "start_ms": 1795547085129, "end_ms": 1795547137573, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 35, "ms": 23312, "start_ms": 1795546882744, "end_ms": 1795546906056, "title": "oc-ledger lock budget (#619)"}, {"n": 31, "ms": 21697, "start_ms": 1795546854711, "end_ms": 1795546876408, "title": "oc-drift-check"}, {"n": 69, "ms": 20535, "start_ms": 1795547514288, "end_ms": 1795547534823, "title": "entry-preamble fixpoint + relative invocation (#708)"}, {"n": 56, "ms": 20423, "start_ms": 1795547438058, "end_ms": 1795547458481, "title": "oc-lint-laws (law syntax & reference linter)"}]}
 }
