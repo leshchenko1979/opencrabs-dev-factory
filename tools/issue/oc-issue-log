@@ -345,7 +345,10 @@ FULL_SHA="$(git -C "$REPO_PATH" log --format=%H -1 "$SHA" 2>/dev/null)" || die 3
 
 SUBJECT="$(git -C "$REPO_PATH" log -1 --format=%s "$FULL_SHA")"
 TRAILERS="$(git -C "$REPO_PATH" log -1 --format='%(trailers:key=Session-Id,valueonly)%(trailers:key=Issue-Ref,valueonly)' "$FULL_SHA" | sed '/^$/d')"
-BODY="$(mktemp /tmp/oc-issue-log-body.XXXXXX.md)"
+# #171: TMPDIR-relative, not a hardcoded /tmp. This is a per-run scratch body
+# (composed, posted, deleted); under the battery it belongs in the run's
+# TEST_TMPDIR root, and ${TMPDIR:-/tmp} keeps the standalone behaviour identical.
+BODY="$(mktemp "${TMPDIR:-/tmp}/oc-issue-log-body.XXXXXX.md")"
 {
   echo "Implementation commit: \`$FULL_SHA\`"
   echo
