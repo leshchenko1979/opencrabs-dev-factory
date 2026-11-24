@@ -481,7 +481,7 @@ status_run() {
 # ============================================================================
 # SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
 # `OC_DEPLOY_FUNCS_ONLY=1 . oc-status` defines the functions above and RETURNS
-# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# here. That is how `oc-build --selftest` gets all four tools' functions into
 # ONE shell without re-running a prologue: no second tools-log row, no second
 # mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
 # invocation never sets the variable, so the test is false and `return` never
@@ -513,7 +513,7 @@ oc_deploy_load_funcs oc-fanout
 
 # The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
 # and it is reachable from every arm: selftest() loads the other tools' functions
-# through the hook above. `oc-deploy --selftest` is the documented spelling.
+# through the hook above. `oc-build --selftest` is the documented spelling.
 
 usage() {
   cat <<'USAGE'
@@ -551,7 +551,7 @@ case "${1:-}" in
   recover-receipt) shift; recover_receipt_run "$@"; exit $? ;;
   poll)       MODE="poll"; shift ;;
   watch)      MODE="watch"; shift ;;
-  --selftest) selftest "$@"; exit $? ;;
+  --selftest) selftest; exit $? ;;   # #168 cut 5: BARE — the suite takes no argv (a flag here reached `$1`)
   -h|--help)  usage; exit 0 ;;
   '')         die 1 "usage: oc-status status [--json] | poll [--execute] [--wait N] [--notify-session UUID] | watch [--with-delta] | recover-receipt [--journal J] [--run R] [--sha S] [--dry-run] [--historical] [--json]" ;;
   *)          die 1 "unknown arg: $1" ;;

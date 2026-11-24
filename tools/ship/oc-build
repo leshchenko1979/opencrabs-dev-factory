@@ -80,7 +80,7 @@ oc_deploy_same_patch() {
 # ============================================================================
 # SOURCE-SAFE HOOK (the split's one structural addition, and it is one line):
 # `OC_DEPLOY_FUNCS_ONLY=1 . oc-build` defines the functions above and RETURNS
-# here. That is how `oc-deploy --selftest` gets all four tools' functions into
+# here. That is how `oc-build --selftest` gets all four tools' functions into
 # ONE shell without re-running a prologue: no second tools-log row, no second
 # mirror copy (oc-snap), no second EXIT trap, and no verb executed. A normal
 # invocation never sets the variable, so the test is false and `return` never
@@ -113,7 +113,7 @@ oc_deploy_load_funcs oc-fanout oc-status
 
 # The selftest is ONE suite (tests/deploy-selftest.sh) covering all four stages,
 # and it is reachable from every arm: selftest() loads the other tools' functions
-# through the hook above. `oc-deploy --selftest` is the documented spelling.
+# through the hook above. `oc-build --selftest` is the documented spelling.
 
 usage() {
   cat <<'USAGE'
@@ -139,7 +139,7 @@ MODE="ship"
 case "${1:-}" in
   ship)       shift ;;
   features)   shift; features_run "$@"; exit $? ;;
-  --selftest) selftest "$@"; exit $? ;;
+  --selftest) selftest; exit $? ;;   # #168 cut 5: BARE — the suite takes no argv (a flag here reached `$1`)
   -h|--help)  usage; exit 0 ;;
   '')         : ;;   # no flags: the ship arm's own validation answers (rc 2)
   -*)         : ;;   # flag-first spelling: `oc-build --sha S`

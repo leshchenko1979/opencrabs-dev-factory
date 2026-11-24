@@ -945,7 +945,7 @@ fi
 selftest() { # body lives in tests/deploy-selftest.sh (sourced: nested check_* close over local pass/fail)
   local _sf="$OC_TOOLS_DIR/tests/deploy-selftest.sh"
   if [ ! -f "$_sf" ]; then
-    printf 'oc-deploy selftest: %s missing (broken LOCAL TOOL TREE, not a test result)\n' "$_sf" >&2
+    printf 'deploy selftest: %s missing (broken LOCAL TOOL TREE, not a test result)\n' "$_sf" >&2
     return 2   # (#932 discipline) a box fault, never a silent 0 or a bare 127
   fi
   oc_deploy_load_funcs   # NEW (the split): the suite exercises all four tools, so every arm's functions must be in THIS shell
