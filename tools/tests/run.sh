@@ -2999,7 +2999,7 @@ for desc, lane in (
 # The binding must still be live in the shipped file: the surface owner outranks
 # a verbose editor on its own issue. Delete ROLE_DOMAINS and this goes red.
 lane_owner = {"uuid": "e4", "is_busy": False, "class": "ACTIVE",
-              "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-deploy)",
+              "feature": "TOOLSMITH lane: owns tools/ CLI (oc-ledger, oc-fanout)",
               "raw": {"role": "toolsmith"}}
 lane_verbose = {"uuid": "e5", "is_busy": False, "class": "ACTIVE",
                 "feature": "harvest upstream port census sweep notify queue delivery router cli exec",

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# oc-deploy-lib.sh — the SHARED body of the four-way oc-deploy split.
+# oc-deploy-lib.sh — the SHARED body of the four deploy stage tools.
 #
-# tools/ship/oc-deploy is a DISPATCHER: it routes each verb to one of four
-# tools, each of which owns ONE stage of the deploy pipeline:
+# Each of these four tools owns ONE stage of the deploy pipeline and sources
+# this lib directly; there is no dispatcher in front of them (#168 cut 5):
 #
 #   oc-build    ship + features      dispatch a carrier build (build/land leg)
 #   oc-swap     swap-execute         install a verified artifact on the host
@@ -441,7 +441,7 @@ ledger_stamp() { # $1=by  $2=what  $3=kind
     OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" --what-file "$_ls_tmp" --by "$1"
   else
     OC_LEDGER="$LEDGER" "$LEDGER_TOOL" stamp "$_ls_kind" --what-file "$_ls_tmp" \
-      --by "(unattributed oc-deploy)" --allow-unattributed
+      --by "(unattributed)" --allow-unattributed
   fi
   _ls_rc=$?
   rm -f "$_ls_tmp"

@@ -711,13 +711,13 @@ case "$MODE" in
           fi
         fi
         UNIT="oc-swap-${B_SHA:0:8}-$(date +%s)"
-        # factory#145: the handoff must name the RECEIVER, never $SELF. `oc-deploy`
-        # `exec`s into this tool (tools/ship/oc-deploy:176), so the shared
+        # factory#145: the handoff must name the RECEIVER, never $SELF. The (now
+        # retired) `oc-deploy` dispatcher `exec`ed into this tool, so the shared
         # lib's SELF="$(readlink -f "$0")" (tools/lib/oc-deploy-lib.sh:81) resolves
         # to oc-status -- and the unit was launched as `oc-status swap-execute`,
         # which dies on THIS file's own `*) die 1 "unknown arg: $1"` arm (:346)
-        # before oc-swap is ever reached. The lib's die() prefix is `oc-deploy:`,
-        # so the death read as an oc-deploy/infra fault while deployed.sha never
+        # before oc-swap is ever reached. The lib's die() prefix then read `oc-deploy:`,
+        # so the death looked like a dispatcher/infra fault while deployed.sha never
         # moved. Measured 2026-11-22: 12 `handed-off` shadow rows spanning
         # 13:58:25-14:01:25, `systemctl --user list-units 'oc-swap-*' --all` = 0
         # loaded units, deployed.sha still 30317398a. Latent since the four-way

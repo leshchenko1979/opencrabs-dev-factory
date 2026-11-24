@@ -35,7 +35,7 @@
 set -u
 
 TOOLS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SELF_BIN="$TOOLS_DIR/ship/oc-deploy"
+SELF_BIN="$TOOLS_DIR/ship/oc-fanout"
 RUNS=20
 JOBS=1
 VERBOSE=0

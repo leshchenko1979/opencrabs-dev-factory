@@ -2433,7 +2433,7 @@ U156EOF
   check_rc "156e-empty-what-rc2" "$?" 2
   OC_TOOLS_DIR="$OC_TOOLS_DIR" OC_DEPLOY_STATE_DIR="$SD156" bash "$_u156" stamp "" "swap-result empty-actor probe" swap-result >/dev/null 2>&1
   check_rc "156e-empty-actor-rc0" "$?" 0
-  grep -q 'unattributed oc-deploy' "$SD156/events.jsonl" \
+  grep -q '(unattributed)' "$SD156/events.jsonl" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: 156e empty actor did not stamp an explicit unattributed row"; }
   # 156f — the row is visible to the LEDGER's own reader (the acceptance
   #        shape: `oc-ledger events` sees what deploy stamped).
