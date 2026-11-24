@@ -41,15 +41,17 @@ stay here. Expected reply shape: "routed to <worker>", not done-work.
 - Owner directive or validated poll proposal → surgical `edit_file` → VERIFY on
   disk (grep the markers; parallel writers are a standing hazard) → append the
   `## v<v>` entry to `CHANGELOG.md` (the C8 sync gate REFUSES a bump without
-  it, v0.4.65) → bump the version in `SKILL.md` frontmatter.
+  it, v0.4.65) → bump the version in `SKILL.md` frontmatter — entry and bump in
+  the SAME commit, never as two.
 - One coherent revision per owner-verdict batch (one `v0.4.x`), never scattered
   patches. Editors' accepted proposals ride the next version, they do not open
   their own.
 - `tools/**` CODE authorship is TOOLSMITH's (v0.4.87) — fixes / extensions / new tools
   execute THERE with battery receipts (§PROCESS-TOOL OWNERSHIP above; `toolsmith.md §Duty TM1`).
   HQ keeps skill markdown, CHANGELOG, version bumps, and fleet-directives.
-- Provenance = the `## v<v>` CHANGELOG entry, written at ship time (this file,
-  §Rule-text provenance — CHANGELOG at ship time, F13 — rule text carries NO biography).
+- Provenance = the `## v<v>` CHANGELOG entry, written at ship time in the bump
+  commit (this file, §Rule-text provenance — CHANGELOG at ship time, F13 — rule
+  text carries NO biography).
 - **Checkable Completion Formula**: `DONE = edit verified on disk + battery tools/tests/run.sh PASS + CHANGELOG.md entry present + git commit in skill repo + oc-ledger sync --version <v> returns rc=0` — and **"entry present" means the entry NAMES every non-sync commit the sync bundles** (v0.4.239), checked against `git log --oneline <prev-sync>..<this-sync>`: a fix that rides a sync unmentioned is unrecoverable from the version record, which is the only place its ship date exists.
 - **The version bump is the LAST edit and sync runs in the SAME turn (v0.4.217).**
   `oc-drift-check` resolves the live version from the **on-disk** canonical
@@ -58,7 +60,7 @@ stay here. Expected reply shape: "routed to <worker>", not done-work.
   `current_skill_version` still reads the old one. Read it correctly: **"acked
   version > ledger version" is an author-window artifact, NOT evidence that the
   acking lane jumped ahead** — never file it as lane misbehaviour. Order: law
-  edits → CHANGELOG entry → version bump → commit → sync, with nothing left
+  edits → CHANGELOG entry + version bump in ONE commit → sync, with nothing left
   uncommitted across a turn boundary.
 
 ## Duty 2 — Worker registry: identity + versions, NEVER live status
@@ -343,9 +345,10 @@ on and the close ordering above.
 ## Rule-text provenance — CHANGELOG at ship time
 
 Rule text carries NO biography — provenance (date, origin quote, war story)
-lives in CHANGELOG.md, written at ship time of the version carrying the
-rule. This resolves the Duty-1 "every rule carries its war story" clause in
-favor of lens A: rules stay lean, history stays in CHANGELOG.
+lives in CHANGELOG.md, written at ship time of the version carrying the rule,
+in that version's own bump commit. This resolves the Duty-1 "every rule
+carries its war story" clause in favor of lens A: rules stay lean, history
+stays in CHANGELOG.
 
 ## Correction rows name what they supersede (c29 H-2)
 
