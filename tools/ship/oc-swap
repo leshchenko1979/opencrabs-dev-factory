@@ -192,20 +192,6 @@ post_verify() { # $1=expected_sha  $2=expected_marker_sha  $3=expect_meta(0/1) ;
   PV_DETAIL="$(jq -cn --arg a "$ACTIVE" --arg d "${DISK_SHA:-}" --arg e "$1" --arg mm "$MARK_MARKER" --arg mt "$MARK_META" --argjson x "$3" --argjson m "$PV_MATCH" '{is_active:$a, disk_sha256:$d, expected_sha256:$e, marker_sha:$mm, marker_meta:$mt, meta_expect:($x==1), match:($m==1)}')"
 }
 
-# --------------------------------------------------- skills sidecar (#143) --
-skills_tree_hash() { # $1 = dir -> sha256 over the sorted (relpath, filehash) list
-  # CONTENT hash, never mtime: the rollback leg below asserts the restored tree
-  # EQUALS the pre-swap tree, and "the dir exists" is not evidence of that.
-  # `-print0 | sort -z` keeps the order stable for paths with spaces; LC_ALL=C
-  # keeps the sort byte-ordered so two hosts agree on the digest.
-  local d="$1" f
-  [ -d "$d" ] || { echo "none"; return 0; }
-  ( cd "$d" 2>/dev/null || exit 1
-    find . -type f -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' f; do
-      printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "${f#./}"
-    done ) | sha256sum | cut -d' ' -f1
-}
-
 # ------------------------------------------------------------- swap-execute --
 # Phase B body (spec: s2-swap-journal-spec.md). Runs under a systemd transient
 # in prod; env overrides sandbox every side effect for selftest.
@@ -272,12 +258,6 @@ swap_execute() {
     # dummy artifact = byte-copy of the RUNNING binary; expected sha set
     # deliberately wrong so post-verify fails and exercises the rollback leg.
     cp "$SWAP_TARGET" "$WORKDIR/opencrabs" || die 2 "drill: cannot copy target"
-    # #143: a drill that ignored the artifact's skills tree would exercise the
-    # BINARY rollback only, leaving the skills-restore leg untested — exactly the
-    # half-rollback the issue forbids. Carry the tree when one is supplied.
-    if [ -n "$ARTDIR" ] && [ -d "$ARTDIR/skills" ]; then
-      cp -a "$ARTDIR/skills" "$WORKDIR/skills" || die 2 "drill: cannot copy skills tree"
-    fi
     BIN="$WORKDIR/opencrabs"
     EXPECTED="deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
     jline verify 0 "$(jq -cn '{drill:true, note:"dummy artifact = copy of running binary; expected sha deliberately wrong; provenance skipped"}')"
@@ -311,23 +291,6 @@ swap_execute() {
   BAK_BYTES="$(stat -c %s "$BAK")"
   jline backup 0 "$(jq -cn --arg p "$BAK" --arg s "$BAK_SHA" --argjson b "$BAK_BYTES" '{backup_path:$p, backup_sha256:$s, bytes:$b}')"
   prune_binary_backups "$BAK"
-
-  # --- 3b. skills sidecar backup (#143) ---
-  #     Same discipline as the binary: the pre-swap tree is captured BEFORE any
-  #     install, so the rollback leg in step 10 has a real restore point. Kept
-  #     beside the binary backups so one prune policy governs both.
-  local SKILLS_DST SKILLS_BAK SKILLS_PRESENT=0 SKILLS_SHA_PRE="none" SKILLS_INSTALLED=0
-  SKILLS_DST="$(dirname "$SWAP_TARGET")/skills"   # resolved from the TARGET, never a compiled-in path
-  SKILLS_BAK="$BACKUP_DIR/skills-${TS}-pre-$SHORT"
-  if [ -d "$SKILLS_DST" ]; then
-    rm -rf "$SKILLS_BAK"
-    cp -a "$SKILLS_DST" "$SKILLS_BAK" 2>/dev/null || { jline skills-backup 1 "$(jq -cn --arg d "$SKILLS_DST" '{reason:"copy-fail", dest:$d}')"; die 2 "skills backup FAILED — swap aborted before install"; }
-    SKILLS_PRESENT=1
-    SKILLS_SHA_PRE="$(skills_tree_hash "$SKILLS_BAK")"
-    jline skills-backup 0 "$(jq -cn --arg p "$SKILLS_BAK" --arg s "$SKILLS_SHA_PRE" '{backup_path:$p, tree_sha256:$s, present:true}')"
-  else
-    jline skills-backup 0 "$(jq -cn --arg d "$SKILLS_DST" '{present:false, dest:$d, note:"no skills tree on target — nothing to back up"}')"
-  fi
 
   # --- 4. state backups for rollback (markers + baseline + orders) ---
   mkdir -p "$WORKDIR/state-backup"
@@ -405,47 +368,6 @@ swap_execute() {
     || { jline install 1 "$(jq -cn '{reason:"install-fail"}')"; die 2 "install failed — backup intact, target untouched or restored manually"; }
   NEW_SHA="$(sha256sum "$SWAP_TARGET" | cut -d' ' -f1)"
   jline install 0 "$(jq -cn --arg o "$OLD_SHA" --arg n "$NEW_SHA" --argjson b "$(stat -c %s "$SWAP_TARGET")" '{old_sha256:$o, new_sha256:$n, bytes:$b, method:"install+mv"}')"
-
-  # --- 5b. skills sidecar install (#143) ---
-  #     The CI artifact is FLAT, and step 2's `cp -r "$ARTDIR/."` already carried
-  #     `skills/<name>/SKILL.md` into WORKDIR — so there is no tar to extract and
-  #     no extract logic to add. This leg only has to PLACE the tree.
-  local SK_SRC="$WORKDIR/skills" SK_RC=0 SK_NEW="" SK_OLD="" SKILLS_SHA_POST="none"
-  if [ ! -d "$SK_SRC" ]; then
-    # #143 req 2 (HQ ruling, recorded on the issue): an absent tree in the
-    # artifact is NEITHER an instruction to delete the tree on disk NOR a
-    # failure. Failing here would make the first swap after this lands
-    # impossible on every pre-change artifact; deleting would wipe the tree for
-    # anyone still on one. SKIP + WARN is the chosen arm.
-    jline skills-install 0 "$(jq -cn --arg d "$SKILLS_DST" '{skipped:"artifact-carries-no-skills", dest:$d, note:"existing tree left untouched"}')"
-    echo "oc-deploy: WARNING — artifact carries no skills/ tree; binary installed, existing skills dir left untouched ($SKILLS_DST)" >&2
-  else
-    SK_NEW="$SKILLS_DST.new-$$"; SK_OLD="$SKILLS_DST.old-$$"
-    rm -rf "$SK_NEW" "$SK_OLD"
-    if cp -a "$SK_SRC" "$SK_NEW" 2>/dev/null; then
-      # displace, then rename: a partially-written tree is never visible at the
-      # destination, and the displaced copy survives until the rename succeeds.
-      if [ -d "$SKILLS_DST" ]; then mv "$SKILLS_DST" "$SK_OLD" 2>/dev/null || SK_RC=1; fi
-      if [ "$SK_RC" = 0 ] && mv "$SK_NEW" "$SKILLS_DST" 2>/dev/null; then
-        SKILLS_INSTALLED=1
-        rm -rf "$SK_OLD"
-        SKILLS_SHA_POST="$(skills_tree_hash "$SKILLS_DST")"
-        jline skills-install 0 "$(jq -cn --arg d "$SKILLS_DST" --arg s "$SKILLS_SHA_POST" '{dest:$d, tree_sha256:$s, method:"cp-a+rename"}')"
-      else
-        SK_RC=1
-      fi
-    else
-      SK_RC=1
-    fi
-    if [ "$SK_RC" != 0 ]; then
-      # put back what we displaced: a failed skills install must not leave the
-      # box with NO skills tree at all.
-      [ -d "$SK_OLD" ] && [ ! -d "$SKILLS_DST" ] && mv "$SK_OLD" "$SKILLS_DST" 2>/dev/null
-      rm -rf "$SK_NEW"
-      jline skills-install 1 "$(jq -cn --arg d "$SKILLS_DST" --arg s "$SK_SRC" '{dest:$d, source:$s, reason:"install-fail"}')"
-      die 2 "skills install FAILED — binary already replaced and NOT restarted; rollback sources: $BAK (binary), $SKILLS_BAK (skills)"
-    fi
-  fi
 
   # --- 6. seal (baseline merge; drill skips) ---
   if [ "$DRILL" = "1" ]; then
@@ -546,18 +468,6 @@ swap_execute() {
   if [ -f "$WORKDIR/state-backup/deployed.meta.json" ]; then cp -p "$WORKDIR/state-backup/deployed.meta.json" "$DEPLOYED_META" || RB_FAIL=1; else rm -f "$DEPLOYED_META" || RB_FAIL=1; fi
   if [ -f "$WORKDIR/state-backup/baseline.json" ]; then cp -p "$WORKDIR/state-backup/baseline.json" "$BASELINE" || RB_FAIL=1; fi
   if [ -f "$WORKDIR/state-backup/orders.json" ]; then cp -p "$WORKDIR/state-backup/orders.json" "$ORDERS" || RB_FAIL=1; fi
-  # #143: the skills sidecar is part of the deployed state. Restoring only the
-  # binary leaves a NEWER skills tree in place — a half-rollback that reads as
-  # success because every binary-level assertion passes. Verified by CONTENT
-  # hash, not existence: "the dir is there" is satisfied by the wrong tree.
-  if [ "$SKILLS_INSTALLED" = 1 ]; then
-    if [ "$SKILLS_PRESENT" = 1 ] && [ -d "$SKILLS_BAK" ]; then
-      rm -rf "$SKILLS_DST" && cp -a "$SKILLS_BAK" "$SKILLS_DST" || RB_FAIL=1
-    else
-      rm -rf "$SKILLS_DST" || RB_FAIL=1   # none existed pre-swap: rollback returns to ABSENT, not to empty
-    fi
-    [ "$(skills_tree_hash "$SKILLS_DST")" = "$SKILLS_SHA_PRE" ] || RB_FAIL=1
-  fi
   [ "${OC_SWAP_ROLLBACK_FAIL:-0}" = 1 ] && RB_FAIL=1   # test-only hook (F-H1 selftest 11b): force the failed-restore branch
   if [ "$RB_FAIL" = 1 ]; then
     jline rollback 1 "$(jq -cn --arg b "$BAK" --arg s "$BAK_SHA" --arg r "post-verify mismatch after bounce" '{restored_backup:$b, restored_sha256:$s, reason:$r, restore_failed:true, error:"restore leg failed — binary state UNVERIFIED, manual recovery required"}')"
