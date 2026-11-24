@@ -183,7 +183,11 @@ post_verify() { # $1=expected_sha  $2=expected_marker_sha  $3=expect_meta(0/1) ;
         [ "$PROC_SHA" = "$1" ] && { PV_MATCH=1; break; }
       fi
     fi
-    sleep 2
+    # cadence only: after the FINAL attempt no retry can follow, so the wait
+    # is pure dead time (measured 14 s per selftest — 5 drill arms + both pv
+    # no-match arms; every production exhausted verify also finishes 2 s
+    # earlier). Inter-attempt waits are unchanged. #166
+    if [ "$i" -lt "${OC_SWAP_TRIES:-30}" ]; then sleep 2; fi
   done
   PV_DETAIL="$(jq -cn --arg a "$ACTIVE" --arg d "${DISK_SHA:-}" --arg e "$1" --arg mm "$MARK_MARKER" --arg mt "$MARK_META" --argjson x "$3" --argjson m "$PV_MATCH" '{is_active:$a, disk_sha256:$d, expected_sha256:$e, marker_sha:$mm, marker_meta:$mt, meta_expect:($x==1), match:($m==1)}')"
 }
