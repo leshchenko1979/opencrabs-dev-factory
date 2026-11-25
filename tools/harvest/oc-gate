@@ -45,12 +45,16 @@
 # in-flight run (owner GO 2026-09-17 22:59Z; closes run 35279942039). Branch
 # refs omit it: a moved PR-lane head genuinely invalidates the old verdict, so
 # supersede-on-cancel stays correct there.
-# `-f test_threads=N` when `--test-threads N` is passed AND the carrier yml
-# declares the input (the #1936 Stage 1 hang-capture mitigation, factory #33).
-# Unlike no_cancel (an internal optimisation the tool may legitimately skip),
-# this is a CALLER-REQUESTED input: a request the yml cannot honour is a LOUD
-# rc 4, never a silent drop — otherwise the gate would run WITHOUT the
-# mitigation while the caller believed it applied.
+# `-f test_threads=N` — RETIRED 2026-11-20 (factory #181): the carrier yml
+# declares the `test_threads` input and IGNORES it (pr-checks.yml: "RETIRED
+# 2026-11-20 … Accepted and IGNORED — read by nothing"; the callee relay was
+# deleted 2026-11-22), so the #1936 Stage 1 hang-capture mitigation (factory
+# #33) is dead. `--test-threads N` stays parsed for compatibility (the rc-2
+# typo guard at the boundary is unchanged) and is ACCEPTED, NOT FORWARDED: a
+# request is noted loudly on stderr + journal and the dispatch proceeds rc 0,
+# with NO dispatch ever carrying `-f test_threads=N`. The rc-4 contract arm
+# STAYS for a yml that does not even DECLARE the input — still a true contract
+# statement; no other rc surface moves.
 #
 # Exit: 0 GREEN (terminal, run conclusion success, zero FAILED steps/jobs)
 #       2 usage / sha-shape / unknown ref / repo-path-no-origin
@@ -311,8 +315,10 @@ Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budg
   resume <run-id>  re-attach to a run this lane WITNESSED (rc-5 stdout / journal extra.run_id);
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
                    skips shape gate / yml check / dispatch / lock / adoption, goes straight to watch+verdict
-  --test-threads N libtest --test-threads for the carrier Run tests step (#1936 Stage 1 mitigation);
-                   probed against the carrier yml; requested-but-undeclared is a LOUD rc 4
+  --test-threads N RETIRED 2026-11-20 (#181): the carrier declares the input and IGNORES it
+                   (pr-checks.yml "Accepted and IGNORED — read by nothing") — the #1936 Stage 1
+                   mitigation is dead; the flag stays parsed for compatibility, a request is
+                   ACCEPTED, NOT FORWARDED (loud note, rc 0); undeclared-by-the-yml is still a LOUD rc 4
 Exit: 0 GREEN / 2 usage-or-shape-fork-lane / 3 RED / 4 dispatch-or-api-or-lock / 5 in-flight-timeout / 6 CANCELLED-superseded (P4) / 7 carrier-head-unresolvable / 8 AMBIGUOUS-same-ref-witness-unverifiable (fail-closed, dispatch refused, #115B)
 EOS
   exit 2
@@ -390,8 +396,10 @@ YEOF
       ;;
       yml_no_test_threads)
       # factory #33: declares no_cancel but NOT test_threads -- the contract-fail
-      # fixture. A --test-threads request against THIS must die rc 4 with NO
-      # dispatch (a silent drop would run the gate without the mitigation).
+      # fixture. It SURVIVES retirement (#181): a --test-threads request against
+      # THIS still dies rc 4 with NO dispatch — nothing is forwarded any more,
+      # but a request the target yml cannot even EXPRESS refuses rather than
+      # proceeding (the yml is the contract).
       cat <<'YEOF'
 name: PR-lane gates
 on:
@@ -1425,10 +1433,11 @@ do_selftest() {
   else t_bad "log per-attempt (a1=${_a1:-none} a3=${_a3:-none} attempts=${_ap:-none} err=${_ae:0:40})"; fi
   unset GHDISPATCH_LOG
 
-  # --test-threads N passthrough (factory #33, #1936 Stage 1 hang mitigation).
-  # The input is CALLER-REQUESTED, so the yml probe GATES it: declared -> the
-  # flag rides the dispatch; undeclared -> LOUD rc 4 with NO dispatch. The
-  # absence control proves the flag is not simply always sent.
+  # --test-threads N (factory #33 -> RETIRED 2026-11-20, factory #181): the
+  # carrier declares the input and IGNORES it, so the flag is accepted and
+  # NOTED, never forwarded. Leg (a) is the INVERTED positive: a request must
+  # carry NO dispatch input and name the retirement. The absence control proves
+  # a plain call sends nothing either.
   TT_LOG="$D/gh-dispatch.log"
   export GHDISPATCH_LOG="$TT_LOG"
   tt_leg() { # $1=shim scenario, rest = tool argv -> rc in tt_rc, log in tt_hits, out in tt_out
@@ -1446,17 +1455,22 @@ do_selftest() {
   # label interpolated a multi-line $tt_out and the token and the FAIL marker
   # landed on different lines of the SAME label.
   tt_brief() { printf '%s' "$1" | tr '\n\t' '  ' | cut -c1-160; }
-  # (a) declared input + --test-threads 2 -> the flag rides the dispatch
+  # (a) RETIRED (factory #181; inverts factory #33's positive-forwarding leg):
+  # declared input + --test-threads 2 -> the flag is ACCEPTED, NOT FORWARDED —
+  # the dispatch carries NO test_threads and the retirement note is loud.
   tt_leg green "$SHA" --test-threads 2
-  if [ "$tt_rc" -eq 0 ] && case "$tt_hits" in *"test_threads=2"*) true ;; *) false ;; esac; then
-    t_ok "test_threads/dispatched: --test-threads 2 vs a yml declaring the input -> dispatch carries -f test_threads=2"
-  else t_bad "test_threads/dispatched: rc=$tt_rc hits=$(tt_brief "$tt_hits") out=$(tt_brief "$tt_out")"; fi
+  if [ "$tt_rc" -eq 0 ] && case "$tt_hits" in *test_threads*) false ;; *) true ;; esac \
+     && case "$tt_out" in *"retired 2026-11-20"*) true ;; *) false ;; esac; then
+    t_ok "test_threads/not-forwarded: --test-threads 2 vs a yml declaring the input -> accepted, NOT forwarded, loud retirement note"
+  else t_bad "test_threads/not-forwarded: rc=$tt_rc hits=$(tt_brief "$tt_hits") out=$(tt_brief "$tt_out")"; fi
   # (b) ABSENCE CONTROL: no --test-threads -> the log carries NO test_threads
   tt_leg green "$SHA"
   if [ "$tt_rc" -eq 0 ] && case "$tt_hits" in *test_threads*) false ;; *) true ;; esac; then
     t_ok "test_threads/absent: no --test-threads -> dispatch carries NO test_threads (absence control)"
   else t_bad "test_threads/absent: rc=$tt_rc hits=$(tt_brief "$tt_hits")"; fi
-  # (c) CONTRACT FAIL: yml declares NO test_threads -> rc 4, NO dispatch, loud
+  # (c) CONTRACT FAIL (kept per #181's rc-4 choice): yml declares NO
+  # test_threads -> rc 4, NO dispatch, loud — a request the target cannot even
+  # express still refuses; the retirement note would not make it expressible.
   tt_leg yml_no_test_threads "$SHA" --test-threads 2
   tt_dispatched=0
   case "$tt_hits" in *"workflow run"*) tt_dispatched=1 ;; esac
@@ -1748,8 +1762,8 @@ Usage: oc-gate [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait
   resume <run-id>  re-attach to a witnessed run (no dispatch, no adoption) — #74 H2
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
   --fast           fast gate (fmt + clippy only, skip tests on carrier)
-  --test-threads N libtest --test-threads for the carrier Run tests step (empty = libtest default);
-                   the #1936 Stage 1 mitigation. Fail-loud rc 4 if the carrier yml does not declare it.
+  --test-threads N RETIRED 2026-11-20 (#181): the carrier declares the input and IGNORES it;
+                   accepted, NOT forwarded (loud note, rc 0). Undeclared-by-the-yml is still rc 4.
 Exit: 0 GREEN / 2 usage-or-shape-fork-lane / 3 RED / 4 dispatch-or-api-or-lock / 5 in-flight-timeout / 6 CANCELLED-superseded (P4) / 7 carrier-head-unresolvable / 8 AMBIGUOUS-same-ref-witness-unverifiable (fail-closed, dispatch refused, #115B)
 EOH
   exit 0
@@ -2200,17 +2214,21 @@ if [ "$REF_IS_SHA" -eq 1 ] && [ "$YML_HAS_NO_CANCEL" -eq 1 ]; then
   DISPATCH_ARGS+=(-f "no_cancel=true")
   NO_CANCEL_SENT=1
 fi
-# --test-threads N (factory #33, #1936 Stage 1 mitigation): a CALLER-REQUESTED
-# input, so the yml probe GATES it and a request the yml cannot honour is a
-# LOUD rc 4 — a silent drop would run the gate WITHOUT the mitigation while the
-# caller believed it applied. Placement is after the probe, lock held.
+# --test-threads N — RETIRED 2026-11-20 (factory #181): the carrier yml declares
+# the input and IGNORES it, so the #1936 Stage 1 mitigation is dead and NOTHING
+# is forwarded. A request is ACCEPTED AND NOTED loudly (stderr + journal) and
+# the dispatch proceeds unchanged — no dispatch ever carries -f test_threads=N.
+# The rc-4 contract arm STAYS only for a yml that does not even declare the
+# input: a request nothing in the target can express refuses rather than
+# proceeding (the yml is the contract; a tool flag is not a workflow input).
+# Placement is after the probe, lock held. No new exit code.
 TEST_THREADS_SENT=0
 if [ -n "$TEST_THREADS" ]; then
   if [ "$YML_HAS_TEST_THREADS" -eq 1 ]; then
-    DISPATCH_ARGS+=(-f "test_threads=$TEST_THREADS")
-    TEST_THREADS_SENT=1
+    echo "$PROG: --test-threads $TEST_THREADS retired 2026-11-20 — the carrier declares the input and ignores it; accepted, not forwarded (factory #181; no dispatch input is sent)" >&2
+    oc_log_extra "test_threads_retired" "accepted-not-forwarded"
   else
-    echo "$PROG: --test-threads $TEST_THREADS requested, but the carrier yml declares no 'test_threads' input (repo=$REPO carrier=$CARRIER) — refusing to dispatch WITHOUT the mitigation you asked for (the yml is the contract; a tool flag is not a workflow input)" >&2
+    echo "$PROG: --test-threads $TEST_THREADS requested, but the carrier yml declares no 'test_threads' input (repo=$REPO carrier=$CARRIER) — the input is retired 2026-11-20 and this yml does not even declare it: refusing to dispatch (the yml is the contract; a tool flag is not a workflow input)" >&2
     oc_log_extra "test_threads" "requested-but-undeclared"
     flock -u 8
     exit 4
@@ -2268,9 +2286,8 @@ if [ "$DISPATCH_RC" -ne 0 ] && [ "$NO_CANCEL_SENT" -eq 1 ] && ! _is_5xx "$DISPAT
   DISPATCH_ARGS=(-f "ref=$SHA")
   [ "$FAST_MODE" -eq 1 ] && DISPATCH_ARGS+=(-f "fast=true")
   # factory #33: the retry drops only the no_cancel OPTIMISATION. --test-threads
-  # is caller-requested, so it is re-added; if the retry then 422s on it the
-  # dispatch fails LOUD (rc 4) rather than silently losing the mitigation.
-  [ -n "$TEST_THREADS" ] && DISPATCH_ARGS+=(-f "test_threads=$TEST_THREADS")
+  # is NOT re-added: the input is retired 2026-11-20 (factory #181) and no
+  # dispatch — initial or retried — carries it.
   NO_CANCEL_SENT=0
   _dispatch_try "${DISPATCH_ARGS[@]}"
 fi

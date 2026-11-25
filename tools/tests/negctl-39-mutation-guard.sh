@@ -1,32 +1,33 @@
 #!/usr/bin/env bash
-# Mutation guard for factory #39 — prove the --test-threads legs are LIVE.
+# Mutation guard for factory #39 → RETIRED by factory #181 — prove the
+# NON-FORWARDING legs are LIVE.
 #
-# #39 (ASK from the lane "Telegram: Rich Text", 2026-10-15): oc-ship had
-# no way to hand libtest's `--test-threads N` to the LEG1 gate it dispatches, so
-# the #1936 Stage-1 hang mitigation was UNREACHABLE through the chain — every
-# fresh LEG1 dispatch was a coin flip. Measured, same turn: carrier run
-# 38799188468 was CANCELLED at 2717 s against ci-lane-impl.yml's own
-# `timeout-minutes: 45` (2700 s), its log carrying 3,971 `ok` lines and
-# `running 10805 tests` — the gate had no thread cap to ask for.
+# #39 (2026-10-15): oc-ship gained --test-threads / OC_SHIPCHAIN_TEST_THREADS
+# to carry the #1936 Stage-1 hang mitigation into LEG1's dispatch, with nine
+# selftest legs and TWO mutants (always-append / forwarding-disabled) proving
+# them live. That contract is DEAD: the carrier workflow declares `test_threads`
+# and IGNORES it (pr-checks.yml: "RETIRED 2026-11-20 … Accepted and IGNORED —
+# read by nothing"; the callee relay was deleted 2026-11-22), so factory #181
+# (2026-11-25) removed the forward — the flag is accepted at the boundary,
+# noted loudly, and NO dispatch ever carries it again.
 #
-# The fix adds --test-threads / OC_SHIPCHAIN_TEST_THREADS and nine selftest
-# legs. THIS guard is the evidence that those legs are LIVE: a leg that cannot
-# fail under a mutant which removes the behaviour it claims to test is
-# decoration, and decoration is worse than no leg at all because it reads as
-# coverage.
+# A retired input changes what "the legs are live" means: the regression this
+# guard must catch is the FORWARD COMING BACK. One mutant, the inverse of the
+# old ARM B:
 #
-# TWO ARMS, because the feature has two independent halves and one mutant can
-# only reach one of them:
+#   ARM R — the RETIRED FORWARD RESTORED:
+#     the retirement note's journal line is replaced with the old
+#     `PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")` append. The three legs
+#     that assert the flag does NOT reach the dispatch (not-forwarded,
+#     journal-resolved-argv, env) must redden; the absence control (no flag →
+#     no append even under the mutant), the shape gate (dies at the boundary
+#     before any dispatch) and the carry-path legs (no dispatch there at all)
+#     must survive it. Expected drop: 3 legs.
 #
-#   ARM A — always-append (hardcoded default):
-#     the ABSENCE control must redden. The inline comment above the legs calls
-#     it load-bearing for exactly this reason: without it, a mutant that always
-#     appends (a hardcoded default, say) passes the forward leg VACUOUSLY.
-#     Expected drop: 1 leg (test-threads/absent).
-#   ARM B — the forwarding line DISABLED:
-#     the three FORWARDING legs must redden. This is the feature's CORE — the
-#     flag has to actually reach the dispatch. Expected drop: 3 legs
-#     (forwarded, journal-resolved-argv, env).
+# The old always-append arm (ARM A) has no separate identity any more: an
+# unconditional append trips the same not-forwarded legs (they pass a value),
+# so the absence control is exercised as this arm's SURVIVE control — under a
+# restore-when-requested mutant a no-flag call still dispatches nothing.
 #
 # Each arm also asserts the legs INDEPENDENT of its mutation SURVIVE it, so a
 # mutant that simply broke the whole verb cannot be mistaken for a catch.
@@ -35,11 +36,11 @@
 #   bad() { FAIL=$((FAIL+1)); echo "FAIL $1"; }        # STDOUT — not stderr
 # (oc-ledger, guarded by negctl-38, writes its FAIL lines to STDERR; the two
 # guards are NOT interchangeable). Every failing leg therefore names itself on
-# stdout as `FAIL <token>`, and each of the nine new legs carries a
-# `test-threads/...` token. The assertion is the TOKEN on a FAIL line, not
-# merely "rc != 0", so the guard NAMES the regression instead of counting it —
-# and the pass-count drop is asserted beside it, because a token test alone
-# cannot tell a leg that failed from a leg that never ran.
+# stdout as `FAIL <token>`, and each leg carries a `test-threads/...` token.
+# The assertion is the TOKEN on a FAIL line, not merely "rc != 0", so the guard
+# NAMES the regression instead of counting it — and the pass-count drop is
+# asserted beside it, because a token test alone cannot tell a leg that failed
+# from a leg that never ran.
 #
 # NO standalone probe: unlike negctl-38 (whose oc-ledger verb is drivable
 # directly against a stub `gh`), a chain run needs the full fixture apparatus —
@@ -63,7 +64,7 @@ SKILL_DIR="/root/.opencrabs/profiles/ops/skills/opencrabs-dev"
 #: real regression, not only to convict its own internal mutant.
 SRC="${OC_NEGCTL_SRC:-$SKILL_DIR/tools}"
 TOOL_REL="ship/oc-ship"
-#: The #39 LEGS live in the selftest BODY, which the T6 split (74244b21) moved
+#: The legs live in the selftest BODY, which the T6 split (74244b21) moved
 #: out of oc-ship into its own file; oc-ship now SOURCES it. A guard that greps
 #: only TOOL_REL for them finds nothing and calls itself vacuous on a tree where
 #: every leg is present — which is what it did, six FAILs per run, from that
@@ -81,7 +82,7 @@ fails=0
 ok()  { echo "  ok   - $1"; }
 bad() { echo "  FAIL - $1"; fails=$((fails + 1)); }
 
-echo "=== #39 mutation guard (--test-threads rides the LEG1 dispatch) ==="
+echo "=== #181 mutation guard (--test-threads retired: accepted, NOT forwarded) ==="
 
 run_st() {  # run_st <tool-path> <outfile> -> echoes rc. stderr FOLDED IN.
   local tool="$1" outfile="$2" rc=0 out=""
@@ -102,22 +103,23 @@ mutate() {  # mutate <tools-tree> <arm>
 import sys
 path, arm = sys.argv[1], sys.argv[2]
 lines = open(path, encoding="utf-8").read().split("\n")
-# The ONE line that forwards the flag into LEG1's dispatch argv. Matched on the
-# STRIPPED text so the mutation survives an indentation change, and required to
-# be UNIQUE: two matches would mean the guard cannot say which it mutated.
-needle = '[ -n "$TEST_THREADS" ] && PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")'
+# The retirement journal line inside oc-ship's fresh-dispatch TEST_THREADS
+# block. Matched on the STRIPPED text so the mutation survives an indentation
+# change, and required to be UNIQUE: two matches would mean the guard cannot
+# say which it mutated. Replacing it with the retired append restores the
+# factory #39 forward EXACTLY where it used to live (inside the same
+# `if [ -n "$TEST_THREADS" ]`), leaving the stderr note in place — so the
+# mutant isolates the FORWARD, not the note.
+needle = 'journal "LEG1 --test-threads $TEST_THREADS retired 2026-11-20 — accepted, not forwarded (factory #181)"'
 hits = [i for i, l in enumerate(lines) if l.strip() == needle]
 if len(hits) != 1:
-    sys.stderr.write("mutation: %d forwarding lines, need exactly 1\n" % len(hits))
+    sys.stderr.write("mutation: %d retirement-journal lines, need exactly 1\n" % len(hits))
     sys.exit(2)
 i = hits[0]
 indent = lines[i][:len(lines[i]) - len(lines[i].lstrip())]
-if arm == "A":
-    lines[i] = (indent + 'PRCHECKS_CALL+=(--test-threads "${TEST_THREADS:-4}")'
-                '  # MUTANT A (factory #39): hardcoded default - ALWAYS appends')
-elif arm == "B":
-    lines[i] = (indent + 'true'
-                '  # MUTANT B (factory #39): the forwarding line is DISABLED - never appends')
+if arm == "R":
+    lines[i] = (indent + 'PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")'
+                '  # MUTANT R (factory #181): the RETIRED forward RESTORED')
 else:
     sys.stderr.write("mutation: unknown arm %r\n" % arm)
     sys.exit(2)
@@ -134,16 +136,25 @@ n_b="$(passed_of "$WORK/base.out")"
                || bad "baseline oc-ship rc=$rc_b (expected 0)"
 [ -n "$n_b" ] || bad "baseline did not print a pass-count marker (cannot measure the drop)"
 
-# The guard is vacuous unless the pristine tree carries the code AND the legs it
-# later requires to redden: a renamed or deleted leg would silently disarm it.
-grep -qF '[ -n "$TEST_THREADS" ] && PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")' "$SRC/$TOOL_REL" \
-  && ok "baseline carries the #39 forwarding line" \
-  || bad "the #39 forwarding line is MISSING from oc-ship — the guard would be vacuous"
+# The guard is vacuous unless the pristine tree carries the RETIREMENT: the
+# forward must be GONE and the loud note present. The old #39 check asserted
+# the forwarding line EXISTS — that contract is retired with the input, and a
+# guard still requiring it would red on every correct tree from now on.
+if grep -qF 'PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")' "$SRC/$TOOL_REL" \
+   || grep -qF 'DISPATCH_ARGS+=(-f "test_threads=' "$SRC/harvest/oc-gate"; then
+  bad "a test_threads forward is PRESENT in the pristine tree — the retirement (#181) has been reverted"
+else
+  ok "pristine tree carries NO test_threads forward (oc-ship + oc-gate)"
+fi
+grep -qF 'retired 2026-11-20 — the carrier declares the input and ignores it; accepted, not forwarded' "$SRC/$TOOL_REL" \
+  && ok "baseline carries the oc-ship retirement note" \
+  || bad "the oc-ship retirement note is MISSING — the guard would be vacuous"
 grep -qF 'OC_SHIPCHAIN_TEST_THREADS needs a non-negative integer' "$SRC/$TOOL_REL" \
   && ok "baseline carries the env shape gate" \
   || bad "the env shape gate is MISSING from oc-ship — the guard would be vacuous"
-for leg in test-threads/forwarded test-threads/journal-resolved-argv test-threads/env \
-           test-threads/absent test-threads/shape-usage test-threads/inert-carry-green; do
+for leg in test-threads/not-forwarded test-threads/journal-resolved-argv test-threads/env \
+           test-threads/absent test-threads/shape-usage test-threads/inert-carry-green \
+           test-threads/retired-note-on-fresh-path; do
   #: Search BOTH surfaces: the legs sit in the body since the T6 split, and the
   #: predicate must match every place the thing can live, not one phrasing of it.
   if grep -qF "$leg" "$SRC/$BODY_REL" 2>/dev/null || grep -qF "$leg" "$SRC/$TOOL_REL"; then
@@ -204,23 +215,19 @@ run_arm() {  # run_arm <A|B> <expected_drop>; reads REDDEN[]/SURVIVE[] from scop
   fi
 }
 
-# ARM A: always-append. The absence control is the ONLY leg that may redden — the
-# three forward legs pass a value, so appending a default changes nothing they
-# assert; they are this arm's mutation-independent controls.
-REDDEN=( test-threads/absent )
-SURVIVE=( test-threads/forwarded test-threads/journal-resolved-argv test-threads/env \
-          test-threads/shape-usage test-threads/inert-carry-green )
-run_arm A 1
-
-# ARM B: forwarding disabled. Now the three forward legs ARE the regression and
-# the absence control is the one that cannot notice — the inverse of arm A.
-REDDEN=( test-threads/forwarded test-threads/journal-resolved-argv test-threads/env )
-SURVIVE=( test-threads/absent test-threads/shape-usage test-threads/inert-carry-green )
-run_arm B 3
+# ARM R: the RETIRED forward RESTORED. The three non-forwarding legs ARE the
+# regression; the absence control cannot notice it (no flag -> the restored
+# append still never fires), the shape gate dies before any dispatch, the
+# carry-path legs never dispatch at all, and the retirement-note legs keep
+# their note (the mutant only re-adds the forward beside it).
+REDDEN=( test-threads/not-forwarded test-threads/journal-resolved-argv test-threads/env )
+SURVIVE=( test-threads/absent test-threads/shape-usage test-threads/inert-carry-green \
+          test-threads/retired-note-on-fresh-path test-threads/env-retired-note )
+run_arm R 3
 
 echo
 if [ "$fails" -eq 0 ]; then
-  echo "MUTATION GUARD PASSED — the #39 --test-threads legs fail under their mutants and stay green on the pristine tree"
+  echo "MUTATION GUARD PASSED — the #181 retirement legs fail under the restored-forward mutant and stay green on the pristine tree"
   exit 0
 fi
 echo "MUTATION GUARD FAILED (failures=$fails)"

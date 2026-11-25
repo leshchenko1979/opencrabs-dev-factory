@@ -419,17 +419,19 @@ EOF
   grep "LEG1 gate start" "$T/journal.log" | grep -q -- "--fast" && bad "journal-leg1-argv-truth-full-claims-fast" || ok "journal-leg1-argv-truth-full-omits-fast"
   grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -qF "$FSHA"     && ok "journal-leg1-argv-names-sha" || bad "journal-leg1-argv-names-sha"
 
-  # 1b-tt. factory #39: --test-threads rides LEG1's FRESH dispatch. Four legs:
-  # forward, ABSENCE control, env default, and shape. The absence control is
-  # load-bearing -- without it a mutant that always appends --test-threads (a
-  # hardcoded default, say) passes the forward leg VACUOUSLY.
+  # 1b-tt. RETIRED (factory #181; was factory #39): the carrier declares
+  # test_threads and IGNORES it, so --test-threads is ACCEPTED, NOT FORWARDED.
+  # Three legs: the dispatch carries NO such input, the journal's resolved argv
+  # is free of it, and the retirement note is loud on stderr. The absence
+  # control below stays load-bearing: without it a mutant that forwards the
+  # flag for every call could hide behind these legs.
   rm -f "$T/journal.log" "$T/prchecks.log"
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 --test-threads 2 2>&1)" || RC=$?
   check_rc "test-threads/chain-green" "$RC" 0
-  grep -q -e "--test-threads 2" "$T/prchecks.log" && ok "test-threads/forwarded: --test-threads 2 reaches the LEG1 dispatch" || bad "test-threads/forwarded: $(head -2 "$T/prchecks.log" 2>/dev/null | tr '\n' ' ')"
-  grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -q -- "--test-threads 2" && ok "test-threads/journal-resolved-argv" || bad "test-threads/journal-resolved-argv"
-  case "$OUT" in *INERT*) bad "test-threads/fresh-path-is-not-inert: $OUT" ;; *) ok "test-threads/fresh-path-is-not-inert" ;; esac
+  grep -q -e "--test-threads" "$T/prchecks.log" && bad "test-threads/not-forwarded: --test-threads 2 must NOT reach the LEG1 dispatch (retired 2026-11-20, #181)" || ok "test-threads/not-forwarded: --test-threads 2 does NOT reach the LEG1 dispatch (retired, accepted-not-forwarded)"
+  grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -q -- "--test-threads" && bad "test-threads/journal-resolved-argv: the resolved argv must NOT carry --test-threads" || ok "test-threads/journal-resolved-argv: the resolved argv carries NO --test-threads (retired, #181)"
+  case "$OUT" in *"retired 2026-11-20"*) ok "test-threads/retired-note-on-fresh-path" ;; *) bad "test-threads/retired-note-on-fresh-path: $OUT" ;; esac
 
   # 1b-tt-absence. NEGATIVE CONTROL: the same chain WITHOUT the flag (and
   # without the env) must carry NO --test-threads at all.
@@ -439,13 +441,15 @@ EOF
   check_rc "test-threads/absent-chain-green" "$RC" 0
   grep -q -e "--test-threads" "$T/prchecks.log" && bad "test-threads/absent: no flag -> dispatch carries NO --test-threads" || ok "test-threads/absent: no flag -> dispatch carries NO --test-threads (absence control)"
 
-  # 1b-tt-env. OC_SHIPCHAIN_TEST_THREADS is the env default. Scoped to the
-  # command substitution's own subshell so it cannot leak into later legs.
+  # 1b-tt-env. OC_SHIPCHAIN_TEST_THREADS is the env form — RETIRED like the
+  # flag (#181): accepted, noted, never forwarded. Scoped to the command
+  # substitution's own subshell so it cannot leak into later legs.
   rm -f "$T/journal.log" "$T/prchecks.log"
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_SHIPCHAIN_TEST_THREADS=3 FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
   check_rc "test-threads/env-chain-green" "$RC" 0
-  grep -q -e "--test-threads 3" "$T/prchecks.log" && ok "test-threads/env: OC_SHIPCHAIN_TEST_THREADS=3 reaches the dispatch" || bad "test-threads/env: $(head -2 "$T/prchecks.log" 2>/dev/null | tr '\n' ' ')"
+  grep -q -e "--test-threads" "$T/prchecks.log" && bad "test-threads/env: OC_SHIPCHAIN_TEST_THREADS=3 must NOT reach the dispatch (retired 2026-11-20, #181)" || ok "test-threads/env: OC_SHIPCHAIN_TEST_THREADS=3 does NOT reach the dispatch (retired, accepted-not-forwarded)"
+  case "$OUT" in *"retired 2026-11-20"*) ok "test-threads/env-retired-note" ;; *) bad "test-threads/env-retired-note: $OUT" ;; esac
 
   # 1b-tt-shape. A non-integer is a usage error (rc 2) and NOTHING dispatches.
   rm -f "$T/prchecks.log"
@@ -1406,17 +1410,17 @@ EOF
   check_rc "gated-run-green" "$RC" 0
   grep -q "LEG1 gate pre-verified GREEN (gh run: 11111 completed success" "$T/journal.log" && ok "journal-gated-run" || bad "journal-gated-run"
 
-  # 6-tt. factory #39: --test-threads on a CARRY-FORWARD path is INERT, and the
-  # chain must SAY SO. A silent drop would let a lane read the carried run as
-  # mitigated evidence it never received -- and NOTHING may dispatch here, so
-  # the empty fake-prchecks log is the control that no second gate was fired.
+  # 6-tt. RETIRED (factory #181; was factory #39's INERT warning): on a
+  # CARRY-FORWARD path no gate leg dispatches HERE at all, and the flag is not
+  # forwarded on ANY path — the chain must SAY SO. The empty fake-prchecks log
+  # stays the control that no second gate was fired.
   rm -f "$T/prchecks.log"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
   RC=0; OUT="$(OC_GH="$T/fake-gh-run" FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --gated-run 11111 --test-threads 2 2>&1)" || RC=$?
   check_rc "test-threads/inert-carry-green" "$RC" 0
-  case "$OUT" in *INERT*) ok "test-threads/inert-declared-on-stderr" ;; *) bad "test-threads/inert-declared-on-stderr: $OUT" ;; esac
-  grep -q "INERT" "$T/journal.log" && ok "test-threads/inert-journalled" || bad "test-threads/inert-journalled"
+  case "$OUT" in *"NOT forwarded on any path"*) ok "test-threads/inert-declared-on-stderr" ;; *) bad "test-threads/inert-declared-on-stderr: $OUT" ;; esac
+  grep -q "retired (#181) + INERT" "$T/journal.log" && ok "test-threads/inert-journalled" || bad "test-threads/inert-journalled"
   [ -s "$T/prchecks.log" ] && bad "test-threads/inert-dispatched-nothing" || ok "test-threads/inert: no dispatch on the carry-forward path"
 
   # 6a. Duty-4 n=2520, the arm the editor lane ACTUALLY hit: --gated-run whose
