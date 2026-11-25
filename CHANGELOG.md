@@ -30,6 +30,14 @@ hardcodes it). `--full` and `--n 2000/3000` stay deliberate overrides. The
 RC-CONTRACT `Default` column is not built yet; Reviewer B's DEFAULTS test is
 policy, not a mechanical gate, until it is.
 
+**Bundled in this range (other lanes' work, named here because the version
+record is the only place their ship date exists).** `4cb9398cf` feat(tools):
+default `oc-build --wait` to 2700 under `--execute` (#176), with its receipts
+`95d839f1f` and `6b5c8836f`; `29a595abc` docs(rc): record the oc-gate/oc-ship
+wait defaults too (#176); `79fcc3365` fix(oc-ship): release the ship lock before
+a background state-repo `git gc --auto` (#177) with its receipt `da1068eb7`.
+`3d9aa377d` is this entry's own law commit.
+
 **Verification.** Battery on the PR-186 head: **454 pass / 0 fail**, receipt ts
 `2026-11-25T17:08:02Z`, `tree_changed=false`; the mutation guard reddened
 exactly the 3 non-forwarding legs (465→462). `oc-lint-laws` rc=0 over the law
