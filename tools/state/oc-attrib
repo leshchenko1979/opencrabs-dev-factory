@@ -381,7 +381,8 @@ fi
 MF=""
 if [ -n "$LEDGER" ] && [ -f "$LEDGER" ]; then
   MF="$(mktemp)" || exit 3
-  jq -r '(.workers // [])[] | [(.uuid//""),(.topic_id|tostring),(.feature//"-")] | @tsv' "$LEDGER" > "$MF" 2>/dev/null \
+  "$OC_TOOLS_DIR/state/oc-ledger" --ledger "$LEDGER" workers --json 2>/dev/null \
+    | jq -r '.[] | [(.uuid//""),(.topic_id|tostring),(.feature//"-")] | @tsv' > "$MF" \
     || { echo "unreadable ledger: $LEDGER" >&2; rm -f "$MF"; exit 3; }
 fi
 

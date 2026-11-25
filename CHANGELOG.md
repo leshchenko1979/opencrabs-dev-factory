@@ -1,5 +1,44 @@
 # Changelog — opencrabs-dev
 
+## v0.4.335 — Reviewer B gains the DEFAULTS test
+
+**What changed (law).** Owner order, 2026-11-25, verbatim: "simplify
+instructions for using our tools by ensuring that the tools have defaults that
+now are coded in the instructions so that the instructions may just use
+defaults." Reviewer B's Cache test already said a document that restates the
+environment is a cache, and it never said what to do with a flag value. It does
+now.
+
+- **Reviewer B — the DEFAULTS test.** A role file must not spell a flag, or a
+  value on a flag, whose omission already produces that value. Omission is the
+  compliant form. A literal that matches the producer's default is a cache;
+  delete it. A literal that differs is a finding unless the line is a deliberate
+  override and the reason on it is true. The finding names the producer:
+  `tools/<file>:<line>`, `.github/workflows/<file>:<line>`, or the owning `src/`
+  parser. No producer, no finding.
+- **Reviewer J — defer, don't double-file.** When the number is a flag literal,
+  B owns the verdict. J owns a remembered gate input with no literal. A census
+  bound the parser must not swallow is a design gate (T1), not a J finding.
+- **Not a mechanical gate.** No tool compares role-file literals to parser
+  defaults yet. The test is policy. A later census that reports zero is not a
+  pass until that comparison exists. `oc-review-persist check-cycle` shows that
+  lens B ran; it does not show that this test was applied.
+
+**What this entry does not claim.** `--test-threads 2` in `editor-ship.md` is
+not a restated default: `oc-ship` and `oc-gate` still default the value empty,
+and the carrier input is retired and ignored. That stale instruction is
+[factory #178](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/178).
+`--wait 2700` on the ship chain is `oc-ship`'s own default
+(`OC_SHIPCHAIN_SHIP_WAIT`), not an `oc-build` parser default. Neither row is a
+specimen for this test.
+
+**Verification.** `oc-lint-laws` over the law corpus, rc=0, run against the
+PR worktree before merge. `oc-review-persist` still derives its lens keys from
+the catalogue headings; this text adds none. Merged on the owner's word,
+2026-11-25T12:44:56Z, as [PR #179](https://github.com/leshchenko1979/opencrabs-dev-factory/pull/179)
+(`860de0b6`, head `c928a390`). The drift baseline is stamped by the sync that
+publishes this version, not by the merge.
+
 ## v0.4.334 — the dispatcher is gone: every ship verb names its own tool
 
 **What changed (law).** Batch 2 of the #168 legacy-ship-path campaign (owner

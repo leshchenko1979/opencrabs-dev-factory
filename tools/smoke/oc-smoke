@@ -1166,12 +1166,14 @@ fi
 RUN_ID="${RUN_ID:-unknown}"
 
 ACTOR="${OPENCRABS_SESSION_ID:-}"
-if [ -z "$ACTOR" ] && [ -f "$STATE_DIR/workers-ledger.json" ]; then
-  CLAIM_ACTOR="$(jq -r --arg iss "$ISSUE" '.events[]? | select(.kind == "claim" and ((.issue|tostring) == $iss)) | .actor // empty' "$STATE_DIR/workers-ledger.json" 2>/dev/null | tail -1 || true)"
+if [ -z "$ACTOR" ] && { [ -f "$STATE_DIR/events.jsonl" ] || [ -f "$STATE_DIR/workers-ledger.json" ]; }; then
+  _smoke_ledger="$STATE_DIR/events.jsonl"
+  [ -f "$_smoke_ledger" ] || _smoke_ledger="$STATE_DIR/workers-ledger.json"
+  CLAIM_ACTOR="$("$LEDGER_TOOL" --ledger "$_smoke_ledger" events --kind claim --json --all 2>/dev/null | jq -r --arg iss "$ISSUE" '.[] | select((.issue|tostring) == $iss) | .actor // empty' | tail -1 || true)"
   if [ -n "$CLAIM_ACTOR" ]; then
     ACTOR="$CLAIM_ACTOR"
   else
-    ACTOR="$(jq -r '.workers[-1].uuid // empty' "$STATE_DIR/workers-ledger.json" 2>/dev/null || true)"
+    ACTOR="$("$LEDGER_TOOL" --ledger "$_smoke_ledger" workers --json 2>/dev/null | jq -r '.[-1].uuid // empty' || true)"
   fi
 fi
 ACTOR="${ACTOR:-unknown-actor}"
@@ -1338,8 +1340,8 @@ echo "$PROG: recorded verdict row ($VERDICT) for #$ISSUE in $CANON_LOG"
 LEDGER_RC=1
 if [ "$VERDICT" = "PASS" ] && [ "$NO_LEDGER" -eq 0 ]; then
   ACTUAL_LEDGER_BIN="${OC_LEDGER_BIN:-$LEDGER_TOOL}"
-  if [ -x "$ACTUAL_LEDGER_BIN" ] && [ -f "$STATE_DIR/workers-ledger.json" ]; then
-    echo "$PROG: stamping workers-ledger.json done for issue #$ISSUE..."
+  if [ -x "$ACTUAL_LEDGER_BIN" ] && { [ -f "$STATE_DIR/events.jsonl" ] || [ -f "$STATE_DIR/workers-ledger.json" ]; }; then
+    echo "$PROG: stamping ledger done for issue #$ISSUE..."
     set +e
     # #699: the row must BEGIN with the issue ref. is_addressed() is anchored
     # (deliberately -- #305 fences off mid-sentence closure), so the historical

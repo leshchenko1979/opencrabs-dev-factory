@@ -1322,6 +1322,44 @@ SHIP_LOCK_FILE="$STATE_DIR/ship.lock"
 SHIP_LOCK_FD=200
 LOCK_HELD=0
 
+# #177: the TRACKED-namespace sweep runs once per ship leg, not on every stamp.
+# Never fatal — a refused git commit must not fail a green gate. Skipped when
+# the chain is not stamping the ledger (selftest / --no-ledger).
+oc_ship_leg_sweep() {
+  local leg="${1:-leg}"
+  if [ "${OC_TOOLS_NOLOG:-0}" = "1" ] || [ "${NOLEDGER:-0}" = "1" ]; then
+    return 0
+  fi
+  local out rc=0
+  out="$("$TOOLS_DIR/state/oc-ledger" commit-pending --bundle 2>&1)" || rc=$?
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out" | while IFS= read -r line; do
+      [ -n "$line" ] && journal "sweep $leg: $line"
+    done
+  fi
+  if [ "$rc" != "0" ]; then
+    printf '%s\n' "oc-ship: WARNING: state sweep after $leg rc=$rc — ship continues (#177)" >&2
+    journal "sweep $leg FAILED rc=$rc (non-fatal)"
+  fi
+  return 0
+}
+
+# #177: git gc on the state repo between ships, at the end of a successful
+# chain only. Not a cron or a timer.
+oc_ship_state_gc() {
+  if ! git -C "$STATE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    return 0
+  fi
+  journal "state-gc start"
+  if git -C "$STATE_DIR" gc --quiet; then
+    journal "state-gc ok"
+  else
+    journal "state-gc FAILED (non-fatal)"
+    printf '%s\n' "oc-ship: WARNING: git gc in $STATE_DIR failed — ship result stands (#177)" >&2
+  fi
+  return 0
+}
+
 release_ship_lock() {
   if [ "$LOCK_HELD" = "1" ]; then
     journal "SHIP-LOCK released"
@@ -1879,6 +1917,7 @@ if [ -n "$TEST_THREADS" ]; then
       ;;
   esac
 fi
+oc_ship_leg_sweep LEG1
 
 # ---- LEG2 tracker resolution (#11, factory) -------------------------------
 # The 2026-10-03 routing split the trackers, SUPERSEDED 2026-10-09 (fork-first
@@ -1993,6 +2032,7 @@ if [ -n "$ISSUE" ]; then
 else
   journal "LEG2 issue-log skipped (--issue not given)"
 fi
+oc_ship_leg_sweep LEG2
 
 # ---- leg 3: ff-merge into fork main (under ship lock) ----------------------
 acquire_ship_lock "${SHIP_LOCK_TIMEOUT:-$SHIP_LOCK_WAIT}"
@@ -2188,6 +2228,7 @@ MERGED="$(git -C "$FORK_REPO" rev-parse --short HEAD)"
 # is done -- leaving it behind litters the fork with one ref per recovery.
 [ -n "${_rb_ref:-}" ] && { git -C "$FORK_REPO" update-ref -d "$_rb_ref" 2>/dev/null || true; }
 journal "LEG3 ff-merge ok fork-main=$MERGED"
+oc_ship_leg_sweep LEG3
 
 # ---- no-self-ping guard ----------------------------------------------------
 # The calling lane invoked this tool and is awake — any session-notify fired by
@@ -2275,6 +2316,8 @@ case "$SHIP_RC" in
     esac
     journal "LEG4 ship INFRA rc=$SHIP_RC"; die "ship infra rc=$SHIP_RC" 6 ;;
 esac
+
+oc_ship_leg_sweep LEG4
 
 # ---- leg 5: swap confirmation ---------------------------------------------
 # THE PREDICATE IS THE MARKER, NOT A STDOUT TOKEN (defect fix 2026-09-12,
@@ -2367,6 +2410,8 @@ if [ "$SWAPPED" != "1" ]; then
   die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA — $(leg5_host_state) — inspect via: oc-status status" 6
 fi
 journal "DONE SWAPPED sha=$SHA"
+oc_ship_leg_sweep LEG5
+oc_ship_state_gc
 echo "SHIP-CHAIN $CHAIN: SWAPPED sha=$SHA gate=$SHIP_GATE_MODE"
 exit 0
 

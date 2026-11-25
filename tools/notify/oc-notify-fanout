@@ -424,6 +424,12 @@ JSON
   H="$T/home"
   mkdir -p "$H/.opencrabs/profiles/ops/opencrabs-dev"
   cp "$LEDG" "$H/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json"
+  # #177: the default path is the record. Materialise it through oc-ledger
+  # verbs so the lint does not see a direct jq of the ledger files.
+  _hd="$H/.opencrabs/profiles/ops/opencrabs-dev"
+  _lg="$OC_TOOLS_DIR/state/oc-ledger"
+  "$_lg" --ledger "$LEDG" events --jsonl > "$_hd/events.jsonl"
+  "$_lg" --ledger "$LEDG" workers --json | jq '{workers: .}' > "$_hd/workers.json"
   : > "$T/fake-notify-log-1a2"
   out="$(env -u OC_FANOUT_LEDGER OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
     OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" \
@@ -1225,12 +1231,17 @@ ACTIVE_HOLDERS="$(mktemp /tmp/fanout-active.XXXXXX)"
 # skipped live claim-holders as DORMANT. Fail-loud: an empty holder set is a
 # FINDING, never a silent "nobody is active".
 python3 -c '
-import json, os, re, sys
+import json, os, re, sys, subprocess
 sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
 import oc_claims as oc
 U = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-with open(sys.argv[2]) as f:
-    rows = oc.parse_events(json.load(f).get("events", []))
+tool, ledger = sys.argv[2], sys.argv[3]
+r = subprocess.run([tool, "--ledger", ledger, "events", "--json", "--all"],
+                   capture_output=True, text=True, timeout=120)
+if r.returncode != 0:
+    sys.stderr.write((r.stderr or r.stdout or "oc-ledger rc %s" % r.returncode).strip() + "\n")
+    sys.exit(1)
+rows = oc.parse_events(json.loads(r.stdout or "[]"))
 seen = set()
 for row in rows:
     if row["kind"] == "claim":
@@ -1238,7 +1249,7 @@ for row in rows:
         if m and m.group(0) not in seen:
             seen.add(m.group(0))
             print(m.group(0))
-' "$SKILL_DIR/tools" "$LEDGER" >> "$ACTIVE_HOLDERS" || die "ACTIVE_HOLDERS scan failed — refusing to run LAW 17 with an empty holder set" 3
+' "$SKILL_DIR/tools" "$SKILL_DIR/tools/state/oc-ledger" "$LEDGER" >> "$ACTIVE_HOLDERS" || die "ACTIVE_HOLDERS scan failed — refusing to run LAW 17 with an empty holder set" 3
 
 # --text-file is loaded HERE, not merely hashed. The first cut validated the
 # file (244), hashed its content into the wave-id (245) — and then never read
@@ -1389,7 +1400,9 @@ if [ -n "$only_file" ]; then
     _u="${_u%%[[:space:]]*}"                       # tolerate trailing space/comment
     [ -n "$_u" ] || continue
     case "$_u" in \#*) continue ;; esac
-    _row="$(jq -r --arg u "$_u" '.workers[] | select(.uuid==$u) | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv' "$LEDGER" 2>/dev/null | head -1)"
+    # worker rc 1 on a miss (unlike jq, which exits 0 with empty output).
+    # pipefail + set -e would abort the --only loop; a miss must become ABSENT.
+    _row="$("$SKILL_DIR/tools/state/oc-ledger" --ledger "$LEDGER" worker --uuid "$_u" 2>/dev/null | head -1 || true)"
     if [ -n "$_row" ]; then
       only_rows+="${_row}"$'\n'
     else
@@ -1550,7 +1563,7 @@ while IFS=$'\t' read -r uuid role topic wstate; do
   else
     receipts+="FAIL ${uuid} ${role} rc=${rc} ${LAT_MS}ms"$'\n'; failed=$((failed+1))
   fi
-done < <( if [ -n "$only_file" ]; then printf '%s' "$only_rows"; else jq -r '.workers[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv' "$LEDGER"; fi )
+done < <( if [ -n "$only_file" ]; then printf '%s' "$only_rows"; else "$SKILL_DIR/tools/state/oc-ledger" --ledger "$LEDGER" workers --json | jq -r '.[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv'; fi )
 
 echo "--- receipts ---"; printf '%s' "$receipts"
 printf '%s' "$absent_lines"

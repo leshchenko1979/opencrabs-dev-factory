@@ -3068,14 +3068,14 @@ NF="$TOOLS_DIR/notify/oc-notify-fanout"
 NFSELF="$(bash "$TOOLS_DIR/state/oc-ledger" roster --live --role toolsmith 2>/dev/null | head -1 | awk '{print $1}')"
 [ -n "$NFSELF" ] || NFSELF="00000000-0000-4000-8000-00000000dead"
 # 61a. placeholder law: dangling token -> every send ABORTed, rc!=0
-NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
+NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl" timeout 200 bash "$NF" \
   --title "t-battery" --text "dangling {{NOSUCH}} token" --dry-run 2>&1)" \
   && bad "fanout placeholder-guard: rc=0 on token leak" \
   || { grep -q "placeholder-token-survived" <<< "$NFOUT" \
        && ok "fanout placeholder-guard: dangling token -> send ABORTed (law1)" \
        || bad "fanout placeholder-guard: aborted but no law1 receipt"; }
 # 61b. substitution: valid tokens -> DRY briefs, no ABORT, dead uuids skipped
-NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
+NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl" timeout 200 bash "$NF" \
   --title "t-battery" --text "v{{VERSION}} u{{UUID}}" --dry-run 2>&1)"
 grep -q "placeholder-token-survived" <<< "$NFOUT" \
   && bad "fanout substitution: valid tokens ABORTed (substitution broken)" \
@@ -3084,7 +3084,7 @@ grep -qE "sent=[0-9]+ skipped=[0-9]+ failed=0" <<< "$NFOUT" \
   && ok "fanout dry-run summary clean (dead targets skipped, none failed)" \
   || bad "fanout dry-run summary has failures"
 # 61c. roles filter: --roles toolsmith (self-excluded) -> sent=0
-NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
+NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl" timeout 200 bash "$NF" \
   --title "t" --text "x" --dry-run --roles toolsmith 2>&1)"
 grep -q "sent=0" <<< "$NFOUT" \
   && ok "fanout --roles filter respected" \
@@ -3666,6 +3666,13 @@ for f in "$TOOLS_DIR"/lib/*.py; do [ -e "$f" ] && cp "$f" "$D451STUB/tools/lib/"
 # fixture that copies only *.py leaves the tool unable to resolve the tools root,
 # so TOOL_DIR collapses to the tool's own subdir and the shared lib/ disappears.
 [ -f "$TOOLS_DIR/lib/oc-root.sh" ] && cp "$TOOLS_DIR/lib/oc-root.sh" "$D451STUB/tools/lib/"
+# #177: dispatch now reads the ledger through oc-ledger. Without the reader
+# (and oc-log.sh, which it sources) the stub exits rc 2 before the notify
+# sleep, so the SIGKILL never lands mid-send.
+mkdir -p "$D451STUB/tools/state"
+cp "$TOOLS_DIR/state/oc-ledger" "$D451STUB/tools/state/oc-ledger"
+chmod +x "$D451STUB/tools/state/oc-ledger"
+[ -f "$TOOLS_DIR/lib/oc-log.sh" ] && cp "$TOOLS_DIR/lib/oc-log.sh" "$D451STUB/tools/lib/"
 # The send must BLOCK so the kill lands inside it. A real notify would either
 # reach the live bus or return instantly, and neither reproduces #451. Bounded
 # at 30s: the stub outlives the 10s kill by design, but never permanently.

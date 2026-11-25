@@ -1003,9 +1003,15 @@ PY
     fi
   fi
 
-  # Ledger JSON syntax check
-  if [ -f "$STATE/workers-ledger.json" ]; then
-    if ! python3 -c 'import json; json.load(open("'"$STATE/workers-ledger.json"'"))' 2>/dev/null; then
+  # Ledger JSON syntax check (#177: through oc-ledger ok, no direct slurp)
+  _health_ledger=""
+  if [ -f "$STATE/events.jsonl" ]; then
+    _health_ledger="$STATE/events.jsonl"
+  elif [ -f "$STATE/workers-ledger.json" ]; then
+    _health_ledger="$STATE/workers-ledger.json"
+  fi
+  if [ -n "$_health_ledger" ]; then
+    if ! "$TOOLS_DIR/state/oc-ledger" --ledger "$_health_ledger" ok >/dev/null 2>&1; then
       add_finding 13 URGENT ledger-corrupt "workers-ledger.json has invalid JSON syntax"
     else
       clean_line "ledger: valid JSON"
@@ -1192,22 +1198,33 @@ fi
 # CLASS 6: fleet_lanes
 # =============================================================================
 if is_class_active "fleet_lanes"; then
-  if [ -f "$STATE/workers-ledger.json" ]; then
-    # Check if ledger JSON is valid before parsing roster
-    if ! python3 -c 'import json; json.load(open("'"$STATE/workers-ledger.json"'"))' 2>/dev/null; then
+  _health_ledger=""
+  if [ -f "$STATE/events.jsonl" ]; then
+    _health_ledger="$STATE/events.jsonl"
+  elif [ -f "$STATE/workers-ledger.json" ]; then
+    _health_ledger="$STATE/workers-ledger.json"
+  fi
+  if [ -n "$_health_ledger" ]; then
+    # Check if ledger JSON is valid before parsing roster (#177: oc-ledger)
+    if ! "$TOOLS_DIR/state/oc-ledger" --ledger "$_health_ledger" ok >/dev/null 2>&1; then
       add_finding 13 URGENT ledger-corrupt "workers-ledger.json has invalid JSON syntax"
     else
       # Roster is TOP-LEVEL `.workers` (a LIST) — NOT `.roster.workers`, which has
       # never existed: `uuids` was always [] so the duplicate check could not fire.
       roster_err="$(python3 -c '
-import json, sys
+import json, sys, subprocess
+tool, ledger = sys.argv[1], sys.argv[2]
 try:
-    uuids = [w.get("uuid") for w in json.load(sys.stdin).get("workers", [])]
+    r = subprocess.run([tool, "--ledger", ledger, "workers", "--json"],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout or "oc-ledger rc %s" % r.returncode).strip())
+    uuids = [w.get("uuid") for w in json.loads(r.stdout or "[]")]
     if len(uuids) != len(set(uuids)):
         print("duplicate worker UUIDs in roster")
 except Exception as e:
     print("roster error: %s" % e)
-' < "$STATE/workers-ledger.json" 2>/dev/null)"
+' "$TOOLS_DIR/state/oc-ledger" "$_health_ledger" 2>/dev/null)"
       if [ -n "$roster_err" ]; then
         add_finding 14 QUIRK roster-inconsistency "$roster_err"
       else
@@ -1285,16 +1302,27 @@ fi
 if is_class_active "issue_portfolio"; then
   # Audit issue claims. DELEGATED to tools/lib/oc_claims.py, the ONE claim-closure
   # predicate. The copy this replaces keyed on keys absent from all 9025 live events.
-  if [ -f "$STATE/workers-ledger.json" ]; then
+  _health_ledger=""
+  if [ -f "$STATE/events.jsonl" ]; then
+    _health_ledger="$STATE/events.jsonl"
+  elif [ -f "$STATE/workers-ledger.json" ]; then
+    _health_ledger="$STATE/workers-ledger.json"
+  fi
+  if [ -n "$_health_ledger" ]; then
     claims_check="$(python3 -c '
-import json, sys, os
+import json, sys, os, subprocess
 sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
 import oc_claims as oc
-open_c = oc.open_claims(json.load(sys.stdin).get("events", []))
+tool, ledger = sys.argv[2], sys.argv[3]
+r = subprocess.run([tool, "--ledger", ledger, "events", "--json", "--all"],
+                   capture_output=True, text=True, timeout=120)
+if r.returncode != 0:
+    raise SystemExit((r.stderr or r.stdout or "oc-ledger rc %s" % r.returncode).strip())
+open_c = oc.open_claims(json.loads(r.stdout or "[]"))
 unassigned = [c for c in open_c if not c["by"]]
 if unassigned:
     print("%d unassigned claim(s) of %d open" % (len(unassigned), len(open_c)))
-' "$TOOLS_DIR" < "$STATE/workers-ledger.json" 2>&1)"
+' "$TOOLS_DIR" "$TOOLS_DIR/state/oc-ledger" "$_health_ledger" 2>&1)"
     claims_rc=$?
     if [ "$claims_rc" -ne 0 ]; then
       add_finding 17 REPORT issue-claims "claim scan FAILED (rc=$claims_rc): $(printf '%s' "$claims_check" | head -1)"

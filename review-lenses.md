@@ -63,17 +63,29 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      branch — not word-trimming).
      PLUS the CACHE test (vocabulary refresh 2026-09-10, upstream
      writing-for-agents f054def): the environment is a source of truth too
-     BOUNDARY (I-2 v0.4.320): B weighs references as LOAD-WEIGHT only and never
-     concludes on reachability — a grep showing no dangling pointers answers
-     "nothing points at the old line", NOT "the load path is intact". G owns
-     every load-path verdict (see its LOAD-PATH MANDATE below); B reports what a
-     reference costs and stops there.
      (config files, scripts, directory layout, --help) and a document that
      restates it is a cache — a copy of a lookup earning its load only when
      the lookup is expensive; cache what the agent cannot find by looking
      (the unwritten convention, the reason behind a choice, the gotcha no
      config confesses), leave one-file/one-command lookups to the
      environment where they cannot go stale.
+     BOUNDARY (I-2 v0.4.320): B weighs references as LOAD-WEIGHT only and never
+     concludes on reachability — a grep showing no dangling pointers answers
+     "nothing points at the old line", NOT "the load path is intact". G owns
+     every load-path verdict (see its LOAD-PATH MANDATE below); B reports what a
+     reference costs and stops there.
+     PLUS the DEFAULTS test: a role file must not spell a flag, or a value on a
+     flag, whose omission already produces that value. The compliant form is
+     omission. A literal that MATCHES the producer's default is a cache — delete
+     it. A literal that DIFFERS is a finding unless the line is a deliberate
+     override and the reason written on it is true. A finding names the producer
+     (`tools/<file>:<line>`, `.github/workflows/<file>:<line>`, or the owning
+     `src/` parser); a finding that names none is not a finding. This test is
+     policy until a tool compares the two corpora — a human re-read is not proof
+     the class cannot return. `--full` and "NO `--fast`" before a PR stay
+     overrides when that reason is true. Naming a board on `--close-repo` is an
+     override only when the line says why that board, not what the flag defaults
+     to; a sentence that restates the default is still a finding.
      PLUS the NEGATION test (vocabulary refresh 2026-09-10): steering by
      prohibition drags the forbidden behaviour into context and makes it
      more available (the ban half-reads as an instruction to do the thing);
@@ -145,6 +157,13 @@ change only on census evidence + owner word (ship-time fold, §FAMILY: META).
      mechanical, the prose is descriptive, NO ACTION. Failing T1 = a GATE
      (owner/design/verdict) and prose is its correct home — automating it would
      delete the human, which is the point of the gate; a gate is NEVER a J finding.
+     CROSS-BOUNDARY NOTE (T3): J defers to Reviewer B when the number is a flag
+     literal a producer already supplies. J does not file that site again. J owns
+     a remembered gate input that has no flag literal: the rule tells an agent to
+     re-derive state a tool could read. An owner or design threshold the parser
+     must not swallow — a census bound that is a different population from the
+     parser default — fails T1 and is not a J finding. A finding that names no
+     tool half is the rule restated.
      EVIDENCE FORMAT — each finding carries (a) the law site, file + verbatim quote,
      (b) the state the decision reads, (c) the tool that should own it and its
      single-command interface, (d) the cost already paid (incident, ledger row, run

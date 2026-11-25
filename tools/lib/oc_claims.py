@@ -118,22 +118,50 @@ SOAK_SECONDS = 24 * 3600
 SOAK_HOURS = SOAK_SECONDS / 3600.0
 
 
-#: The canonical workers-ledger.json location. ONE spelling for every reader:
-#: the same precedence `oc-ledger` uses on the write side (OC_LEDGER, then
-#: OC_DEV_STATE, then the ops profile default), so a reader can never look
-#: somewhere the writer does not write.
+#: The canonical ledger location. ONE spelling for every reader: the same
+#: precedence `oc-ledger` uses on the write side (OC_LEDGER, then OC_DEV_STATE,
+#: then the ops profile default). #177: the record is events.jsonl.
 def default_ledger_path():
     state = os.environ.get("OC_DEV_STATE") or os.path.join(
         os.path.expanduser("~"), ".opencrabs", "profiles", "ops", "opencrabs-dev")
-    return os.environ.get("OC_LEDGER") or os.path.join(state, "workers-ledger.json")
+    return os.environ.get("OC_LEDGER") or os.path.join(state, "events.jsonl")
 
 
 def load_ledger(path=None):
-    """Read + parse the workers-ledger. Raises OSError/ValueError -- loud, never
-    a silent empty ledger: a caller that cannot tell "no claims" from "no file"
-    reports an idle fleet for a broken path.
+    """Read + parse the ledger as a unified dict. Raises OSError/ValueError --
+    loud, never a silent empty ledger: a caller that cannot tell "no claims"
+    from "no file" reports an idle fleet for a broken path.
+
+    Accepts events.jsonl (composed with sibling workers.json), a directory
+    containing the record, or a legacy unified workers-ledger.json file.
     """
-    with open(path or default_ledger_path()) as fh:
+    path = path or default_ledger_path()
+    if os.path.isdir(path):
+        ev = os.path.join(path, "events.jsonl")
+        wf = os.path.join(path, "workers.json")
+        view = os.path.join(path, "workers-ledger.json")
+        if os.path.isfile(ev):
+            path = ev
+        elif os.path.isfile(view):
+            path = view
+        else:
+            path = ev
+    if os.path.basename(path) in ("events.jsonl", "workers.json"):
+        ev = path if os.path.basename(path) == "events.jsonl" else os.path.join(os.path.dirname(path), "events.jsonl")
+        wf = os.path.join(os.path.dirname(ev), "workers.json")
+        events = []
+        with open(ev) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    events.append(json.loads(line))
+        data = {}
+        if os.path.isfile(wf):
+            with open(wf) as fh:
+                data = json.load(fh)
+        data["events"] = events
+        return data
+    with open(path) as fh:
         return json.load(fh)
 
 

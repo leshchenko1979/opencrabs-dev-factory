@@ -246,8 +246,29 @@ parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
     esac
   done
   [ -n "$LEDGER" ] || LEDGER="${OC_LEDGER:-}"
-  [ -n "$LEDGER" ] || { [ -n "${OC_DEPLOY_STATE_DIR:-}" ] && LEDGER="$OC_DEPLOY_STATE_DIR/workers-ledger.json"; }
-  [ -n "$LEDGER" ] || LEDGER="$STATE_DIR_DEFAULT/workers-ledger.json"
+  [ -n "$LEDGER" ] || { [ -n "${OC_DEPLOY_STATE_DIR:-}" ] && {
+    LEDGER="$OC_DEPLOY_STATE_DIR/events.jsonl"
+  }; }
+  [ -n "$LEDGER" ] || {
+    LEDGER="$STATE_DIR_DEFAULT/events.jsonl"
+  }
+  # #177: the record is events.jsonl. Callers may still pass workers.json or
+  # the retired view path. If a sibling events.jsonl exists, use it. A fixture
+  # that only has the compact file (no events.jsonl) stays in legacy mode.
+  # Resolved at call time (_oc_dirname is defined below).
+  case "$(basename -- "$LEDGER")" in
+    workers.json)
+      LEDGER="$(_oc_dirname "$LEDGER")/events.jsonl" ;;
+    workers-ledger.json)
+      # Remap only when the view is gone; if the compact file still exists it
+      # stays the source (migrate --force, legacy fixtures). JSONL mode is
+      # decided by events.jsonl being present, not by this path.
+      _pg_sd="$(_oc_dirname "$LEDGER")"
+      if [ ! -f "$LEDGER" ] && [ -f "$_pg_sd/events.jsonl" ]; then
+        LEDGER="$_pg_sd/events.jsonl"
+      fi
+      ;;
+  esac
   ARGS=("$@")
 }
 # #149 spawn reduction: `dirname` costs one execve per call and STATE_DIR() is
@@ -694,14 +715,10 @@ _git_state_commit_now() { # $1=message — the commit/sweep/push tail itself; ne
   else
     echo "commit-lag: state commit deferred — $1" >&2
   fi
-  # #508 (HQ item a): the ledger alone is not the TRACKED class. Sweep the rest
-  # of the namespace on the same tail — this is the state-repo commit path the
-  # v0.4.238 law names, so the TRACKED class stops accumulating dirty between
-  # bundle sweeps (which no cron invokes).
-  state_sweep_tracked "$sd" "auto-commit: $1" || true
-  # #524 (HQ durability gap): the mutation path COMMITS the TRACKED class and
-  # never pushed, so off-box durability depended on irregular sync/bundle runs.
-  # Called AFTER the sweep so the push carries what this mutation just wrote.
+  # #177: the TRACKED-namespace sweep no longer runs on every stamp. oc-ship
+  # runs `oc-ledger commit-pending --bundle` once per leg; other callers can
+  # invoke that verb directly. push_backlog_if_due stays here so a stamp still
+  # has a path off-box when the backlog is due.
   push_backlog_if_due "$sd" state || true
   push_backlog_if_due "$SKILL_DIR" skill || true
 }
@@ -826,7 +843,7 @@ sweep_stale_temps() { # $1 = state dir; best-effort — never fails the caller
 # the migration is opt-in per state dir and reversible by deleting one file.
 _JSONL_EVENTS() { printf '%s/events.jsonl' "$(STATE_DIR)"; }
 _JSONL_WORKERS() { printf '%s/workers.json' "$(STATE_DIR)"; }
-_jsonl_mode() { [ -f "$(_JSONL_EVENTS)" ]; }
+_jsonl_mode() { [ -f "$(_JSONL_EVENTS)" ] || [ "$(basename -- "$LEDGER")" = "events.jsonl" ]; }
 # _ledger_tracked_names — the basenames the state commit actually stages.
 # #149 (spec trap 4): the two audit `mech` strings hardcoded workers-ledger.json,
 # so after cutover they would compare a declaration against a file that is no
@@ -864,7 +881,34 @@ ledger_load() {
   fi
 }
 
-# ledger_write_view — regenerate the materialized view ATOMICALLY (tmp + mv on
+# jq_ledger — run jq against the unified ledger dict. In JSONL mode the view
+# file is gone, so we build the dict from the record (ledger_load) instead of
+# reading $LEDGER. Legacy mode still jq's the compact file.
+jq_ledger() {
+  if _jsonl_mode; then
+    ledger_load | jq "$@"
+  else
+    jq "$@" "$LEDGER"
+  fi
+}
+
+# _prepare_unified / _cleanup_unified — for python or jq programs that need a
+# filesystem path to the unified dict (not a pipe).
+_prepare_unified() {
+  if _jsonl_mode; then
+    _UNIFIED="$(mktemp "${TMPDIR:-/tmp}/oc-ledger-unified.XXXXXX")" || return 4
+    ledger_load > "$_UNIFIED" || { rm -f "$_UNIFIED"; return 3; }
+  else
+    _UNIFIED="$LEDGER"
+  fi
+  return 0
+}
+_cleanup_unified() {
+  if _jsonl_mode; then rm -f "${_UNIFIED:-}"; fi
+  return 0
+}
+
+# ledger_write_view — retired in #177. The view is no longer written.
 # the same filesystem, spec trap 6): a consumer reading mid-rewrite must never
 # see truncated JSON. $1 = a file holding the already-unified dict.
 ledger_write_view() { # $1 = path to the unified dict; rc 4 on failure
@@ -931,9 +975,9 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
         then $new[-1] else empty end' "$next" > "$app" 2>/dev/null
   local ev; ev="$(_JSONL_EVENTS)"
   if [ -s "$app" ]; then
-    # The RECORD first: if we die after this, events.jsonl is already right and
-    # the view is merely stale (the next write regenerates it). Fail toward the
-    # record, never toward the view.
+    # #177: a stamp is an append + fsync of one line. The view is not written,
+    # and workers.json is left alone — an event-only mutation does not change
+    # non-event state (the jq program may bump .updated_at, which we drop).
     cat "$app" >> "$ev" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
     sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
   else
@@ -941,21 +985,34 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
       rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4
     fi
     mv "$ev.tmp.$$" "$ev" || { rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4; }
+    # Non-event state: only rewritten when it actually changed.
+    local wf; wf="$(_JSONL_WORKERS)"
+    jq -c 'del(.events)' "$next" > "$wf.tmp.$$" 2>/dev/null \
+      && { cmp -s "$wf.tmp.$$" "$wf" 2>/dev/null || mv "$wf.tmp.$$" "$wf"; } \
+      ; rm -f "$wf.tmp.$$"
   fi
-  # Non-event state: only rewritten when it actually changed, so an append does
-  # not churn workers.json.
-  local wf; wf="$(_JSONL_WORKERS)"
-  jq -c 'del(.events)' "$next" > "$wf.tmp.$$" 2>/dev/null \
-    && { cmp -s "$wf.tmp.$$" "$wf" 2>/dev/null || mv "$wf.tmp.$$" "$wf"; } \
-    ; rm -f "$wf.tmp.$$"
-  # The view is the unified dict we just computed — no second read.
-  ledger_write_view "$next" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
   rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""
   return 0
 }
 
+# #177: stamps (and every other locked mutation) run at normal ionice/nice,
+# even when a parent oc-ship applied idle class 3 / nice 19. Best-effort and
+# never fatal: a failed raise must not refuse a write. This process only —
+# the parent keeps its class.
+_oc_normal_io() {
+  if command -v ionice >/dev/null 2>&1; then
+    ionice -c2 -n0 -p $$ >/dev/null 2>&1 || true
+  fi
+  if command -v renice >/dev/null 2>&1; then
+    renice -n 0 -p $$ >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
 with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
-  local rc; exec 9>"$LEDGER.lock"
+  local rc
+  _oc_normal_io
+  exec 9>"$LEDGER.lock"
   # (#619) The waiter budget must EXCEED the holder's worst case, or a normal
   # ship storm starves concurrent appends and DROPS JOURNAL ROWS SILENTLY.
   # (#95) THAT PREMISE CHANGED, so the derivation changed with it: the pushes no
@@ -1001,9 +1058,9 @@ derive_by() { # default stamp attribution (v0.4.58, Duty-4 IDEA from lane 7e1ebb
   # (quoted verbatim: that role string is now `hq`)
   # mis-attributed worker stamps (n=1337-correct-via---by vs n=1386-silent-lie).
   local uuid="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}" hit
-  if [ -n "$uuid" ] && [ -f "$LEDGER" ]; then
+  if [ -n "$uuid" ] && { [ -f "$LEDGER" ] || _jsonl_mode; }; then
     uuid="$(printf '%s' "$uuid" | tr 'A-F' 'a-f')"   # M2-3: uuids are lowercase; an UPPERCASE actor could never match
-    hit="$(jq -r --arg u "$uuid" '[.workers[] | select(.uuid==$u)][0] | if . == null then "" else (.role + " " + .uuid) end' "$LEDGER" 2>/dev/null || true)"
+    hit="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid==$u)][0] | if . == null then "" else (.role + " " + .uuid) end' 2>/dev/null || true)"
     if [ -n "$hit" ]; then echo "$hit"; return; fi
     # M2-3 (census 2026-09-12): the lookup above is an EXACT compare, so a uuid
     # FRAGMENT can never match — and 8 live rows carry a bare 8-char prefix
@@ -1027,7 +1084,7 @@ derive_by() { # default stamp attribution (v0.4.58, Duty-4 IDEA from lane 7e1ebb
           # `2>/dev/null` below turns that ERROR into an empty hit, i.e. an
           # unresolvable lookup read as "unrostered". Caught by the battery,
           # 237/2, on the first run of this branch.
-          hit="$(jq -r --arg p "$uuid" '[.workers[] | select((.uuid // "") | startswith($p))] | if length == 1 then (.[0].role + " " + .[0].uuid) else "" end' "$LEDGER" 2>/dev/null || true)"
+          hit="$(jq_ledger -r --arg p "$uuid" '[.workers[] | select((.uuid // "") | startswith($p))] | if length == 1 then (.[0].role + " " + .[0].uuid) else "" end' 2>/dev/null || true)"
           if [ -n "$hit" ]; then echo "$hit"; return; fi
         fi
         ;;
@@ -1065,7 +1122,7 @@ derive_by() { # default stamp attribution (v0.4.58, Duty-4 IDEA from lane 7e1ebb
           *[!0-9a-f-]*) : ;;   # tail is not a uuid/fragment -> a LABEL, keep the sentinel
           *)
             if [ "${#_cb_tail}" -ge 4 ]; then
-              hit="$(jq -r --arg p "$_cb_tail" '[.workers[] | select((.uuid // "") | startswith($p))] | if length == 1 then (.[0].role + " " + .[0].uuid) else "" end' "$LEDGER" 2>/dev/null || true)"
+              hit="$(jq_ledger -r --arg p "$_cb_tail" '[.workers[] | select((.uuid // "") | startswith($p))] | if length == 1 then (.[0].role + " " + .[0].uuid) else "" end' 2>/dev/null || true)"
               if [ -n "$hit" ]; then echo "$hit"; return; fi
             fi
             ;;
@@ -1171,7 +1228,7 @@ _by_uuid_shaped_unresolvable() { # $1=value; prints a warning to stderr if unres
   esac
   [ "${#cand}" -ge 4 ] || return 0
   local hit
-  hit="$(jq -r --arg p "$cand" '[.workers[] | select((.uuid // "") | startswith($p))] | if length >= 1 then "y" else "" end' "$LEDGER" 2>/dev/null || true)"
+  hit="$(jq_ledger -r --arg p "$cand" '[.workers[] | select((.uuid // "") | startswith($p))] | if length >= 1 then "y" else "" end' 2>/dev/null || true)"
   [ -n "$hit" ] && return 0
   printf '%s\n' "oc-ledger: WARNING — --by '$v' is UUID-SHAPED but resolves to NO roster worker; the row is stamped VERBATIM and is indistinguishable from a legitimate attribution." >&2
   printf '%s\n' "  A hand-assembled uuid (remembered prefix + invented tail) is the usual cause. Fix: copy the uuid from a LIVE read — oc-ledger roster --live, or \$OPENCRABS_SESSION_ID. A genuine label is fine as-is (it carries a non-hex char)." >&2
@@ -1294,16 +1351,44 @@ cmd_stamp() {
       issues_json="$(_primary_issue_tokens "$what" \
         | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber) | if length == 0 then null else . end')"
     fi
-    atomic_jq --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
-      --argjson iss "$issues_json" \
-      '.events += [{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
-                    + (if $iss == null then {} else {issues: $iss} end)] | .updated_at = $t' || return $?
+    if _jsonl_mode; then
+      # #177: append one line and fsync. Do not slurp the record or touch
+      # workers.json / the retired view. n was taken from the record under lock.
+      local ev line
+      ev="$(_JSONL_EVENTS)"
+      [ -f "$ev" ] || : > "$ev"
+      line="$(jq -nc --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
+        --argjson iss "$issues_json" \
+        '{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
+         + (if $iss == null then {} else {issues: $iss} end)')" || return 4
+      printf '%s\n' "$line" >> "$ev" || return 4
+      sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
+    else
+      atomic_jq --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
+        --argjson iss "$issues_json" \
+        '.events += [{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
+                      + (if $iss == null then {} else {issues: $iss} end)] | .updated_at = $t' || return $?
+    fi
     # read-back self-verify (Duty-6 lens C2, 2026-08-31): never trust the write —
     # the n=1361/1372 glitched-argv stamps landed with what:"--what" and no check spoke
     local r_kind r_what r_iss
-    r_kind="$(jq -r --argjson n "$n" '[.events[] | select(.n == $n)][0].kind // ""' "$LEDGER" 2>/dev/null)"
-    r_what="$(jq -r --argjson n "$n" '[.events[] | select(.n == $n)][0].what // ""' "$LEDGER" 2>/dev/null)"
-    r_iss="$(jq -c --argjson n "$n" '[.events[] | select(.n == $n)][0].issues // null' "$LEDGER" 2>/dev/null)"
+    if _jsonl_mode; then
+      local last
+      last="$(tail -n 1 "$(_JSONL_EVENTS)")"
+      r_kind="$(printf '%s' "$last" | jq -r '.kind // ""')"
+      r_what="$(printf '%s' "$last" | jq -r '.what // ""')"
+      r_iss="$(printf '%s' "$last" | jq -c '.issues // null')"
+      # The last line must be the row we just appended (n matches). A torn
+      # write or a concurrent append (should be impossible under the lock)
+      # fails the same way a view-file mismatch used to.
+      local r_n
+      r_n="$(printf '%s' "$last" | jq -r '.n // empty')"
+      [ "$r_n" = "$n" ] || die 4 "stamp READ-BACK MISMATCH: sent n=$n, last line has n=$r_n — ledger corruption; investigate before further stamps"
+    else
+      r_kind="$(jq_ledger -r --argjson n "$n" '[.events[] | select(.n == $n)][0].kind // ""' 2>/dev/null)"
+      r_what="$(jq_ledger -r --argjson n "$n" '[.events[] | select(.n == $n)][0].what // ""' 2>/dev/null)"
+      r_iss="$(jq_ledger -c --argjson n "$n" '[.events[] | select(.n == $n)][0].issues // null' 2>/dev/null)"
+    fi
     if [ "$r_kind" != "$kind" ] || [ "$r_what" != "$what" ]; then
       die 4 "stamp READ-BACK MISMATCH: sent kind=$kind what=$what, disk has kind=$r_kind what=$r_what — ledger corruption; investigate before further stamps"
     fi
@@ -1540,19 +1625,19 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
   # so stale is False and no bound is applied. Measured, an unconditional bound
   # would have narrowed a correct 1-commit range against the wrong instant.
   anchor_t="$(git -C "$SKILL_DIR" log -1 --format=%cI "$anchor" 2>/dev/null || true)"
-  if [ -n "$anchor_t" ] && [ -f "$LEDGER" ]; then
+  if [ -n "$anchor_t" ] && { [ -f "$LEDGER" ] || _jsonl_mode; }; then
     anchor_e="$(date -u -d "$anchor_t" +%s 2>/dev/null || echo 0)"
     # Newest skill-bump row as (epoch, version), normalised to epoch BEFORE the
     # comparison: the commit arrives as "...+00:00" and the row as "...Z", and
     # 'Z' (0x5A) sorts ABOVE '+' (0x2B), so a string compare reads a row stamped
     # in the SAME SECOND as newer than the commit that follows it. Same trap the
     # spans comparison below already fixes; same reason.
-    bump_e="$(jq -r '[.events[]? | select(.kind == "skill-bump") | (.t // "")
-                     | select(. != "")] | sort | last // empty' "$LEDGER" 2>/dev/null)"
-    bump_v="$(jq -r '[.events[]? | select(.kind == "skill-bump")
+    bump_e="$(jq_ledger -r '[.events[]? | select(.kind == "skill-bump") | (.t // "")
+                     | select(. != "")] | sort | last // empty' 2>/dev/null)"
+    bump_v="$(jq_ledger -r '[.events[]? | select(.kind == "skill-bump")
                      | [(.t // ""), ((.what // "") | split(" ")[0])]
                      | select(.[0] != "" and .[1] != "")] | sort_by(.[0]) | last // ["",""]
-                     | .[1]' "$LEDGER" 2>/dev/null)"
+                     | .[1]' 2>/dev/null)"
     if [ -n "$bump_e" ] && [ -n "$bump_v" ]; then
       bump_e="$(date -u -d "$bump_e" +%s 2>/dev/null || echo 0)"
       # The bound must never sit PAST HEAD. A skill-bump row stamped later than
@@ -1577,7 +1662,7 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
   # restricted to commits after the newest of them, so the straddle is CORRECTED
   # rather than merely disclosed — and the note says which, because a reader
   # must be able to tell a bounded range from an unbounded one.
-  if [ -n "$anchor_t" ] && [ -f "$LEDGER" ]; then
+  if [ -n "$anchor_t" ] && { [ -f "$LEDGER" ] || _jsonl_mode; }; then
     # NORMALISE BOTH SIDES TO EPOCH before comparing. The two timestamps arrive
     # in DIFFERENT ISO forms — the commit as "...+00:00", the ledger row as
     # "...Z" — and 'Z' (0x5A) sorts ABOVE '+' (0x2B), so a plain string compare
@@ -1585,8 +1670,8 @@ c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
     # follows it. Caught by this function's own control leg, which fired on an
     # unmodified fixture: every bump row looked newer than its own sync commit.
     anchor_e="$(date -u -d "$anchor_t" +%s 2>/dev/null || echo 0)"
-    spans="$(jq -r '.events[]? | select(.kind == "skill-bump") | [(.t // ""), ((.what // "") | split(" ")[0])] | @tsv' \
-        "$LEDGER" 2>/dev/null \
+    spans="$(jq_ledger -r '.events[]? | select(.kind == "skill-bump") | [(.t // ""), ((.what // "") | split(" ")[0])] | @tsv' \
+        2>/dev/null \
       | while IFS="$(printf '\t')" read -r rt rv; do
           [ -n "$rt" ] || continue
           [ -n "$rv" ] || continue
@@ -1806,7 +1891,7 @@ law_digest() {
   printf '%s' "$out" | sha256sum | cut -d' ' -f1
 }
 law_digest_stamped() { # newest skill-bump row's stamp; "" when absent (pre-#47 rows)
-  jq -r '[.events[]? | select(.kind == "skill-bump")] | last | .law_digest // ""' "$LEDGER" 2>/dev/null
+  jq_ledger -r '[.events[]? | select(.kind == "skill-bump")] | last | .law_digest // ""' 2>/dev/null
 }
 
 cmd_sync() {
@@ -1854,7 +1939,7 @@ cmd_sync() {
   # verdict n=1695, HQ-approved 2026-09-06) relaxes ONLY the step size for the
   # shipped-ahead dead zone — the doc-first gate above still pins v to the
   # shipped version, so only multi-step FORWARD jumps gain a legal path.
-  local cur skipped=""; cur="$(jq -r '.meta.skill_version // ""' "$LEDGER")"
+  local cur skipped=""; cur="$(jq_ledger -r '.meta.skill_version // ""')"
   if [ "$cur" != "$v" ]; then
     local c2 c3 v2 v3
     c2="$(echo "$cur" | cut -d. -f2)"; c3="$(echo "$cur" | cut -d. -f3)"
@@ -1882,7 +1967,7 @@ cmd_sync() {
     local n t dup; n=$(( $(max_n) + 1 )); t="$(now_iso)"
     # idempotent re-sync: a skill-bump event for this version already present
     # (e.g. re-running after a failed git leg) → fields refreshed, NO dup event
-    dup="$(jq --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | length' "$LEDGER")"
+    dup="$(jq_ledger --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | length')"
     if [ "${dup:-0}" -gt 0 ]; then
       # factory #47: a re-sync at the SAME version is an idempotent repair of a
       # failed git leg — it must never launder a law edit into a published
@@ -1892,7 +1977,7 @@ cmd_sync() {
       # row is worse than a refused re-run). An empty stamp means a pre-#47 row,
       # which has no baseline to contradict — allowed, and check-version
       # discloses the missing baseline instead of inventing one.
-      local dup_stamp; dup_stamp="$(jq -r --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | last | .law_digest // ""' "$LEDGER")"
+      local dup_stamp; dup_stamp="$(jq_ledger -r --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | last | .law_digest // ""')"
       if [ -n "$dup_stamp" ] && [ "$dup_stamp" != "$ldg" ]; then
         die 6 "sync: law files changed since v$v was stamped ($dup_stamp -> $ldg) — a re-sync is not a bump; publish the NEXT version (bump SKILL.md + CHANGELOG, then sync --version <next>)"
       fi
@@ -2020,9 +2105,9 @@ cmd_check_version() {
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
   local sv a b c bad=0
   sv="$(grep -m1 '^version:' "$SKILL_DIR/SKILL.md" | awk '{print $2}')"
-  a="$(jq -r '.current_skill_version // ""' "$LEDGER")"
-  b="$(jq -r '.meta.current_skill_version // ""' "$LEDGER")"
-  c="$(jq -r '.meta.skill_version // ""' "$LEDGER")"
+  a="$(jq_ledger -r '.current_skill_version // ""')"
+  b="$(jq_ledger -r '.meta.current_skill_version // ""')"
+  c="$(jq_ledger -r '.meta.skill_version // ""')"
   for pair in "SKILL.md:$sv:$sv" "current_skill_version:$a:$sv" "meta.current_skill_version:$b:$sv" "meta.skill_version:$c:$sv"; do
     local nm got want; nm="${pair%%:*}"; got="$(echo "$pair" | cut -d: -f2)"; want="$(echo "$pair" | cut -d: -f3)"
     if [ "$nm" = "SKILL.md" ]; then continue; fi
@@ -2060,7 +2145,7 @@ cmd_check_version() {
   #   LANE-LEVEL  — >=1 worker's last_acked.version is behind SKILL.md: real
   #     lane drift; each lagging lane must re-ack.
   local behind
-  behind="$(jq --arg v "$sv" '[.workers[]? | select(.last_acked.version != null and .last_acked.version != $v)] | length' "$LEDGER" 2>/dev/null)" || behind=""
+  behind="$(jq_ledger --arg v "$sv" '[.workers[]? | select(.last_acked.version != null and .last_acked.version != $v)] | length' 2>/dev/null)" || behind=""
   case "${behind:-}" in ''|*[!0-9]*) behind=0 ;; esac
   if [ "$behind" -eq 0 ]; then
     echo "CAUSE FLEET-LEVEL: registry lags SKILL.md with 0 worker(s) behind — skipped sync, not lane drift; heal with: oc-ledger sync --version $sv"
@@ -2108,11 +2193,11 @@ cmd_cadence() {
   # cycle it claimed to close — stale-boundary drift, instance 2). Falls back
   # to review-battery/skill-review rows for pre-close epochs (selftest fixtures).
   local out c b
-  out="$(jq -r '([.events[]? | select((.kind // "") == "note" and ((.what // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+ ACCEPTED")))] | map(.n // 0) | max // 0) as $close
+  out="$(jq_ledger -r '([.events[]? | select((.kind // "") == "note" and ((.what // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+ ACCEPTED")))] | map(.n // 0) | max // 0) as $close
     | (if $close > 0 then $close
        else ([.events[]? | select(.kind == "review-battery" or ((.kind // "") | startswith("skill-review")))] | map(.n // 0) | max // 0) end) as $b
     | ([.events[]? | select(.kind == "skill-bump" and ((.n // 0) > $b))] | length) as $c
-    | "\($c) \($b)"' "$LEDGER")"
+    | "\($c) \($b)"')"
   c="${out%% *}"; b="${out##* }"
   if [ "$c" -ge 5 ]; then echo "cadence: $c/5 FIRE (boundary n=$b) — Duties 4+6 due"; return 1
   else echo "cadence: $c/5 WAIT (boundary n=$b)"; return 0; fi
@@ -2185,7 +2270,7 @@ cmd_ack() {
   echo "$at" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
     || die 2 "ack: --at must be an ISO-8601 UTC stamp (YYYY-MM-DDThh:mm:ssZ, fractional seconds and +00:00 accepted); got '$at'"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
-  jq -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' "$LEDGER" >/dev/null 2>&1 \
+  jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
     || die 3 "ack: unknown uuid $uuid — roster discovery first (Duty 2), or: oc-ledger enroll"
   _ack_locked() {
     local n t dup; n=$(( $(max_n) + 1 )); t="$(now_iso)"
@@ -2202,8 +2287,8 @@ cmd_ack() {
     # same worker at a new version, is new information and still appends. The
     # compare is EXACT string equality on the composed `what`, never `contains`:
     # a substring test would make 0.4.1 match 0.4.10 and swallow a real bump.
-    dup="$(jq --arg u "$uuid" --arg v "$version" \
-      '[.events[]? | select(.kind == "ack" and ((.what // "") == ("worker " + $u + " acked " + $v)))] | length' "$LEDGER")"
+    dup="$(jq_ledger --arg u "$uuid" --arg v "$version" \
+      '[.events[]? | select(.kind == "ack" and ((.what // "") == ("worker " + $u + " acked " + $v)))] | length')"
     if [ "${dup:-0}" -gt 0 ]; then
       # fields STILL refreshed (--at may carry a new timestamp) — a lane that
       # re-acks after a failed git leg must not keep a stale last_acked.at
@@ -2251,7 +2336,7 @@ cmd_enroll() {
   _is_uuid "$uuid" \
     || die 2 "enroll: uuid shape invalid: '$uuid'"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
-  jq -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' "$LEDGER" >/dev/null 2>&1 \
+  jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
     && die 2 "enroll: uuid already enrolled: $uuid"
   # TOPIC EXISTENCE GUARD (fork #503, Toolsmith 2026-09-22). --topic used to be
   # taken verbatim and coerced with tonumber, so ANY numeric value enrolled rc 0
@@ -2324,13 +2409,13 @@ cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
   _is_uuid "$uuid" \
     || die 2 "promote: uuid shape invalid: '$uuid'"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
-  jq -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' "$LEDGER" >/dev/null 2>&1 \
+  jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
     || die 2 "promote: uuid not enrolled — use enroll to create the row: $uuid"
   # current values (null renders as "-" — the enroll convention)
   local cur_role cur_topic cur_feature
-  cur_role="$(jq -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].role // "-"' "$LEDGER")"
-  cur_topic="$(jq -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].topic_id // "-" | tostring' "$LEDGER")"
-  cur_feature="$(jq -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].feature // "-"' "$LEDGER")"
+  cur_role="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].role // "-"')"
+  cur_topic="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].topic_id // "-" | tostring')"
+  cur_feature="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].feature // "-"')"
   local changes=""
   [ "$role" != "$cur_role" ] && changes="role: $cur_role -> $role"
   if [ -n "$topic" ] && [ "$topic" != "$cur_topic" ]; then
@@ -2429,39 +2514,39 @@ cmd_retire() { # retire <uuid> [--topic N] [--role R] [--why TEXT] — REMOVE on
   # selectors when given. An absent topic_id can never equal a numeric
   # --topic ("" != "49607"), so a selector never matches a null-topic row.
   local n_match
-  n_match="$(jq -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
+  n_match="$(jq_ledger -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
     [ .workers[] | select(.uuid == $u)
       | select($tp == "" or ((.topic_id // "") | tostring) == $tp)
-      | select($rl == "" or ((.role // "") == $rl)) ] | length' "$LEDGER" 2>/dev/null)" \
+      | select($rl == "" or ((.role // "") == $rl)) ] | length' 2>/dev/null)" \
     || die 3 "retire: ledger unreadable: $LEDGER"
   case "$n_match" in ''|*[!0-9]*) die 3 "retire: ledger unreadable: $LEDGER" ;; esac
   [ "$n_match" -gt 0 ] || die 2 "retire: no row matches $uuid${sel_topic:+ (topic $sel_topic)}${sel_role:+ (role $sel_role)} — nothing to remove"
   if [ "$n_match" -gt 1 ]; then
     echo "retire: ambiguous — $n_match rows carry $uuid; add --topic N and/or --role R to pick exactly one:" >&2
-    jq -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
+    jq_ledger -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
       .workers[] | select(.uuid == $u)
       | select($tp == "" or ((.topic_id // "") | tostring) == $tp)
       | select($rl == "" or ((.role // "") == $rl))
       | "  " + (.role // "-") + "  topic " + ((.topic_id // "-") | tostring)
         + "  feature " + (.feature // "-") + "  confirmed " + ((.confirmed // false) | tostring)' \
-      "$LEDGER" >&2
+      >&2
     die 2 "retire: ambiguous uuid — refusing to remove more than one row"
   fi
   # Exactly one match: pin it to an ARRAY INDEX so the removal is exact.
   local idx
-  idx="$(jq -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
+  idx="$(jq_ledger -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
     [ .workers | to_entries[]
       | select(.value.uuid == $u)
       | select($tp == "" or ((.value.topic_id // "") | tostring) == $tp)
-      | select($rl == "" or ((.value.role // "") == $rl)) ][0].key' "$LEDGER")"
+      | select($rl == "" or ((.value.role // "") == $rl)) ][0].key')"
   case "$idx" in ''|*[!0-9]*) die 3 "retire: ledger unreadable (no index for the matched row): $LEDGER" ;; esac
   [ -n "$why" ] || why="(no reason given)"
   # Snapshot the row BEFORE removal — the event is its only surviving record.
   local cur_role cur_topic cur_feature cur_confirmed
-  cur_role="$(jq -r --argjson i "$idx" '.workers[$i].role // "-"' "$LEDGER")"
-  cur_topic="$(jq -r --argjson i "$idx" '(.workers[$i].topic_id // "-") | tostring' "$LEDGER")"
-  cur_feature="$(jq -r --argjson i "$idx" '.workers[$i].feature // "-"' "$LEDGER")"
-  cur_confirmed="$(jq -r --argjson i "$idx" '(.workers[$i].confirmed // false) | tostring' "$LEDGER")"
+  cur_role="$(jq_ledger -r --argjson i "$idx" '.workers[$i].role // "-"')"
+  cur_topic="$(jq_ledger -r --argjson i "$idx" '(.workers[$i].topic_id // "-") | tostring')"
+  cur_feature="$(jq_ledger -r --argjson i "$idx" '.workers[$i].feature // "-"')"
+  cur_confirmed="$(jq_ledger -r --argjson i "$idx" '(.workers[$i].confirmed // false) | tostring')"
   _retire_locked() {
     local n t; n=$(( $(max_n) + 1 )); t="$(now_iso)"
     atomic_jq --argjson i "$idx" --arg u "$uuid" --arg r "$cur_role" --arg tp "$cur_topic" \
@@ -2596,8 +2681,8 @@ cmd_migrate() {
   while [ $# -gt 0 ]; do
     case "$1" in
       -h|--help) echo "usage: oc-ledger migrate --to jsonl [--source <workers-ledger.json>] [--ledger <path>] [--force] [--live]
-  Convert a legacy single-file ledger into events.jsonl + workers.json, leaving
-  workers-ledger.json as a regenerated view. Refuses to clobber an existing
+  Convert a legacy single-file ledger into events.jsonl + workers.json.
+  The compact view is no longer written. Refuses to clobber an existing
   events.jsonl unless --force, and refuses the LIVE state dir unless --live
   (flipping the live write path is a declared window, not a side effect).
   --ledger <path> points the STATE dir at a copy (the destination), so
@@ -2666,19 +2751,11 @@ cmd_migrate() {
   [ "$n_out" = "$n_src" ] || die 4 "migrate: row count changed in flight (source $n_src, emitted $n_out) — refusing"
 
   jq -c 'del(.events)' "$frozen" > "$wftmp" 2>/dev/null || die 4 "migrate: could not build workers.json"
-  # The view is regenerated FROM THE TWO ARTIFACTS BEING INSTALLED (same
-  # expression ledger_load uses), so it is provably a function of the record.
-  if ! jq -s --slurpfile w "$wftmp" '($w[0] // {}) + {events: .}' "$evtmp" > "$vtmp" 2>"$vtmp.err"; then
-    die 4 "migrate: could not regenerate the view: $(cat "$vtmp.err" 2>/dev/null)"
-  fi
-  jq -e . "$vtmp" >/dev/null 2>&1 || die 4 "migrate: regenerated view is not valid JSON — refusing"
 
-  # Install: non-event state, then the RECORD (its presence IS the mode switch),
-  # then the view last so no consumer can read a view that outruns the record.
+  # #177: install the record only. The materialized view is no longer written.
   mv "$wftmp" "$(_JSONL_WORKERS)" || die 4 "migrate: could not install workers.json"
   mv "$evtmp" "$ev" || die 4 "migrate: could not install events.jsonl"
-  mv "$vtmp" "$LEDGER" || die 4 "migrate: record installed but the view rewrite failed"
-  rm -f "$vtmp.err"
+  rm -f "$vtmp" "$vtmp.err"
   trap - EXIT
 
   echo "migrate: ok"
@@ -2687,7 +2764,6 @@ cmd_migrate() {
   echo "  rows:          $n_out (source $n_src)"
   echo "  record:        $ev"
   echo "  workers:       $(_JSONL_WORKERS)"
-  echo "  view:          $LEDGER (regenerated from the record)"
   echo "  NOTE: this state dir is now in JSONL mode — the live write path changed with it."
 }
 
@@ -3734,10 +3810,16 @@ FIXTURE
   printf '{"probe":"#80 control"}\n' > "$T/state/baseline.json"
   git -C "$T/state" status --porcelain -- baseline.json | grep -q . && ok || bad "auto-commit-control-not-dirty"
   bash "$ME" stamp note "#508/#80 auto-commit probe" >/dev/null 2>&1
-  # the POSITIVE control: the tail still sweeps the TRACKED namespace
+  # #177: a stamp no longer sweeps the TRACKED namespace (that runs once per
+  # oc-ship leg, or via commit-pending --bundle). The control must stay dirty
+  # after the stamp, then clean after the explicit sweep.
   git -C "$T/state" status --porcelain -- baseline.json | grep -q . \
-    && bad "auto-commit-tail-inert: baseline.json left dirty -- the sweep stopped running" \
-    || ok "auto-commit tail still sweeps the TRACKED namespace (baseline.json control)"
+    && ok "stamp leaves TRACKED files dirty (#177: no per-stamp sweep)" \
+    || bad "auto-commit-tail-still-sweeps: baseline.json was committed by the stamp"
+  bash "$ME" commit-pending --bundle >/dev/null 2>&1
+  git -C "$T/state" status --porcelain -- baseline.json | grep -q . \
+    && bad "commit-pending-bundle-inert: baseline.json left dirty -- the sweep stopped running" \
+    || ok "commit-pending --bundle sweeps the TRACKED namespace (baseline.json control)"
   # and the ignored log is neither staged nor lost
   git -C "$T/state" ls-files --error-unmatch tools.log >/dev/null 2>&1 \
     && bad "auto-commit-tools-log-tracked: the ignored log was committed (#80 regression)" || ok
@@ -5415,6 +5497,60 @@ M149EOF
     "$(tail -1 "$M149A/state/events.jsonl" | jq -r '.what // .text // .summary // ""')"
   rm -rf "$M149"
 
+  # ---- #177 lock-free read verbs ----------------------------------------------
+  # workers / worker / events --all|--jsonl / ok. No lock, no ledger_load slurp.
+  # Fixtures cover both the compact file and JSONL mode, plus the events.jsonl
+  # --ledger remap (canonical default moving to the record path).
+  R177="$T/r177"; mkdir -p "$R177"
+  printf '%s' '{"workers":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"editor","topic_id":7,"feature":"x","state":"ACTIVE"},{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"toolsmith","topic_id":0,"feature":"-","state":"RETIRED"}],"events":[{"n":1,"t":"2026-11-25T09:00:00Z","kind":"claim","by":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","what":"CLAIM #177"},{"n":2,"t":"2026-11-25T09:01:00Z","kind":"note","by":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","what":"hello"}]}' > "$R177/workers-ledger.json"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" ok >/dev/null
+  chk "r177-ok-legacy-rc" 0 $?
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" workers --json > "$R177/w.json"
+  chk "r177-workers-count" 2 "$(jq 'length' "$R177/w.json")"
+  chk "r177-workers-first-role" "editor" "$(jq -r '.[0].role' "$R177/w.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" worker --uuid "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" > "$R177/one.tsv"
+  chk "r177-worker-tsv" $'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb	toolsmith	0	RETIRED' "$(cat "$R177/one.tsv")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" worker --uuid "00000000-0000-4000-8000-000000000000" >/dev/null 2>&1
+  chk "r177-worker-miss-rc" 1 $?
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --json --all > "$R177/e.json"
+  chk "r177-events-all-count" 2 "$(jq 'length' "$R177/e.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind note --json --all > "$R177/en.json"
+  chk "r177-events-kind-filter" 1 "$(jq 'length' "$R177/en.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind nosuch --json --all > "$R177/empty.json"
+  chk "r177-events-all-empty-is-rc0" 0 $?
+  chk "r177-events-all-empty-array" "[]" "$(cat "$R177/empty.json")"
+  # JSONL mode: record + workers.json, view may be absent (fresh clone).
+  mkdir -p "$R177/jl"
+  printf '%s\n' '{"n":1,"t":"2026-11-25T09:00:00Z","kind":"claim","by":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","what":"CLAIM #177"}' \
+    '{"n":2,"t":"2026-11-25T09:01:00Z","kind":"note","by":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","what":"hello"}' \
+    > "$R177/jl/events.jsonl"
+  printf '%s' '{"workers":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"editor","topic_id":7,"feature":"x","state":"ACTIVE"}]}' > "$R177/jl/workers.json"
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" ok >/dev/null
+  chk "r177-ok-jsonl-without-view-rc" 0 $?
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" workers --json > "$R177/jl-w.json"
+  chk "r177-jsonl-workers-count" 1 "$(jq 'length' "$R177/jl-w.json")"
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" events --jsonl > "$R177/jl-e.jsonl"
+  chk "r177-jsonl-events-lines" 2 "$(wc -l < "$R177/jl-e.jsonl" | tr -d ' ')"
+  # --ledger events.jsonl is used as the record path (#177; no view remap).
+  OC_LEDGER="$R177/jl/events.jsonl" bash "$ME" workers --json > "$R177/remap-w.json"
+  chk "r177-remap-events-jsonl-workers" 1 "$(jq 'length' "$R177/remap-w.json")"
+  OC_LEDGER="$R177/jl/events.jsonl" bash "$ME" events --json --all > "$R177/remap-e.json"
+  chk "r177-remap-events-jsonl-events" 2 "$(jq 'length' "$R177/remap-e.json")"
+  mkdir -p "$R177/bad"
+  printf 'not json\n' > "$R177/bad/workers-ledger.json"
+  OC_LEDGER="$R177/bad/workers-ledger.json" bash "$ME" ok >/dev/null 2>&1
+  chk "r177-ok-malformed-rc" 3 $?
+  # existing tail events: no-match stays rc 1 (a verdict), --all does not change it
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind nosuch >/dev/null 2>&1
+  chk "r177-events-tail-nomatch-still-rc1" 1 $?
+  # #177: a jsonl stamp appends the record and must not create or refresh the view.
+  mkdir -p "$R177/noview"
+  printf '%s\n' '{"n":1,"t":"2026-11-25T09:00:00Z","kind":"note","by":"hq","what":"seed"}' > "$R177/noview/events.jsonl"
+  printf '%s' '{"workers":[],"updated_at":"2026-11-25T09:00:00Z"}' > "$R177/noview/workers.json"
+  OC_LEDGER="$R177/noview/events.jsonl" bash "$ME" stamp note "no-view stamp" --by hq --allow-unattributed --allow-no-ref >/dev/null
+  chk "r177-stamp-jsonl-no-view-file" 1 "$([ ! -e "$R177/noview/workers-ledger.json" ] && echo 1 || echo 0)"
+  chk "r177-stamp-jsonl-appended" 2 "$(wc -l < "$R177/noview/events.jsonl" | tr -d ' ')"
+
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
 }
@@ -5424,7 +5560,7 @@ _latest_claim_issue() { # $1=uuid -> stdout: issue number (rc 0) or failure
   # diagnostic (rc 3). Single owner of the claim->issue derivation —
   # cmd_claim_ref and cmd_confirm both consume it (E4, v0.4.77).
   local claim issue
-  claim="$(jq -r --arg u "$1" '[.events[] | select(.kind=="claim" and ((.by // "") | contains($u)))][-1].what // ""' "$LEDGER")"
+  claim="$(jq_ledger -r --arg u "$1" '[.events[] | select(.kind=="claim" and ((.by // "") | contains($u)))][-1].what // ""')"
   [ -n "$claim" ] || { echo "no claim event by $1"; return 3; }
   # RESIDUAL (lane c6b1a539 report, 2026-09-12; the D-2 family — the gate must
   # not LIE): the ref is extracted by the SINGLE OWNER (_issue_ref_tokens),
@@ -5482,6 +5618,7 @@ _latest_open_claim_issue() { # $1=uuid [$2=max_age_days] -> stdout: the lane's l
   # while older open claims existed. The closure predicate stays the canonical
   # one (oc_claims.claim_is_closed) — never re-inlined here: four inlined copies
   # of it had already drifted apart (#305).
+  _prepare_unified || return 3
   python3 -c '
 import sys, os, json, datetime
 
@@ -5588,7 +5725,10 @@ if older:
         "%d older claim row(s) by %s were also scanned and none is open\n"
         % (older, uuid))
 sys.exit(3)
-' "$LEDGER" "$_OC_DIR" "$1" "${2:-0}"
+' "$_UNIFIED" "$_OC_DIR" "$1" "${2:-0}"
+  local _purc=$?
+  _cleanup_unified
+  return $_purc
 }
 
 cmd_claim() { # oc-ledger claim [<uuid>] <issue-number|#N> [text...] | oc-ledger claim --issue <N> [--what <text>]
@@ -5724,7 +5864,7 @@ cmd_confirm() { # oc-ledger confirm <uuid> [--gh <cmd>] — verify the worker's
   esac; done
   [ -n "$uuid" ] || die 2 "usage: oc-ledger confirm <uuid> [--gh <cmd>]"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
-  jq -e --arg u "$uuid" '.workers[] | select(.uuid==$u)' "$LEDGER" >/dev/null 2>&1 \
+  jq_ledger -e --arg u "$uuid" '.workers[] | select(.uuid==$u)' >/dev/null 2>&1 \
     || die 3 "confirm: unknown worker uuid $uuid"
   # claim->issue derivation delegated to the single owner (E4, v0.4.77)
   local out issue
@@ -5744,7 +5884,7 @@ cmd_confirm() { # oc-ledger confirm <uuid> [--gh <cmd>] — verify the worker's
   # D-2 (HQ d72bd52d, 2026-09-12): `by` must CONTAIN the uuid, because
   # cmd_claims links a closure with `(.value.by // "") | contains($u)`.
   # The composed "<role> <uuid>" form satisfies it and stays readable.
-  role="$(jq -r --arg u "$uuid" '[.workers[] | select(.uuid==$u)][0].role // ""' "$LEDGER" 2>/dev/null || true)"
+  role="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid==$u)][0].role // ""' 2>/dev/null || true)"
   by="$uuid"; [ -n "$role" ] && by="$role $uuid"
   _confirm_locked() {
     # D-2: the top-level .events row is the one cmd_claims SCANS — without it
@@ -5786,11 +5926,11 @@ cmd_lessons() { # oc-ledger lessons — H-2 (v0.4.116): extract lesson/incident 
   local lcls
   lcls="$(printf '%s' "$cls" | tr 'A-Z' 'a-z')"
   local out rc
-  out="$(jq -r --arg kind "$kind" --arg lcls "$lcls" \
+  out="$(jq_ledger -r --arg kind "$kind" --arg lcls "$lcls" \
     '.events | to_entries[]
      | select(($kind == "all") or ((.value.kind // "") == $kind))
      | select(($lcls == "") or (((.value.what // "") | ascii_downcase) | contains($lcls)))
-     | (["n=" + (.key | tostring), (.value.kind // "?"), (.value.t // "?"), ((.value.what // "") | .[0:160])] | join("\t"))' "$LEDGER")"
+     | (["n=" + (.key | tostring), (.value.kind // "?"), (.value.t // "?"), ((.value.what // "") | .[0:160])] | join("\t"))')"
   rc=$?
   [ $rc -eq 0 ] || die 3 "lessons: jq failed (rc $rc) — ledger unreadable or query error"
   [ -n "$out" ] && printf '%s\n' "$out"
@@ -5820,6 +5960,7 @@ cmd_claims() { # oc-ledger claims [<N>] — dispatch=verify-unclaimed backend (#
   fi
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
 
+  _prepare_unified || die 3 "claims: cannot load ledger"
   python3 -c '
 import sys, os, json
 
@@ -5839,7 +5980,10 @@ except Exception as e:
 
 for claim in oc.open_claims(events, sys.argv[2] or None):
     sys.stdout.write("%s\t%s\t%s\n" % (claim["by"], claim["t"], claim["what"]))
-' "$LEDGER" "$target" "$_OC_DIR"
+' "$_UNIFIED" "$target" "$_OC_DIR"
+  local _purc=$?
+  _cleanup_unified
+  exit $_purc
 }
 cmd_sweep_closed_claims() { # oc-ledger sweep-closed-claims [--dry-run]
   # Release OPEN claim rows whose issue is CLOSED on a home tracker and OPEN on
@@ -5885,6 +6029,7 @@ cmd_sweep_closed_claims() { # oc-ledger sweep-closed-claims [--dry-run]
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
 
   local pairs unres
+  _prepare_unified || die 3 "sweep-closed-claims: cannot load ledger"
   pairs="$(python3 -c '
 import sys, os, json, subprocess
 
@@ -5988,8 +6133,9 @@ for tok, by, what in unresolved:
 # The verdict is a CLAIM ABOUT A POPULATION, so the population travels with it.
 sys.stdout.write("S\t%d\t%d\t%d\t%d\n"
                  % (len(open_claims), n_open, n_closed, len(unresolved)))
-' "$LEDGER" "$_OC_DIR" 2>"${TMPDIR:-/tmp}/oc-sweep-closed-claims.$$.err")"
+' "$_UNIFIED" "$_OC_DIR" 2>"${TMPDIR:-/tmp}/oc-sweep-closed-claims.$$.err")"
   rc=$?
+  _cleanup_unified
   [ $rc -eq 0 ] || die 3 "sweep-closed-claims: scan failed (rc $rc) — ledger or GitHub probe"
 
   local counts
@@ -6154,7 +6300,7 @@ cmd_roster() { # oc-ledger roster [--role <substr>] [--live] [--json]
   # session has no binding). With --live it is BOTH the liveness filter and the
   # topic source; without --live it is empty and every row passes, keeping the
   # historical (ledger-order, stored-topic) output byte-identical.
-  sel="$(jq -r --arg lr "$lrole" --argjson ir "$include_retired" \
+  sel="$(jq_ledger -r --arg lr "$lrole" --argjson ir "$include_retired" \
     --argjson lv "$live" --argjson live "$livejson" \
     '.workers[]?
      | select(($ir == 1) or ((.state // "") != "RETIRED"))
@@ -6167,16 +6313,16 @@ cmd_roster() { # oc-ledger roster [--role <substr>] [--live] [--json]
         (if ($lt != null and $lt != "") then $lt
          else (($w.topic_id // "-") | tostring) end),
         (($w.feature // "-") | tostring | .[0:60]), ($w.last_acked.version // "-")]
-     | @tsv' "$LEDGER")"
+     | @tsv')"
   rc=$?
   # RETIRED-exclusion diagnostics (law 9, defect #6, 2026-09-12): when the
   # default filter excludes rows, a rc-1 NO-MATCH must say whether retirement
   # is the reason, so a lane does not read it as "no such lane ever existed".
   local retired_n=0
   if [ "$include_retired" -eq 0 ]; then
-    retired_n="$(jq -r --arg lr "$lrole" \
+    retired_n="$(jq_ledger -r --arg lr "$lrole" \
       '[.workers[]? | select((.state // "") == "RETIRED")
-        | select(($lr == "") or (((.role // "") | ascii_downcase) | contains($lr)))] | length' "$LEDGER" 2>/dev/null)" || retired_n=0
+        | select(($lr == "") or (((.role // "") | ascii_downcase) | contains($lr)))] | length' 2>/dev/null)" || retired_n=0
     case "$retired_n" in ''|*[!0-9]*) retired_n=0 ;; esac
   fi
   [ $rc -eq 0 ] || { [ -n "$livef" ] && rm -f "$livef"; die 3 "roster: jq failed (rc $rc) — ledger unreadable or query error"; }
@@ -6208,7 +6354,7 @@ cmd_roster() { # oc-ledger roster [--role <substr>] [--live] [--json]
       [ -n "$dline" ] || continue
       printf '%s\n' "$dline" >&2
       drift_n=$(( drift_n + 1 ))
-    done <<< "$(jq -r --argjson ir "$include_retired" --argjson live "$livejson" --arg lr "$lrole" \
+    done <<< "$(jq_ledger -r --argjson ir "$include_retired" --argjson live "$livejson" --arg lr "$lrole" \
       '.workers[]?
        | select(($ir == 1) or ((.state // "") != "RETIRED"))
        | select(($lr == "") or (((.role // "") | ascii_downcase) | contains($lr)))
@@ -6218,7 +6364,7 @@ cmd_roster() { # oc-ledger roster [--role <substr>] [--live] [--json]
        | select($lt != null and $lt != "")
        | (($w.topic_id // "") | tostring) as $st
        | select($st != "" and $st != $lt)
-       | "BINDING-MISMATCH uuid=\($u[0:8]) role=\($w.role // "-") stored=\($st) live=\($lt) -- reconcile with: oc-ledger promote \($u) \($w.role // "editor") --topic \($lt)"' "$LEDGER")"
+       | "BINDING-MISMATCH uuid=\($u[0:8]) role=\($w.role // "-") stored=\($st) live=\($lt) -- reconcile with: oc-ledger promote \($u) \($w.role // "editor") --topic \($lt)"')"
     if [ "$drift_n" -eq 0 ]; then
       printf '%s\n' "roster --reconcile: 0 BINDING-MISMATCH over the live-bound rows" >&2
     else
@@ -6277,7 +6423,7 @@ cmd_duplicates() {
   # row. Measured live 2026-09-25: 111 groups by (kind, what), of which the
   # two classes below are reported separately.
   local sel
-  sel="$(jq -r --arg k "$kind" '
+  sel="$(jq_ledger -r --arg k "$kind" '
     [ .events[]?
       | select($k == "" or ((.kind // .type // "") == $k))
       | { k: (.kind // .type // "-"),
@@ -6294,7 +6440,7 @@ cmd_duplicates() {
         rows: [ .[].n ], ts: [ .[].t ],
         what: (.[0].w | .[0:90]) }
     | . + { cls: (if (.bys | length) == 1 then "DUPLICATE" else "IDENTITY-SPLIT" end) }
-  ' "$LEDGER")" || die 3 "duplicates: ledger unreadable"
+  ')" || die 3 "duplicates: ledger unreadable"
   # jq -s slurps the stream into ONE array; a per-input -r would print one
   # count per row, and a multi-line value then fails the digit test below and
   # reads as 0 -- a clean verdict over a non-empty result.
@@ -6337,6 +6483,10 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   #   --since T  byte-lexicographic compare on `t` (== chronological for a
   #              well-formed ISO-8601Z stamp; a corrupt t sorts by its bytes)
   #   --json     JSON array of the matching events (full fields, untruncated)
+  #   --all      do not apply the --n tail window; emit every match (rc 0 even
+  #              when the match set is empty — a full dump is not a verdict)
+  #   --jsonl    stream one event object per line, no wrapper array; implies
+  #              the record is read as a stream (no ledger_load slurp, no lock)
   #   --full     do not truncate `what` (default 160 chars, as in `lessons`);
   #              a truncated row is nudged on stderr so no caller silently
   #              builds a claim on a clipped read
@@ -6344,7 +6494,7 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   # rc 0 rows printed · 1 NO-MATCH verdict (deliberately not a silent empty:
   # a caller that gets 1 must widen the filter, NEVER conclude "no events")
   # · 2 usage · 3 ledger unreadable.
-  local n=20 kind="" actor="" since="" json=0 full=0
+  local n=20 kind="" actor="" since="" json=0 full=0 all=0 jsonl=0
   if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
     n="$1"; shift
   fi
@@ -6355,14 +6505,21 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
       --actor) [ -n "${2:-}" ] || die 2 "events: --actor needs a value"; actor="$2"; shift 2 ;;
       --since) [ -n "${2:-}" ] || die 2 "events: --since needs a value"; since="$2"; shift 2 ;;
       --json) json=1; shift ;;
+      --jsonl) jsonl=1; shift ;;
+      --all) all=1; shift ;;
       --full) full=1; shift ;;
-      -h|--help) echo "usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--full]"; exit 0 ;;
-      *) die 2 "events: unknown arg '$1' (usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--full])" ;;
+      -h|--help) echo "usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--jsonl] [--all] [--full]"; exit 0 ;;
+      *) die 2 "events: unknown arg '$1' (usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--jsonl] [--all] [--full])" ;;
     esac
   done
   case "$n" in ''|*[!0-9]*) die 2 "events: --n must be a positive integer (got '$n')" ;; esac
   [ "$n" -ge 1 ] || die 2 "events: --n must be >= 1 (got '$n')"
+  [ "$json" -eq 1 ] && [ "$jsonl" -eq 1 ] && die 2 "events: --json and --jsonl are mutually exclusive"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  if [ "$all" -eq 1 ] || [ "$jsonl" -eq 1 ]; then
+    _events_dump "$kind" "$actor" "$since" "$json" "$jsonl" "$full" "$all"
+    exit $?
+  fi
   local sel rc
   # #156 (2026-11-23): read through `ledger_load` — the ONE reader — instead of
   # raw-jq on `$LEDGER`. In JSONL mode `$LEDGER` names the DERIVED view, which
@@ -6447,6 +6604,161 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
       [.[] | select((n_what | length) > $t)] | length')"
     [ "${clipped:-0}" -gt 0 ] && echo "events: $clipped row(s) had 'what' truncated to $trunc chars — rerun with --full for the complete text" >&2
   fi
+  exit 0
+}
+
+# ---- lock-free streaming dumps (#177) ----------------------------------------
+# The seven direct readers needed only: the workers list, one worker by uuid,
+# every event (optionally filtered), and a syntax check. These verbs take NO
+# fleet lock and do not go through ledger_load (which slurps the record into
+# a unified dict). In JSONL mode they read workers.json / events.jsonl; in
+# legacy mode they read .workers / .events off the compact file.
+
+_workers_source() {
+  # stdout: path to the file a workers read should open, plus a second
+  # word "array" (the file IS the workers array) or "dict" (.workers).
+  if _jsonl_mode && [ -f "$(_JSONL_WORKERS)" ]; then
+    printf '%s dict\n' "$(_JSONL_WORKERS)"
+    return 0
+  fi
+  [ -f "$LEDGER" ] || return 3
+  printf '%s dict\n' "$LEDGER"
+}
+
+_events_source() {
+  if _jsonl_mode; then
+    printf '%s jsonl\n' "$(_JSONL_EVENTS)"
+    return 0
+  fi
+  [ -f "$LEDGER" ] || return 3
+  printf '%s array\n' "$LEDGER"
+}
+
+# Filter program shared by --all / --jsonl dumps. Raw fields, no schema
+# normalisation: callers that used to json.load the view's .events must see
+# the same objects.
+_EVENTS_FILTER='
+  def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+  def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+  def n_t:    ((.t // .ts // .at // "") | tostring);
+  select(($kind == "") or (n_kind == $kind))
+  | select(($actor == "") or (n_by | contains($actor)))
+  | select(($since == "") or (n_t >= $since))
+'
+
+_events_dump() { # kind actor since json jsonl full all
+  local kind="$1" actor="$2" since="$3" json="$4" jsonl="$5" full="$6" all="$7"
+  local src mode sel rc
+  src="$(_events_source)" || die 3 "events: ledger missing or unparseable: $LEDGER"
+  mode="${src##* }"; src="${src% *}"
+  if [ "$mode" = "jsonl" ]; then
+    sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" \
+      "$_EVENTS_FILTER" "$src")"
+    rc=$?
+  else
+    sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" \
+      "[.events[]? | ($_EVENTS_FILTER)][]" "$src")"
+    rc=$?
+  fi
+  [ $rc -eq 0 ] || die 3 "events: jq failed (rc $rc) — ledger unreadable or query error"
+  if [ "$jsonl" -eq 1 ]; then
+    [ -n "$sel" ] && printf '%s\n' "$sel"
+    exit 0
+  fi
+  if [ "$json" -eq 1 ]; then
+    if [ -z "$sel" ]; then echo '[]'; else printf '%s\n' "$sel" | jq -s -c '.'; fi
+    exit 0
+  fi
+  # TSV of every match (the --all text form). Empty is rc 0, not a no-match verdict.
+  if [ -z "$sel" ]; then exit 0; fi
+  local trunc=160; [ "$full" -eq 1 ] && trunc=1000000
+  printf '%s\n' "$sel" | jq -s -r --argjson t "$trunc" '
+    def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+    def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+    def n_t:    ((.t // .ts // .at // "") | tostring);
+    def n_what: ((.what // .text // .summary // .note // .detail // .event
+                  // .action // .directive // .details // "") | tostring);
+    def n_n:    (.n // .seq // .id // 0);
+    .[] | [ n_n,
+            (n_t    | if . == "" then "?" else . end),
+            (n_kind | if . == "" then "?" else . end),
+            (n_by   | if . == "" then "-" else . end),
+            (n_what | .[0:$t]) ] | @tsv'
+  exit 0
+}
+
+cmd_ok() { # oc-ledger ok — syntax check, no lock, no slurp of the view
+  case "${1:-}" in
+    -h|--help) echo "usage: oc-ledger ok"; echo "Exit: 0 readable / 3 missing or unparseable"; exit 0 ;;
+    "") ;;
+    *) die 2 "ok: unknown arg '$1' (usage: oc-ledger ok)" ;;
+  esac
+  ledger_ok || die 3 "ok: ledger missing or unparseable: $LEDGER"
+  echo "ok"
+  exit 0
+}
+
+cmd_workers() { # oc-ledger workers [--json] [--uuid U]
+  # READ-ONLY, no lock. Emits the workers list from workers.json (JSONL mode)
+  # or .workers (legacy / fixture). Default is --json (the array the seven
+  # readers already consumed as ledger_data["workers"]).
+  local json=1 uuid="" tsv=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; tsv=0; shift ;;
+      --tsv)  tsv=1; json=0; shift ;;
+      --uuid) [ -n "${2:-}" ] || die 2 "workers: --uuid needs a value"; uuid="$2"; shift 2 ;;
+      -h|--help) echo "usage: oc-ledger workers [--json|--tsv] [--uuid U]"; exit 0 ;;
+      *) die 2 "workers: unknown arg '$1' (usage: oc-ledger workers [--json|--tsv] [--uuid U])" ;;
+    esac
+  done
+  local src mode
+  src="$(_workers_source)" || die 3 "workers: ledger missing or unparseable: $LEDGER"
+  mode="${src##* }"; src="${src% *}"
+  local prog
+  if [ -n "$uuid" ]; then
+    prog='[.workers[]? | select((.uuid // "") == $u)]'
+  else
+    prog='(.workers // [])'
+  fi
+  local out
+  out="$(jq -c --arg u "$uuid" "$prog" "$src")" || die 3 "workers: jq failed — ledger unreadable or query error"
+  if [ "$tsv" -eq 1 ]; then
+    printf '%s' "$out" | jq -r '.[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.feature // "-"), (.state // "ACTIVE")] | @tsv'
+    exit 0
+  fi
+  printf '%s\n' "$out"
+  exit 0
+}
+
+cmd_worker() { # oc-ledger worker --uuid U [--json]
+  # One roster row by uuid. Default TSV matches oc-notify-fanout's extract:
+  # uuid, role (editor), topic_id (0), state (ACTIVE). --json emits the object.
+  # rc 0 found · 1 NO-MATCH (empty stdout) · 2 usage · 3 unreadable.
+  local uuid="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --uuid) [ -n "${2:-}" ] || die 2 "worker: --uuid needs a value"; uuid="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: oc-ledger worker --uuid U [--json]"; exit 0 ;;
+      *)
+        if [ -z "$uuid" ] && [ "${1#-}" = "$1" ]; then uuid="$1"; shift
+        else die 2 "worker: unknown arg '$1' (usage: oc-ledger worker --uuid U [--json])"; fi ;;
+    esac
+  done
+  [ -n "$uuid" ] || die 2 "worker: --uuid is required"
+  local src
+  src="$(_workers_source)" || die 3 "worker: ledger missing or unparseable: $LEDGER"
+  src="${src% *}"
+  local out
+  out="$(jq -c --arg u "$uuid" '[.workers[]? | select((.uuid // "") == $u)][0] // empty' "$src")" \
+    || die 3 "worker: jq failed — ledger unreadable or query error"
+  [ -n "$out" ] || exit 1
+  if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$out"
+    exit 0
+  fi
+  printf '%s\n' "$out" | jq -r '[(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv'
   exit 0
 }
 
@@ -6537,7 +6849,7 @@ cmd_mode() {
 
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
-case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode|workers|worker|ok> | [selftest|--selftest]"; exit 0 ;; esac
 if [ "$SELFTEST" -eq 1 ]; then
   # (#722) `selftest --help` must be a READ. parse_global consumes the bare
   # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
@@ -6571,11 +6883,14 @@ case "$sub" in
   lessons) cmd_lessons "${rest[@]+"${rest[@]}"}" ;;
   roster) cmd_roster "${rest[@]+"${rest[@]}"}" ;;
   events|tail) cmd_events "${rest[@]+"${rest[@]}"}" ;;
+  workers) cmd_workers "${rest[@]+"${rest[@]}"}" ;;
+  worker) cmd_worker "${rest[@]+"${rest[@]}"}" ;;
+  ok) cmd_ok "${rest[@]+"${rest[@]}"}" ;;
   duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
   mode) cmd_mode "${rest[@]+"${rest[@]}"}" ;;
   selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
-    echo "stamp fixture sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
+    echo "stamp fixture sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail workers worker ok duplicates mode"
     exit 0
     ;;
   *)
@@ -6588,7 +6903,7 @@ case "$sub" in
       kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
       push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
       version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
-      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode|workers|worker|ok> | --verbs | --selftest" ;;
     esac
     ;;
 esac
