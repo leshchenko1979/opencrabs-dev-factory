@@ -3068,14 +3068,14 @@ NF="$TOOLS_DIR/notify/oc-notify-fanout"
 NFSELF="$(bash "$TOOLS_DIR/state/oc-ledger" roster --live --role toolsmith 2>/dev/null | head -1 | awk '{print $1}')"
 [ -n "$NFSELF" ] || NFSELF="00000000-0000-4000-8000-00000000dead"
 # 61a. placeholder law: dangling token -> every send ABORTed, rc!=0
-NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
+NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl" timeout 200 bash "$NF" \
   --title "t-battery" --text "dangling {{NOSUCH}} token" --dry-run 2>&1)" \
   && bad "fanout placeholder-guard: rc=0 on token leak" \
   || { grep -q "placeholder-token-survived" <<< "$NFOUT" \
        && ok "fanout placeholder-guard: dangling token -> send ABORTed (law1)" \
        || bad "fanout placeholder-guard: aborted but no law1 receipt"; }
 # 61b. substitution: valid tokens -> DRY briefs, no ABORT, dead uuids skipped
-NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
+NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl" timeout 200 bash "$NF" \
   --title "t-battery" --text "v{{VERSION}} u{{UUID}}" --dry-run 2>&1)"
 grep -q "placeholder-token-survived" <<< "$NFOUT" \
   && bad "fanout substitution: valid tokens ABORTed (substitution broken)" \
@@ -3084,7 +3084,7 @@ grep -qE "sent=[0-9]+ skipped=[0-9]+ failed=0" <<< "$NFOUT" \
   && ok "fanout dry-run summary clean (dead targets skipped, none failed)" \
   || bad "fanout dry-run summary has failures"
 # 61c. roles filter: --roles toolsmith (self-excluded) -> sent=0
-NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/workers-ledger.json" timeout 200 bash "$NF" \
+NFOUT="$(OC_TOOLS_NOLOG=1 OC_FANOUT_SELF="$NFSELF" OC_FANOUT_LEDGER="$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl" timeout 200 bash "$NF" \
   --title "t" --text "x" --dry-run --roles toolsmith 2>&1)"
 grep -q "sent=0" <<< "$NFOUT" \
   && ok "fanout --roles filter respected" \

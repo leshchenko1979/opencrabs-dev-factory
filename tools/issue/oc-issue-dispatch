@@ -127,9 +127,7 @@ DEFAULT_LEDGER = os.environ.get(
 )
 if not os.path.exists(DEFAULT_LEDGER):
     DEFAULT_LEDGER = os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")
-_jsonl = os.path.join(DEFAULT_LEDGER, "events.jsonl")
-_view = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
-DEFAULT_LEDGER_FILE = _jsonl if os.path.exists(_jsonl) else _view
+DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "events.jsonl")
 
 # ---- two-stream issue routing (SKILL.md; owner order 2026-10-09) -------------
 # BINARY issues live on the FORK leshchenko1979/opencrabs (the single binary

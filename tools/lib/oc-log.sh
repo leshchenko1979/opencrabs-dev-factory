@@ -269,8 +269,7 @@ oc_log_finish() {
 
 # oc_ledger_path -- THE canonical ledger path (v0.4.38 precedence: OC_LEDGER >
 # OC_DEV_STATE > profile default). #177: the default is the record (events.jsonl).
-# oc-ledger remaps this to the view path for stamp writes; readers go through
-# oc-ledger verbs and never slurp the file themselves.
+# There is no fallback to the retired workers-ledger.json view.
 # A caller with its own ledger source (a --ledger flag, a fixture) parses that
 # itself and skips this helper.
 oc_ledger_path() {
@@ -279,13 +278,7 @@ oc_ledger_path() {
     return 0
   fi
   local dir="${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
-  # #177: prefer the record when it is present; fall back to the compact
-  # file so a fixture (or a tree that has not cut over) still resolves.
-  if [ -f "$dir/events.jsonl" ]; then
-    printf '%s\n' "$dir/events.jsonl"
-  else
-    printf '%s\n' "$dir/workers-ledger.json"
-  fi
+  printf '%s\n' "$dir/events.jsonl"
 }
 
 # oc_session_trailer <commit-message-text> — Duty-6 lens F task 2 (v0.4.91 batch)

@@ -57,7 +57,7 @@ REPO="${HOME}/opencrabs"
 BASE_REF="adolfousier/main"
 UPSTREAM_REPO="opencrabs/opencrabs"
 STATE_DIR="${HOME}/.opencrabs/profiles/ops/opencrabs-dev"
-LEDGER_FILE="${STATE_DIR}/workers-ledger.json"
+LEDGER_FILE="${STATE_DIR}/events.jsonl"
 
 usage() {
   cat <<EOF

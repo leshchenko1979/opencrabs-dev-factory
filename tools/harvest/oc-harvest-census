@@ -2421,7 +2421,7 @@ if action == 'check':
     # deterministic precedence rule -- and this ruling did not name it.
     #
     # The ledger is still read here because cycle_note consumes it.
-    ledger_path = mock_ledger or os.path.join(st_dir, 'workers-ledger.json')
+    ledger_path = mock_ledger or os.path.join(st_dir, 'events.jsonl')
     active_claims = oc_claims.get_active_claims(ledger_path, repo_path)
 
     for cycle in cycle_note(active_claims, target_iss):

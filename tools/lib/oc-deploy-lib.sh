@@ -53,19 +53,19 @@ STATE_DIR="${OC_DEPLOY_STATE_DIR:-${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/
 # 2026-08-29). OC_LEDGER overrides everything; an explicit OC_DEPLOY_STATE_DIR
 # keeps selftest/battery fixtures isolated on their own ledger file.
 _oc_state_dir="${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
-if [ -f "$_oc_state_dir/events.jsonl" ]; then
-  CANONICAL_LEDGER="$_oc_state_dir/events.jsonl"
-else
-  CANONICAL_LEDGER="$_oc_state_dir/workers-ledger.json"
-fi
+CANONICAL_LEDGER="$_oc_state_dir/events.jsonl"
 if [ -n "${OC_LEDGER:-}" ]; then
   LEDGER="$OC_LEDGER"
 elif [ -n "${OC_DEPLOY_STATE_DIR:-}" ]; then
-  # Fixtures often still use the compact file; prefer the record when present.
+  # Production default is events.jsonl (CANONICAL_LEDGER). Fixtures in
+  # deploy-selftest often still plant only the compact file; use it when
+  # the record has not been created yet so stamps land where those tests look.
   if [ -f "$OC_DEPLOY_STATE_DIR/events.jsonl" ]; then
     LEDGER="$OC_DEPLOY_STATE_DIR/events.jsonl"
-  else
+  elif [ -f "$OC_DEPLOY_STATE_DIR/workers-ledger.json" ]; then
     LEDGER="$OC_DEPLOY_STATE_DIR/workers-ledger.json"
+  else
+    LEDGER="$OC_DEPLOY_STATE_DIR/events.jsonl"
   fi
 else
   LEDGER="$CANONICAL_LEDGER"
