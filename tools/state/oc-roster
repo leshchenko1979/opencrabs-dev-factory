@@ -135,13 +135,27 @@ def forum_ids(con):
         "WHERE s.archived_at IS NULL AND b.chat_id = ?", (FORUM,))]
 
 def load_ledger():
+    # #177: go through oc-ledger (lock-free workers / events --all). The
+    # compact view is no longer read here.
     if not LEDGER or not os.path.exists(LEDGER):
         die(3, "ledger unreadable: %s" % (LEDGER or "<unset>"))
-    try:
-        with open(LEDGER) as fh:
-            return json.load(fh)
-    except (OSError, ValueError) as e:
-        die(3, "ledger parse failed: %s" % e)
+    tool = os.path.join(_TOOLS_DIR, "state/oc-ledger")
+    if not os.path.exists(tool):
+        die(3, "ledger unreadable: oc-ledger missing at %s" % tool)
+    def _grab(args):
+        try:
+            r = subprocess.run([tool, "--ledger", LEDGER] + args,
+                               capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as e:
+            die(3, "ledger unreadable: %s" % e)
+        if r.returncode != 0:
+            die(3, "ledger unreadable: %s" % ((r.stderr or r.stdout or "oc-ledger rc %s" % r.returncode).strip()))
+        try:
+            return json.loads(r.stdout or "null")
+        except ValueError as e:
+            die(3, "ledger parse failed: %s" % e)
+    return {"workers": _grab(["workers", "--json"]),
+            "events": _grab(["events", "--json", "--all"])}
 
 def claims_index(events):
     """-> (open_claims, issues_by_uuid).

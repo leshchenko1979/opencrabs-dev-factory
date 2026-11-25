@@ -114,7 +114,8 @@ watch_covered() { # $1=sha ; echoes reason, rc 0 covered / 1 uncovered
   if [ -f "$SHADOW" ] && grep -F "$S" "$SHADOW" 2>/dev/null | grep -Eq '(dispatched|deployed|handed-off)'; then
     echo "ship-event"; return 0
   fi
-  if jq -e --arg s "$S" '[ (.events // [])[] | select(.kind != null and ((.kind|tostring) | test("ship|swap")) and (((.what // "")|tostring) | contains($s))) ] | length > 0' "$LEDGER" >/dev/null 2>&1; then
+  if "$LEDGER_TOOL" --ledger "$LEDGER" events --json --all 2>/dev/null \
+    | jq -e --arg s "$S" '[ .[] | select(.kind != null and ((.kind|tostring) | test("ship|swap")) and (((.what // "")|tostring) | contains($s))) ] | length > 0' >/dev/null 2>&1; then
     echo "ledger-event"; return 0
   fi
   return 1

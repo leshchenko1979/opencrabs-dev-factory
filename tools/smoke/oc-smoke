@@ -1166,12 +1166,12 @@ fi
 RUN_ID="${RUN_ID:-unknown}"
 
 ACTOR="${OPENCRABS_SESSION_ID:-}"
-if [ -z "$ACTOR" ] && [ -f "$STATE_DIR/workers-ledger.json" ]; then
-  CLAIM_ACTOR="$(jq -r --arg iss "$ISSUE" '.events[]? | select(.kind == "claim" and ((.issue|tostring) == $iss)) | .actor // empty' "$STATE_DIR/workers-ledger.json" 2>/dev/null | tail -1 || true)"
+if [ -z "$ACTOR" ] && { [ -f "$STATE_DIR/workers-ledger.json" ] || [ -f "$STATE_DIR/events.jsonl" ]; }; then
+  CLAIM_ACTOR="$("$LEDGER_TOOL" --ledger "$STATE_DIR/workers-ledger.json" events --kind claim --json --all 2>/dev/null | jq -r --arg iss "$ISSUE" '.[] | select((.issue|tostring) == $iss) | .actor // empty' | tail -1 || true)"
   if [ -n "$CLAIM_ACTOR" ]; then
     ACTOR="$CLAIM_ACTOR"
   else
-    ACTOR="$(jq -r '.workers[-1].uuid // empty' "$STATE_DIR/workers-ledger.json" 2>/dev/null || true)"
+    ACTOR="$("$LEDGER_TOOL" --ledger "$STATE_DIR/workers-ledger.json" workers --json 2>/dev/null | jq -r '.[-1].uuid // empty' || true)"
   fi
 fi
 ACTOR="${ACTOR:-unknown-actor}"

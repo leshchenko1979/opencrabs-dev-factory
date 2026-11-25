@@ -127,7 +127,9 @@ DEFAULT_LEDGER = os.environ.get(
 )
 if not os.path.exists(DEFAULT_LEDGER):
     DEFAULT_LEDGER = os.path.expanduser("~/.opencrabs/profiles/ops/opencrabs-dev")
-DEFAULT_LEDGER_FILE = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
+_jsonl = os.path.join(DEFAULT_LEDGER, "events.jsonl")
+_view = os.path.join(DEFAULT_LEDGER, "workers-ledger.json")
+DEFAULT_LEDGER_FILE = _jsonl if os.path.exists(_jsonl) else _view
 
 # ---- two-stream issue routing (SKILL.md; owner order 2026-10-09) -------------
 # BINARY issues live on the FORK leshchenko1979/opencrabs (the single binary
@@ -532,6 +534,21 @@ def run_cmd(cmd, cwd=None, env=None, timeout=60):
         return 124, "", f"Command timed out after {timeout}s"
     except Exception as e:
         return 1, "", str(e)
+
+
+def load_ledger_data(ledger_file):
+    """#177: load workers + events through oc-ledger (lock-free, no view slurp)."""
+    tool = os.path.join(TOOL_DIR, "state/oc-ledger")
+    def _grab(args):
+        r = subprocess.run([tool, "--ledger", ledger_file] + args,
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout or "oc-ledger rc %s" % r.returncode).strip())
+        return json.loads(r.stdout or "null")
+    return {
+        "workers": _grab(["workers", "--json"]),
+        "events": _grab(["events", "--json", "--all"]),
+    }
 
 
 def extract_claimed_issues(ledger_data):
@@ -2431,8 +2448,11 @@ def cmd_auto(args):
         print(f"ERROR: Ledger file not found at {ledger_file}", file=sys.stderr)
         return 2
 
-    with open(ledger_file, "r") as f:
-        ledger_data = json.load(f)
+    try:
+        ledger_data = load_ledger_data(ledger_file)
+    except Exception as e:
+        print(f"ERROR: Ledger file not readable at {ledger_file}: {e}", file=sys.stderr)
+        return 2
 
     claimed_issues = extract_claimed_issues(ledger_data)
     open_issues = fetch_open_issues(args.repo)
@@ -2687,8 +2707,11 @@ def cmd_targeted(args):
         print(f"ERROR: Ledger file not found at {ledger_file}", file=sys.stderr)
         return 2
 
-    with open(ledger_file, "r") as f:
-        ledger_data = json.load(f)
+    try:
+        ledger_data = load_ledger_data(ledger_file)
+    except Exception as e:
+        print(f"ERROR: Ledger file not readable at {ledger_file}: {e}", file=sys.stderr)
+        return 2
 
     issue_num = args.issue
     open_issues = fetch_open_issues(args.repo)
