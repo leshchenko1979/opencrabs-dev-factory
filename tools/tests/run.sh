@@ -3666,6 +3666,13 @@ for f in "$TOOLS_DIR"/lib/*.py; do [ -e "$f" ] && cp "$f" "$D451STUB/tools/lib/"
 # fixture that copies only *.py leaves the tool unable to resolve the tools root,
 # so TOOL_DIR collapses to the tool's own subdir and the shared lib/ disappears.
 [ -f "$TOOLS_DIR/lib/oc-root.sh" ] && cp "$TOOLS_DIR/lib/oc-root.sh" "$D451STUB/tools/lib/"
+# #177: dispatch now reads the ledger through oc-ledger. Without the reader
+# (and oc-log.sh, which it sources) the stub exits rc 2 before the notify
+# sleep, so the SIGKILL never lands mid-send.
+mkdir -p "$D451STUB/tools/state"
+cp "$TOOLS_DIR/state/oc-ledger" "$D451STUB/tools/state/oc-ledger"
+chmod +x "$D451STUB/tools/state/oc-ledger"
+[ -f "$TOOLS_DIR/lib/oc-log.sh" ] && cp "$TOOLS_DIR/lib/oc-log.sh" "$D451STUB/tools/lib/"
 # The send must BLOCK so the kill lands inside it. A real notify would either
 # reach the live bus or return instantly, and neither reproduces #451. Bounded
 # at 30s: the stub outlives the 10s kill by design, but never permanently.

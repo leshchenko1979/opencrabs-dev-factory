@@ -466,6 +466,18 @@ PFEOF
     bad "path-form negative control: resolver ACCEPTED a fabricated path"
   fi
 
+  mkdir -p "$T/tools/state"
+  printf '%s\n' '#!/bin/bash' 'jq -r ".events[]" "$HOME/x/workers-ledger.json"' > "$T/tools/state/oc-bad-reader"
+  chmod +x "$T/tools/state/oc-bad-reader"
+  run "$T/clean.md"
+  chk "direct jq of workers-ledger.json is DIRECT-LEDGER-READ" 1 "DIRECT-LEDGER-READ"
+  rm -f "$T/tools/state/oc-bad-reader"
+  printf '%s\n' '#!/bin/bash' 'exec "$TOOLS_DIR/state/oc-ledger" --ledger "$HOME/x/workers-ledger.json" workers --json' > "$T/tools/state/oc-ok-reader"
+  chmod +x "$T/tools/state/oc-ok-reader"
+  run "$T/clean.md"
+  chk "oc-ledger --ledger path is not a direct read" 0 "" "DIRECT-LEDGER-READ"
+  rm -f "$T/tools/state/oc-ok-reader"
+
   printf 'selftest: %d passed, %d failed\n' "$pass" "$fail"
   [ "$fail" = 0 ] || return 1
   return 0
@@ -622,6 +634,83 @@ EOC
   fi
 done
 IFS="$OLDIFS"
+
+# ---- #177: flag direct reads of the ledger outside oc-ledger --------------
+# Readers must go through oc-ledger verbs (workers / worker / events / ok).
+# Writes, existence checks, --ledger arguments, comments, and oc-ledger itself
+# are allowed. The view (workers-ledger.json) and the record (events.jsonl)
+# are both covered, so a later view removal cannot sneak a raw jsonl slurp
+# back in.
+scan_direct_ledger_reads() {
+  python3 - "$TOOLS_DIR" <<'SCAN'
+import os, re, sys
+root = sys.argv[1]
+skip_dir = {"tests", "docs", "__pycache__", "archive"}
+skip_name_re = re.compile(r"\.(bak|pre-)|\.bak-")
+allow_re = re.compile(
+    r"--ledger\b|\boc-ledger\b|"
+    r"\[\s*-f\b|os\.path\.exists|os\.path\.isfile|"
+    r"^\s*#"
+)
+write_re = re.compile(
+    r"(^|[^=<>!])>(?!>)|>>|"
+    r"\becho\b|\bprintf\b|\btouch\b|\bcp\b|\bmv\b|\brm\b|\bls\b|"
+    r"\bjson\.dump\b|\bmkdir\b"
+)
+read_re = re.compile(
+    r"json\.load\s*\(|(?<![-\w])jq\b|"
+    r"<\s*[\"'$]|([^$]|^)open\s*\(|\bcat\s+"
+)
+name_re = re.compile(
+    r"workers-ledger\.json|events\.jsonl|"
+    r"\$LEDGER\b|\$OC_ROSTER_LEDGER\b|\$OC_FANOUT_LEDGER\b|"
+    r"\$\{LEDGER\}|\$\{OC_ROSTER_LEDGER\}|\$\{OC_FANOUT_LEDGER\}"
+)
+findings = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in skip_dir and not d.startswith(".")]
+    for fn in filenames:
+        if skip_name_re.search(fn):
+            continue
+        path = os.path.join(dirpath, fn)
+        base = os.path.basename(path)
+        if base in ("oc-ledger", "oc-lint-laws"):
+            continue
+        if not os.path.isfile(path):
+            continue
+        if not (base.startswith("oc-") or base.endswith((".sh", ".py"))):
+            continue
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        rel = os.path.relpath(path, root)
+        for i, line in enumerate(text.splitlines(), 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if not name_re.search(line):
+                continue
+            if "dirname" in line and "workers-ledger.json" not in line and "events.jsonl" not in line:
+                continue
+            if allow_re.search(line):
+                continue
+            if write_re.search(line) and not read_re.search(line):
+                continue
+            if not read_re.search(line):
+                continue
+            token = "workers-ledger.json" if "workers-ledger.json" in line else (
+                "events.jsonl" if "events.jsonl" in line else "$LEDGER")
+            findings.append((rel, i, token, s[:160]))
+for rel, i, token, s in findings:
+    print("%s\t%s\t%s\t%s" % (rel, i, token, s))
+SCAN
+}
+
+while IFS="$(printf '\t')" read -r _lr_rel _lr_ln _lr_tok _lr_detail; do
+  [ -n "${_lr_rel:-}" ] || continue
+  add "tools/${_lr_rel}" "$_lr_ln" "DIRECT-LEDGER-READ" "oc-ledger" "$_lr_tok" "direct read of the ledger; go through oc-ledger verbs: ${_lr_detail}"
+done < <(scan_direct_ledger_reads)
 
 if [ "$JSON" = 1 ]; then
   [ -n "$OUTJ" ] && printf '%s' "$OUTJ"
