@@ -118,7 +118,7 @@ oc_deploy_load_funcs oc-fanout oc-status
 
 usage() {
   cat <<'USAGE'
-usage: oc-build ship [--sha S] [--features F] [--execute] [--gated-run ID]
+usage: oc-build ship [--sha S] [--features F] [--execute] [--wait N] [--gated-run ID]
                      [--gated-sha SHA] [--allow-ungated-push "<justification>"]
                      [--allow-features-drop] [--priority low|normal]
                      [--resolve-priority]
@@ -128,7 +128,9 @@ usage: oc-build ship [--sha S] [--features F] [--execute] [--gated-run ID]
 
 Build/land leg of the four-way oc-deploy split: resolve the carrier feature set,
 refuse an ungated landing (#355), rebase-if-needed, push, dispatch the carrier
-workflow, and optionally bounded-poll the run it just dispatched (--wait N).
+workflow, and optionally bounded-poll the run it just dispatched (--wait N; an --execute
+ship that omits it waits 2700s by default — --wait 0 or OC_BUILD_WAIT=0 restores
+fire-and-forget).
 Everything else lives in a sibling tool — see `oc-swap`, `oc-fanout`, `oc-status`.
 
 Exit codes: 0 ok/plan | 1 usage | 2 rebase/gate/push/features fail | 5 --wait
@@ -163,6 +165,39 @@ case "$MODE" in
     # process bounded-polls the carrier run (N seconds) and exits on GREEN /
     # terminal-RED / timeout. Plan mode still refuses: a poll needs a dispatch
     # to watch. --notify-session stays poll-only (ship-wait is fire-and-see).
+    # ---- #176: THE WAIT DEFAULT LIVES IN THE PARSER, EXECUTE-ONLY ----------
+    # Every role file that ships restated `--wait 2700`, because the parser's
+    # default was "no wait": an --execute ship returned the instant it
+    # dispatched, so a lane that forgot the flag silently left the run
+    # unwatched and chained the poll leg by hand. The default now lives HERE.
+    #
+    # It is EXECUTE-ONLY on purpose. A blanket default would be a regression,
+    # not a convenience: plan mode has nothing to poll, and the gate below
+    # REFUSES a nonzero --wait without --execute -- so a bare `oc-build ship
+    # --sha S` (dry plan, the way every lane rehearses) would die 2
+    # wait-plan-mode on a flag nobody passed.
+    #
+    # Explicit wins: --wait N (including 0) is never overridden, which is why
+    # the parser tracks WAIT_EXPLICIT instead of inferring absence from a 0.
+    # Escape: OC_BUILD_WAIT=N replaces the default, and OC_BUILD_WAIT=0 is the
+    # way to restore the old fire-and-forget for a lane that genuinely wants to
+    # dispatch and exit. The note goes to stderr, so a caller parsing stdout
+    # sees no change and an operator sees WHY a ship is now waiting.
+    if [ "$WAIT_EXPLICIT" != 1 ]; then
+      if [ "$EXECUTE" = 1 ]; then
+        WAIT_SECS="${OC_BUILD_WAIT:-2700}"
+        case "$WAIT_SECS" in
+          ''|*[!0-9]*) die 1 "OC_BUILD_WAIT needs an integer (seconds), got '$WAIT_SECS'" ;;
+        esac
+        if [ -n "${OC_BUILD_WAIT:-}" ]; then
+          echo "$OC_DEPLOY_PROG: --wait not passed; OC_BUILD_WAIT=$WAIT_SECS applies (0 = fire-and-forget)" >&2
+        else
+          echo "$OC_DEPLOY_PROG: --wait not passed on an --execute ship; defaulting to ${WAIT_SECS}s (fire-and-forget: --wait 0 or OC_BUILD_WAIT=0)" >&2
+        fi
+      else
+        WAIT_SECS=0   # plan mode: nothing to poll (see the gate below)
+      fi
+    fi
     if [ "$WAIT_SECS" != 0 ]; then
       case "$WAIT_SECS" in ''|*[!0-9]*) die 1 "--wait needs an integer (seconds)" ;; esac
       if [ "$EXECUTE" != 1 ]; then
@@ -386,8 +421,9 @@ case "$MODE" in
       # F-1 fusion (v0.4.97): bounded in-process poll of the run we just
       # dispatched — editor.md Phase 6a lens E F-1 promise. GREEN (or any
       # terminal state, success|failure) ends the poll; rc 6 = RED, rc 5 =
-      # timeout. No --wait (or 0): classic fire-and-forget, poll leg chained
-      # explicitly by the operator.
+      # timeout. --wait 0 (or OC_BUILD_WAIT=0, or a plan-mode ship): classic
+      # fire-and-forget, poll leg chained explicitly by the operator. An
+      # --execute ship that omits the flag gets the #176 default (2700s).
       if [ "$WAIT_SECS" != 0 ]; then
         POLL_INTERVAL="${OC_DEPLOY_POLL_INTERVAL:-15}"
         SW_DEADLINE=$(( $(date +%s) + WAIT_SECS ))
