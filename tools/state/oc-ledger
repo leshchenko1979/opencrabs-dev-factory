@@ -246,8 +246,28 @@ parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
     esac
   done
   [ -n "$LEDGER" ] || LEDGER="${OC_LEDGER:-}"
-  [ -n "$LEDGER" ] || { [ -n "${OC_DEPLOY_STATE_DIR:-}" ] && LEDGER="$OC_DEPLOY_STATE_DIR/workers-ledger.json"; }
-  [ -n "$LEDGER" ] || LEDGER="$STATE_DIR_DEFAULT/workers-ledger.json"
+  [ -n "$LEDGER" ] || { [ -n "${OC_DEPLOY_STATE_DIR:-}" ] && {
+    if [ -f "$OC_DEPLOY_STATE_DIR/events.jsonl" ]; then
+      LEDGER="$OC_DEPLOY_STATE_DIR/events.jsonl"
+    else
+      LEDGER="$OC_DEPLOY_STATE_DIR/workers-ledger.json"
+    fi
+  }; }
+  [ -n "$LEDGER" ] || {
+    if [ -f "$STATE_DIR_DEFAULT/events.jsonl" ]; then
+      LEDGER="$STATE_DIR_DEFAULT/events.jsonl"
+    else
+      LEDGER="$STATE_DIR_DEFAULT/workers-ledger.json"
+    fi
+  }
+  # Callers may now pass the record path (events.jsonl) or workers.json now
+  # that the canonical default is moving to jsonl. Stamp still writes the
+  # view at workers-ledger.json in that directory; read verbs never consult
+  # the view. Resolved at call time (_oc_dirname is defined below).
+  case "$(basename -- "$LEDGER")" in
+    events.jsonl|workers.json)
+      LEDGER="$(_oc_dirname "$LEDGER")/workers-ledger.json" ;;
+  esac
   ARGS=("$@")
 }
 # #149 spawn reduction: `dirname` costs one execve per call and STATE_DIR() is
@@ -5415,6 +5435,53 @@ M149EOF
     "$(tail -1 "$M149A/state/events.jsonl" | jq -r '.what // .text // .summary // ""')"
   rm -rf "$M149"
 
+  # ---- #177 lock-free read verbs ----------------------------------------------
+  # workers / worker / events --all|--jsonl / ok. No lock, no ledger_load slurp.
+  # Fixtures cover both the compact file and JSONL mode, plus the events.jsonl
+  # --ledger remap (canonical default moving to the record path).
+  R177="$T/r177"; mkdir -p "$R177"
+  printf '%s' '{"workers":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"editor","topic_id":7,"feature":"x","state":"ACTIVE"},{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"toolsmith","topic_id":0,"feature":"-","state":"RETIRED"}],"events":[{"n":1,"t":"2026-11-25T09:00:00Z","kind":"claim","by":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","what":"CLAIM #177"},{"n":2,"t":"2026-11-25T09:01:00Z","kind":"note","by":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","what":"hello"}]}' > "$R177/workers-ledger.json"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" ok >/dev/null
+  chk "r177-ok-legacy-rc" 0 $?
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" workers --json > "$R177/w.json"
+  chk "r177-workers-count" 2 "$(jq 'length' "$R177/w.json")"
+  chk "r177-workers-first-role" "editor" "$(jq -r '.[0].role' "$R177/w.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" worker --uuid "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" > "$R177/one.tsv"
+  chk "r177-worker-tsv" $'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb	toolsmith	0	RETIRED' "$(cat "$R177/one.tsv")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" worker --uuid "00000000-0000-4000-8000-000000000000" >/dev/null 2>&1
+  chk "r177-worker-miss-rc" 1 $?
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --json --all > "$R177/e.json"
+  chk "r177-events-all-count" 2 "$(jq 'length' "$R177/e.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind note --json --all > "$R177/en.json"
+  chk "r177-events-kind-filter" 1 "$(jq 'length' "$R177/en.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind nosuch --json --all > "$R177/empty.json"
+  chk "r177-events-all-empty-is-rc0" 0 $?
+  chk "r177-events-all-empty-array" "[]" "$(cat "$R177/empty.json")"
+  # JSONL mode: record + workers.json, view may be absent (fresh clone).
+  mkdir -p "$R177/jl"
+  printf '%s\n' '{"n":1,"t":"2026-11-25T09:00:00Z","kind":"claim","by":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","what":"CLAIM #177"}' \
+    '{"n":2,"t":"2026-11-25T09:01:00Z","kind":"note","by":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","what":"hello"}' \
+    > "$R177/jl/events.jsonl"
+  printf '%s' '{"workers":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"editor","topic_id":7,"feature":"x","state":"ACTIVE"}]}' > "$R177/jl/workers.json"
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" ok >/dev/null
+  chk "r177-ok-jsonl-without-view-rc" 0 $?
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" workers --json > "$R177/jl-w.json"
+  chk "r177-jsonl-workers-count" 1 "$(jq 'length' "$R177/jl-w.json")"
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" events --jsonl > "$R177/jl-e.jsonl"
+  chk "r177-jsonl-events-lines" 2 "$(wc -l < "$R177/jl-e.jsonl" | tr -d ' ')"
+  # --ledger events.jsonl remaps to the view path but reads the record.
+  OC_LEDGER="$R177/jl/events.jsonl" bash "$ME" workers --json > "$R177/remap-w.json"
+  chk "r177-remap-events-jsonl-workers" 1 "$(jq 'length' "$R177/remap-w.json")"
+  OC_LEDGER="$R177/jl/events.jsonl" bash "$ME" events --json --all > "$R177/remap-e.json"
+  chk "r177-remap-events-jsonl-events" 2 "$(jq 'length' "$R177/remap-e.json")"
+  mkdir -p "$R177/bad"
+  printf 'not json\n' > "$R177/bad/workers-ledger.json"
+  OC_LEDGER="$R177/bad/workers-ledger.json" bash "$ME" ok >/dev/null 2>&1
+  chk "r177-ok-malformed-rc" 3 $?
+  # existing tail events: no-match stays rc 1 (a verdict), --all does not change it
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind nosuch >/dev/null 2>&1
+  chk "r177-events-tail-nomatch-still-rc1" 1 $?
+
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
 }
@@ -6337,6 +6404,10 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   #   --since T  byte-lexicographic compare on `t` (== chronological for a
   #              well-formed ISO-8601Z stamp; a corrupt t sorts by its bytes)
   #   --json     JSON array of the matching events (full fields, untruncated)
+  #   --all      do not apply the --n tail window; emit every match (rc 0 even
+  #              when the match set is empty — a full dump is not a verdict)
+  #   --jsonl    stream one event object per line, no wrapper array; implies
+  #              the record is read as a stream (no ledger_load slurp, no lock)
   #   --full     do not truncate `what` (default 160 chars, as in `lessons`);
   #              a truncated row is nudged on stderr so no caller silently
   #              builds a claim on a clipped read
@@ -6344,7 +6415,7 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
   # rc 0 rows printed · 1 NO-MATCH verdict (deliberately not a silent empty:
   # a caller that gets 1 must widen the filter, NEVER conclude "no events")
   # · 2 usage · 3 ledger unreadable.
-  local n=20 kind="" actor="" since="" json=0 full=0
+  local n=20 kind="" actor="" since="" json=0 full=0 all=0 jsonl=0
   if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
     n="$1"; shift
   fi
@@ -6355,14 +6426,21 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
       --actor) [ -n "${2:-}" ] || die 2 "events: --actor needs a value"; actor="$2"; shift 2 ;;
       --since) [ -n "${2:-}" ] || die 2 "events: --since needs a value"; since="$2"; shift 2 ;;
       --json) json=1; shift ;;
+      --jsonl) jsonl=1; shift ;;
+      --all) all=1; shift ;;
       --full) full=1; shift ;;
-      -h|--help) echo "usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--full]"; exit 0 ;;
-      *) die 2 "events: unknown arg '$1' (usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--full])" ;;
+      -h|--help) echo "usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--jsonl] [--all] [--full]"; exit 0 ;;
+      *) die 2 "events: unknown arg '$1' (usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--jsonl] [--all] [--full])" ;;
     esac
   done
   case "$n" in ''|*[!0-9]*) die 2 "events: --n must be a positive integer (got '$n')" ;; esac
   [ "$n" -ge 1 ] || die 2 "events: --n must be >= 1 (got '$n')"
+  [ "$json" -eq 1 ] && [ "$jsonl" -eq 1 ] && die 2 "events: --json and --jsonl are mutually exclusive"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  if [ "$all" -eq 1 ] || [ "$jsonl" -eq 1 ]; then
+    _events_dump "$kind" "$actor" "$since" "$json" "$jsonl" "$full" "$all"
+    exit $?
+  fi
   local sel rc
   # #156 (2026-11-23): read through `ledger_load` — the ONE reader — instead of
   # raw-jq on `$LEDGER`. In JSONL mode `$LEDGER` names the DERIVED view, which
@@ -6447,6 +6525,161 @@ cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T
       [.[] | select((n_what | length) > $t)] | length')"
     [ "${clipped:-0}" -gt 0 ] && echo "events: $clipped row(s) had 'what' truncated to $trunc chars — rerun with --full for the complete text" >&2
   fi
+  exit 0
+}
+
+# ---- lock-free streaming dumps (#177) ----------------------------------------
+# The seven direct readers needed only: the workers list, one worker by uuid,
+# every event (optionally filtered), and a syntax check. These verbs take NO
+# fleet lock and do not go through ledger_load (which slurps the record into
+# a unified dict). In JSONL mode they read workers.json / events.jsonl; in
+# legacy mode they read .workers / .events off the compact file.
+
+_workers_source() {
+  # stdout: path to the file a workers read should open, plus a second
+  # word "array" (the file IS the workers array) or "dict" (.workers).
+  if _jsonl_mode && [ -f "$(_JSONL_WORKERS)" ]; then
+    printf '%s dict\n' "$(_JSONL_WORKERS)"
+    return 0
+  fi
+  [ -f "$LEDGER" ] || return 3
+  printf '%s dict\n' "$LEDGER"
+}
+
+_events_source() {
+  if _jsonl_mode; then
+    printf '%s jsonl\n' "$(_JSONL_EVENTS)"
+    return 0
+  fi
+  [ -f "$LEDGER" ] || return 3
+  printf '%s array\n' "$LEDGER"
+}
+
+# Filter program shared by --all / --jsonl dumps. Raw fields, no schema
+# normalisation: callers that used to json.load the view's .events must see
+# the same objects.
+_EVENTS_FILTER='
+  def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+  def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+  def n_t:    ((.t // .ts // .at // "") | tostring);
+  select(($kind == "") or (n_kind == $kind))
+  | select(($actor == "") or (n_by | contains($actor)))
+  | select(($since == "") or (n_t >= $since))
+'
+
+_events_dump() { # kind actor since json jsonl full all
+  local kind="$1" actor="$2" since="$3" json="$4" jsonl="$5" full="$6" all="$7"
+  local src mode sel rc
+  src="$(_events_source)" || die 3 "events: ledger missing or unparseable: $LEDGER"
+  mode="${src##* }"; src="${src% *}"
+  if [ "$mode" = "jsonl" ]; then
+    sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" \
+      "$_EVENTS_FILTER" "$src")"
+    rc=$?
+  else
+    sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" \
+      "[.events[]? | ($_EVENTS_FILTER)][]" "$src")"
+    rc=$?
+  fi
+  [ $rc -eq 0 ] || die 3 "events: jq failed (rc $rc) — ledger unreadable or query error"
+  if [ "$jsonl" -eq 1 ]; then
+    [ -n "$sel" ] && printf '%s\n' "$sel"
+    exit 0
+  fi
+  if [ "$json" -eq 1 ]; then
+    if [ -z "$sel" ]; then echo '[]'; else printf '%s\n' "$sel" | jq -s -c '.'; fi
+    exit 0
+  fi
+  # TSV of every match (the --all text form). Empty is rc 0, not a no-match verdict.
+  if [ -z "$sel" ]; then exit 0; fi
+  local trunc=160; [ "$full" -eq 1 ] && trunc=1000000
+  printf '%s\n' "$sel" | jq -s -r --argjson t "$trunc" '
+    def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+    def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+    def n_t:    ((.t // .ts // .at // "") | tostring);
+    def n_what: ((.what // .text // .summary // .note // .detail // .event
+                  // .action // .directive // .details // "") | tostring);
+    def n_n:    (.n // .seq // .id // 0);
+    .[] | [ n_n,
+            (n_t    | if . == "" then "?" else . end),
+            (n_kind | if . == "" then "?" else . end),
+            (n_by   | if . == "" then "-" else . end),
+            (n_what | .[0:$t]) ] | @tsv'
+  exit 0
+}
+
+cmd_ok() { # oc-ledger ok — syntax check, no lock, no slurp of the view
+  case "${1:-}" in
+    -h|--help) echo "usage: oc-ledger ok"; echo "Exit: 0 readable / 3 missing or unparseable"; exit 0 ;;
+    "") ;;
+    *) die 2 "ok: unknown arg '$1' (usage: oc-ledger ok)" ;;
+  esac
+  ledger_ok || die 3 "ok: ledger missing or unparseable: $LEDGER"
+  echo "ok"
+  exit 0
+}
+
+cmd_workers() { # oc-ledger workers [--json] [--uuid U]
+  # READ-ONLY, no lock. Emits the workers list from workers.json (JSONL mode)
+  # or .workers (legacy / fixture). Default is --json (the array the seven
+  # readers already consumed as ledger_data["workers"]).
+  local json=1 uuid="" tsv=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; tsv=0; shift ;;
+      --tsv)  tsv=1; json=0; shift ;;
+      --uuid) [ -n "${2:-}" ] || die 2 "workers: --uuid needs a value"; uuid="$2"; shift 2 ;;
+      -h|--help) echo "usage: oc-ledger workers [--json|--tsv] [--uuid U]"; exit 0 ;;
+      *) die 2 "workers: unknown arg '$1' (usage: oc-ledger workers [--json|--tsv] [--uuid U])" ;;
+    esac
+  done
+  local src mode
+  src="$(_workers_source)" || die 3 "workers: ledger missing or unparseable: $LEDGER"
+  mode="${src##* }"; src="${src% *}"
+  local prog
+  if [ -n "$uuid" ]; then
+    prog='[.workers[]? | select((.uuid // "") == $u)]'
+  else
+    prog='(.workers // [])'
+  fi
+  local out
+  out="$(jq -c --arg u "$uuid" "$prog" "$src")" || die 3 "workers: jq failed — ledger unreadable or query error"
+  if [ "$tsv" -eq 1 ]; then
+    printf '%s' "$out" | jq -r '.[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.feature // "-"), (.state // "ACTIVE")] | @tsv'
+    exit 0
+  fi
+  printf '%s\n' "$out"
+  exit 0
+}
+
+cmd_worker() { # oc-ledger worker --uuid U [--json]
+  # One roster row by uuid. Default TSV matches oc-notify-fanout's extract:
+  # uuid, role (editor), topic_id (0), state (ACTIVE). --json emits the object.
+  # rc 0 found · 1 NO-MATCH (empty stdout) · 2 usage · 3 unreadable.
+  local uuid="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --uuid) [ -n "${2:-}" ] || die 2 "worker: --uuid needs a value"; uuid="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: oc-ledger worker --uuid U [--json]"; exit 0 ;;
+      *)
+        if [ -z "$uuid" ] && [ "${1#-}" = "$1" ]; then uuid="$1"; shift
+        else die 2 "worker: unknown arg '$1' (usage: oc-ledger worker --uuid U [--json])"; fi ;;
+    esac
+  done
+  [ -n "$uuid" ] || die 2 "worker: --uuid is required"
+  local src
+  src="$(_workers_source)" || die 3 "worker: ledger missing or unparseable: $LEDGER"
+  src="${src% *}"
+  local out
+  out="$(jq -c --arg u "$uuid" '[.workers[]? | select((.uuid // "") == $u)][0] // empty' "$src")" \
+    || die 3 "worker: jq failed — ledger unreadable or query error"
+  [ -n "$out" ] || exit 1
+  if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$out"
+    exit 0
+  fi
+  printf '%s\n' "$out" | jq -r '[(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv'
   exit 0
 }
 
@@ -6537,7 +6770,7 @@ cmd_mode() {
 
 # ---- dispatch -----------------------------------------------------------------
 parse_global "$@"
-case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | [selftest|--selftest]"; exit 0 ;; esac
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode|workers|worker|ok> | [selftest|--selftest]"; exit 0 ;; esac
 if [ "$SELFTEST" -eq 1 ]; then
   # (#722) `selftest --help` must be a READ. parse_global consumes the bare
   # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
@@ -6571,11 +6804,14 @@ case "$sub" in
   lessons) cmd_lessons "${rest[@]+"${rest[@]}"}" ;;
   roster) cmd_roster "${rest[@]+"${rest[@]}"}" ;;
   events|tail) cmd_events "${rest[@]+"${rest[@]}"}" ;;
+  workers) cmd_workers "${rest[@]+"${rest[@]}"}" ;;
+  worker) cmd_worker "${rest[@]+"${rest[@]}"}" ;;
+  ok) cmd_ok "${rest[@]+"${rest[@]}"}" ;;
   duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
   mode) cmd_mode "${rest[@]+"${rest[@]}"}" ;;
   selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
   --verbs)
-    echo "stamp fixture sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail duplicates mode"
+    echo "stamp fixture sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail workers worker ok duplicates mode"
     exit 0
     ;;
   *)
@@ -6588,7 +6824,7 @@ case "$sub" in
       kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
       push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
       version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
-      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode> | --verbs | --selftest" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode|workers|worker|ok> | --verbs | --selftest" ;;
     esac
     ;;
 esac
