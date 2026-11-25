@@ -260,9 +260,11 @@ ONLY when it meets one of:
     wait for a filing. **The MECHANISM is `oc-smoke --close`, DEFAULT ON (tool #68):** it closes on
     the receipt and posts a comment naming both rows, so a lane VERIFIES the close
     instead of performing it — a hand close is owed only where the tool skipped
-    (`--no-ledger`, unreadable tracker, non-numeric ref). A **factory** issue needs
-    `--close-repo leshchenko1979/opencrabs-dev-factory`; the default is the fork and
-    both boards hold low numbers. **A `done` row ALONE is not (d)** — `oc-smoke` stamps
+    (`--no-ledger`, unreadable tracker, non-numeric ref). A **factory** issue should pass
+    `--close-repo leshchenko1979/opencrabs-dev-factory`. There is no constant
+    default (#154): the flag wins, then `OC_SMOKE_CLOSE_REPO`; without either,
+    the tool probes both boards and selects the sole OPEN copy. Ambiguous or
+    unreadable probes refuse to close. **A `done` row ALONE is not (d)** — `oc-smoke` stamps
     `done` on PASS, so the two normally arrive together, but a `done` row written
     by any other path is a bookkeeping claim and closure still needs the
     behavioural row beside it. This class exists because the 2026-09-18 sweep
