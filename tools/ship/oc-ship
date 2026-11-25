@@ -55,16 +55,15 @@
 #                    a gated ref cancels the in-flight run — it would destroy
 #                    the verdict it is waiting for). Budget: 2 attempts
 #                    (OC_SHIPCHAIN_REARM_MAX). Env form: OC_SHIPCHAIN_NO_REARM=1.
-#   --test-threads <N>  LEG1 gate: libtest --test-threads for the carrier's
-#                    `Run tests` step — the #1936 Stage-1 hang mitigation,
-#                    forwarded to oc-gate' dispatch (factory #39).
-#                    FRESH-DISPATCH ONLY: on the --gated-sha / --gated-run
-#                    paths NO leg runs here, so the flag is INERT and the
-#                    chain SAYS SO on stderr rather than dropping it silently
-#                    (a caller who believes the mitigation applied would read
-#                    a carried run as mitigated evidence it never got).
+#   --test-threads <N>  RETIRED 2026-11-20 (#181): the carrier declares
+#                    `test_threads` and IGNORES it, so the #1936 Stage-1 hang
+#                    mitigation (factory #39) is dead and NOTHING is forwarded
+#                    to LEG1's oc-gate dispatch. The flag stays parsed for
+#                    compatibility: the request is ACCEPTED, NOT FORWARDED and
+#                    the chain SAYS SO on stderr + journal (the old INERT
+#                    warning's carried-path caveat is now true on every path).
 #                    Env: OC_SHIPCHAIN_TEST_THREADS (same shape; empty =
-#                    not requested, which leaves the dispatch byte-identical).
+#                    not requested).
 #
 # --issue-repo <slug>  The tracker that OWNS --issue, for LEG2's mandatory
 #                    per-commit comment. `--repo` above is the FORK CHECKOUT's
@@ -936,10 +935,12 @@ EVAL_DOCS_SKIP=0
 # minutes and must not compete with the daemon. `normal` is the opt-out.
 PRIORITY="low"
 PRIORITY_PROBE=0
-# factory #39: the #1936 Stage-1 hang mitigation, forwarded to LEG1's
-# oc-gate dispatch. The env default follows the house pattern
-# (OC_SHIPCHAIN_GATE_WAIT / OC_SHIPCHAIN_SHIP_WAIT); EMPTY = not requested,
-# the only value that leaves the dispatch byte-identical to pre-#39 behaviour.
+# factory #39 → RETIRED 2026-11-20 (factory #181): --test-threads carried the
+# #1936 Stage-1 hang mitigation into LEG1's oc-gate dispatch; the carrier
+# declares the input and IGNORES it, so the forward is GONE. The env default
+# follows the house pattern (OC_SHIPCHAIN_GATE_WAIT / OC_SHIPCHAIN_SHIP_WAIT);
+# the value is ACCEPTED and NOTED loudly, never sent (the dispatch is
+# byte-identical with or without it).
 TEST_THREADS="${OC_SHIPCHAIN_TEST_THREADS:-}"
 # #78: env form of --no-rearm, so a lane can set it for a whole session without
 # threading the flag through every invocation. Shape is validated like
@@ -1802,11 +1803,16 @@ else
   [ -n "$REPO" ] && PRCHECKS_CALL+=(--repo "$REPO")
   PRCHECKS_CALL+=(--wait "$GATE_WAIT")
   [ "$FAST_GATE" -eq 1 ] && PRCHECKS_CALL+=(--fast)
-  # factory #39: the #1936 Stage-1 hang mitigation rides the FRESH dispatch.
-  # The carrier-yml contract check is NOT duplicated here -- oc-gate owns
-  # it and refuses rc 4 with NO dispatch when the yml cannot honour the input,
-  # which is the loud behaviour a caller-requested mitigation requires.
-  [ -n "$TEST_THREADS" ] && PRCHECKS_CALL+=(--test-threads "$TEST_THREADS")
+  # RETIRED 2026-11-20 (#181): the carrier declares `test_threads` and IGNORES
+  # it, so factory #39's forward is DEAD — the flag is ACCEPTED, NOT FORWARDED
+  # and no LEG1 gate dispatch ever carries it again (oc-gate owns the same
+  # retirement; its rc-4 arm remains for a yml that does not even declare the
+  # input, which nothing from here can reach any more). Same treatment as
+  # oc-gate: accepted at the boundary, loudly noted, never sent.
+  if [ -n "$TEST_THREADS" ]; then
+    printf 'oc-ship: --test-threads %s retired 2026-11-20 — the carrier declares the input and ignores it; accepted, not forwarded (factory #181; the LEG1 gate dispatch carries no such input)\n' "$TEST_THREADS" >&2
+    journal "LEG1 --test-threads $TEST_THREADS retired 2026-11-20 — accepted, not forwarded (factory #181)"
+  fi
   # LEG1 journal prints the RESOLVED argv (defect #9, 2026-09-12): the old
   # line expanded ${FAST_GATE:+ --fast} from the flag variable — FAST_GATE is
   # always "1"/"0" (both non-empty), so the journal claimed --fast even on
@@ -1980,18 +1986,21 @@ fi
 printf 'oc-ship: GATE MODE = %s (%s)\n' "$SHIP_GATE_MODE" "$SHIP_GATE_NOTE" >&2
 journal "GATE MODE $SHIP_GATE_MODE — $SHIP_GATE_NOTE"
 
-# factory #39: --test-threads is a DISPATCH-time request, and on the
-# CARRIED-FORWARD / SKIPPED-DOCS paths NO gate leg is dispatched HERE -- so the
-# mitigation cannot apply to the gate being carried. Say so out loud: a silent
-# drop is exactly what oc-gate' #33 contract refuses, and a caller who
-# believed the mitigation applied would read a carried run as mitigated
-# evidence it never received. The FRESH path (FAST/FULL) prints nothing here.
+# factory #39's INERT warning, reworded 2026-11-25 (factory #181 retirement):
+# the #1936 mitigation this block once guarded is DEAD — the carrier declares
+# `test_threads` and IGNORES it, and the flag is not forwarded on ANY path any
+# more (the fresh path notes the retirement where the #39 forward used to be).
+# On the CARRIED-FORWARD / SKIPPED-DOCS paths no gate leg is dispatched HERE at
+# all, so a carried run was never mitigated evidence and cannot become one: the
+# block keeps SAYING so instead of dropping the request silently. The old
+# out-of-band remedy named --test-threads and is gone with the retirement —
+# there is nothing left to apply.
 if [ -n "$TEST_THREADS" ]; then
   case "$SHIP_GATE_MODE" in
     CARRIED-FORWARD|SKIPPED-DOCS)
-      printf 'oc-ship: --test-threads %s is INERT on this path -- GATE MODE = %s: no gate leg is dispatched here, so the #1936 mitigation CANNOT apply to the gate being carried. To apply it, dispatch the gate out-of-band first: %s %s --test-threads %s --wait <sec>, then re-arm with --gated-run <id>.\n' \
-        "$TEST_THREADS" "$SHIP_GATE_MODE" "${PRCHECKS_BIN##*/}" "$SHA" "$TEST_THREADS" >&2
-      journal "LEG1 --test-threads $TEST_THREADS INERT (GATE MODE $SHIP_GATE_MODE: no dispatch here)"
+      printf 'oc-ship: --test-threads %s is retired 2026-11-20 (#181) and NOT forwarded on any path -- GATE MODE = %s additionally dispatches NO gate leg here, so the carried run never received the retired #1936 mitigation and no remedy re-arms it (the carrier ignores the input; there is nothing to apply).\n' \
+        "$TEST_THREADS" "$SHIP_GATE_MODE" >&2
+      journal "LEG1 --test-threads $TEST_THREADS retired (#181) + INERT on $SHIP_GATE_MODE (no dispatch here)"
       ;;
   esac
 fi
