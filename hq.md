@@ -208,7 +208,11 @@ What STAYS at this factory, because it is process law about US and not about the
 - **The poll is an ACT, not an inference.** Before the channels are read, the cycle ISSUES the poll
   and records its instant (`notify-fanout` row carrying `DUTY 4 POLL — cycle <id>`). An intake
   directory no poll ever announced is not a Duty-4 execution, and a zero intake that no poll
-  preceded cannot be told apart from nobody having been asked.
+  preceded cannot be told apart from nobody having been asked. The mechanical tool for that act
+  is `tools/state/oc-poll` (factory #134): `open` freezes the target list and census predicate,
+  `answer` writes atomically, `status` joins the wave files and names set differences. It does
+  not decide who is relevant, when to read, or what the answers mean. Verb list and rc:
+  `tools/docs/RC-CONTRACT.md`; inventory: `reference-tools.md`.
 - **An intake read is an event with an INSTANT, and an instant before the poll is not an intake.**
   The authoritative read is taken at or after the poll's own row, recorded as its own row with its
   own instant. A read taken inside the window is a T0 receipt, never the intake. A provisional zero

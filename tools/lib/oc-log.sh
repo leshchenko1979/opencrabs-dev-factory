@@ -69,13 +69,13 @@ OC_LOG_START=""
 # oc-harvest-sweep (branch) -- measured at 0 rows each.
 #
 # The bare SUBCOMMAND spelling is therefore a property of the TOOLS that
-# dispatch one -- exactly four carry a `selftest)` case arm -- and NOT of the
+# dispatch one -- exactly five carry a `selftest)` case arm -- and NOT of the
 # fleet. oc_log_init sets OC_LOG_TOOL BEFORE this predicate runs, so the arm can
 # be scoped to its owners: a free-text positional that reads `selftest` in any
 # other tool now logs normally. Battery section 00d holds this list EQUAL to the
 # real set of arms in both directions, and its negative control (the env hook
 # below) proves the arm is what suppresses the row.
-OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-ledger oc-roster oc-watcher-audit "
+OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-ledger oc-poll oc-roster oc-watcher-audit "
 OC_LOG_BARE_SELFTEST_TOOLS="${OC_LOG_BARE_SELFTEST_TOOLS:-$OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT}"
 oc_is_selftest() {
   case " $OC_LOG_ARGS " in

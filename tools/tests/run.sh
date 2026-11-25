@@ -2991,7 +2991,7 @@ section "rc contract coverage: unregistered executables + phantom rows (#139)"
 # OC_LOG_VERDICT_RCS_DEFAULT, so a tool with no register row is invisible to it
 # and to every other contract leg -- a new executable ships with no documented
 # exit codes and nothing reddens. Measured at 6532016c: five live executables
-# had no row (oc-build, oc-swap, oc-fanout, oc-status, and one other later registered).
+# had no row (oc-build, oc-swap, oc-fanout, oc-status, oc-poll).
 #
 # This leg enumerates the filesystem and subtracts the register, in BOTH
 # directions: an executable with no row (RESIDUE) and a row with no executable
@@ -3046,10 +3046,10 @@ RCX_PHA="$(printf '%s\n' "$RCX_LIVE" | grep '^PHANTOM ' | grep -v -e '^PHANTOM o
 $RCX_PHA"
 # POSITIVE control (residue): delete a real row from a COPY -> the same scanner
 # must report it. Without this the leg passes on a scanner that cannot fire.
-grep -v '^| oc-roster ' "$TOOLS_DIR/docs/RC-CONTRACT.md" > "$RCX/reg-drop.md"
+grep -v '^| oc-poll ' "$TOOLS_DIR/docs/RC-CONTRACT.md" > "$RCX/reg-drop.md"
 RCX_DROP="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$RCX/reg-drop.md")"
-case "$RCX_DROP" in *"RESIDUE oc-roster"*) ok "rc contract: a dropped row is SEEN as residue (positive control)" ;;
-  *) bad "rc contract: the coverage scanner cannot fire (dropped oc-roster row unseen)" ;; esac
+case "$RCX_DROP" in *"RESIDUE oc-poll"*) ok "rc contract: a dropped row is SEEN as residue (positive control)" ;;
+  *) bad "rc contract: the coverage scanner cannot fire (dropped oc-poll row unseen)" ;; esac
 # POSITIVE control (phantom): a row for a nonexistent tool must be flagged.
 { cat "$TOOLS_DIR/docs/RC-CONTRACT.md"; printf '| oc-ghost-tool | 0 | 2 | 0 |\n'; } > "$RCX/reg-ghost.md"
 RCX_GH="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$RCX/reg-ghost.md")"
