@@ -20,7 +20,7 @@ right here (`opencrabs-ops` user unit).
 ```bash
 # Unified 4-leg smoke verification & verdict row logging + CLOSE ON PASS (default):
 ~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<command-to-verify-behavior>"
-# FACTORY issue (not the fork)? The tracker MUST be named, or it closes the FORK's #N:
+# Factory issue: explicitly name the tracker to avoid an ambiguous board:
 ~/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/smoke/oc-smoke <issue-N> --probe "<cmd>" --close-repo leshchenko1979/opencrabs-dev-factory
 ```
 
@@ -59,10 +59,12 @@ right here (`opencrabs-ops` user unit).
    hand the port to HARVEST, the last *editor* step, though the lane's obligation is
    discharged by the recorded behavioural verdict, not by the post and not by any
    filing (SKILL.md §Hard rules — ISSUE ROUTING bullet, PR SHIPMENT row).
-   **A FACTORY issue needs
-   `--close-repo leshchenko1979/opencrabs-dev-factory`:** the default is the FORK,
-   and both boards hold low numbers, so omitting it closes the fork's issue of
-   that number. Nothing is ever waiting on an upstream PR.
+   **A factory issue should pass
+   `--close-repo leshchenko1979/opencrabs-dev-factory`.** There is no constant
+   default (#154): the flag wins, then `OC_SMOKE_CLOSE_REPO`; without either,
+   `oc-smoke` probes both boards and selects the sole OPEN copy. Ambiguous or
+   unreadable probes refuse to close. Nothing is ever waiting
+   on an upstream PR.
 5. FAIL → FILE THE ISSUE FIRST (Phase 1 procedure: symptom + evidence — you
    found it, you file it). Then send raw evidence + the issue link directly to
    the owning editor or Triage lane (`session_notify`) — do NOT attribute, do NOT fix another
