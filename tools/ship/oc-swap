@@ -435,7 +435,7 @@ swap_execute() {
       FO_OUT="$( ( fanout_run "$RUN_ID" 0 ) 2>&1 )" || FO_RC=$?
       FO_NOTE="rc=$FO_RC"
       jline fanout "$FO_RC" "{\"run\":\"$RUN_ID\"}"   # lens F HIGH-2 (v0.4.79): fanout rc in the swap journal — stderr-only surfacing was a silent-loss path
-      [ "$FO_RC" = 0 ] || { echo "$OC_DEPLOY_PROG: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-deploy fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
+      [ "$FO_RC" = 0 ] || { echo "$OC_DEPLOY_PROG: GREEN fan-out rc=$FO_RC — swap stands; re-run 'oc-fanout --run $RUN_ID'" >&2; printf '%s\n' "$FO_OUT" >&2; }
     fi
     # --- #766 fork release publish tail — LOGGED AND TOLERATED ----------------
     # Publishes the just-verified binary as fork release assets (design:
