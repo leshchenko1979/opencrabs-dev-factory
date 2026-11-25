@@ -742,6 +742,12 @@ kill_brake() {
 oc_deploy_parse_args() { # $@ = flags for THIS invocation (the verb already shifted off)
 SHA=""; FEATURES=""; FEATURES_EXPLICIT=0; EXECUTE=0; RUN_ID=""; DRILL=0; ARTDIR=""; DRYRUN=0; WITH_DELTA=0; ALLOW_DROP=0   # FEATURES="" = resolve from carrier (KERNEL D2, 2026-08-28)
 WAIT_SECS=0; NOTIFY_SESSION=""   # C-#2: poll --wait / --notify-session
+# #176: WAIT_EXPLICIT records whether --wait was ON THE COMMAND LINE, because the
+# parser's WAIT_SECS=0 above cannot tell "flag absent" from "--wait 0" and a caller
+# that WANTS a default (oc-build ship under --execute) must not override an explicit
+# 0. The default itself is NOT set here: poll's 0 is a contract (oc-ship LEG5 calls
+# bare `poll --execute` 12x and each call must return, not block for 45 minutes).
+WAIT_EXPLICIT=0
 ALLOW_REWRITTEN_LINEAGE=0; RW_JUSTIFY=""; RW_ACTOR="${OC_DEPLOY_ACTOR:-$(id -un 2>/dev/null || echo unknown)}"   # v0.4.151: audited swap-guard override
 GATED_RUN=""; GATED_SHA=""; ALLOW_UNGATED=0; UNGATED_JUSTIFY=""   # #355: gate-before-land (reuses oc-ship's --gated-run/--gated-sha contract)
 # #77: scheduling class. `low` (nice 19 + ionice class idle) is the default
@@ -768,7 +774,7 @@ while [ $# -gt 0 ]; do
       ALLOW_UNGATED=1; UNGATED_JUSTIFY="${2:-}"; shift ;;
     --dry-run)  DRYRUN=1 ;;   # issue #24: fanout rehearsal — never marks done
     --with-delta) WITH_DELTA=1 ;;   # merge B (v0.4.48): watch rides oc-upstream-delta too
-    --wait)     WAIT_SECS="${2:-}"; shift ;;   # C-#2: poll blocks until a NEW green run (or timeout, rc 5)
+    --wait)     WAIT_SECS="${2:-}"; WAIT_EXPLICIT=1; shift ;;   # C-#2: poll blocks until a NEW green run (or timeout, rc 5). #176: WAIT_EXPLICIT marks it as OPERATOR-SUPPLIED
     --notify-session) [ -n "${2:-}" ] || die 2 "--notify-session needs a session uuid"; NOTIFY_SESSION="${2:-}"; shift ;;   # C-#2: session uuid woken on handoff/timeout; guard lens C MED-3 (v0.4.79)
     --artifact-dir) ARTDIR="${2:-}"; shift ;;
     # #77: scheduling class. Validated HERE so a typo dies at the caller's own

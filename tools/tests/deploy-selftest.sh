@@ -357,6 +357,22 @@ CYML
   # tokens — the retry loop branches on the token, not prose (>=10 manual
   # ship->validate->ship cycles in tools.log motivated this).
   check_has "ship-wait-gate-token" "$out" "OC_DEPLOY_GATE=wait-plan-mode"
+  # ---- #176: the wait default is EXECUTE-ONLY -------------------------------
+  # The regression this leg exists to catch: applying the 2700s default to EVERY
+  # ship would make a bare `ship --sha S` (PLAN mode — the way every lane
+  # rehearses a landing) die 2 wait-plan-mode on a flag nobody passed. Plan mode
+  # must stay silent: rc 0, a plan, no default note, no poll. The refusal above
+  # is what makes this leg FAST rather than hanging: a leaked default would die
+  # at the gate instead of polling 2700s inside the suite.
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_REPO="$T/repo" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+  check_rc "shipwait-plan-bare-rc" $rc 0
+  check_has "shipwait-plan-bare-plan" "$out" "would: git push"
+  case "$out" in
+    *"defaulting to"*|*SHIP-WAIT*) fail=$((fail+1)); echo "SELFTEST FAIL: #176 wait default LEAKED into plan mode (a bare plan ship must never wait): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)" ;;
+    *) pass=$((pass+1)) ;;
+  esac
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git"     OC_DEPLOY_CARRIER="$SD/tools/carrier"     "$BUILD_BIN" ship --sha "$SHA2" --notify-session aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa 2>&1)"; check_rc "ship-notify-refused" $? 2
   check_has "ship-notify-msg" "$out" "--notify-session is poll-mode only"
   check_has "ship-notify-gate-token" "$out" "OC_DEPLOY_GATE=notify-poll-only"
@@ -437,7 +453,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 2>&1)"; rc=$?
   check_rc "ship-nonff-conflict-rc" $rc 5
   check_has "ship-nonff-conflict-token" "$out" "OC_DEPLOY_GATE=rebase-conflict"
 
@@ -447,7 +463,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD:refs/heads/main
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 2>&1)"; rc=$?
   check_rc "ship-nonff-autorebase-rc" $rc 0
   check_has "ship-nonff-autorebase-msg" "$out" "auto-rebased"
 
@@ -515,7 +531,7 @@ CYML
   git -C "$T/repo" push -q -f "$T/remote.git" HEAD~1:refs/heads/main   # back to c1
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 2>&1)"; rc=$?
   check_rc "ship-exec-rc" $rc 0
   check_has "ship-exec-gates" "$out" "4/4 PASS"
   check_has "ship-exec-dispatch" "$out" "dispatched carrier run"
@@ -557,10 +573,58 @@ CYML
     OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="9999999999999999999999999999999999999999" OC_TEST_SHIPWAIT_CONCL=completed-success \
     "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 2 2>&1)"; check_rc "shipwait-wrongsha-rc" $? 5
   rm -f "$T/shipwait-flag"
+  # ---- #176: THE EXECUTE-ONLY WAIT DEFAULT (HQ ruling 2026-11-25) ----------
+  # The role files restated `--wait 2700` on every ship because the parser had
+  # no default: an --execute ship returned the instant it dispatched, so a lane
+  # that forgot the flag left the run unwatched. The default now lives in
+  # oc-build, under --execute ONLY.
+  # 6f is the DISCRIMINATOR: no --wait, no env escape -> the ship must POLL.
+  # Pre-#176 this leg sees no SHIP-WAIT line and reddens.
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-success \
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+  check_rc "shipwait-default-rc" $rc 0
+  check_has "shipwait-default-line" "$out" "SHIP-WAIT: run 555 GREEN"
+  check_has "shipwait-default-note" "$out" "defaulting to 2700s"
+  check_has "shipwait-default-names-escape" "$out" "OC_BUILD_WAIT=0"
+  # 6g. THE ESCAPE: OC_BUILD_WAIT=0 on the same bare --execute ship dispatches
+  #     and RETURNS. Without this leg the default could be made UNESCAPABLE and
+  #     every other leg here would still pass.
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_BUILD_WAIT=0 OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-success \
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+  check_rc "shipwait-env0-rc" $rc 0
+  check_has "shipwait-env0-note" "$out" "OC_BUILD_WAIT=0 applies"
+  check_has "shipwait-env0-dispatched" "$out" "dispatched carrier run"
+  case "$out" in
+    *SHIP-WAIT*) fail=$((fail+1)); echo "SELFTEST FAIL: OC_BUILD_WAIT=0 did NOT restore fire-and-forget (ship still polled)" ;;
+    *) pass=$((pass+1)) ;;
+  esac
+  # 6h. EXPLICIT --wait BEATS the env escape: --wait 5 with OC_BUILD_WAIT=0 must
+  #     still poll (the escape names the DEFAULT, never the operator's flag).
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_BUILD_WAIT=0 OC_DEPLOY_POLL_INTERVAL=1 OC_TEST_SHIPWAIT_HEAD="$SHA2" OC_TEST_SHIPWAIT_CONCL=completed-success \
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 5 2>&1)"; rc=$?
+  check_rc "shipwait-explicit-beats-env-rc" $rc 0
+  check_has "shipwait-explicit-beats-env-line" "$out" "SHIP-WAIT: run 555 GREEN"
+  # 6i. a non-integer OC_BUILD_WAIT dies 1 AT THE BOUNDARY, before any dispatch
+  #     (a typo must not reach the wait loop as an arithmetic error).
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    OC_BUILD_WAIT=abc "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+  check_rc "shipwait-env-bad-rc" $rc 1
+  check_has "shipwait-env-bad-msg" "$out" "OC_BUILD_WAIT needs an integer"
+  case "$out" in
+    *"dispatched carrier run"*) fail=$((fail+1)); echo "SELFTEST FAIL: a bad OC_BUILD_WAIT still DISPATCHED (validation must precede the push/dispatch)" ;;
+    *) pass=$((pass+1)) ;;
+  esac
   # 7. ship execute gate-fail -> exit 2 (validator stub exits 2; push is no-op)
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-fail" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute >/dev/null 2>&1); check_rc "ship-gate-fail" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 >/dev/null 2>&1); check_rc "ship-gate-fail" $? 2
   grep -q "gate-fail" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no gate-fail shadow row"; }
 
   # 7b. #355 GATE-BEFORE-LAND: the push leg refuses an ungated landing.
@@ -572,7 +636,7 @@ CYML
   rm -f "$SD/oc-deploy-shadow.log"
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --wait 0 2>&1)"; rc=$?
   check_rc "gate-missing-refused-rc" $rc 2
   check_has "gate-missing-refused-token" "$out" "OC_DEPLOY_GATE=gate-missing"
   [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$R_TIP_BEFORE"  ]\
@@ -580,7 +644,7 @@ CYML
 
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --execute --gated-run 444 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --wait 0 --gated-run 444 2>&1)"; rc=$?
   check_rc "gate-inflight-refused-rc" $rc 2
   check_has "gate-inflight-refused-token" "$out" "OC_DEPLOY_GATE=gate-inflight"
   [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$R_TIP_BEFORE"  ]\
@@ -588,23 +652,23 @@ CYML
 
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --execute --gated-run 888 >/dev/null 2>&1); check_rc "gate-red-refused-rc" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --wait 0 --gated-run 888 >/dev/null 2>&1); check_rc "gate-red-refused-rc" $? 2
 
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --execute --gated-run 777 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --wait 0 --gated-run 777 2>&1)"; rc=$?
   check_rc "gate-green-allowed-rc" $rc 0
   [ "$(git -C "$T/remote.git" rev-parse refs/heads/main 2>/dev/null)" = "$SHA2"  ]\
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: gate-green-did-push: a GREEN-gated landing did NOT reach remote main"; }
 
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "selftest: exercising the audited escape hatch" 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --wait 0 --allow-ungated-push "selftest: exercising the audited escape hatch" 2>&1)"; rc=$?
   check_rc "gate-override-allowed-rc" $rc 0
   check_has "gate-override-is-loud" "$out" "UNGATED PUSH OVERRIDE"
   (cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
     OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --execute --allow-ungated-push "" >/dev/null 2>&1); check_rc "gate-override-needs-justification-rc" $? 2
+    "$BUILD_BIN" ship --sha "$SHA2" --execute --wait 0 --allow-ungated-push "" >/dev/null 2>&1); check_rc "gate-override-needs-justification-rc" $? 2
 
   if [ "$R_TIP_ORIG" != "none" ]; then
     git -C "$T/repo" push -q -f "$T/remote.git" "$R_TIP_ORIG:refs/heads/main" 2>/dev/null || true
@@ -1584,7 +1648,7 @@ NSTUB3
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
     OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_TEST_CARRIER_FORK_VERSION=1 \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 2>&1)"; rc=$?
   check_rc "72-dispatch-rc" $rc 0
   # Dispatch runs BEFORE the seal, so it must inject the cycle the seal WILL write (352+1).
   check_has "72-dispatch-echo" "$out" "carrier fork_version=0.5.4+fork.353"
@@ -1607,7 +1671,7 @@ NSTUB3
   out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD7" OC_DEPLOY_REPO="$T/crepo" \
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
     OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 2>&1)"; rc=$?
   check_rc "72-transition-rc" $rc 0
   grep -q 'fork_version=' "$GH_LOG" \
     && { fail=$((fail+1)); echo "SELFTEST FAIL: #72 passed fork_version to a carrier that does not declare it (422 on every ship)"; } || pass=$((pass+1))
@@ -1620,7 +1684,7 @@ NSTUB3
     OC_DEPLOY_REMOTE="$T/remote.git" OC_DEPLOY_VALIDATE="$SD/tools/val-ok" \
     OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
     OC_TEST_CARRIER_YML_FAIL=1 \
-    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute 2>&1)"; rc=$?
+    "$BUILD_BIN" ship --sha "$SHA2" --allow-ungated-push "selftest fixture: local temp repo, no live gate exists" --execute --wait 0 2>&1)"; rc=$?
   check_rc "72-undecidable-rc" $rc 2
   check_has "72-undecidable-msg" "$out" "refusing to dispatch blind"
   grep -q 'workflow run' "$GH_LOG" \
