@@ -32,10 +32,12 @@ and the carrier input is retired and ignored. That stale instruction is
 (`OC_SHIPCHAIN_SHIP_WAIT`), not an `oc-build` parser default. Neither row is a
 specimen for this test.
 
-**Verification.** `oc-lint-laws` over the law corpus, rc=0, run against this
-worktree before the PR. `oc-review-persist` still derives its lens keys from
-the catalogue headings; this text adds none. Nothing in this version is merged,
-so no drift baseline was updated.
+**Verification.** `oc-lint-laws` over the law corpus, rc=0, run against the
+PR worktree before merge. `oc-review-persist` still derives its lens keys from
+the catalogue headings; this text adds none. Merged on the owner's word,
+2026-11-25T12:44:56Z, as [PR #179](https://github.com/leshchenko1979/opencrabs-dev-factory/pull/179)
+(`860de0b6`, head `c928a390`). The drift baseline is stamped by the sync that
+publishes this version, not by the merge.
 
 ## v0.4.334 — the dispatcher is gone: every ship verb names its own tool
 
