@@ -1,20 +1,20 @@
 {
-  "path": "/tmp/fix-174-ocdeployment-strings/tools/tests/battery-last.json",
-  "ts": "2026-11-25T09:10:47Z",
-  "pass": 471,
+  "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
+  "ts": "2026-11-25T11:08:23Z",
+  "pass": 454,
   "fail": 0,
   "verdict": "PASS",
   "mode": "sequential",
-  "pids_max": "64",
+  "pids_max": "max",
   "pids_cap": "",
   "fail_log": "",
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r5fbbc13b95e84cd9834d35cd8ea62269.scope",
+  "cgroup": "/user.slice/user-0.slice/session-173619.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 3485050,
-  "timing": {"max_concurrency": 1, "section_count": 72, "sum_ms": 3484538, "slowest": [{"n": 7, "ms": 914971, "start_ms": 1795594628377, "end_ms": 1795595543348, "title": "unified-log wire (real tool -> tmp log)"}, {"n": 28, "ms": 531698, "start_ms": 1795596451785, "end_ms": 1795596983483, "title": "oc-gate"}, {"n": 25, "ms": 448828, "start_ms": 1795595741429, "end_ms": 1795596190257, "title": "deploy stage tools"}, {"n": 26, "ms": 255054, "start_ms": 1795596190257, "end_ms": 1795596445311, "title": "oc-ledger"}, {"n": 55, "ms": 245611, "start_ms": 1795597462084, "end_ms": 1795597707695, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 44, "ms": 155524, "start_ms": 1795597167107, "end_ms": 1795597322631, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 31, "ms": 88085, "start_ms": 1795597020206, "end_ms": 1795597108291, "title": "oc-drift-check"}, {"n": 6, "ms": 79092, "start_ms": 1795594549285, "end_ms": 1795594628377, "title": "flood guard ignores verdict rcs (#68-follow-up)"}, {"n": 1, "ms": 71023, "start_ms": 1795594363013, "end_ms": 1795594434036, "title": "lib/oc-log.sh (unified tools log)"}, {"n": 4, "ms": 54950, "start_ms": 1795594494225, "end_ms": 1795594549175, "title": "flood guard reads both ts forms (#738)"}]}
+  "wall_ms": 1535385,
+  "timing": {"max_concurrency": 1, "section_count": 68, "sum_ms": 928063, "slowest": [{"n": 23, "ms": 233280, "start_ms": 1795604019481, "end_ms": 1795604252761, "title": "deploy stage tools"}, {"n": 24, "ms": 186230, "start_ms": 1795604252761, "end_ms": 1795604438991, "title": "oc-ledger"}, {"n": 42, "ms": 128063, "start_ms": 1795604597834, "end_ms": 1795604725897, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 26, "ms": 53950, "start_ms": 1795604443350, "end_ms": 1795604497300, "title": "oc-gate"}, {"n": 46, "ms": 38788, "start_ms": 1795604735348, "end_ms": 1795604774136, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 33, "ms": 29971, "start_ms": 1795604531057, "end_ms": 1795604561028, "title": "oc-ledger lock budget (#619)"}, {"n": 51, "ms": 26806, "start_ms": 1795604798835, "end_ms": 1795604825641, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 61, "ms": 20090, "start_ms": 1795604844652, "end_ms": 1795604864742, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 37, "ms": 17075, "start_ms": 1795604564385, "end_ms": 1795604581460, "title": "oc-commit"}, {"n": 29, "ms": 16235, "start_ms": 1795604510275, "end_ms": 1795604526510, "title": "oc-drift-check"}]}
 }
