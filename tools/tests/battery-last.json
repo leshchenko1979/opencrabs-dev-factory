@@ -1,6 +1,6 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-25T11:08:23Z",
+  "ts": "2026-11-25T12:26:26Z",
   "pass": 454,
   "fail": 0,
   "verdict": "PASS",
@@ -11,10 +11,10 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/session-173619.scope",
+  "cgroup": "/user.slice/user-0.slice/session-174288.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 1535385,
-  "timing": {"max_concurrency": 1, "section_count": 68, "sum_ms": 928063, "slowest": [{"n": 23, "ms": 233280, "start_ms": 1795604019481, "end_ms": 1795604252761, "title": "deploy stage tools"}, {"n": 24, "ms": 186230, "start_ms": 1795604252761, "end_ms": 1795604438991, "title": "oc-ledger"}, {"n": 42, "ms": 128063, "start_ms": 1795604597834, "end_ms": 1795604725897, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 26, "ms": 53950, "start_ms": 1795604443350, "end_ms": 1795604497300, "title": "oc-gate"}, {"n": 46, "ms": 38788, "start_ms": 1795604735348, "end_ms": 1795604774136, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 33, "ms": 29971, "start_ms": 1795604531057, "end_ms": 1795604561028, "title": "oc-ledger lock budget (#619)"}, {"n": 51, "ms": 26806, "start_ms": 1795604798835, "end_ms": 1795604825641, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 61, "ms": 20090, "start_ms": 1795604844652, "end_ms": 1795604864742, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 37, "ms": 17075, "start_ms": 1795604564385, "end_ms": 1795604581460, "title": "oc-commit"}, {"n": 29, "ms": 16235, "start_ms": 1795604510275, "end_ms": 1795604526510, "title": "oc-drift-check"}]}
+  "wall_ms": 580261,
+  "timing": {"max_concurrency": 1, "section_count": 68, "sum_ms": 580084, "slowest": [{"n": 24, "ms": 91555, "start_ms": 1795609105994, "end_ms": 1795609197549, "title": "oc-ledger"}, {"n": 42, "ms": 90130, "start_ms": 1795609314429, "end_ms": 1795609404559, "title": "oc-ship (5\u2192swapped orchestrator, owner GO 16:16Z)"}, {"n": 23, "ms": 78233, "start_ms": 1795609027761, "end_ms": 1795609105994, "title": "deploy stage tools"}, {"n": 26, "ms": 45346, "start_ms": 1795609199852, "end_ms": 1795609245198, "title": "oc-gate"}, {"n": 46, "ms": 40558, "start_ms": 1795609414215, "end_ms": 1795609454773, "title": "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"}, {"n": 51, "ms": 26591, "start_ms": 1795609481504, "end_ms": 1795609508095, "title": "oc-issue-dispatch (mechanized issue triage dispatch)"}, {"n": 33, "ms": 22228, "start_ms": 1795609273997, "end_ms": 1795609296225, "title": "oc-ledger lock budget (#619)"}, {"n": 61, "ms": 20087, "start_ms": 1795609538467, "end_ms": 1795609558554, "title": "oc-issue-dispatch SIGKILL evidence (#451)"}, {"n": 29, "ms": 16314, "start_ms": 1795609254235, "end_ms": 1795609270549, "title": "oc-drift-check"}, {"n": 47, "ms": 15142, "start_ms": 1795609454773, "end_ms": 1795609469915, "title": "oc-health (hourly health & cleanliness sweep)"}]}
 }
