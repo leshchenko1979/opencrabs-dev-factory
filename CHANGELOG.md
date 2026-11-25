@@ -1,5 +1,41 @@
 # Changelog — opencrabs-dev
 
+## v0.4.336 — the retired input stops being forwarded, and the prose stops restating defaults
+
+**What changed (tool).** [PR #186](https://github.com/leshchenko1979/opencrabs-dev-factory/pull/186),
+merged `0714b272f` on the owner's word ("Merge all", 2026-11-25). `oc-gate`
+no longer puts `-f test_threads=…` on a dispatch at either site (fresh or the
+422 auto-retry); `--test-threads` is parsed and ACCEPTED, NOT FORWARDED, with
+`test_threads_retired=accepted-not-forwarded` on stderr and the journal. The
+rc-4 yml-contract arm stays for a yml that does not even declare the input.
+`oc-ship` drops its `PRCHECKS_CALL` forward and its help says RETIRED
+2026-11-20. The selftest leg inverted from `test_threads/dispatched` to
+`test_threads/not-forwarded` — the mutation guard reddens exactly that leg.
+
+**What changed (law).** [PR #187](https://github.com/leshchenko1979/opencrabs-dev-factory/pull/187),
+merged `938195be0`. Three instructions stopped contradicting their tools: the
+`oc-ledger events` default window is **20** (was "~21", a doc bug); the
+`oc-ship` example no longer passes `--test-threads 2` (the carrier declares the
+input and reads nothing, so the flag capped nothing); and a factory smoke close
+no longer claims the board defaults to the fork — the ladder is explicit
+`--close-repo` → `OC_SMOKE_CLOSE_REPO` → a state probe of both boards, refusing
+on ambiguous or unreadable (#154). Six role files, +18/−15.
+
+**What this entry does not claim.** Three of the survey's six "movable" rows
+were NOT migrated, because a default there would have changed an existing
+caller: `oc-status poll --wait` (the ship loop calls bare poll and plan mode
+rejects a nonzero wait), `--test-threads` (the carrier ignores it — factory
+#178/#181), and `--first-parent` (no negative parser arm; oc-fanout already
+hardcodes it). `--full` and `--n 2000/3000` stay deliberate overrides. The
+RC-CONTRACT `Default` column is not built yet; Reviewer B's DEFAULTS test is
+policy, not a mechanical gate, until it is.
+
+**Verification.** Battery on the PR-186 head: **454 pass / 0 fail**, receipt ts
+`2026-11-25T17:08:02Z`, `tree_changed=false`; the mutation guard reddened
+exactly the 3 non-forwarding legs (465→462). `oc-lint-laws` rc=0 over the law
+corpus before the PR-187 commit. Both merged on the owner's word, not by lane
+discretion.
+
 ## v0.4.335 — Reviewer B gains the DEFAULTS test
 
 **What changed (law).** Owner order, 2026-11-25, verbatim: "simplify
