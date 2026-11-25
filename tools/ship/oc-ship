@@ -727,8 +727,10 @@ GATE_RESUMES="${OC_SHIPCHAIN_GATE_RESUMES:-2}"     # max rc-5 resume-polls befor
 WAIT="${OC_SHIPCHAIN_SHIP_WAIT:-2700}"             # 45 min — one carrier build, comfortably
 # SHIP-LOCK queue budget (defect fix 2026-09-19, fork #391; reported
 # independently by lanes 61161247 and c78e78e0). The lock is acquired at LEG3
-# and released ONLY from the exit trap, so it is held across LEG3 (ff-merge,
-# seconds) + LEG4 (WAIT above) + LEG5 (swap poll, 12 x 10 s + poll runtime).
+# and released from the exit trap (on a SWAPPED path, also released
+# explicitly after the swap, before the background state-repo `git gc --auto`
+# is launched), so it is held across LEG3 (ff-merge, seconds) + LEG4 (WAIT
+# above) + LEG5 (swap poll, 12 x 10 s + poll runtime) and NOT across the gc.
 # The old default was a hardcoded 600 s against a ~3300 s max hold: the queue
 # budget was STRUCTURALLY SHORTER than the thing it serialized, so any chain
 # that queued behind a real ship expired by construction. Volume measured over
@@ -1344,18 +1346,94 @@ oc_ship_leg_sweep() {
   return 0
 }
 
-# #177: git gc on the state repo between ships, at the end of a successful
-# chain only. Not a cron or a timer.
+# #177: git gc --auto on the state repo, only after a successful swap, and
+# only AFTER SHIP-LOCK has been released. Ship #1 held the lock across a
+# synchronous `git gc` for 28 minutes (16:31-16:59 MSK). Not a cron or a
+# timer. The job is launched detached (setsid, else nohup) at idle I/O
+# priority and is non-fatal: a failed or skipped gc does not fail the ship.
+# A second launch while one is still running is skipped (flock on
+# $STATE_DIR/state-gc.lock; git also has gc.pid). The child stamps
+# "state-gc ok|FAILED (<N>s)" via oc-ledger --by "${OC_ACTOR:-oc-ship}"
+# (or appends OC_SHIPCHAIN_LEDGER in selftest) and always writes
+# $STATE_DIR/state-gc.log.
 oc_ship_state_gc() {
   if ! git -C "$STATE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     return 0
   fi
-  journal "state-gc start"
-  if git -C "$STATE_DIR" gc --quiet; then
-    journal "state-gc ok"
+
+  local lockfile="$STATE_DIR/state-gc.lock"
+  local logfile="$STATE_DIR/state-gc.log"
+  local runner="$STATE_DIR/state-gc-run.sh"
+  mkdir -p "$STATE_DIR" || return 0
+
+  # fd 201 is inherited by the detached child and released when it exits.
+  # The parent closes its copy after launch so the lock is not held by us.
+  eval "exec 201>\"$lockfile\"" 2>/dev/null || return 0
+  if ! flock -n 201 2>/dev/null; then
+    eval "exec 201>&-" 2>/dev/null || true
+    journal "state-gc skipped (already running)"
+    return 0
+  fi
+
+  cat > "$runner" <<'EOS'
+#!/usr/bin/env bash
+set +e
+# Do not inherit the ship lock (fd 200). Keep fd 201 (state-gc.lock) open.
+exec 200>&- 2>/dev/null
+state="${OC_SHIP_STATE_GC_STATE:?}"
+log="${OC_SHIP_STATE_GC_LOG:?}"
+printf '%s\n' "$$" > "$state/state-gc.pid"
+start="$(date +%s)"
+if command -v ionice >/dev/null 2>&1; then
+  if command -v nice >/dev/null 2>&1; then
+    ionice -c3 nice -n 19 git -C "$state" gc --auto --quiet
   else
-    journal "state-gc FAILED (non-fatal)"
-    printf '%s\n' "oc-ship: WARNING: git gc in $STATE_DIR failed — ship result stands (#177)" >&2
+    ionice -c3 git -C "$state" gc --auto --quiet
+  fi
+elif command -v nice >/dev/null 2>&1; then
+  nice -n 19 git -C "$state" gc --auto --quiet
+else
+  git -C "$state" gc --auto --quiet
+fi
+rc=$?
+dur=$(( $(date +%s) - start ))
+if [ "$rc" -eq 0 ]; then
+  msg="state-gc ok (${dur}s)"
+else
+  msg="state-gc FAILED (${dur}s)"
+fi
+printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$msg" >> "$log"
+# Prefer the chain journal file in selftest; otherwise stamp the ledger
+# with a valid --by. Never fail the ship on a stamp error.
+if [ -n "${OC_SHIPCHAIN_LEDGER:-}" ]; then
+  printf '%s\n' "[${CHAIN:-oc-ship}] $msg" >> "$OC_SHIPCHAIN_LEDGER"
+elif [ "${OC_TOOLS_NOLOG:-0}" != "1" ] && [ "${NOLEDGER:-0}" != "1" ] && [ -x "${TOOLS_DIR:-}/state/oc-ledger" ]; then
+  "${TOOLS_DIR}/state/oc-ledger" stamp shipchain "$msg" --by "${OC_ACTOR:-oc-ship}" >>"$log" 2>&1 || true
+fi
+rm -f "$state/state-gc.pid" "$state/state-gc-run.sh"
+EOS
+  chmod +x "$runner" || true
+  export OC_SHIP_STATE_GC_STATE="$STATE_DIR"
+  export OC_SHIP_STATE_GC_LOG="$logfile"
+
+  local launched=0
+  if command -v setsid >/dev/null 2>&1; then
+    setsid -f "$runner" </dev/null >/dev/null 2>>"$logfile" &
+    launched=1
+  elif command -v nohup >/dev/null 2>&1; then
+    nohup "$runner" </dev/null >/dev/null 2>>"$logfile" &
+    launched=1
+  else
+    "$runner" </dev/null >/dev/null 2>>"$logfile" &
+    launched=1
+  fi
+  # Close our copy of the gc lock; the child keeps its inherited fd.
+  eval "exec 201>&-" 2>/dev/null || true
+  if [ "$launched" = "1" ]; then
+    journal "state-gc launched (bg)"
+  else
+    journal "state-gc FAILED to launch (non-fatal)"
+    rm -f "$runner" "$STATE_DIR/state-gc.pid"
   fi
   return 0
 }
@@ -2411,6 +2489,9 @@ if [ "$SWAPPED" != "1" ]; then
 fi
 journal "DONE SWAPPED sha=$SHA"
 oc_ship_leg_sweep LEG5
+# #177: drop SHIP-LOCK before launching the background gc, so the next
+# ship is not queued behind it. The EXIT trap will then see LOCK_HELD=0.
+release_ship_lock
 oc_ship_state_gc
 echo "SHIP-CHAIN $CHAIN: SWAPPED sha=$SHA gate=$SHIP_GATE_MODE"
 exit 0

@@ -20,7 +20,14 @@
 # =============================================================================
   set -u
   T="$(mktemp -d)"
-  trap 'rm -rf "$T"' EXIT
+  _reap_state_gc() {
+    # #177: a background `git gc --auto` in $T/state must finish (or be given
+    # a few seconds) before the suite deletes the fixture tree.
+    if [ -f "$T/state/state-gc.lock" ]; then
+      flock -w 5 "$T/state/state-gc.lock" true 2>/dev/null || true
+    fi
+  }
+  trap '_reap_state_gc; rm -rf "$T"' EXIT
   export OC_SHIPCHAIN_LOG="$T/detach-default.log"
   PASS=0; FAIL=0
   # The owning session the fixture commits declare via a Session-Id trailer —
@@ -268,6 +275,12 @@ EOF
   # GUARDED (2026-09-12): `set -e` + a bare `OUT="$(...)"` aborts the WHOLE
   # selftest on the first failing chain — rc 6, zero output, no assertion
   # printed. A harness that cannot report a failure cannot be trusted green.
+  # #177: STATE_DIR must be a git repo or the chain skips the background gc
+  # (and the lock-vs-gc-order arms below would be vacuously untested).
+  mkdir -p "$T/state"
+  git init -q "$T/state"
+  git -C "$T/state" config user.email t@t
+  git -C "$T/state" config user.name t
   RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
   check_rc "full-chain-green" "$RC" 0
   case "$OUT" in *SWAPPED*) ok "swapped-marker" ;; *) bad "swapped-marker: $OUT" ;; esac
@@ -286,6 +299,29 @@ EOF
   grep -q "LEG5 swap poll start" "$T/journal.log" && ok "leg5-ran" || bad "leg5-ran"
   grep -q "LEG4 ship GREEN" "$T/journal.log" && ok "journal-ship-leg" || bad "journal-ship-leg"
   grep -q "DONE SWAPPED" "$T/journal.log" && ok "journal-done" || bad "journal-done"
+  # #177: SHIP-LOCK is released BEFORE the background state-gc is launched,
+  # so a later ship is not queued behind the gc (ship #1, 28 minutes).
+  grep -q "SHIP-LOCK released" "$T/journal.log" && ok "journal-ship-lock-released-on-swap" || bad "journal-ship-lock-released-on-swap"
+  grep -q "state-gc launched (bg)" "$T/journal.log" && ok "journal-state-gc-launched-bg" || bad "journal-state-gc-launched-bg"
+  _rel="$(grep -n "SHIP-LOCK released" "$T/journal.log" | head -1 | cut -d: -f1)"
+  _lnch="$(grep -n "state-gc launched (bg)" "$T/journal.log" | head -1 | cut -d: -f1)"
+  if [ -n "$_rel" ] && [ -n "$_lnch" ] && [ "$_rel" -lt "$_lnch" ]; then
+    ok "state-gc-after-lock-release"
+  else
+    bad "state-gc-after-lock-release (released=${_rel:-none} launched=${_lnch:-none})"
+  fi
+  # Reap the background job, then drop the fixture .git so later arms do not
+  # launch a gc of their own (they share $T/state).
+  if [ -f "$T/state/state-gc.lock" ]; then
+    if flock -w 5 "$T/state/state-gc.lock" true 2>/dev/null; then
+      ok "state-gc-bg-reaped"
+    else
+      bad "state-gc-bg-reaped (still holding state-gc.lock)"
+    fi
+  else
+    ok "state-gc-bg-reaped"
+  fi
+  rm -rf "$T/state/.git"
 
   grep -q -e "--fast" "$T/prchecks.log" && ok "default-gate-is-fast" || bad "default-gate-is-fast"
   grep -F "LEG1 gate start (resolved argv:" "$T/journal.log" | grep -q -- "--fast"     && ok "journal-leg1-resolved-argv-fast" || bad "journal-leg1-resolved-argv-fast"
@@ -3229,6 +3265,47 @@ DRIVER
   _ra_ck "norearm-rc6-bare-infra" "" "gate infra" 6
   _ra_ck "norearm-rc6-empty-msg" "" "" 6
   CHAIN_DIE_MSG=""
+
+  # ---- #177: a second state-gc launch is skipped while one is running ----
+  # Placed at the end so the extra ff-merge does not move fixture main under
+  # earlier arms. $T/ship-sha is restored afterwards.
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" checkout -qb feat-gc-skip
+  echo gc-skip > "$T/clone/gc-skip.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm 'gc-skip' --trailer "Session-Id: $FIXTURE_SESSION"
+  _GCSHA="$(git -C "$T/clone" rev-parse HEAD)"
+  printf '%s\n' "$_GCSHA" > "$T/ship-sha"
+  git -C "$T/clone" push -q origin feat-gc-skip
+  git -C "$T/clone" checkout -q main
+  mkdir -p "$T/state"
+  git init -q "$T/state"
+  git -C "$T/state" config user.email t@t
+  git -C "$T/state" config user.name t
+  # Hold state-gc.lock the way a live background gc would (inherited flock).
+  flock -x "$T/state/state-gc.lock" sleep 30 &
+  _GC_HOLD=$!
+  _i=0
+  while flock -n "$T/state/state-gc.lock" true 2>/dev/null; do
+    sleep 0.05
+    _i=$((_i+1))
+    if [ "$_i" -gt 40 ]; then
+      bad "state-gc-skip-holder-did-not-acquire"
+      break
+    fi
+  done
+  rm -f "$T/journal.log"
+  RC=0; OUT="$(run_chain --sha "$_GCSHA" --branch feat-gc-skip --issue 42 --wait 5 2>&1)" || RC=$?
+  check_rc "state-gc-skip-if-running-chain" "$RC" 0
+  grep -q "state-gc skipped (already running)" "$T/journal.log" && ok "state-gc-skipped-if-running" || bad "state-gc-skipped-if-running: $(grep -E 'state-gc|SHIP-LOCK released' "$T/journal.log" | tr '\n' ' ')"
+  if grep -q "state-gc launched (bg)" "$T/journal.log"; then
+    bad "state-gc-skip-did-not-launch"
+  else
+    ok "state-gc-skip-did-not-launch"
+  fi
+  kill "$_GC_HOLD" 2>/dev/null || true
+  wait "$_GC_HOLD" 2>/dev/null || true
+  rm -rf "$T/state/.git"
+  printf '%s\n' "$FSHA" > "$T/ship-sha"
 
   echo "selftest: $PASS passed, $FAIL failed"
   # Contract fix 2026-09-11: was `return $?`, which returned ECHO's status (0),
