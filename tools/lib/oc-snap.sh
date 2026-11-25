@@ -99,7 +99,7 @@ oc_snap_guard() {
   # measured 10.01 s on an otherwise idle box (three runs: 10.01 / 0.17 / 0.45 s
   # -- the first pays the page cache). The fleet `--help` leg runs 48 tools under
   # a wall-clock bound, so that cost landed on innocent tools and reddened
-  # whichever one hit the loaded moment (factory #115: oc-t5-sweep FAILED in the
+  # whichever one hit the loaded moment (factory #115: a tool FAILED in the
   # fleet loop and PASSED in its own section of the SAME run). With the excludes
   # the copy is 4.7 MB and 0.078 s. tar is used rather than `cp -a` because tar
   # can exclude; -p preserves the mode/mtime that `cp -a` gave us.

@@ -303,7 +303,7 @@ A1 governs **who acts**. This governs **who is acted upon**, and the two collaps
 | Kind | Verbs | Rule |
 |---|---|---|
 | **SELF** — the uuid is the caller's own | `oc-ledger ack` · `enroll` · `claim-ref` · `confirm` · `claim` · `oc-drift-check` | **derived from env**; the argument becomes optional, and when supplied it is **cross-checked** against `$OPENCRABS_SESSION_ID` — a mismatch is **named as an advisory `note:` on stderr with rc 0**, NEVER a refusal (#657: a hard cross-check reddens 60 selftest legs, incl. `ack2-otheruuid-rc0`, because `ack`/`enroll` legitimately act on ANOTHER lane's uuid) |
-| **TARGET** — the uuid names another session | `oc-ledger retire` · `promote` · `oc-ping-proof` · `oc-tg-audit` · `oc-notify-fanout` recipients | **stays explicit** — there is no ambient answer, and defaulting one would silently act on the wrong lane |
+| **TARGET** — the uuid names another session | `oc-ledger retire` · `promote` · `oc-tg-audit` · `oc-notify-fanout` recipients | **stays explicit** — there is no ambient answer, and defaulting one would silently act on the wrong lane |
 
 `oc-ledger claim` already spells this out as `[<uuid>]` (optional) — so the convention exists in the usage line and was never enforced in the body.
 

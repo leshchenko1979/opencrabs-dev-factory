@@ -69,13 +69,13 @@ OC_LOG_START=""
 # oc-harvest-sweep (branch) -- measured at 0 rows each.
 #
 # The bare SUBCOMMAND spelling is therefore a property of the TOOLS that
-# dispatch one -- exactly five carry a `selftest)` case arm -- and NOT of the
+# dispatch one -- exactly four carry a `selftest)` case arm -- and NOT of the
 # fleet. oc_log_init sets OC_LOG_TOOL BEFORE this predicate runs, so the arm can
 # be scoped to its owners: a free-text positional that reads `selftest` in any
 # other tool now logs normally. Battery section 00d holds this list EQUAL to the
 # real set of arms in both directions, and its negative control (the env hook
 # below) proves the arm is what suppresses the row.
-OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-ledger oc-poll oc-roster oc-watcher-audit "
+OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" oc-commit oc-ledger oc-roster oc-watcher-audit "
 OC_LOG_BARE_SELFTEST_TOOLS="${OC_LOG_BARE_SELFTEST_TOOLS:-$OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT}"
 oc_is_selftest() {
   case " $OC_LOG_ARGS " in
@@ -145,8 +145,7 @@ OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601?
 # silently widening the exemption.
 #
 # DELIBERATELY ABSENT, each because rc 1 there is NOT a benign answer:
-#   oc-closure-sweep     1 = "a close FAILED"          — a failure
-#   oc-branch-sweep      1 = "deletions"               — destructive; 4x IS a storm
+# #   oc-branch-sweep      1 = "deletions"               — destructive; 4x IS a storm
 #   oc-fmt               1 = "formatting diffs"        — may write
 #   oc-mutate            1 = "not proven"              — expensive; retry storm
 #   oc-issue-dispatch / oc-harvest-dispatch / oc-harvest-census / oc-census
@@ -156,7 +155,7 @@ OC_LOG_JQ_TS='def ts_epoch: (.ts // "" | sub("\\+00:00$";"Z") | fromdateiso8601?
 #   oc-verify-job / oc-verify-order / oc-pr-atomicity /
 #   oc-verify-artifact   1 = legacy USAGE code         — exempting it hides a
 #                                                        real usage bug
-OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-ping-proof:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-audit-ship:1 oc-skew-scan:1 oc-smoke-evidence:1 oc-t5-sweep:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
+OC_LOG_VERDICT_RCS_DEFAULT=" oc-ledger:1 oc-drift-check:1 oc-lint-laws:1 oc-vendor-drift:1 oc-claims-single-source:1 oc-health:1 oc-issue-sweep:1 oc-log-search:1 oc-pr-fault-scope:1 oc-rebase-safety:1 oc-audit-ship:1 oc-smoke-evidence:1 oc-tg-audit:1 oc-upstream-delta:1 oc-watcher-audit:1 oc-harvest-sweep:1 "
 OC_LOG_VERDICT_RCS="${OC_LOG_VERDICT_RCS:-$OC_LOG_VERDICT_RCS_DEFAULT}"
 
 # oc_log_flood_guard — C-F1 (lens C 2026-08-31, owner "Go all"): a runaway

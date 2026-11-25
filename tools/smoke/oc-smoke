@@ -1389,14 +1389,12 @@ fi
 #    `--behavioral na` (structurally untestable, stated) closes, because a leg
 #    the caller has explicitly ruled out is not an unproven one.
 if [ "$CLOSE_MODE" -eq 1 ] && [ "$VERDICT" = "PASS" ] && [ "$LEDGER_RC" -eq 0 ] && [ "$BEHAVIORAL" != "absent" ]; then
-  # T-10: ONE implementation of class (d) closure, shared with
-  # `oc-closure-sweep --apply`. The sweep's whole purpose is closing through the
-  # SAME path this does, and two copies of a gh-close block is exactly how the
-  # two drift — the copy nobody reads stops matching the one that is. The lib
-  # carries the guard set (numeric-only, unreadable-state skip, idempotent
-  # already-CLOSED, printf-built comment); rc policy stays HERE, because the lib
-  # never exits and guard 7 (a gh failure never changes the verdict) is this
-  # file's promise, not the helper's.
+  # T-10: ONE implementation of class (d) closure. The lib carries the
+  # guard set (numeric-only, unreadable-state skip, idempotent already-CLOSED,
+  # printf-built comment); rc policy stays HERE, because the lib never exits
+  # and guard 7 (a gh failure never changes the verdict) is this file's
+  # promise, not the helper's. The catch-up sweep that used to share this
+  # path was removed (factory #177).
   if command -v oc_resolve_close_board >/dev/null 2>&1; then
     # #154: resolve the BOARD before resolving the close. The source is printed
     # either way, because a close aimed by a probe and a close aimed by a flag

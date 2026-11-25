@@ -1454,7 +1454,7 @@ for ln in open(path):
     rows[c[0]]=(c[2],'|'.join(c[3:]))
 # A BENIGN rc 1 names a STATE the tool observed (DRIFT, findings, zero-hits,
 # SILENT). A FAILURE rc 1 names an ACTION the tool could not complete. A bare
-# `1 <word>` test cannot tell the two apart: oc-closure-sweep's row reads
+# `1 <word>` test cannot tell the two apart: a historical register row read
 # `1 a close FAILED`, which passes it, and the FIRST draft of this list exempted
 # exactly that tool (#68-follow-up). So the rc-1 clause is also screened for
 # action-failure vocabulary.
@@ -1465,7 +1465,7 @@ for ln in open(path):
 FAILW=re.compile(r'fail|error|refus|denied|unable|abort|crash|not\s+found',re.I)
 
 # A NEGATED word is a DISCLAIMER, not an assertion. `(VERDICT, not an error)` names
-# a verdict and must not red the gate -- measured 2026-11-20: the oc-t5-sweep row
+# a verdict and must not red the gate -- measured 2026-11-20: one register row
 # was the sole HIT of 19 registered entries, and the word it fired on sat inside
 # its own disclaimer. A word list cannot tell `an error` from `not an error`, so
 # the frame is stripped before the scan; an ASSERTED failure behind the frame
@@ -2257,19 +2257,7 @@ if tool oc-issue-sweep; then
   "$TOOLS_DIR/issue/oc-issue-sweep" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
 fi
 
-# ---- 9g. oc-skew-scan (KERNEL C4) -------------------------------------------
-section "oc-skew-scan"
-run_selftest oc-skew-scan
-if tool oc-skew-scan; then
-  "$TOOLS_DIR/state/oc-skew-scan" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
-fi
-
-# ---- 9h. oc-ping-proof (B25) -------------------------------------------------
-section "oc-ping-proof"
-run_selftest oc-ping-proof
-if tool oc-ping-proof; then
-  "$TOOLS_DIR/notify/oc-ping-proof" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
-fi
+# ---- 9g/9h retired — removed factory #177 ----
 
 # ---- 9i. oc-watchdog-check — RETIRED v0.4.65 (lens E A1: pure passthrough to oc-deploy watch) ----
 
@@ -2849,8 +2837,8 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   HELP_N=$((HELP_N+1))
   # (#115) The bound is 60s, not 20s, and the rc is NAMED. A bare `timeout 20`
   # reddened on whichever innocent tool landed on a loaded moment: battery-115
-  # (2026-11-20T13:32:24Z) had oc-t5-sweep FAIL here and PASS in its own section
-  # (66c) of the SAME run, and the victim MOVED between runs (oc-ship
+  # (2026-11-20T13:32:24Z) had a tool FAIL here and PASS in its own section
+  # of the SAME run, and the victim MOVED between runs (oc-ship
   # rc=124 under load 11.66). Two measured causes: the tree had grown to 16 MB
   # on disk while the bound stayed at the 36-file figure it was set for, and
   # every oc-* invocation copies that tree through oc_snap_guard before exec
@@ -2872,7 +2860,7 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   # the wrong stream is still a successful exit. The 2026-10-01 audit named seven
   # (oc-start, oc-issue-create, oc-issue-log, oc-issue-sweep, oc-harvest-sweep,
   # oc-pr-atomicity, oc-smoke-evidence); the same sweep found FIVE MORE inside
-  # this very loop (the four ship/ tools and oc-skew-scan), which is why the
+  # this very loop (the four ship/ tools and one state/ tool), which is why the
   # assertion is fleet-wide rather than a list of names. Assert stdout is
   # NON-EMPTY, never a byte count: the text is free to grow (#316 debt).
   # (#115) rc is captured, so a bound kill is named as a skip instead of being
@@ -3003,7 +2991,7 @@ section "rc contract coverage: unregistered executables + phantom rows (#139)"
 # OC_LOG_VERDICT_RCS_DEFAULT, so a tool with no register row is invisible to it
 # and to every other contract leg -- a new executable ships with no documented
 # exit codes and nothing reddens. Measured at 6532016c: five live executables
-# had no row (oc-build, oc-swap, oc-fanout, oc-status, oc-poll).
+# had no row (oc-build, oc-swap, oc-fanout, oc-status, and one other later registered).
 #
 # This leg enumerates the filesystem and subtracts the register, in BOTH
 # directions: an executable with no row (RESIDUE) and a row with no executable
@@ -3058,10 +3046,10 @@ RCX_PHA="$(printf '%s\n' "$RCX_LIVE" | grep '^PHANTOM ' | grep -v -e '^PHANTOM o
 $RCX_PHA"
 # POSITIVE control (residue): delete a real row from a COPY -> the same scanner
 # must report it. Without this the leg passes on a scanner that cannot fire.
-grep -v '^| oc-poll ' "$TOOLS_DIR/docs/RC-CONTRACT.md" > "$RCX/reg-drop.md"
+grep -v '^| oc-roster ' "$TOOLS_DIR/docs/RC-CONTRACT.md" > "$RCX/reg-drop.md"
 RCX_DROP="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$RCX/reg-drop.md")"
-case "$RCX_DROP" in *"RESIDUE oc-poll"*) ok "rc contract: a dropped row is SEEN as residue (positive control)" ;;
-  *) bad "rc contract: the coverage scanner cannot fire (dropped oc-poll row unseen)" ;; esac
+case "$RCX_DROP" in *"RESIDUE oc-roster"*) ok "rc contract: a dropped row is SEEN as residue (positive control)" ;;
+  *) bad "rc contract: the coverage scanner cannot fire (dropped oc-roster row unseen)" ;; esac
 # POSITIVE control (phantom): a row for a nonexistent tool must be flagged.
 { cat "$TOOLS_DIR/docs/RC-CONTRACT.md"; printf '| oc-ghost-tool | 0 | 2 | 0 |\n'; } > "$RCX/reg-ghost.md"
 RCX_GH="$(python3 "$RCX/cov.py" "$TOOLS_DIR" "$RCX/reg-ghost.md")"
@@ -3193,54 +3181,7 @@ if tool oc-smoke; then
   "$TOOLS_DIR/smoke/oc-smoke" --help >/dev/null 2>&1 && ok "oc-smoke --help rc=0" || bad "oc-smoke --help rc!=0"
 fi
 
-# ---- 66b. oc-closure-sweep (class (d) catch-up close, T-10)
-# The catch-up companion to oc-smoke --close: an issue whose smoke PASS landed
-# before that flag existed (or whose gh close call failed) carries BOTH receipts
-# and stays OPEN forever, because a `done` row closes the CLAIM and the dispatch
-# predicate then reads it as landed. #279 is that shape. This tool joins the
-# issue's newest verdict-bearing smoke row x a done ledger row x the live
-# tracker state, and DRY RUNS by default.
-#
-# It is in this list because a tool that is not enumerated here is not tested:
-# run_selftest is opt-in per tool, so a new tool ships silently UNCOVERED. Its
-# 17 arms (four parsed row shapes, the #279 regression, the done-without-PASS
-# exclusion, the shared close path, the park mirrors) were green on the
-# standalone run and would still have been absent from every battery receipt.
-section "oc-closure-sweep (class (d) catch-up close)"
-run_selftest oc-closure-sweep
-if tool oc-closure-sweep; then
-  "$TOOLS_DIR/state/oc-closure-sweep" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
-  "$TOOLS_DIR/state/oc-closure-sweep" --help >/dev/null 2>&1 && ok "oc-closure-sweep --help rc=0" || bad "oc-closure-sweep --help rc!=0"
-fi
-
-# ---- 66c. oc-t5-sweep (the five Duty T5 legs, boundaries declared)
-# The sweep every T5 patrol used to perform BY HAND. A hand count cannot be
-# re-run, so a flag could not be audited and the population boundaries — the
-# whole reason the detector is usable rather than permanently red (92.8% flagged
-# at whole-open-set scope vs 16.1% post-gate) — lived only in a human's memory.
-#
-# In this list for the reason #66b names: run_selftest is opt-in per tool, so a
-# new tool ships silently UNCOVERED. Its 29 arms are mutation-verified (14/14
-# neutered predicates turn a named arm red), and the two that survive a naive
-# fixture are the reason each leg carries BOTH a pass arm and a red arm.
-section "oc-t5-sweep (five Duty T5 legs, declared boundaries)"
-run_selftest oc-t5-sweep
-if tool oc-t5-sweep; then
-  "$TOOLS_DIR/state/oc-t5-sweep" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
-  "$TOOLS_DIR/state/oc-t5-sweep" --help >/dev/null 2>&1 && ok "oc-t5-sweep --help rc=0" || bad "oc-t5-sweep --help rc!=0"
-  # A boundary that is not RFC3339 must be REFUSED, not silently compared as a
-  # string: a malformed bound makes every population empty and every leg read
-  # clean, which is the "green because blind" shape the whole tool guards against.
-  "$TOOLS_DIR/state/oc-t5-sweep" --boundary leg=a:2026-13-99 >/dev/null 2>&1; [ $? -eq 2 ] && ok "malformed boundary -> 2" || bad "malformed boundary -> expected 2"
-  "$TOOLS_DIR/state/oc-t5-sweep" --boundary leg=q:2026-10-01T00:00:00Z >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown leg name -> 2" || bad "unknown leg name -> expected 2"
-  # Offline determinism: the same fixture must give the same flags twice. A
-  # sweep whose answer moves between runs cannot be an acceptance oracle.
-  _t5f="$(mktemp)"; printf '%s\n' '{"issues":[],"claims":[],"anchors":{}}' > "$_t5f"
-  _t5a="$("$TOOLS_DIR/state/oc-t5-sweep" --fixture "$_t5f" --json 2>/dev/null | md5sum)"
-  _t5b="$("$TOOLS_DIR/state/oc-t5-sweep" --fixture "$_t5f" --json 2>/dev/null | md5sum)"
-  [ "$_t5a" = "$_t5b" ] && ok "two runs over one fixture agree byte-for-byte" || bad "fixture run is not deterministic"
-  rm -f "$_t5f"
-fi
+# ---- 66b/66c retired — removed factory #177 ----
 
 # ---- 64. oc-issue-dispatch (mechanized fork issue dispatch, v0.4.169 Zero-Ack)
 section "oc-issue-dispatch (mechanized issue triage dispatch)"
@@ -4586,7 +4527,7 @@ fi
 EP_DYN=0
 EP_STARVED=0
 for rel in state/oc-ledger ship/oc-build harvest/oc-gate audit/oc-lint-laws \
-           smoke/oc-smoke git/oc-commit issue/oc-issue-scope notify/oc-ping-proof \
+           smoke/oc-smoke git/oc-commit issue/oc-issue-scope notify/oc-notify-fanout \
            tests/run.sh; do
   t="$TOOLS_DIR/$rel"
   [ -f "$t" ] || { bad "relative-invocation sample missing: $rel"; continue; }

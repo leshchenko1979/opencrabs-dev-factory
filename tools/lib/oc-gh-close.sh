@@ -5,12 +5,11 @@
 #
 # SOURCED, never executed. Provides oc_close_on_receipt().
 #
-# WHY THIS IS A LIB (T-10, 2026-11-20): class (d) closure now has TWO callers —
-# `oc-smoke --close` (the live verdict path) and `oc-closure-sweep --apply` (the
-# catch-up path for a PASS that landed before the close did). The sweep's whole
-# acceptance is "closes through the same path `oc-smoke --close` uses", and two
-# copies of a gh-close block is exactly how that drifts: the copy nobody is
-# reading stops matching the one that is. One function, two callers, one guard set.
+# WHY THIS IS A LIB (T-10, 2026-11-20): class (d) closure goes through ONE
+# function so a second close path cannot drift from `oc-smoke --close`. The
+# catch-up sweep that used to share this path was removed (factory #177);
+# `oc-smoke --close` remains the caller. The lib never exits; rc policy stays
+# with the caller.
 #
 # CONTRACT
 #   oc_close_on_receipt <prog> <gh> <repo> <issue> <receipt-1> <receipt-2> [class-label]
