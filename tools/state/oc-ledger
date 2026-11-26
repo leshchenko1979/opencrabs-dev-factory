@@ -4998,6 +4998,63 @@ MODEPROSE
   OC_LEDGER="$T/bad.json" bash "$ME" mode >/dev/null 2>&1; chk "mode-bad-ledger-rc3" 3 $?
   chkeq "verbs-flag-contains-mode" "true" "$(bash "$ME" --verbs 2>/dev/null | grep -qw mode && echo true || echo false)"
 
+  # 71-ter. #185: the declaration VALUE is checked against the register
+  # VOCABULARY, not only its shape. The pre-fix predicate accepted any uppercase
+  # token, so a newest row reading `MODE: FACTORY-PAUSED` answered rc 0 with no
+  # diagnostic — the verb built to answer "what is the current MODE" replied with
+  # a value no register defines. The fixture is the live ledger's shape exactly:
+  # an OLDER legal declaration, then the unknown newest one. A reader that walks
+  # PAST the unknown row answers UPSTREAM-ON-REQUEST (fail OPEN); the required
+  # answer is rc 1 with stdout EMPTY, so a caller parsing stdout reads no
+  # authorisation out of an unreadable value.
+  cat > "$T/mode-unknown.json" <<'MODEUNK'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":200,"t":"2026-02-01T00:00:00Z","kind":"note","by":"x","what":"MODE: DEGRADED — older declaration"},
+ {"n":300,"t":"2026-03-01T00:00:00Z","kind":"note","by":"x","what":"MODE: UPSTREAM-ON-REQUEST — owner named group 3"},
+ {"n":500,"t":"2026-11-20T06:54:20Z","kind":"note","by":"x","what":"MODE: FACTORY-PAUSED — owner order 2026-11-17"}]}
+MODEUNK
+  OC_LEDGER="$T/mode-unknown.json" bash "$ME" mode > "$T/mode-unk.out" 2> "$T/mode-unk.err"
+  chk "mode-unknown-value-rc1" 1 $?
+  chkeq "mode-unknown-value-stdout-empty" "" "$(cat "$T/mode-unk.out")"
+  chkeq "mode-unknown-value-names-token" "true" "$(grep -q 'FACTORY-PAUSED' "$T/mode-unk.err" && echo true || echo false)"
+  chkeq "mode-unknown-value-names-row" "true" "$(grep -q 'n=500' "$T/mode-unk.err" && echo true || echo false)"
+  chkeq "mode-unknown-value-names-instant" "true" "$(grep -q '2026-11-20T06:54:20Z' "$T/mode-unk.err" && echo true || echo false)"
+  # the walk-past is the defect: the OLDER legal value must not be the answer
+  chkeq "mode-unknown-value-does-not-walk-past" "true" "$(grep -q 'UPSTREAM-ON-REQUEST' "$T/mode-unk.out" && echo false || echo true)"
+  OC_LEDGER="$T/mode-unknown.json" bash "$ME" mode --json > "$T/mode-unk.json" 2>/dev/null
+  chk "mode-unknown-value-json-rc1" 1 $?
+  chkeq "mode-unknown-value-json-stdout-empty" "" "$(cat "$T/mode-unk.json")"
+  # ...and the two legacy aliases still read FORWARD (the whitelist admits them,
+  # and the printed value is the LIVE token, never the retired one).
+  cat > "$T/mode-degraded.json" <<'MODEDEG'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":200,"t":"2026-02-01T00:00:00Z","kind":"note","by":"x","what":"MODE: DEGRADED — owner order"}]}
+MODEDEG
+  OC_LEDGER="$T/mode-degraded.json" bash "$ME" mode > "$T/mode-deg.out" 2>/dev/null; chk "mode-legacy-degraded-rc0" 0 $?
+  chkeq "mode-legacy-degraded-reads-forward" "FORK-STANDING" "$(cut -f3 "$T/mode-deg.out")"
+  cat > "$T/mode-hightrust.json" <<'MODEHT'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":200,"t":"2026-02-01T00:00:00Z","kind":"note","by":"x","what":"MODE: HIGH-TRUST — owner order"}]}
+MODEHT
+  OC_LEDGER="$T/mode-hightrust.json" bash "$ME" mode > "$T/mode-ht.out" 2>/dev/null; chk "mode-legacy-high-trust-rc0" 0 $?
+  chkeq "mode-legacy-high-trust-reads-forward" "UPSTREAM-ON-REQUEST" "$(cut -f3 "$T/mode-ht.out")"
+  # POSITIVE CONTROL: an unknown token that is NOT the newest declaration must
+  # NOT refuse — the newest DECLARATION decides, so the refusal above is aimed at
+  # the newest row and not at any stray mention. Without this leg, a "refuse when
+  # the word appears anywhere" mutant would pass every arm above.
+  cat > "$T/mode-unknown-older.json" <<'MODEOLD'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":400,"t":"2026-10-01T00:00:00Z","kind":"note","by":"x","what":"MODE: FACTORY-PAUSED — an OLDER unknown declaration"},
+ {"n":500,"t":"2026-11-25T00:00:00Z","kind":"note","by":"x","what":"MODE: FORK-STANDING — owner merge word 2026-11-25"}]}
+MODEOLD
+  OC_LEDGER="$T/mode-unknown-older.json" bash "$ME" mode > "$T/mode-old.out" 2>/dev/null
+  chk "mode-unknown-older-is-superseded-rc0" 0 $?
+  chkeq "mode-unknown-older-newest-wins" "FORK-STANDING" "$(cut -f3 "$T/mode-old.out")"
+  # --help must state the vocabulary check, not only the shape (a lane reading
+  # help has to be able to learn the legal values without opening SKILL.md).
+  chkeq "mode-help-names-vocabulary-check" "true" "$(bash "$ME" mode --help 2>&1 | grep -q 'REGISTER VOCABULARY' && echo true || echo false)"
+  chkeq "mode-help-names-refusal-rc" "true" "$(bash "$ME" mode --help 2>&1 | grep -q 'no usable declaration' && echo true || echo false)"
+
   # 71. grammar / suggestion hints and --verbs discovery
   bash "$ME" --verbs > "$T/verbs.out" 2>/dev/null; chk "verbs-flag-rc0" 0 $?
   chk "verbs-flag-contains-stamp" "true" "$(grep -qw stamp "$T/verbs.out" && echo true || echo false)"
@@ -6770,6 +6827,20 @@ cmd_worker() { # oc-ledger worker --uuid U [--json]
 # ledger by eye answers the WRONG row, and `events` cannot answer at all without
 # --n because it is a TAIL whose default window is ~21 rows. This verb is that
 # predicate, stated once. Newest DECLARATION wins; prose never does.
+#
+# #185 (2026-11-26): the declaration predicate used to validate SHAPE only —
+# `^MODE:[ ]+[A-Z][A-Z0-9_-]*([ ]+(—|--|-)[ ]+.*)?$` — so ANY uppercase token
+# passed and a row reading `MODE: FACTORY-PAUSED — …` printed rc 0 with no
+# diagnostic. The verb built to answer "what is the current MODE" was therefore
+# answering with a value no register defines, and the caller had no way to tell
+# an authorisation from an unreadable token. It now checks VOCABULARY too: the
+# four documented values are the live pair (FORK-STANDING, UPSTREAM-ON-REQUEST)
+# plus the two legacy aliases that read FORWARD (DEGRADED, HIGH-TRUST). Anything
+# else on the NEWEST declaration is a REFUSAL — rc 1, stdout EMPTY (so a caller
+# that parses stdout reads no authorisation out of it), stderr naming the token,
+# its row number and its instant. rc 1 keeps its existing meaning ("no usable
+# declaration → fail closed: FORK-STANDING"); no new code is invented, because
+# rc 4 in this tool means WRITE and overloading it would be worse than the gap.
 cmd_mode() {
   local json=0
   while [ $# -gt 0 ]; do
@@ -6785,11 +6856,15 @@ cmd_mode() {
           'Declaration grammar (SKILL.md §CONSENT REGISTER):' \
           '    MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>' \
           '' \
-          'Legacy values read forward: DEGRADED => FORK-STANDING;' \
+          'The declaration value is checked against the REGISTER VOCABULARY, not' \
+          'only its shape: FORK-STANDING, UPSTREAM-ON-REQUEST, plus the two legacy' \
+          'aliases which read FORWARD — DEGRADED => FORK-STANDING;' \
           'HIGH-TRUST => UPSTREAM-ON-REQUEST with no named groups.' \
+          'A newest declaration carrying ANY other token is REFUSED: rc 1, stdout' \
+          'empty, stderr naming the token, its row number and its instant.' \
           '' \
-          'rc 0 declaration printed · 1 no declaration (fail closed: FORK-STANDING)' \
-          '   2 usage · 3 ledger unreadable'
+          'rc 0 declaration printed · 1 no usable declaration (fail closed:' \
+          '   FORK-STANDING) · 2 usage · 3 ledger unreadable'
         return 0 ;;
       *) die 2 "mode: unknown arg: $1 (see oc-ledger mode --help)" ;;
     esac
@@ -6808,14 +6883,30 @@ cmd_mode() {
   if _jsonl_mode; then _msrc="$(_JSONL_EVENTS)"; else _msrc="$LEDGER"; fi
 
   # Projection and render each re-state the defs: jq defs do not cross calls.
+  # `live` is the ONE place a legacy token reads FORWARD (#185), so a reader that
+  # delegates here inherits the mapping instead of re-implementing the
+  # vocabulary. `known` is the register whitelist: exactly the four documented
+  # values. A newest declaration outside it is a REFUSAL, not an answer.
   local proj
   proj=$(ledger_load | jq -c '
     def dw: ((.what // .text // .note // .detail // "") | tostring)
             | gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def is_decl: dw | test("^MODE:[ ]+[A-Z][A-Z0-9_-]*([ ]+(—|--|-)[ ]+.*)?$");
+    def val: dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value;
     def is_prose: (dw | test("MODE:")) and (is_decl | not);
-    { decl: ([.events[]? | select(is_decl)] | sort_by(.n // 0) | last),
-      prose: ([.events[]? | select(is_prose)] | length) }
+    def live: if . == "DEGRADED" then "FORK-STANDING"
+              elif . == "HIGH-TRUST" then "UPSTREAM-ON-REQUEST"
+              else . end;
+    def known: . == "FORK-STANDING" or . == "UPSTREAM-ON-REQUEST"
+               or . == "DEGRADED" or . == "HIGH-TRUST";
+    ([.events[]? | select(is_decl)] | sort_by(.n // 0) | last) as $d
+    | { decl: $d,
+        n: (if $d == null then null else ($d.n // null) end),
+        ts: (if $d == null then null else ($d.t // $d.ts // $d.at // null) end),
+        value: (if $d == null then null else ($d | val) end),
+        live: (if $d == null then null else ($d | val | live) end),
+        known: (if $d == null then false else ($d | val | known) end),
+        prose: ([.events[]? | select(is_prose)] | length) }
   ' 2>/dev/null) || die 3 "mode: projection failed on $_msrc"
 
   local decl
@@ -6829,20 +6920,27 @@ cmd_mode() {
     exit 1
   fi
 
+  # #185: the newest declaration EXISTS but carries a token no register defines.
+  # Refuse on rc 1 with stdout EMPTY — a caller that parses stdout must read no
+  # authorisation out of an unreadable value, and the diagnostic names the token,
+  # the row and its instant so the row can be found and re-stamped.
+  local mknown
+  mknown=$(printf '%s' "$proj" | jq -r '.known')
+  if [ "$mknown" != "true" ]; then
+    local mval mn mts
+    mval=$(printf '%s' "$proj" | jq -r '.value')
+    mn=$(printf '%s' "$proj" | jq -r '.n')
+    mts=$(printf '%s' "$proj" | jq -r '.ts')
+    echo "oc-ledger: mode: UNKNOWN DECLARATION VALUE '$mval' — row n=$mn at $mts is the newest MODE declaration but '$mval' is not a register value" >&2
+    echo "oc-ledger: mode: the register defines FORK-STANDING, UPSTREAM-ON-REQUEST, and the legacy aliases DEGRADED/HIGH-TRUST (which read forward)" >&2
+    echo "oc-ledger: mode: fail closed — an unreadable declaration is not an authorisation, so NOTHING is printed on stdout and the answer is FORK-STANDING" >&2
+    exit 1
+  fi
+
   if [ "$json" -eq 1 ]; then
-    printf '%s' "$decl" | jq -c '
-      def dw: ((.what // .text // .note // .detail // "") | tostring)
-              | gsub("^[[:space:]]+|[[:space:]]+$"; "");
-      { n: (.n // null),
-        ts: (.t // .ts // .at // null),
-        value: (dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value) }'
+    printf '%s' "$proj" | jq -c '{ n: (.n // null), ts: (.ts // null), value: .live }'
   else
-    printf '%s' "$decl" | jq -r '
-      def dw: ((.what // .text // .note // .detail // "") | tostring)
-              | gsub("^[[:space:]]+|[[:space:]]+$"; "");
-      [ (.n // "?"),
-        (.t // .ts // .at // "?"),
-        (dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value) ] | @tsv'
+    printf '%s' "$proj" | jq -r '[ (.n // "?"), (.ts // "?"), .live ] | @tsv'
   fi
   exit 0
 }

@@ -1461,45 +1461,78 @@ elif action == 'dispatch':
     # retired the 2026-09-20 names on 2026-11-12; the two LIVE tokens are
     # FORK-STANDING (default: nothing is filed, and not filing is the normal,
     # finished state) and UPSTREAM-ON-REQUEST (only the groups the OWNER NAMED
-    # are filed). A legacy row reads FORWARD, never backwards: MODE: DEGRADED
-    # means FORK-STANDING, and MODE: HIGH-TRUST means UPSTREAM-ON-REQUEST with
-    # NO named groups (still nothing filed until a group is named). The legacy
-    # tokens stay readable on purpose -- ledger history is never rewritten --
-    # but neither is ever RETURNED or PRINTED.
+    # are filed). The vocabulary, the declaration predicate and the forward
+    # reading of legacy rows have exactly ONE home: `oc-ledger mode` (#185).
     def read_harvest_mode(ledger_file):
-        '''Resolve the live MODE; fail closed to FORK-STANDING.
+        '''Resolve the live MODE through `oc-ledger mode`; fail closed on refusal.
 
-        Fail-closed direction is "nothing is filed": no MODE row, an unreadable
-        ledger and a missing oc-ledger all read FORK-STANDING.
+        #185: this used to keep its OWN token scan over `oc-ledger events --n 2000
+        --kind note`, newest-first, matching four known tokens. A newest
+        declaration carrying an UNKNOWN token was therefore silently WALKED PAST
+        and an older row answered -- a fail-OPEN read of the one register that
+        decides whether anything is filed. Two readers of one register is the
+        same defect from the other end: the tool's `mode` verb and this scan
+        could disagree, and did. This reader now DELEGATES, so there is one
+        implementation, and it refuses the filing arm on ANY non-zero rc.
+
+        Returns (mode, note). `note` is '' on a clean read; on refusal it is a
+        one-line reason that never names the retired vocabulary (the envelope is
+        scanned for it). Any refusal answers FORK-STANDING, so a caller that
+        IGNORES the diagnostic still fails closed BEHAVIOURALLY.
         '''
         ledger_tool = os.path.join(os.environ.get('OC_TOOLS_DIR', ''), 'state', 'oc-ledger')
         if not ledger_tool or not os.path.exists(ledger_tool):
-            return 'FORK-STANDING'
+            return 'FORK-STANDING', 'MODE READ REFUSED (oc-ledger not found at OC_TOOLS_DIR/state/oc-ledger)'
+        # The ledger is resolved by `oc-ledger` ITSELF (OC_LEDGER first), which is
+        # how the pre-#185 scan resolved it too: the ambient environment is
+        # inherited and `ledger_file` is NOT injected, because that positional is
+        # the CLAIMS ledger this dispatch is about and the mode read has never
+        # consulted it. Injecting it here would silently change WHICH file the
+        # register is read from — a second behavioural change hiding inside a
+        # fix whose whole point is that there is one reader.
         try:
-            res = subprocess.run([ledger_tool, 'events', '--n', '2000', '--kind', 'note', '--full'],
+            res = subprocess.run([ledger_tool, 'mode', '--json'],
                                  capture_output=True, text=True, timeout=10)
-        except Exception:
-            return 'FORK-STANDING'
+        except Exception as exc:
+            return 'FORK-STANDING', 'MODE READ REFUSED (oc-ledger mode could not run: %s)' % type(exc).__name__
+        if res.returncode == 1:
+            # rc 1 is `mode`'s NO-USABLE-DECLARATION verdict, and it covers TWO
+            # states that must not read alike (#185):
+            #   (a) NO declaration at all — the documented DEFAULT, and the common
+            #       case for a ledger that never carried a MODE row. Nothing to
+            #       warn about; the arm is simply closed.
+            #   (b) a newest declaration carrying an UNKNOWN token — a REFUSAL.
+            #       rc alone cannot tell them apart, so the tool's OWN diagnostic
+            #       is read for the token it names. This re-implements NOTHING:
+            #       the vocabulary decision was made in `oc-ledger mode`, and this
+            #       only transcribes its verdict so the envelope says WHY. If the
+            #       diagnostic is unparseable the arm is still closed (fail closed
+            #       is the default of every path here).
+            m = re.search(r"UNKNOWN DECLARATION VALUE '([A-Z0-9_-]+)'", res.stderr or '')
+            if m:
+                return 'FORK-STANDING', ('MODE READ REFUSED: the newest MODE declaration carries the '
+                                         "unregistered token '%s' (oc-ledger mode rc=1, stdout empty) — "
+                                         'the filing arm is CLOSED' % m.group(1))
+            return 'FORK-STANDING', ''
         if res.returncode != 0:
-            return 'FORK-STANDING'
-        for line in reversed(res.stdout.splitlines()):
-            upper = line.upper()
-            if 'MODE:UPSTREAM-ON-REQUEST' in upper or 'MODE: UPSTREAM-ON-REQUEST' in upper:
-                return 'UPSTREAM-ON-REQUEST'
-            if 'MODE:FORK-STANDING' in upper or 'MODE: FORK-STANDING' in upper:
-                return 'FORK-STANDING'
-            # Legacy rows, read FORWARD only (owner ruling 2026-11-12).
-            if 'MODE:HIGH-TRUST' in upper or 'MODE: HIGH-TRUST' in upper:
-                return 'UPSTREAM-ON-REQUEST'
-            if 'MODE:DEGRADED' in upper or 'MODE: DEGRADED' in upper:
-                return 'FORK-STANDING'
-        return 'FORK-STANDING'
+            return 'FORK-STANDING', 'MODE READ REFUSED (oc-ledger mode rc=%d) — fail closed to FORK-STANDING' % res.returncode
+        try:
+            token = json.loads(res.stdout).get('value') or ''
+        except Exception:
+            return 'FORK-STANDING', 'MODE READ REFUSED (oc-ledger mode rc=0 but stdout is not the documented JSON)'
+        if token not in ('FORK-STANDING', 'UPSTREAM-ON-REQUEST'):
+            return 'FORK-STANDING', 'MODE READ REFUSED (oc-ledger mode rc=0 but value %r is not a register value)' % token
+        return token, ''
 
-    harvest_mode = read_harvest_mode(ledger_file)
+    harvest_mode, mode_note = read_harvest_mode(ledger_file)
+    if mode_note:
+        print(mode_note, file=sys.stderr)
     if harvest_mode == 'UPSTREAM-ON-REQUEST':
         contract_line = f'Mode: UPSTREAM-ON-REQUEST. Contract: only the groups the OWNER NAMED are filed, on a GREEN CI gate + verified 4-leg smoke pass. File PR ({contract_mode}) on {upstream_repo}:main citing the gate run ID + smoke evidence, link fork {iss_str}, include dependency notices if applicable, notify Triage.'
     else:
         contract_line = 'Mode: FORK-STANDING. Contract: file NOTHING upstream; keeping the change on the fork is the normal, finished state, not a backlog. Prepare and validate the harvest, but do not file -- filing needs an UPSTREAM-ON-REQUEST MODE row naming the groups.'
+        if mode_note:
+            contract_line += '\n' + mode_note + ' — the filing arm is CLOSED until `oc-ledger mode` answers rc 0.'
 
     envelope = f'''[HARVEST DISPATCH: {iss_str}]
 Target Issue: {iss_str} ({slug})
@@ -2297,6 +2330,62 @@ EOF
     echo "  bad 6a-8 - #141 --help must name FORK-STANDING and UPSTREAM-ON-REQUEST, got rc=$rc ($out)"
     return 1
   fi
+  # 6a-9. #185: an UNKNOWN newest declaration must REFUSE, not be walked past.
+  #       The pre-#185 reader kept its own four-token scan, newest-first, so a
+  #       row reading `MODE: FACTORY-PAUSED` was invisible to it and the OLDER
+  #       UPSTREAM-ON-REQUEST row below answered -- a fail-OPEN read of the one
+  #       register that decides whether anything is filed. The reader now
+  #       DELEGATES to `oc-ledger mode`, which refuses (rc 1, stdout empty), so
+  #       the filing arm must close AND the envelope must say why. The Mode: line
+  #       is what is asserted (never the whole envelope: the FORK-STANDING
+  #       contract text legitimately mentions the live token).
+  with_modes "MODE: UPSTREAM-ON-REQUEST — owner named group 3" "MODE: FACTORY-PAUSED — owner order 2026-11-17"
+  dispatch_ledger "$mode_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "FORK-STANDING" ] && oc_has "$out" "MODE READ REFUSED"; then
+    echo "  ok 6a-9 - #185 an UNKNOWN newest declaration refuses the filing arm (no walk-past to the older live row)"
+  else
+    echo "  bad 6a-9 - #185 an unknown newest MODE declaration must answer FORK-STANDING + a refusal note, got rc=$rc token='$(mode_token "$out")' ($out)"
+    return 1
+  fi
+  # ...and the SAME fixture through the register itself: rc 1, stdout EMPTY.
+  local mrc=0 mout=""
+  mout="$(OC_LEDGER="$mode_ledger" bash "$OC_TOOLS_DIR/state/oc-ledger" mode 2>/dev/null)" || mrc=$?
+  if [ "$mrc" -eq 1 ] && [ -z "$mout" ]; then
+    echo "  ok 6a-9a - #185 oc-ledger mode answers rc 1 with EMPTY stdout for an unknown declaration"
+  else
+    echo "  bad 6a-9a - #185 oc-ledger mode must answer rc 1 with empty stdout, got rc=$mrc stdout='$mout'"
+    return 1
+  fi
+  # 6a-9b. CONTROL: the SAME older row with NO unknown declaration above it still
+  #        answers the live token, so 6a-9 is aimed at the unknown row and not at
+  #        "refuse whenever two declarations exist".
+  with_mode "MODE: UPSTREAM-ON-REQUEST — owner named group 3"
+  dispatch_ledger "$mode_ledger"
+  if [ "$rc" -eq 0 ] && [ "$(mode_token "$out")" = "UPSTREAM-ON-REQUEST" ] && ! oc_has "$out" "MODE READ REFUSED"; then
+    echo "  ok 6a-9b - #185 control: without the unknown row the live token still answers, no refusal note"
+  else
+    echo "  bad 6a-9b - #185 control expected UPSTREAM-ON-REQUEST and no refusal, got rc=$rc token='$(mode_token "$out")' ($out)"
+    return 1
+  fi
+  # 6a-10. STRUCTURAL: the walk-past is DELETED, not merely shadowed. A second,
+  #        divergent implementation of the vocabulary is the defect itself, so
+  #        the embedded token scan must be gone from this tool.
+  # The scan is asserted absent in the ENGINE region only (everything before
+  # cmd_selftest): a whole-file grep would match this selftest's own fixtures.
+  local _meng
+  _meng="$(sed -n '1,/^cmd_selftest()/p' "$0")"
+  # A here-string, not `printf ... | grep -q`: the pipeline form is the #660
+  # SIGPIPE class this repo forbids (rc 141 despite a successful match once the
+  # payload passes the 64 KiB pipe buffer), and the battery scans for it.
+  if grep -qF 'upper = line.upper()' <<< "$_meng"; then
+    echo "  bad 6a-10 - #185 a private MODE token scan is STILL embedded in the engine (two readers of one register)"
+    return 1
+  fi
+  if ! grep -q "ledger_tool, 'mode', '--json'" "$0"; then
+    echo "  bad 6a-10 - #185 the reader does not delegate to 'oc-ledger mode'"
+    return 1
+  fi
+  echo "  ok 6a-10 - #185 the MODE reader DELEGATES to oc-ledger mode; no private token scan remains"
   unset OC_LEDGER OC_HARVEST_MOCK_DEPLOYED_TS
 
   # every unit of a cycle onto the first available editor.
