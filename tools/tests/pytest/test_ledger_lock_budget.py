@@ -52,6 +52,46 @@ TIMING HONESTY
     INSTRUMENT (it makes the tail observably slow) and (b) a 20 ms poll
     interval. Neither is a measurement.
 
+EVERY SHELL ASSERTION, AND WHERE IT WENT
+    §33 carries 12 ``ok``/``bad`` legs plus one tool-presence guard. The mapping
+    is exhaustive, including the two that are deliberately NOT ported:
+
+    | run.sh §33 leg                                        | here |
+    |-------------------------------------------------------|------|
+    | ``if tool oc-ledger`` guard                           | ``TOOL = cf.tool_path("oc-ledger")`` at import — an absent tool fails COLLECTION, which is louder than a silent skip |
+    | (c) control: lock free -> stamp succeeds              | ``test_control_a_free_lock_lets_the_stamp_through`` (+ a row-written assertion the shell does not make) |
+    | (a) 1s waiter budget -> rc 4                          | ``test_a_1s_waiter_budget_times_out_with_rc_4_and_names_the_budget`` |
+    | (a) the refusal names the budget it used              | same leg (``"after 1s"``) |
+    | 1s bounded I/O + 30s = 31s disclosed                  | ``test_the_disclosed_worst_case_tracks_the_push_bound[1-31]`` |
+    | (b) budget TRACKS the bound (10s -> 40s)              | ``...[10-40]``, plus ``...[7-37]`` which the shell has no literal for |
+    | #95: 3s tail does not block a concurrent appender     | ``test_a_slow_git_tail_does_not_hold_the_ledger_lock`` |
+    | #95: the holder's row is durable                      | same leg, read from the LEDGER rather than jq-on-a-file |
+    | #171: a test push LANDS in the sentinel origin        | ``test_a_test_run_cannot_publish_into_the_tree_it_runs_from`` |
+    | #171: control — the sentinel ref MOVED (not vacuous)  | same leg |
+    | #171: real origin's remote-tracking refs unchanged    | **replaced** — see below |
+    | #171: ``ls-remote`` on the real origin identical      | **replaced** — see below |
+    | #171 SKIP: ``$_ROOT`` has no origin                   | n/a — no leg reads the real origin at all |
+
+    WHY THE TWO REAL-ORIGIN MD5 LEGS ARE REPLACED, NOT PORTED. They exist
+    because the shell's ``$SKILL_DIR`` DEFAULT is the checkout it runs in, so the
+    only way it can observe "the push went nowhere near the real remote" is to
+    fingerprint that remote twice. In pytest the exposure is removed rather than
+    measured: every leg hands the tool an explicit ``OC_SKILL_DIR``, so no leg
+    can reach the real origin in the first place. Two legs carry that claim:
+
+      * the #171 pair above proves the seam is LOAD-BEARING (drop it and the
+        poison origin moves), on a copied tree, so the claim is about the tool
+        and not about whether a sibling lane happened to push during the run;
+      * ``test_the_sandbox_ledger_is_push_inert`` pins the fixture property the
+        whole suite rests on — ``ledger_sandbox``'s skill dir has NO remote, so
+        no ported oc-ledger leg can push at all.
+
+    Porting the md5s verbatim would have been WORSE than replacing them: this
+    box runs peer lanes that push to that same origin, so the md5 can move for a
+    reason that has nothing to do with the tool (the shell concedes this — its
+    ``timeout 10`` and its printed rc pair are there for an unreachable remote).
+    A leg that can red on a sibling lane's push is a leg that gets muted.
+
 SERIALISATION
     These legs hold flocks, fork a concurrent holder and stamp the same ledger
     twice. They use per-test paths under ``scratch``, but they are marked

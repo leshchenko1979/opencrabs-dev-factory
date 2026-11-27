@@ -227,6 +227,7 @@ harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
 | 23 | deploy stage tools (oc-build / oc-status) — fast boundary legs | `test_deploy_stage.py` |
 | 23 | deploy stage tools — real-subprocess legs (selftest, dispatched-sha, stale ref) | `test_e2e_deploy_stage.py` (`slow`) |
 | 24, 32 | oc-ledger edge legs; confirm + derive_by | `test_ledger_edge.py` |
+| 33 | oc-ledger lock budget (#619) + the #95 git-tail and #171 skill-dir hazards | `test_ledger_lock_budget.py` |
 | 25 | oc-review-persist | `test_review_persist.py` |
 | 26 | oc-gate | `test_gate.py` |
 | 29, 48–50, 52, 55, 56 | usage/`--help` contract cluster | `test_tool_contracts.py` |
@@ -243,6 +244,36 @@ harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
 | 59–60 | lib/oc-snap.sh mirror age; reap | `test_snap.py` |
 | per-tool argv | the `ok`/`bad` usage/rc legs beside each `run_selftest` | `test_usage_rc.py` |
 
+
+### §33 — a deferral that was withdrawn
+
+The original note said a pytest port "would need the same wall-clock budget to
+assert anything the selftest does not". Half right, and the wrong half decided
+the deferral. What the selftest cannot do is real — it asserts the budget's
+DERIVATION by grepping the source, and those greps are built by concatenation
+precisely because a literal self-matches. What it could not do, a pytest leg
+does cheaply: HOLD the lock and read the budget the tool reports.
+
+The wall clock was never the subject. The shell spent 4 s per leg on
+`( flock -x 9; sleep 4 ) &` plus `sleep 0.5` because a shell has no synchronous
+flock; `fcntl.flock` holds the same lock with no latency, so §33's contention
+costs milliseconds here. Ported as `test_ledger_lock_budget.py` — 9 legs, ~23 s
+total, of which 7 s is a deliberate 3 s `pre-commit` hook (the instrument, not a
+measurement).
+
+The port is also STRONGER than the shell in three places, each of which the
+shell could not reach:
+
+* the budget legs add a third push bound (7 s → 37 s) that the shell's two
+  literals (31 s, 40 s) cannot cover, so the leg asserts a derivation rather
+  than a table of constants;
+* the #95 leg POLLS the git-tail lock and asserts the ledger lock is free *at
+  that instant*, where the shell slept 1 s and hoped the holder was in the tail;
+* the #171 legs use a copied tool tree with a POISON origin, so "nothing reached
+  the real remote" is a direct read instead of an md5 of a repo every other lane
+  on the box is also pushing to — and the negative control (drop the seam, the
+  poison origin must move) proves the positive leg is not vacuous.
+
 ### Not ported
 
 Each of these is a deliberate decision, with the reason — not an omission.
@@ -252,10 +283,8 @@ Each of these is a deliberate decision, with the reason — not an omission.
 | **18** | **oc-consent-check** | **RETIRED 2026-08-28 (owner order 18:50Z).** The consent process was eliminated and the tool archived to `tools/archive/`. The shell section is a `section` header with no body — it asserts nothing, so a port would be an empty test that inflates the pass count. Deleted rather than ported. |
 | 14, 15, 20, 21, 27, 28, 31, 36–42, 54 | — | Each is a `run_selftest` line plus at most one argv leg, and both halves are already covered: the selftest by the parametrized `run_selftest` legs, the argv leg by `test_usage_rc.py`'s `RC_CASES` table. A port would duplicate an existing leg verbatim. |
 | 66–68 | cgroup isolation, battery lock fd, scratch root | Harness infrastructure, not tool behaviour — ported as `test_cgroup.py` and `test_fixtures.py`, which assert the pytest harness's own equivalents. |
-| 33 | oc-ledger lock budget (#619) | 131 lines of shell driving concurrent lock contention. Its own `--selftest` covers the kernel; a pytest port would need the same wall-clock budget to assert anything the selftest does not. Deferred, not dropped. |
 | **61** | **oc-issue-dispatch SIGKILL evidence (#451)** | **Deferred, not dropped — and it is a real bespoke section, not a selftest+argv pair.** 10 assertions: kill the dispatch mid-send under `timeout -s KILL 10` and require the narrative on stdout to SURVIVE (rc 137, >0 bytes, ≥1 "notify budget" line), with a derived control that inverts exactly one `line_buffering=` site and must leave 0 bytes. Porting it needs a copied tool tree (`oc-ledger` + every `lib/*.py` + `oc-root.sh` + a `sleep 30` notify stub + a two-shape gh stub) and a 10 s SIGKILL window per leg, twice. It is the strongest test in the set and the right next port. |
 | **63** | **lib/oc-root.sh resolver coherence (F-L1/F-L2)** | **Deferred, not dropped.** 378 lines / 44 assertions: builds a synthetic tree, then walks every entry preamble through depth permutations to prove the resolver converges. It is a property test of the resolver, and the shell's own construction (copy a tree, mutate one file, re-run the tool) maps onto a pytest fixture — but it needs the whole 378 lines read and rewritten, not transliterated. |
 | **64** | **shell-quoting guard (`python3 -c` / heredoc fences)** | **Deferred, not dropped.** 250 lines / 32 assertions, and its subject is the SOURCE TEXT of every tool: it scans for `python3 -c` strings and heredoc fences that would break under quoting. A pytest port would scan the same corpus with the same scanner; the value is in the scanner's own fixture, which the section already carries. |
 | **65** | **entry-preamble fixpoint + relative invocation (#708)** | **Deferred, not dropped.** 160 lines / 17 assertions. The defect: `cd` into a tool's dir and run `./name` spun forever because `dirname "$0"` yields `.` — a fixpoint. The leg drives each tool from its own directory under a timeout and requires it to terminate. Needs the same per-tool drive loop. |
 | 62 | red-receipt transcript (fail log) | Asserts `run.sh`'s own `bad()` accumulator by running a synthetic failing section in a subshell. There is no `run.sh` accumulator inside pytest to assert — the equivalent claim is pytest's own exit code, which every module already depends on. |
-
