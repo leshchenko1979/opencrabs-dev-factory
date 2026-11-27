@@ -12,36 +12,45 @@ THE DEFECT
     Invoked by ABSOLUTE path that terminates. Invoked RELATIVELY — ``cd`` into
     the tool's directory and run ``./name`` — ``$0`` is ``./name``, so
     ``dirname`` yields ``.``, and ``dirname "."`` is ``.`` again: a FIXPOINT.
-    The walk never advances, every guard stays true, and the tool spins at 100 %
-    CPU emitting nothing. It had been shipped in every tool.
+    The walk never advances, every guard stays true, and the tool spins emitting
+    nothing. It had been copy-pasted into every tool in the fleet.
 
 WHY THIS SECTION EXISTS AT ALL
     The battery's other invocation legs drive ``$t`` as an ABSOLUTE path (their
     glob is ``"$TOOLS_DIR"/...``), so they cannot observe this class — the
     fixpoint needs a RELATIVE invocation to reproduce. That blind spot is the
-    section's justification, and it is why the dynamic arm below must keep
-    ``cwd=<tool dir>`` and ``./name``; converting it to an absolute call would
-    leave a green leg that tests nothing.
+    section's whole justification, and it is why the drive below must keep
+    ``cwd=<tool dir>`` and ``./name``: converting either to an absolute form
+    would leave a green leg that tests nothing.
 
-TWO ARMS, AND THEY SEE DIFFERENT THINGS
-    STATIC   every file that still walks up must also carry the BREAK
-             (``[ "$_oc_r" != "." ]``). Keyed on the fix's PRESENCE, never on
-             the old line's absence, so it asserts the fix rather than merely
-             failing to find the bug.
-    DYNAMIC  drive one representative per tool KIND by relative path and require
-             it to RETURN. A sample killed on WALL while having burned almost no
-             CPU is STARVATION, not a hang (#83): a real fixpoint SPINS, so CPU
-             is the discriminator and wall is only a backstop.
+SCOPE — THE BEHAVIOURAL HALF ONLY
+    §65 has two arms in the shell and only one belongs in this module.
 
-THE CPU DISCRIMINATOR IS THE POINT (#83, factory#109)
-    Since #76 the battery runs its parent at ``nice 19`` + ``ionice -c3``, so
-    under load a HEALTHY tool gets killed on wall clock. The old branch then
-    named the fixpoint as the cause — a false ACCUSATION against a tool that
-    never hung. Measured 2026-11-18: healthy = 0.03-0.04 s CPU (identical under
-    nice/ionice); a real fixpoint spin = 19.8 s CPU in a 20 s wall. So the
-    verdict here reads CPU, and a starved sample is reported INCONCLUSIVE rather
-    than green or red. Zero observations is not a pass: if EVERY sample starves,
-    the instrument was blind and the leg reds naming the INSTRUMENT.
+      static   every walk-up carrier must carry the ``.`` break. Already owned
+               by ``test_oc_root_resolver.py::test_every_walkup_carrier_has_the
+               _fixpoint_break``, because the walk-up preamble IS the resolver's
+               bootstrap — §63 and §65 are two views of one line of code. Two
+               ports of one invariant drift: the first to be sharpened leaves the
+               other asserting a stale floor.
+      dynamic  drive one representative per tool KIND by RELATIVE path and
+               require it to RETURN. That is this module.
+
+THE BOUND, AND WHY IT IS NOT A CPU LIMIT
+    A wall clock cannot by itself distinguish "hung" from "starved", which is why
+    the shell leg reads CPU as well (#83, factory#109). ``RLIMIT_CPU`` looks like
+    the clean answer — the kernel kills a process that BURNS n seconds of CPU, so
+    a starved process simply takes longer in wall time — and it was implemented
+    here FIRST, then rejected on measurement. This defect's spin is a FORK LOOP:
+    each iteration forks a ``dirname``, so the CPU is spread across thousands of
+    short-lived children each inside any sane limit while the parent accrues its
+    own slowly. ``ulimit -t 5`` needed **93 s of wall** to fire.
+
+    So the bound is wall time with headroom sized from MEASURED healthy cost:
+    the fleet samples burn 0.015-0.125 s CPU and return in 0.05-0.3 s, making a
+    20 s bound 60-400x headroom. A sample that hits it is INCONCLUSIVE, never
+    accused of hanging. What licenses the verdict is the CONTROL, below: the
+    broken fixture never returns at all, so the instrument is proven able to see
+    the class it is aimed at rather than assumed to be.
 """
 
 from __future__ import annotations
@@ -50,16 +59,6 @@ from __future__ import annotations
 import pytest
 
 import conftest as cf
-
-# The break every walk-up must carry. Both are the shell's literal strings.
-WALK_UP = 'while [ "$_oc_r" != "/" ]'
-FIXPOINT_BREAK = '[ "$_oc_r" != "." ]'
-
-# Floor, not a target: the preamble was in 44 files when the shell leg was
-# written (43 tools + lib + run.sh) and measures 46 today. A glob that silently
-# matches fewer reds HERE instead of passing on a shrunken population — the
-# silent-skip class this battery exists to catch.
-CARRIER_FLOOR = 40
 
 # One representative per tool KIND, so a regression in any single kind is
 # observable without paying a fleet-wide --help sweep. Kept as (relpath, argv):
@@ -123,71 +122,34 @@ def _tool_env():
     return {"BATTERY_IN_CHUNK": ""}
 
 
-def _carriers():
-    """Every fleet file that still walks up, as run.sh §65 enumerates them.
-
-    The glob is the shell's own: ``oc-*``, ``*/oc-*`` and ``tests/run.sh``, with
-    the archive/bak exclusions. It deliberately does NOT reach this pytest tree —
-    this module embeds the preamble in its CONTROL fixtures, and scanning itself
-    would make the static arm red on its own text (the quoting guard's
-    ``test_this_module_is_itself_clean`` exists for the same reason).
-    """
-    out = []
-    candidates = (sorted(cf.TOOLS_DIR.glob("oc-*"))
-                  + sorted(cf.TOOLS_DIR.glob("*/oc-*"))
-                  + [cf.TOOLS_DIR / "tests" / "run.sh"])
-    for path in candidates:
-        if not path.is_file():
-            continue
-        name = path.name
-        if name.endswith(".bak") or ".bak-" in name or ".pre-" in name:
-            continue
-        if "archive" in path.relative_to(cf.TOOLS_DIR).parts:
-            continue
-        try:
-            text = path.read_text(errors="replace")
-        except OSError:
-            continue
-        if WALK_UP in text:
-            out.append((path, text))
-    return out
-
-
+# SCOPE: THE BEHAVIOURAL ARM ONLY — §63'S MODULE OWNS THE STATIC CENSUS
+#
+# §65 has two halves and only one of them belongs here.
+#     ``test_oc_root_resolver.py::test_every_walkup_carrier_has_the_fixpoint_break``
+#     asserts the same invariant (every walk-up carrier carries the ``.`` break,
+#     keyed on the fix's presence, with the same floor), because the walk-up
+#     preamble IS the resolver's bootstrap: §63 and §65 are two views of one line
+#     of code. Porting it twice gives the suite two half-rules that drift apart —
+#     the first to be sharpened leaves the other asserting a stale floor.
+#
+# This module therefore owns only §65's reason for existing: the BEHAVIOURAL arm.
+# The battery's other invocation legs drive tools by ABSOLUTE path, so none of
+# them can observe a relative-path fixpoint at all.
 # =============================================================================
-# STATIC ARM — exact, whole fleet
+# the sample's own integrity
 # =============================================================================
-def test_every_walk_up_carrier_has_the_fixpoint_break():
-    """§65 static: a file that walks up WITHOUT the break spins on ``./name``.
-
-    Keyed on the break's presence, so this reds on a NEW carrier that copies the
-    preamble minus the fix — not merely on the old line reappearing.
-    """
-    carriers = _carriers()
-    offenders = [p.relative_to(cf.TOOLS_DIR).as_posix()
-                 for p, text in carriers if FIXPOINT_BREAK not in text]
-    assert not offenders, (
-        "%d/%d walk-up carrier(s) LACK the fixpoint break (#708) — each spins "
-        "forever when invoked as ./name from its own directory: %s"
-        % (len(offenders), len(carriers), ", ".join(offenders)))
-
-
-def test_the_walk_up_population_clears_the_floor():
-    """The glob must still SEE the fleet — 0 carriers is a broken walker, not a fix.
-
-    Without this, deleting the preamble everywhere would read as a green static
-    arm: the sweep would find nothing to object to and the pass would be vacuous.
-    """
-    n = len(_carriers())
-    assert n >= CARRIER_FLOOR, (
-        "walk-up enumerated only %d file(s) (floor %d) — the glob is not seeing "
-        "the fleet, so the static arm above proved nothing" % (n, CARRIER_FLOOR))
-
-
 def test_the_sample_is_complete():
-    """§65: the relative-invocation sample ran 9 of 9 (EP_DYN -ne 9 -> bad)."""
+    """§65: the relative-invocation sample runs 9 of 9 (``EP_DYN -ne 9 -> bad``).
+
+    The shell reds when the sample covered fewer than nine, so a silently
+    shrunk arm cannot read as a green one. Pinning the count AND checking each
+    file exists catches both ways that happens: a representative dropped from
+    the tuple, and a tool moved so its sample no longer resolves.
+    """
     assert len(SAMPLES) == SAMPLE_COUNT, (
-        "relative-invocation sample carries %d of %d entries — a sample was "
-        "dropped, which shrinks the arm silently" % (len(SAMPLES), SAMPLE_COUNT))
+        "relative-invocation sample carries %d of %d entries — a representative "
+        "was dropped, which shrinks the arm silently"
+        % (len(SAMPLES), SAMPLE_COUNT))
     missing = [rel for rel, _ in SAMPLES if not (cf.TOOLS_DIR / rel).is_file()]
     assert not missing, "relative-invocation sample missing: %s" % ", ".join(missing)
 
