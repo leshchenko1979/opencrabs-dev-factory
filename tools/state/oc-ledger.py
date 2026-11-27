@@ -1752,7 +1752,7 @@ def _self_uuid(verb: str, given: str) -> str:
         ambient = _ambient_uuid()
         if ambient and L.is_uuid(ambient) and ambient != given:
             errln("note: %s acts on '%s', which is NOT the ambient session "
-                  "'%s' — correct for a roster-admin action; a mistake if you "
+                  "'%s' -- correct for a roster-admin action; a mistake if you "
                   "meant yourself (omit the uuid to default to the ambient)."
                   % (verb, given, ambient))
         return given
@@ -2590,6 +2590,538 @@ def cmd_fixture(ledger, args):
     return L.RC_OK
 
 
+def _split_two(args):
+    """``uuid=$1 role=$2; shift 2 2>/dev/null || true`` — bash shift semantics.
+
+    ``shift N`` FAILS ATOMICALLY when fewer than N positionals remain: it shifts
+    NOTHING and the argument stays put. So ``oc-ledger enroll --topic`` leaves
+    ``--topic`` in the tail, where the flag parser reports "--topic needs a
+    value" — the diagnostic the caller needs. A plain ``args[2:]`` slice drops
+    it silently and the run instead dies on the role-shape guard, naming the
+    wrong cause. Caught by the differential on the first pass.
+    """
+    if len(args) >= 2:
+        return args[0], args[1], list(args[2:])
+    if len(args) == 1:
+        return args[0], "", list(args)
+    return "", "", []
+
+
+# ---------------------------------------------------------------------------
+# ack — a lane records that it has READ a version (self verb)
+# ---------------------------------------------------------------------------
+ACK_HELP = "usage: oc-ledger ack [<uuid>] <0.N.N version> [--at <ts>]"
+
+_AT_ISO = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+
+def _normalise_at(value: str) -> str:
+    """Canonicalise an ISO-8601 UTC stamp, accepting the whole family (H-2/c23).
+
+    ``--at`` is the ONLY caller-supplied stamp on any path and it used to be
+    written VERBATIM. The live ledger carried 19 stamps that cannot be true — 9
+    with a literal ``x`` for a redacted digit, 2 space-separated, 8 at
+    minute-precision — and because ``events --since`` compares
+    BYTE-LEXICOGRAPHICALLY, each one silently MIS-RANKED instead of erroring: a
+    malformed value is always-less-than, so it drops out of every window. A
+    stamp that cannot be parsed is a row no window can reach.
+
+    Accept the family and canonicalise rather than demanding one spelling: a
+    stamp with fractional seconds or ``+00:00`` is WELL-FORMED, and refusing it
+    would be the same defect in the direction nobody reports.
+    """
+    text = value
+    text = re.sub(r"\.[0-9]+", "", text)
+    text = re.sub(r"\+00:00$", "", text)
+    text = re.sub(r"Z$", "", text)
+    return text + "Z"
+
+
+def cmd_ack(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(ACK_HELP)
+        return L.RC_OK
+    uuid, version, rest = _split_two(args)
+    at = ""
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--at":
+            # DELIBERATE DIVERGENCE (the only one in this verb). The bash reads
+            # ``at="${2:-}"`` then ``shift 2``, and ``shift 2`` FAILS ATOMICALLY
+            # when one positional remains — so ``--at`` never leaves ``$1`` and
+            # ``oc-ledger ack --at`` loops FOREVER (verified: timeout 5 →
+            # rc 124). A hang is not a behaviour worth porting; this refuses
+            # rc 2 with the reason. Every other flag path matches byte-for-byte.
+            if i + 1 >= len(rest):
+                die(L.RC_USAGE, "ack: --at needs a value (an ISO-8601 UTC "
+                    "stamp); the bash tool HANGS on this input — see cmd_ack")
+            at = rest[i + 1]
+            i += 2
+        else:
+            i += 1
+    # A1b: ``ack`` is SELF, so the uuid is optional. A single NON-UUID argument
+    # is the VERSION (``oc-ledger ack 0.4.268``), which is the form the owner
+    # asked for.
+    if uuid and not version and not L.is_uuid(uuid):
+        version = uuid
+        uuid = ""
+    uuid = _self_uuid("ack", uuid)
+    if not version:
+        die(L.RC_USAGE, ACK_HELP)
+    # tolerate display spelling v0.N.N; store bare, matching sync
+    if version.startswith("v"):
+        version = version[1:]
+    if not re.fullmatch(r"0\.[0-9]+\.[0-9]+", version):
+        die(L.RC_USAGE, "ack: version shape invalid (want 0.N.N, v prefix "
+            "tolerated): '%s'" % version)
+    if not at:
+        at = L.now_iso()
+    at = _normalise_at(at)
+    if not _AT_ISO.match(at):
+        die(L.RC_USAGE, "ack: --at must be an ISO-8601 UTC stamp "
+            "(YYYY-MM-DDThh:mm:ssZ, fractional seconds and +00:00 accepted); "
+            "got '%s'" % at)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    doc = _unified(ledger)
+    workers = doc.get("workers")
+    if not any(isinstance(row, dict)
+               and L.to_string(_keep(row.get("uuid"), "")) == uuid
+               for row in (workers if isinstance(workers, list) else [])):
+        die(L.RC_REFUSED, "ack: unknown uuid %s — roster discovery first "
+            "(Duty 2), or: oc-ledger enroll" % uuid)
+
+    def _ack_locked():
+        n = L.max_n(ledger) + 1
+        t = L.now_iso()
+        # M2-4: idempotent re-ack, mirroring sync's dup guard. An ack of a
+        # (uuid, version) already ON RECORD is not new information. It fired in
+        # the wild because ``oc-drift-check --ack`` DELEGATES here, so one
+        # adoption that both drift-checked and acked wrote TWO byte-identical
+        # rows seconds apart (lane 1a63f103 n=3717/3718; 462181e9 x3).
+        # rc stays 0: oc-drift-check does ``|| die 3`` on this call.
+        # The KEY is (uuid, version) and the compare is EXACT equality on the
+        # composed ``what`` — a substring test would make 0.4.1 match 0.4.10
+        # and swallow a real bump.
+        want = "worker %s acked %s" % (uuid, version)
+        events = _unified(ledger).get("events")
+        dup = sum(1 for row in (events if isinstance(events, list) else [])
+                  if isinstance(row, dict)
+                  and L.to_string(_keep(row.get("kind"), "")) == "ack"
+                  and L.to_string(_keep(row.get("what"), "")) == want)
+
+        if dup > 0:
+            def transform(doc_):
+                for row in doc_.get("workers") or []:
+                    if isinstance(row, dict) \
+                            and L.to_string(_keep(row.get("uuid"), "")) == uuid:
+                        row["last_acked"] = {"version": version, "at": at}
+                # fields STILL refreshed (--at may carry a new timestamp) — a
+                # lane that re-acks after a failed git leg must not keep a
+                # stale last_acked.at
+                doc_["updated_at"] = t
+                return None
+            L.atomic_write(ledger, transform)
+            outln("acked %s at %s (already on record — idempotent, no dup "
+                  "event)" % (uuid, version))
+            L.git_state_commit(ledger, "ledger: ack %s v%s re-ack via oc-ledger"
+                               % (uuid, version))
+            return
+
+        def transform(doc_):
+            for row in doc_.get("workers") or []:
+                if isinstance(row, dict) \
+                        and L.to_string(_keep(row.get("uuid"), "")) == uuid:
+                    row["last_acked"] = {"version": version, "at": at}
+            events_ = doc_.get("events")
+            if events_ is None:
+                events_ = doc_["events"] = []
+            events_.append({"n": n, "t": t, "by": "oc-ledger ack",
+                            "kind": "ack", "what": want})
+            doc_["updated_at"] = t
+            return None
+        L.atomic_write(ledger, transform)
+        outln("acked %s at %s (event n=%s)" % (uuid, version, n))
+        L.git_state_commit(ledger, "ledger n=%s: ack %s v%s (oc-ledger)"
+                           % (n, uuid, version))
+
+    L.with_lock(ledger, _ack_locked)
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
+# enroll — add a roster row (self verb)
+# ---------------------------------------------------------------------------
+ENROLL_HELP = ("usage: oc-ledger enroll [<uuid>] <role> [--topic N] "
+               "[--feature X]")
+
+
+def _warn_topic_not_a_binding(ledger: str, topic: str) -> None:
+    """TOPIC EXISTENCE GUARD (fork #503, Toolsmith 2026-09-22).
+
+    ``--topic`` was taken verbatim and coerced with ``tonumber``, so ANY numeric
+    value enrolled rc 0 and a real forum topic was indistinguishable from an
+    issue number — a live row carried ``topic_id`` 478 (an ISSUE id, never a
+    topic) and only a retire could undo it.
+
+    WARN, never refuse: ``enroll`` runs at lane bring-up and must not be
+    blockable by an absent or busy session DB (a refusal here would be a worse
+    defect than the one it guards), and the live roster resolves 32 of 32 today,
+    so this fires on a genuinely wrong value rather than on normal traffic.
+    Mirrors ``derive_by``, which warns for an unresolvable actor and still
+    writes.
+    """
+    if not topic or topic == "-" or not topic.isdigit():
+        return
+    db = os.environ.get("OC_LEDGER_DB") or os.path.join(
+        os.path.dirname(L.state_dir(ledger)), "opencrabs.db")
+    if not os.path.isfile(db):
+        return
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+    except sqlite3.Error:
+        return
+    try:
+        row = con.execute("SELECT count(*) FROM session_bindings WHERE "
+                          "thread_id = %s;" % topic).fetchone()
+    except sqlite3.Error:
+        return
+    finally:
+        try:
+            con.close()
+        except sqlite3.Error:
+            pass
+    if row and row[0] == 0:
+        errln("oc-ledger enroll: WARNING topic %s names no live binding in %s "
+              "— if that is an ISSUE number rather than a forum topic the "
+              "roster mapping is wrong and only a retire can undo it (fork "
+              "#503); if the topic was simply created and its lane has not "
+              "messaged yet, ignore this." % (topic, db))
+
+
+def cmd_enroll(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(ENROLL_HELP)
+        return L.RC_OK
+    uuid, role, rest = _split_two(args)
+    topic = "-"
+    feature = "-"
+    # A1b: ``enroll`` is SELF, so a single non-uuid argument is the ROLE
+    # (``oc-ledger enroll editor`` = enroll myself).
+    if uuid and not role and not L.is_uuid(uuid):
+        role = uuid
+        uuid = ""
+    uuid = _self_uuid("enroll", uuid)
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--topic":
+            if i + 1 >= len(rest):
+                die(L.RC_USAGE, "--topic needs a value")
+            topic = rest[i + 1]
+            i += 2
+        elif rest[i] == "--feature":
+            if i + 1 >= len(rest):
+                die(L.RC_USAGE, "--feature needs a value")
+            feature = rest[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not uuid or not role:
+        die(L.RC_USAGE, ENROLL_HELP)
+    # arg-shape guard (fork quirk 2026-09-04, #95 lane): a missing role
+    # positional let ``--topic`` land in ``$role`` and pass the non-empty check.
+    # Roles are prose words — a leading dash is always a parsing error.
+    if role.startswith("-"):
+        die(L.RC_USAGE, "enroll: role looks like a flag: '%s' (role positional "
+            "missing?)" % role)
+    if not L.is_uuid(uuid):
+        die(L.RC_USAGE, "enroll: uuid shape invalid: '%s'" % uuid)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    workers = _unified(ledger).get("workers")
+    if any(isinstance(row, dict)
+           and L.to_string(_keep(row.get("uuid"), "")) == uuid
+           for row in (workers if isinstance(workers, list) else [])):
+        die(L.RC_USAGE, "enroll: uuid already enrolled: %s" % uuid)
+    _warn_topic_not_a_binding(ledger, topic)
+
+    def _enroll_locked():
+        n = L.max_n(ledger) + 1
+        t = L.now_iso()
+        what = ("enrolled %s %s%s" % (role, uuid,
+                                      "" if topic == "-" else " (topic %s)" % topic))
+
+        def transform(doc):
+            workers_ = doc.get("workers")
+            if workers_ is None:
+                workers_ = doc["workers"] = []
+            workers_.append({
+                "uuid": uuid, "role": role,
+                "topic_id": None if topic == "-" else int(topic),
+                "feature": feature, "confirmed": False, "first_seen": t,
+                "last_acked": None, "notes": [], "events": []})
+            events_ = doc.get("events")
+            if events_ is None:
+                events_ = doc["events"] = []
+            events_.append({"n": n, "t": t, "by": "oc-ledger enroll",
+                            "kind": "roster-enroll", "what": what})
+            doc["updated_at"] = t
+            return None
+        L.atomic_write(ledger, transform)
+        outln("enrolled %s %s (event n=%s)" % (role, uuid, n))
+        L.git_state_commit(ledger, "ledger n=%s: enroll %s %s (oc-ledger)"
+                           % (n, role, uuid))
+
+    L.with_lock(ledger, _enroll_locked)
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
+# promote — update an enrolled row IN PLACE
+# ---------------------------------------------------------------------------
+PROMOTE_HELP = ("usage: oc-ledger promote <uuid> <new-role> [--topic N] "
+                "[--feature X]")
+
+
+def cmd_promote(ledger, args):
+    # -h|--help is answered BEFORE the role-shape disambiguation below: with
+    # ``promote --help`` the single argument would be read as a ROLE, so the old
+    # path died rc 2 ("role looks like a flag") and this verb's own usage was
+    # unreachable — the one verb without a help arm (#686).
+    if args and args[0] in ("-h", "--help"):
+        outln(PROMOTE_HELP)
+        return L.RC_OK
+    if len(args) > 1 and args[1] in ("-h", "--help"):
+        outln(PROMOTE_HELP)
+        return L.RC_OK
+    uuid, role, rest = _split_two(args)
+    topic = ""
+    feature = ""
+    # A1b (#659): promote is SELF when the uuid is omitted. A single non-uuid
+    # argument is the new ROLE, exactly as enroll disambiguates.
+    if uuid and not role and not L.is_uuid(uuid):
+        role = uuid
+        uuid = ""
+    uuid = _self_uuid("promote", uuid)
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--topic":
+            if i + 1 >= len(rest):
+                die(L.RC_USAGE, "--topic needs a value")
+            topic = rest[i + 1]
+            i += 2
+        elif rest[i] == "--feature":
+            if i + 1 >= len(rest):
+                die(L.RC_USAGE, "--feature needs a value")
+            feature = rest[i + 1]
+            i += 2
+        else:
+            i += 1
+    if not uuid or not role:
+        die(L.RC_USAGE, PROMOTE_HELP)
+    if role.startswith("-"):
+        die(L.RC_USAGE, "promote: role looks like a flag: '%s' (role "
+            "positional missing?)" % role)
+    if not L.is_uuid(uuid):
+        die(L.RC_USAGE, "promote: uuid shape invalid: '%s'" % uuid)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    workers = _unified(ledger).get("workers")
+    rows = [row for row in (workers if isinstance(workers, list) else [])
+            if isinstance(row, dict)
+            and L.to_string(_keep(row.get("uuid"), "")) == uuid]
+    if not rows:
+        die(L.RC_USAGE, "promote: uuid not enrolled — use enroll to create the "
+            "row: %s" % uuid)
+    # current values (null renders as "-" — the enroll convention)
+    cur = rows[0]
+    cur_role = L.to_string(_keep(cur.get("role"), "-"))
+    cur_topic = L.to_string(_keep(cur.get("topic_id"), "-"))
+    cur_feature = L.to_string(_keep(cur.get("feature"), "-"))
+    changes = ""
+    if role != cur_role:
+        changes = "role: %s -> %s" % (cur_role, role)
+    if topic and topic != cur_topic:
+        if not (topic.isdigit() or topic == "-"):
+            die(L.RC_USAGE, "promote: --topic must be a number or '-'")
+        changes = ("%s; topic: %s -> %s" % (changes, cur_topic, topic)
+                   if changes else "topic: %s -> %s" % (cur_topic, topic))
+    if feature and feature != cur_feature:
+        changes = ("%s; feature: %s -> %s" % (changes, cur_feature, feature)
+                   if changes else "feature: %s -> %s" % (cur_feature, feature))
+    if not changes:
+        die(L.RC_USAGE, "promote: nothing to change (role/topic/feature all "
+            "unchanged)")
+
+    def _promote_locked():
+        n = L.max_n(ledger) + 1
+        t = L.now_iso()
+
+        def transform(doc):
+            for row in doc.get("workers") or []:
+                if not (isinstance(row, dict)
+                        and L.to_string(_keep(row.get("uuid"), "")) == uuid):
+                    continue
+                row["role"] = role
+                if topic:
+                    row["topic_id"] = None if topic == "-" else int(topic)
+                if feature:
+                    row["feature"] = feature
+                notes = row.get("notes")
+                if not isinstance(notes, list):
+                    notes = [] if notes is None else [notes]
+                row["notes"] = notes + ["promoted at %s: %s" % (t, changes)]
+            events_ = doc.get("events")
+            if events_ is None:
+                events_ = doc["events"] = []
+            events_.append({"n": n, "t": t, "by": "oc-ledger promote",
+                            "kind": "note",
+                            "what": "promoted %s: %s" % (uuid, changes)})
+            doc["updated_at"] = t
+            return None
+        L.atomic_write(ledger, transform)
+        outln("promoted %s (%s) — event n=%s" % (uuid, changes, n))
+        L.git_state_commit(ledger, "ledger n=%s: promote %s (oc-ledger)"
+                           % (n, uuid))
+
+    L.with_lock(ledger, _promote_locked)
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
+# retire — REMOVE one roster row (the correction path)
+# ---------------------------------------------------------------------------
+RETIRE_HELP = ("usage: oc-ledger retire <uuid> [--topic N] [--role R] "
+               "[--why TEXT]")
+
+
+def cmd_retire(ledger, args):
+    """ROW-SCOPED, NOT UUID-SCOPED (defect fix 2026-09-11, HQ report d72bd52d).
+
+    The first cut removed ``.workers |= map(select(.uuid != $u))`` — EVERY row
+    carrying that uuid — and snapshotted the event from ``[0]``, so a uuid with
+    two rows would have had both revoked by an event naming only one. That was
+    LATENT on the roster of the day but the roster model plainly permits two: an
+    editor row on one topic plus an auditor row on another. So the verb takes
+    ``--topic``/``--role`` selectors — EXACT match, deliberately NOT the
+    substring match ``roster --role`` uses, because this verb DESTROYS a row —
+    and REFUSES rc 2 when the uuid matches more than one row and no selector
+    disambiguates, listing them so the caller can pick. A guard with no selector
+    would be a dead end: a legitimately two-row uuid could then never be
+    retired at all.
+
+    Removal is by ARRAY INDEX, never by re-matching a predicate, so the row
+    removed is exactly the row shown and snapshotted.
+
+    A1b (#659): retire is the ONE self-verb deliberately WITHOUT an env default.
+    ``ack``/``enroll``/``promote`` take it, but retire DESTROYS a roster row — a
+    no-argument ``oc-ledger retire`` would silently remove the AMBIENT lane's own
+    enrollment, and the fixture pin ``retire-no-args`` (rc 2) exists for that
+    reason. So the uuid stays REQUIRED.
+    """
+    uuid = args[0] if args else ""
+    why = ""
+    sel_topic = ""
+    sel_role = ""
+    rest = args[1:]
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--why":
+            if i + 1 >= len(rest) or not rest[i + 1]:
+                die(L.RC_USAGE, "retire: --why needs a value")
+            why = rest[i + 1]
+            i += 2
+        elif arg == "--topic":
+            if i + 1 >= len(rest) or not rest[i + 1]:
+                die(L.RC_USAGE, "retire: --topic needs a value")
+            sel_topic = rest[i + 1]
+            i += 2
+        elif arg == "--role":
+            if i + 1 >= len(rest) or not rest[i + 1]:
+                die(L.RC_USAGE, "retire: --role needs a value")
+            sel_role = rest[i + 1]
+            i += 2
+        elif arg in ("-h", "--help"):
+            outln(RETIRE_HELP)
+            return L.RC_OK
+        else:
+            die(L.RC_USAGE, "retire: unknown arg '%s' (usage: oc-ledger retire "
+                "<uuid> [--topic N] [--role R] [--why TEXT])" % arg)
+    if not uuid:
+        die(L.RC_USAGE, RETIRE_HELP)
+    if not L.is_uuid(uuid):
+        die(L.RC_USAGE, "retire: uuid shape invalid: '%s'" % uuid)
+    # Selector shape is validated BEFORE the match query, so a malformed
+    # --topic can never be misread as "no row matches".
+    if sel_topic and not sel_topic.isdigit():
+        die(L.RC_USAGE, "retire: --topic must be an integer, got '%s'"
+            % sel_topic)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    workers = _unified(ledger).get("workers")
+    workers = workers if isinstance(workers, list) else []
+    # An absent topic_id can never equal a numeric --topic ("" != "49607"), so a
+    # selector never matches a null-topic row.
+    matches = [(idx, row) for idx, row in enumerate(workers)
+               if isinstance(row, dict)
+               and L.to_string(_keep(row.get("uuid"), "")) == uuid
+               and (not sel_topic
+                    or L.to_string(_keep(row.get("topic_id"), "")) == sel_topic)
+               and (not sel_role
+                    or L.to_string(_keep(row.get("role"), "")) == sel_role)]
+    if not matches:
+        die(L.RC_USAGE, "retire: no row matches %s%s%s — nothing to remove"
+            % (uuid,
+               " (topic %s)" % sel_topic if sel_topic else "",
+               " (role %s)" % sel_role if sel_role else ""))
+    if len(matches) > 1:
+        errln("retire: ambiguous — %d rows carry %s; add --topic N and/or "
+              "--role R to pick exactly one:" % (len(matches), uuid))
+        for _, row in matches:
+            errln("  %s  topic %s  feature %s  confirmed %s"
+                  % (L.to_string(_keep(row.get("role"), "-")),
+                     L.to_string(_keep(row.get("topic_id"), "-")),
+                     L.to_string(_keep(row.get("feature"), "-")),
+                     L.to_string(_keep(row.get("confirmed"), False))))
+        die(L.RC_USAGE, "retire: ambiguous uuid — refusing to remove more than "
+            "one row")
+    idx, row = matches[0]
+    if not why:
+        why = "(no reason given)"
+    # Snapshot the row BEFORE removal — the event is its only surviving record.
+    cur_role = L.to_string(_keep(row.get("role"), "-"))
+    cur_topic = L.to_string(_keep(row.get("topic_id"), "-"))
+    cur_feature = L.to_string(_keep(row.get("feature"), "-"))
+    cur_confirmed = L.to_string(_keep(row.get("confirmed"), False))
+
+    def _retire_locked():
+        n = L.max_n(ledger) + 1
+        t = L.now_iso()
+        what = ("retired %s %s (topic %s, feature %s, confirmed %s): %s"
+                % (cur_role, uuid, cur_topic, cur_feature, cur_confirmed, why))
+
+        def transform(doc):
+            workers_ = doc.get("workers")
+            if isinstance(workers_, list) and idx < len(workers_):
+                del workers_[idx]
+            events_ = doc.get("events")
+            if events_ is None:
+                events_ = doc["events"] = []
+            events_.append({"n": n, "t": t, "by": "oc-ledger retire",
+                            "kind": "roster-retire", "what": what})
+            doc["updated_at"] = t
+            return None
+        L.atomic_write(ledger, transform)
+        outln("retired %s %s (event n=%s) — row removed, signing revoked"
+              % (cur_role, uuid, n))
+        L.git_state_commit(ledger, "ledger n=%s: retire %s %s (oc-ledger)"
+                           % (n, cur_role, uuid))
+
+    L.with_lock(ledger, _retire_locked)
+    return L.RC_OK
+
+
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
@@ -2621,6 +3153,10 @@ _HANDLERS = {
     # --- phase 3: the write verbs ---
     "stamp": cmd_stamp,
     "fixture": cmd_fixture,
+    "ack": cmd_ack,
+    "enroll": cmd_enroll,
+    "promote": cmd_promote,
+    "retire": cmd_retire,
 }
 
 # The verbs this file does NOT implement yet plus the one verb the bash keeps

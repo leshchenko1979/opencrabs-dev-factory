@@ -382,97 +382,468 @@ _JSON_DECODER = json.JSONDecoder()
 _WS = " \t\r\n"
 
 
-def _jq_position(text: str, pos: int, exc=None):
-    """jq's own ``(line, column, at_eof)`` for a failure at ``pos``.
+# ---------------------------------------------------------------------------
+# jq 1.7.1's own parse errors — a transcription, not an approximation
+# ---------------------------------------------------------------------------
+# jq does not tokenise JSON the way Python's ``json`` does, and it does not
+# report the same thing when a stream is malformed: it names the failure from
+# its own parse stack ("Unmatched '}'" vs "Objects must consist of key:value
+# pairs" for the SAME byte, depending on what is open) and it reports the
+# position it has CONSUMED to, in BYTES. Re-deriving that from Python's
+# exception message is what the previous version of this code did, and it was
+# wrong by one or two columns on every structural failure.
+#
+# So the scanner below is a line-by-line transcription of jq-1.7.1's
+# ``src/jv_parse.c`` (``scan``/``parse_token``/``check_literal``/
+# ``found_string`` and the EOF tail of ``jv_parser_next``), plus
+# ``decNumberFromString`` for the numeric-literal grammar and
+# ``jv_parser_set_buf`` for the leading-BOM strip. jq is NOT run at runtime —
+# this is stdlib-only Python that reproduces its decisions.
+#
+# The corpus that pins each arm is recorded in the docstrings of
+# :func:`_jq_parse_message` and :func:`_jq_position`.
+#
+# COST: the replay is O(bytes) in Python, and it is only ever reached on the
+# ERROR path (``parse_stream_lines`` calls it from its ``except ValueError``),
+# so a well-formed ledger never pays for it.
 
-    jq does not report where the bad TOKEN starts. Its lexer consumes a run of
-    characters, then trailing whitespace (newlines included), and reports
-    ``line`` = the line it has reached with ``column`` = the characters
-    consumed on that line. Two consequences, both measured against jq-1.7:
+_JQ_BOM = b"\xef\xbb\xbf"
+_JQ_WS_B = b" \t\r\n"          # jv_parse.c classify(): WHITESPACE
+_JQ_STRUCT_B = b"[],{}:"       # jv_parse.c classify(): STRUCTURE
+_JQ_ESCAPES_B = b'\\"/bftnr'   # found_string(): the one-byte escapes
+_JQ_NUMBER_BYTES = b"0123456789+-.eE"
 
-    * A failure AT EOF (``pos >= len(text)``) means the token ran into the end
-      of the input with no delimiter after it — jq calls that ``at EOF``.
-    * Otherwise the reported position is the end of the token RUN, not the
-      character Python stopped on: ``{"a":1} zzz`` reports column 0 of the
-      NEXT line (the run ``zzz`` plus its newline were consumed), not column 7.
-
-    The run is the union of the bareword set (``[A-Za-z0-9_-+.]``) and — for
-    the *Expecting value* failures — every character that cannot END a JSON
-    value, which is what makes ``{"a":1} "xy`` report *Unfinished string at
-    EOF* while ``{"a":1} @foo`` stays *Invalid numeric literal*.
-    """
-    end = len(text)
-    if pos >= end:
-        return _jq_line_column(text, end) + (True,)
-
-    raw = str(exc) if exc is not None else ""
-    stop = pos
-    if "Expecting value" in raw:
-        # a value-position failure consumes until something that could legally
-        # follow a value: whitespace, a delimiter, or a closing bracket
-        while stop < end and text[stop] not in _WS and text[stop] not in "{}[],:":
-            stop += 1
-    else:
-        while stop < end and (text[stop].isalnum()
-                              or text[stop] in "_-+."):
-            stop += 1
-    truncated = stop >= end and stop > pos
-    cursor = stop
-    while cursor < end and text[cursor] in _WS:
-        cursor += 1
-    return _jq_line_column(text, cursor) + (truncated,)
 
 def _jq_line_column(text: str, cursor: int):
+    """``(line, column)`` for a CHARACTER index, with jq's BYTE column.
+
+    jq counts columns in bytes, not characters: ``{"é":1,}`` (é is two bytes)
+    is reported at column 9, and ``{"a":"é",}`` at column 11 — one more than
+    the character offset in each case. Everything in this section therefore
+    runs over ``text.encode("utf-8", "surrogateescape")``; this helper exists
+    only to translate a character index (the one Python's decoder hands us)
+    into that same byte column. ``line`` is unaffected because ``\\n`` is
+    one byte in UTF-8.
+    """
     line = text.count("\n", 0, cursor) + 1
-    column = cursor - (text.rfind("\n", 0, cursor) + 1)
+    start = text.rfind("\n", 0, cursor) + 1
+    column = len(text[start:cursor].encode("utf-8", "surrogateescape"))
     return line, column
 
-def _jq_parse_message(text: str, pos: int, exc: ValueError) -> str:
-    """The ``jq: parse error: …`` line for a failure at ``pos``.
 
-    jq's lexer names its own failures and Python's decoder names different
-    ones for the same byte, so the mapping is measured, not derived. The
-    corpus behind each arm (jq-1.7): ``{not json}``/``{a:1}``/``[1,x]``/
-    ``{'a':1}`` all read *Invalid numeric literal*; ``{"a":1,}`` is *Expected
-    another key-value pair*; ``[1,]`` is *Expected another array element*;
-    ``{"a" 1}`` is *Expected separator between values*; a stray ``}`` or ``]``
-    is *Unmatched*; anything whose token ran into EOF is *… at EOF*, and an
-    unterminated string is *Unfinished string*.
+def _jq_position(text: str, pos: int, exc=None):
+    """jq's own ``(line, column, at_eof)`` for the first failure in ``text``.
+
+    ``pos`` and ``exc`` are accepted for signature compatibility with the
+    caller (``parse_stream_lines`` passes Python's ``exc.pos``) but are NOT
+    used to place the error: jq's position is a property of ITS scanner, and
+    Python's stop offset lands one or two columns short of it on every
+    structural failure (``{"a":1,}`` — Python stops on the ``}`` at offset 7,
+    jq reports column 8 because it consumed the ``}`` before deciding). The
+    position is therefore taken from the single replay that
+    :func:`_jq_parse_message` performs, and recovered from its rendered line so
+    there is exactly one scanner in this module.
+
+    Returns ``(line, column, truncated)`` where ``truncated`` is jq's "at EOF"
+    flag — true only when the failure was raised at end of input with no
+    delimiter after the offending run (``1e``, ``{"a":``, ``"xy``), which is
+    what makes jq print ``… at EOF at line L, column C``.
+
+    The two arms, and the corpus behind them:
+      * a rendered line carrying ``at EOF at line L, column C`` → ``(L, C, True)``
+        (``1e``, ``1.2.3`` with no newline, ``"abc``, ``{"a":1``);
+      * ``at line L, column C`` → ``(L, C, False)``
+        (``{"a":1,}``, ``[1,]``, ``{a:1}``, ``{"a":1}\\n{"b":}``).
     """
-    raw = str(exc)
-    line, column, truncated = _jq_position(text, pos, exc)
-    at = text[pos] if pos < len(text) else ""
+    rendered = _jq_parse_message(text, pos, exc)
+    tail = re.search(r" at (EOF )?at line (\d+), column (\d+)$", rendered)
+    if tail is None:
+        # jq printed no position at all (only "Malformed BOM" does that), or
+        # the fallback arm fired; a position is still part of this signature.
+        return _jq_line_column(text, len(text)) + (True,)
+    return (int(tail.group(2)), int(tail.group(3)),
+            tail.group(1) is not None)
 
-    if "Unterminated string" in raw or "Invalid control character" in raw:
-        kind = "Unfinished string"
-        truncated = True
-    elif "Expecting value" in raw:
-        kind = "Unfinished JSON term" if truncated else "Invalid numeric literal"
-    elif "Expecting property name" in raw:
-        if truncated:
-            kind = "Unfinished JSON term"
-        elif at == "}":
-            kind = "Expected another key-value pair"
-        elif at == "]":
-            kind = "Expected another array element"
-        else:
-            kind = "Invalid numeric literal"
-    elif "Expecting ',' delimiter" in raw:
-        if at == "}":
-            kind = "Unmatched '}'"
-        elif at == "]":
-            kind = "Unmatched ']'"
-        else:
-            kind = "Expected separator between values"
-    elif "Expecting ':' delimiter" in raw:
-        kind = "Expected separator between values"
-    else:
-        kind = "Invalid numeric literal"
 
-    if truncated:
+def _jq_parse_message(text: str, pos: int, exc: ValueError) -> str:
+    """The ``jq: parse error: …`` line for the first malformed token in ``text``.
+
+    ONE replay of jq-1.7.1's scanner produces both the KIND and the POSITION,
+    because in jq they come from the same decision: the kind is chosen by the
+    parse stack at the moment the bad byte is consumed, and the position is
+    how far the scanner had got. Splitting them (as the old exception-message
+    mapping did) is what produced ``Invalid numeric literal`` where jq says
+    ``Unmatched '}'``.
+
+    Each arm below is justified by a measured corpus (jq-1.7.1, ``jq -c .``):
+
+    ==============================  =========================================
+    arm                             corpus that reaches it
+    ==============================  =========================================
+    ``Expected another key-value    ``{"a":1,}`` (col 8), ``{"a":1,  }`` (10),
+    pair``                          ``{"a":1,\\n "b":2,\\n}`` (line 3 col 1)
+    ``Expected another array        ``[1,]`` (4), ``[1,2,]`` (6), ``[1, ]`` (5),
+    element``                       ``{"a":[1,]}`` (9), ``[1,]]`` (4)
+    ``Expected value before ','``   ``,`` (1), ``[,]`` (2), ``{,}`` (2),
+                                    ``{"a":,}`` (6), ``{"a":1,,}`` (8)
+    ``Expected string key before    ``:`` (1), ``{:1}`` (2)
+    ':'``
+    ``Object keys must be strings`` ``{1:2}`` (3), ``{true:1}`` (6),
+                                    ``{"a":1,2:3}`` (9)
+    ``':' not as part of an         ``[1:2]`` (3), ``{"a":1:2}`` (7),
+    object``                        ``["a":1]`` (5), ``[[1]:2]`` (5)
+    ``Unmatched ']'``               ``]`` (1), ``{"a":1]`` (7), ``[1,]`` no —
+                                    ``{"a":1,]`` (8)
+    ``Unmatched '}'``               ``}`` (1), ``{"a":1}}`` (8), ``{"a":}`` (6),
+                                    ``[}`` (2), ``{"a":[}`` (7)
+    ``Objects must consist of       ``[1}`` (3), ``{"a",1}`` (5), ``["a"}`` (5),
+    key:value pairs``               ``{"a"}`` (5), ``{"a":1,[1]}`` (11)
+    ``Expected separator between    ``{"a" 1}`` (7), ``{"a" "b"}`` (8),
+    values``                        ``[1 2]`` (5), ``{"a":1 "b"}`` (10)
+    ``Invalid numeric literal``     ``{a:1}`` (3), ``[1,x]`` (5), ``1.2.3`` (5),
+                                    ``nan1`` (4), ``infx`` (4), ``.`` (1)
+    ``Invalid literal``             ``tru`` (3), ``nullx`` (5), ``falsee`` (6)
+    ``Unfinished string``           ``{"a":"xy`` (8, at EOF), ``"abc`` (4)
+    ``Unfinished JSON term``        ``{"a":1`` (line 2 col 0), ``[1,2``,
+                                    ``{"a"``, ``{``
+    ``Invalid escape``              ``{"a":"x\\\\q"}`` (10)
+    ``Invalid \\\\uXXXX escape``     ``{"a":"\\\\u12"}`` (11)
+    ``Invalid string: control …``   ``{"a":"x<TAB>y"}`` (10), ``{"a":"x\\ny"}``
+                                    (line 2 col 2)
+    ``Malformed BOM``               a leading ``\\xef`` that is not a whole BOM
+    ==============================  =========================================
+
+    Three behaviours that are easy to get wrong and are pinned by the corpus:
+
+    * The numeric-literal grammar is decNumber's, not JSON's: ``+5``, ``.5``,
+      ``01``, ``1.``, ``nan``, ``NaN0``, ``inf``, ``Infinity``, ``snan`` and
+      ``1e999`` are all ACCEPTED by jq; ``1e``, ``1e+``, ``1.2.3``, ``0x10``,
+      ``nan1`` and ``infx`` are not. The literal arm (``t``/``f``/``n``+
+      ``u``) is a plain string compare, so ``tru\\x00`` is *Invalid literal*
+      while ``nan\\x00`` is *valid* — the numeric arm truncates at the first
+      NUL (C ``strlen``) and the literal arm does not.
+    * A string that fails to close is *Unfinished string at EOF*, but a
+      string whose CONTENT is bad (``\\\\q``, a raw control byte, a short
+      ``\\\\u``) fails at the closing quote, not at EOF.
+    * A byte that cannot start a value is not an error by itself — it starts a
+      literal run that is validated when the run ends, which is why
+      ``{a:1}`` blames the ``:`` (column 3) and not the ``a``.
+
+    If jq would ACCEPT the stream (it prints nothing) there is no line to
+    reproduce; that happens only for the loose-number spellings above, which
+    jq normalises on output and so can never appear in a file it wrote. The
+    fallback arm still returns a diagnostic, marked as an estimate.
+    """
+    data = text.encode("utf-8", "surrogateescape")
+
+    # ---- jq_util_input.c: jv_parser_set_buf — the leading BOM strip -------
+    # A whole BOM is dropped and does NOT count towards the column
+    # (``\\xef\\xbb\\xbf{"a":1,}`` reports column 8, same as without it). A
+    # PREFIX of one that then mismatches is "Malformed BOM" with no position
+    # (``\\xef1``, ``\\xef\\xbb{"a":1,}``); a prefix that runs into EOF is
+    # simply empty input (``\\xef\\xbb`` alone → rc 0, no output).
+    if data[:1] == b"\xef":
+        cut = 1
+        while cut < 3 and cut < len(data) and data[cut] == _JQ_BOM[cut]:
+            cut += 1
+        if cut < 3:
+            if cut < len(data):
+                return "jq: parse error: Malformed BOM"
+            data = data[:0]
+        else:
+            data = data[cut:]
+
+    n = len(data)
+    stack = []              # ["array"|"object"|"key", completed_count]
+    nxt = [None]            # p->next: None means jv_invalid()
+    run = bytearray()       # p->tokenbuf
+    state = [0]             # 0 NORMAL, 1 STRING, 2 STRING_ESCAPE
+    line = 1
+    column = 0
+
+    def deliver(kind):
+        """jv_parse.c ``value()`` — one value is pending at most."""
+        if nxt[0] is not None:
+            return "Expected separator between values"
+        nxt[0] = kind
+        return None
+
+    def check_done():
+        """``parse_check_done`` — a completed top-level value is emitted."""
+        if not stack and nxt[0] is not None:
+            nxt[0] = None
+            return True
+        return False
+
+    def number_ok(tok: bytes) -> bool:
+        """decNumberFromString's grammar, minus the coefficient conversion."""
+        nul = tok.find(b"\x00")     # C strlen(): the numeric arm stops here
+        if nul >= 0:
+            tok = tok[:nul]
+        length = len(tok)
+        i = 0
+        last = -1                   # -> last digit of the decimal part
+        dot = -1                    # -> first '.'
+        first = 0                   # -> first character of the decimal part
+        while i < length:
+            ch = tok[i]
+            if 0x30 <= ch <= 0x39:
+                last = i
+                i += 1
+                continue
+            if ch == 0x2E and dot < 0:
+                dot = i
+                if i == first:
+                    first = i + 1
+                i += 1
+                continue
+            if i == 0 and ch in (0x2D, 0x2B):
+                first = 1
+                i += 1
+                continue
+            break
+        if last < 0:                # no digits at all
+            if dot >= 0:            # a dot rules out inf/nan
+                return False
+            rest = tok[i:]
+            lowered = rest.lower()
+            if lowered in (b"infinity", b"inf"):
+                return True
+            skip = 1 if lowered[:1] == b"s" else 0     # sNaN
+            if rest[skip:skip + 3].lower() != b"nan":
+                return False
+            payload = rest[skip + 3:]
+            zeros = 0
+            while zeros < len(payload) and payload[zeros] == 0x30:
+                zeros += 1
+            return zeros == len(payload)   # NaN payload must be all zeros
+        if i != length:             # digits were followed by something
+            if tok[i] not in (0x65, 0x45):             # only 'e'/'E' may follow
+                return False
+            j = i + 1
+            if j < length and tok[j] in (0x2D, 0x2B):
+                j += 1
+            if j >= length:                            # "1e", "1e+"
+                return False
+            while j < length and 0x30 <= tok[j] <= 0x39:
+                j += 1
+            if j != length:                            # "1e5x"
+                return False
+        return True
+
+    def check_literal():
+        """``check_literal`` — the pending literal run, if any."""
+        if not run:
+            return None
+        tok = bytes(run)
+        head = tok[0]
+        pattern = None
+        if head == 0x74:                                   # 't'
+            pattern = b"true"
+        elif head == 0x66:                                 # 'f'
+            pattern = b"false"
+        elif head == 0x6E and len(tok) > 1 and tok[1] == 0x75:   # 'n' + 'u'
+            pattern = b"null"
+        if pattern is not None:
+            if tok != pattern:
+                return "Invalid literal"
+            run.clear()
+            return deliver("literal")
+        if not number_ok(tok):
+            return "Invalid numeric literal"
+        run.clear()
+        return deliver("number")
+
+    def unhex4(buf: bytes) -> int:
+        if len(buf) != 4:
+            return -1
+        value = 0
+        for ch in buf:
+            if 0x30 <= ch <= 0x39:
+                digit = ch - 0x30
+            elif 0x61 <= ch <= 0x66:
+                digit = ch - 0x61 + 10
+            elif 0x41 <= ch <= 0x46:
+                digit = ch - 0x41 + 10
+            else:
+                return -1
+            value = (value << 4) | digit
+        return value
+
+    def found_string(buf: bytes):
+        """``found_string`` — validate the body at the closing quote."""
+        i = 0
+        end = len(buf)
+        while i < end:
+            ch = buf[i]
+            i += 1
+            if ch == 0x5C:                      # backslash
+                if i >= end:
+                    return "Expected escape character at end of string"
+                ch = buf[i]
+                i += 1
+                if ch in _JQ_ESCAPES_B:
+                    continue
+                if ch != 0x75:                  # not 'u'
+                    return "Invalid escape"
+                if i + 4 > end:
+                    return "Invalid \\uXXXX escape"
+                hexval = unhex4(buf[i:i + 4])
+                if hexval < 0:
+                    return "Invalid characters in \\uXXXX escape"
+                i += 4
+                if 0xD800 <= hexval <= 0xDBFF:
+                    if i + 6 > end or buf[i] != 0x5C or buf[i + 1] != 0x75:
+                        return "Invalid \\uXXXX\\uXXXX surrogate pair escape"
+                    low = unhex4(buf[i + 2:i + 6])
+                    if not 0xDC00 <= low <= 0xDFFF:
+                        return "Invalid \\uXXXX\\uXXXX surrogate pair escape"
+                    i += 6
+            elif 0x00 <= ch <= 0x1F:
+                return ("Invalid string: control characters from U+0000 "
+                        "through U+001F must be escaped")
+        return deliver("string")
+
+    def token(ch):
+        """``parse_token`` — the structural bytes, with jq's stack rules."""
+        if ch == 0x5B:                                      # [
+            if nxt[0] is not None:
+                return "Expected separator between values"
+            stack.append(["array", 0])
+        elif ch == 0x7B:                                    # {
+            if nxt[0] is not None:
+                return "Expected separator between values"
+            stack.append(["object", 0])
+        elif ch == 0x3A:                                    # :
+            if nxt[0] is None:
+                return "Expected string key before ':'"
+            if not stack or stack[-1][0] != "object":
+                return "':' not as part of an object"
+            if nxt[0] != "string":
+                return "Object keys must be strings"
+            stack.append(["key", None])
+            nxt[0] = None
+        elif ch == 0x2C:                                    # ,
+            if nxt[0] is None:
+                return "Expected value before ','"
+            if not stack:
+                return "',' not as part of an object or array"
+            if stack[-1][0] == "array":
+                stack[-1][1] += 1
+                nxt[0] = None
+            elif stack[-1][0] == "key":
+                stack.pop()
+                stack[-1][1] += 1
+                nxt[0] = None
+            else:
+                return "Objects must consist of key:value pairs"
+        elif ch == 0x5D:                                    # ]
+            if not stack or stack[-1][0] != "array":
+                return "Unmatched ']'"
+            if nxt[0] is not None:
+                stack[-1][1] += 1
+                nxt[0] = None
+            elif stack[-1][1] != 0:
+                return "Expected another array element"
+            stack.pop()
+            nxt[0] = "array"
+        elif ch == 0x7D:                                    # }
+            if not stack:
+                return "Unmatched '}'"
+            if nxt[0] is not None:
+                if stack[-1][0] != "key":
+                    return "Objects must consist of key:value pairs"
+                stack.pop()
+                stack[-1][1] += 1
+                nxt[0] = None
+            else:
+                if stack[-1][0] != "object":
+                    return "Unmatched '}'"
+                if stack[-1][1] != 0:
+                    return "Expected another key-value pair"
+            stack.pop()
+            nxt[0] = "object"
+        return None
+
+    i = 0
+    while i < n:
+        ch = data[i]
+        i += 1
+        column += 1
+        if ch == 0x0A:
+            line += 1
+            column = 0
+        if state[0] == 0:
+            if ch in _JQ_WS_B:
+                failure = check_literal()
+                if failure:
+                    return ("jq: parse error: %s at line %d, column %d"
+                            % (failure, line, column))
+                check_done()
+            elif ch == 0x22:                                # "
+                failure = check_literal()
+                if failure:
+                    return ("jq: parse error: %s at line %d, column %d"
+                            % (failure, line, column))
+                check_done()
+                state[0] = 1
+            elif ch in _JQ_STRUCT_B:
+                failure = check_literal()
+                if failure:
+                    return ("jq: parse error: %s at line %d, column %d"
+                            % (failure, line, column))
+                check_done()
+                failure = token(ch)
+                if failure:
+                    return ("jq: parse error: %s at line %d, column %d"
+                            % (failure, line, column))
+            else:
+                run.append(ch)
+            if check_done():
+                continue
+        else:
+            if ch == 0x22 and state[0] == 1:
+                failure = found_string(bytes(run))
+                run.clear()
+                if failure:
+                    return ("jq: parse error: %s at line %d, column %d"
+                            % (failure, line, column))
+                state[0] = 0
+                if check_done():
+                    continue
+            else:
+                run.append(ch)
+                state[0] = 2 if (ch == 0x5C and state[0] == 1) else 1
+
+    # ---- the EOF tail of jv_parser_next, in jq's order -------------------
+    if state[0] != 0:
+        return ("jq: parse error: Unfinished string at EOF at line %d, "
+                "column %d" % (line, column))
+    failure = check_literal()
+    if failure:
         return ("jq: parse error: %s at EOF at line %d, column %d"
-                % (kind, line, column))
-    return ("jq: parse error: %s at line %d, column %d" % (kind, line, column))
+                % (failure, line, column))
+    if stack:
+        return ("jq: parse error: Unfinished JSON term at EOF at line %d, "
+                "column %d" % (line, column))
+    if nxt[0] is None:
+        # jq accepted the whole stream, so it printed nothing. Only the loose
+        # number spellings reach here (+5, .5, 01, nan, inf, 1., 1e999): jq
+        # normalises them on output, so a file jq wrote cannot contain one.
+        # The caller still needs a diagnostic, so give the best available
+        # estimate rather than inventing a match.
+        at = text[pos] if pos < len(text) else ""
+        stop = pos
+        while stop < len(text) and text[stop] not in _WS and text[stop] not in "{}[],:":
+            stop += 1
+        at_line, at_column = _jq_line_column(text, stop)
+        kind = "Invalid numeric literal" if at else "Unfinished JSON term"
+        if stop >= len(text):
+            return ("jq: parse error: %s at EOF at line %d, column %d"
+                    % (kind, at_line, at_column))
+        return ("jq: parse error: %s at line %d, column %d"
+                % (kind, at_line, at_column))
+    return ""
 
 def parse_stream_lines(text: str, path: str):
     """``[(value, line_number)]`` — a jq STREAM, with each value's start line.
