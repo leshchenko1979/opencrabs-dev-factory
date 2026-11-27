@@ -36,11 +36,21 @@
 # usage: oc-poll status <dir>
 #   Read-only over frozen files. Prints the three counts and the set
 #   differences, naming each uuid:
-#     targeted-but-undelivered   in targets.txt / wave-*.targets, never sent
-#     delivered-but-unanswered   in wave-*.sent, no index.log row
-#   An ABSENT target (named, never delivered) is therefore targeted-but-
-#   undelivered and is NEVER counted as answered. A file in the answer dir with
-#   no index row is NOT an answer: index.log is the answered set.
+#     targeted-but-undelivered    in targets.txt / wave-*.targets, never sent
+#     delivered-but-unanswered    in wave-*.sent, no index.log row
+#     answered-but-not-targeted   an index.log row for a uuid that is NOT a
+#                                 frozen target — NAMED, never counted
+#     answered-but-not-delivered  a targeted uuid answered without ever being
+#                                 sent — NAMED, never counted
+#   CONTAINMENT IS ENFORCED, not promised: answered ⊆ delivered ⊆ targeted, so
+#   answered/targeted can never rise without a target answering and can never
+#   exceed 100%. An ABSENT target (named, never delivered) is therefore
+#   targeted-but-undelivered and is NEVER counted as answered. A file in the
+#   answer dir with no index row is NOT an answer: index.log is the answered
+#   set. Every uuid the containment EXCLUDES is named in its own always-printed
+#   section, with the count printed even at zero — nothing is dropped silently.
+#   A wave-*.sent uuid absent from the frozen target list is not this poll's
+#   delivery (it belongs to some other poll) and is not counted in `delivered`.
 #   Scans <dir> and <dir>/run (the oc-notify-fanout default RUN_DIR).
 #
 # Exit codes:
@@ -72,6 +82,8 @@ usage: oc-poll open <dir> --targets <file> [--since <ts>] [--force]
   open    freeze a target list into <dir>/targets.txt + <dir>/census.json
   answer  write <dir>/<uuid>.md atomically, receipt it in <dir>/index.log
   status  join targets/delivered/answered from disk; never re-runs a predicate
+          answered ⊆ delivered ⊆ targeted is ENFORCED: an answer for a non-target
+          uuid is named under `answered-but-not-targeted` and never counted
 Exit: 0 ok · 2 usage/argument error · 3 answer exists without --replace · 4 write/IO failure
 USAGE
 }
@@ -178,6 +190,16 @@ cmd_answer() {
   [ "$replace" = 1 ] && note=" (replace)"
   printf '%s|%s|%s|%s\n' "$ts" "$uuid" "$src_sha" "$src_bytes" >> "$dir/index.log" \
     || die 4 "answer: index append failed: $dir/index.log"
+  # #163: an answer for a uuid that is NOT a frozen target is still WRITTEN (the
+  # write happened, and the receipt below says so), but it is WARNED on stderr,
+  # because `status` will name it under answered-but-not-targeted and will NOT
+  # count it. rc is deliberately unchanged: the write succeeded, and a caller
+  # keyed on rc must not read a completed write as a failure.
+  if [ -f "$dir/targets.txt" ] \
+     && ! awk -v u="$uuid" '{ sub(/[[:space:]]+$/, "") } $0 == u { found = 1 } END { exit !found }' \
+            "$dir/targets.txt"; then
+    echo "$PROG: warning: answer: uuid $uuid is NOT in $dir/targets.txt — status names it under answered-but-not-targeted and does NOT count it as answered" >&2
+  fi
   echo "answered: uuid=$uuid path=$dest bytes=$src_bytes sha256=$src_sha$note"
   echo "receipt: $ts|$uuid|$src_sha|$src_bytes"
 }
@@ -196,34 +218,53 @@ cmd_status() {
   # W is GLOBAL on purpose: the EXIT trap fires after this function returns, and
   # a `local` would be unbound by then (set -u aborts the cleanup, leaving the
   # scratch dir behind).
-  local nt nd na ntu nun f
+  local nt nd na ntu nun nnt nnd f
   W="$(mktemp -d)" || die 4 "status: cannot create scratch dir"
   trap 'rm -rf "${W:-}"; W=""' EXIT
-  : > "$W/targeted"; : > "$W/delivered"; : > "$W/answered"
+  : > "$W/targeted"; : > "$W/sent"; : > "$W/answered_raw"
 
   for f in "$dir/targets.txt" "$dir"/wave-*.targets "$dir"/run/wave-*.targets; do
     [ -f "$f" ] && sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$f" >> "$W/targeted"
   done
   for f in "$dir"/wave-*.sent "$dir"/run/wave-*.sent; do
-    [ -f "$f" ] && sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$f" >> "$W/delivered"
+    [ -f "$f" ] && sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$f" >> "$W/sent"
   done
   # answered comes from index.log ONLY. An answer-shaped file with no receipt is
   # not an answer — reading the directory would make the rate 100% by construction.
   if [ -f "$dir/index.log" ]; then
-    awk -F'|' 'NF >= 2 && $2 != "" { print $2 }' "$dir/index.log" >> "$W/answered"
+    awk -F'|' 'NF >= 2 && $2 != "" { print $2 }' "$dir/index.log" >> "$W/answered_raw"
   fi
 
-  sort -u "$W/targeted"  -o "$W/targeted"
-  sort -u "$W/delivered" -o "$W/delivered"
-  sort -u "$W/answered"  -o "$W/answered"
-  comm -23 "$W/targeted"  "$W/delivered" > "$W/undelivered"
-  comm -23 "$W/delivered" "$W/answered"  > "$W/unanswered"
+  sort -u "$W/targeted"     -o "$W/targeted"
+  sort -u "$W/sent"         -o "$W/sent"
+  sort -u "$W/answered_raw" -o "$W/answered_raw"
+  # #163: the containment answered ⊆ delivered ⊆ targeted is ENFORCED here, not
+  # merely promised in the header. Before this, `answered` was the raw index.log
+  # count, so an answer for a NON-target uuid raised answered/targeted (measured:
+  # 3 targets, index rows {A,Z} read 66.67% where one target answered = 33.33%),
+  # and a never-delivered target could be reported undelivered AND counted as
+  # answered in the same block.
+  #   delivered := sent ∩ targeted   — a sent uuid outside the frozen list is
+  #                                    another poll's delivery, not this one's
+  comm -12 "$W/sent" "$W/targeted" > "$W/delivered"
+  #   answered_targeted := index ∩ targeted — the answers to questions THIS poll
+  #                                    asked (the rest are named, never counted)
+  comm -12 "$W/answered_raw" "$W/targeted" > "$W/answered_targeted"
+  #   answered := answered_targeted ∩ delivered — an answer for a target that was
+  #                                    never sent is NAMED, never counted
+  comm -12 "$W/answered_targeted" "$W/delivered" > "$W/answered"
+  comm -23 "$W/targeted"         "$W/delivered"  > "$W/undelivered"
+  comm -23 "$W/delivered"        "$W/answered"   > "$W/unanswered"
+  comm -23 "$W/answered_raw"     "$W/targeted"   > "$W/not_targeted"
+  comm -23 "$W/answered_targeted" "$W/delivered" > "$W/not_delivered"
 
   nt="$(wc -l < "$W/targeted"  | tr -d ' ')"
   nd="$(wc -l < "$W/delivered" | tr -d ' ')"
   na="$(wc -l < "$W/answered"  | tr -d ' ')"
   ntu="$(wc -l < "$W/undelivered" | tr -d ' ')"
   nun="$(wc -l < "$W/unanswered"  | tr -d ' ')"
+  nnt="$(wc -l < "$W/not_targeted" | tr -d ' ')"
+  nnd="$(wc -l < "$W/not_delivered" | tr -d ' ')"
 
   echo "targeted=$nt delivered=$nd answered=$na"
   # The difference sections print a count ALWAYS and a uuid only when there is
@@ -232,6 +273,12 @@ cmd_status() {
   if [ "$ntu" -gt 0 ]; then sed 's/^/  /' "$W/undelivered"; fi
   echo "delivered-but-unanswered ($nun):"
   if [ "$nun" -gt 0 ]; then sed 's/^/  /' "$W/unanswered"; fi
+  # The two containment sections are ALWAYS printed, including at zero: an
+  # exclusion the output does not name is an exclusion the reader cannot see.
+  echo "answered-but-not-targeted ($nnt):"
+  if [ "$nnt" -gt 0 ]; then sed 's/^/  /' "$W/not_targeted"; fi
+  echo "answered-but-not-delivered ($nnd):"
+  if [ "$nnd" -gt 0 ]; then sed 's/^/  /' "$W/not_delivered"; fi
 }
 
 # ---- selftest -----------------------------------------------------------------
@@ -284,9 +331,12 @@ cmd_selftest() {
   has "$(cat "$T/out4")" "sha256=$(sha1 "$T/p1/$A.md")" "4-answer-prints-receipt"
   # an answer-SHAPED file with no receipt is NOT an answer: the answered set is
   # index.log, not the directory listing (this is what reddens the `ls` mutation)
+  printf '%s\n' "$A" > "$T/p1/wave-001.sent"   # #163: delivered, so A can count
   printf 'orphan, never receipted\n' > "$T/p1/$B.md"
-  has "$(bash "$ME" status "$T/p1" 2>&1)" "answered=1" "4-orphan-file-not-counted"
-  rm -f "$T/p1/$B.md"
+  o="$(bash "$ME" status "$T/p1" 2>&1)"
+  has "$o" "answered=1" "4-orphan-file-not-counted"
+  hasnt "$o" "$B" "4-orphan-file-not-named"
+  rm -f "$T/p1/$B.md" "$T/p1/wave-001.sent"
 
   # --- arm 5: second answer without --replace refuses rc 3, bytes unchanged ---
   b5="$(sha1 "$T/p1/$A.md")"
@@ -353,9 +403,77 @@ cmd_selftest() {
   has "$o" "targeted=3 delivered=3 answered=3" "10-counts"
   has "$o" "targeted-but-undelivered (0):" "10-undelivered-header-zero"
   has "$o" "delivered-but-unanswered (0):" "10-unanswered-header-zero"
+  has "$o" "answered-but-not-targeted (0):" "10-not-targeted-header-zero"
+  has "$o" "answered-but-not-delivered (0):" "10-not-delivered-header-zero"
   hasnt "$o" "$A" "10-empty-difference-names-no-uuid"
   eqv "10-undelivered-empty" "" "$(diffuuids "$o" 'targeted-but-undelivered')"
   eqv "10-unanswered-empty"  "" "$(diffuuids "$o" 'delivered-but-unanswered')"
+  eqv "10-not-targeted-empty" "" "$(diffuuids "$o" 'answered-but-not-targeted')"
+  eqv "10-not-delivered-empty" "" "$(diffuuids "$o" 'answered-but-not-delivered')"
+
+  # --- arm 11 (#163 AC1): an answer for a NON-TARGET uuid is NOT counted ------
+  # The #163 reproducer: targets {A,B,C}, sent {A,B,C}, index rows {A,Z} with Z
+  # NOT a target. The pre-fix tool read answered=2 (66.67 %) for a poll where
+  # exactly ONE target answered (33.33 %) — a 2x overstatement — and named Z
+  # nowhere. This arm is the one `tools/tests/negctl-163-mutation-guard.sh`
+  # reddens when the containment is reverted.
+  Z=99999999-9999-4999-8999-999999999999
+  D11="$T/p11"; printf '%s\n' "$A" "$B" "$C" > "$T/t11.txt"
+  bash "$ME" open "$D11" --targets "$T/t11.txt" >/dev/null 2>&1; chk "11-open" 0 $?
+  printf '%s\n' "$A" "$B" "$C" > "$D11/wave-001.targets"
+  printf '%s\n' "$A" "$B" "$C" > "$D11/wave-001.sent"
+  printf 'z\n' > "$T/bodyZ.md"
+  bash "$ME" answer "$D11" "$A" "$T/bodyA.md" >/dev/null 2>&1
+  bash "$ME" answer "$D11" "$Z" "$T/bodyZ.md" >/dev/null 2>&1
+  o="$(bash "$ME" status "$D11" 2>&1)"; chk "11-status-rc" 0 $?
+  has "$o" "targeted=3 delivered=3 answered=1" "11-non-target-not-counted"
+  has "$o" "answered-but-not-targeted (1):" "11-not-targeted-header-count"
+  eqv "11-names-the-non-target" "$Z" "$(diffuuids "$o" 'answered-but-not-targeted')"
+  eqv "11-unanswered-is-B-and-C" "$B $C" "$(diffuuids "$o" 'delivered-but-unanswered')"
+  # the ANSWER itself warns on stderr and STILL exits 0: #163 must not change
+  # `answer`'s exit code, so a caller keyed on rc cannot read a completed write
+  # as a failure.
+  bash "$ME" answer "$D11" "$Z" "$T/bodyZ.md" --replace >"$T/o11" 2>"$T/e11"
+  chk "11-answer-non-target-rc" 0 $?
+  has "$(cat "$T/e11")" "$Z" "11-answer-non-target-warns-on-stderr"
+  has "$(cat "$T/e11")" "answered-but-not-targeted" "11-answer-non-target-says-why"
+  # ...and a TARGET answer emits NO such warning (the control: the warning is
+  # aimed at non-targets, not printed unconditionally)
+  bash "$ME" answer "$D11" "$B" "$T/bodyB.md" >"$T/o11b" 2>"$T/e11b"
+  chk "11-answer-target-rc" 0 $?
+  if grep -qF "answered-but-not-targeted" "$T/e11b"; then F=$((F+1)); echo "  FAIL oc-poll - 11-target-answer-does-not-warn (stderr warns on a real target)" >&2; else P=$((P+1)); fi
+
+  # --- arm 12 (#163 AC2): answered-but-NEVER-DELIVERED is named, not counted --
+  # targets {A,B,C,D}, sent {A,B,C}, index rows {A,B,C,D}. D was never sent, so
+  # it is NOT an answer this poll can count — but it must be NAMED, or the reader
+  # sees a row vanish. The pre-fix tool read answered=4 on 3 delivered (133 %)
+  # and reported D undelivered AND answered in the same block.
+  D12="$T/p12"; printf '%s\n' "$A" "$B" "$C" "$D" > "$T/t12.txt"
+  bash "$ME" open "$D12" --targets "$T/t12.txt" >/dev/null 2>&1; chk "12-open" 0 $?
+  printf '%s\n' "$A" "$B" "$C" "$D" > "$D12/wave-001.targets"
+  printf '%s\n' "$A" "$B" "$C"    > "$D12/wave-001.sent"
+  for u in "$A" "$B" "$C" "$D"; do bash "$ME" answer "$D12" "$u" "$T/bodyA.md" >/dev/null 2>&1; done
+  o="$(bash "$ME" status "$D12" 2>&1)"; chk "12-status-rc" 0 $?
+  has "$o" "targeted=4 delivered=3 answered=3" "12-never-delivered-not-counted"
+  has "$o" "answered-but-not-delivered (1):" "12-not-delivered-header-count"
+  eqv "12-names-the-never-delivered" "$D" "$(diffuuids "$o" 'answered-but-not-delivered')"
+  eqv "12-not-targeted-is-empty" "" "$(diffuuids "$o" 'answered-but-not-targeted')"
+  # D is still an UNDELIVERED target too: the two sections are independent reads
+  eqv "12-D-also-undelivered" "$D" "$(diffuuids "$o" 'targeted-but-undelivered')"
+
+  # --- arm 13 (#163 AC4): a SENT uuid outside the target list is not delivery -
+  # The symmetric arm on `delivered`: wave-001.sent carrying a uuid absent from
+  # targets.txt must not raise `delivered`, and must not surface under
+  # delivered-but-unanswered as if it were a target that went unanswered.
+  Q=77777777-7777-4777-8777-777777777777
+  D13="$T/p13"; printf '%s\n' "$A" "$B" "$C" > "$T/t13.txt"
+  bash "$ME" open "$D13" --targets "$T/t13.txt" >/dev/null 2>&1; chk "13-open" 0 $?
+  printf '%s\n' "$A" "$B" "$C" > "$D13/wave-001.targets"
+  printf '%s\n' "$A" "$B" "$C" "$Q" > "$D13/wave-001.sent"
+  bash "$ME" answer "$D13" "$A" "$T/bodyA.md" >/dev/null 2>&1
+  o="$(bash "$ME" status "$D13" 2>&1)"; chk "13-status-rc" 0 $?
+  has "$o" "targeted=3 delivered=3 answered=1" "13-non-target-sent-not-delivered"
+  eqv "13-Q-absent-from-unanswered" "$B $C" "$(diffuuids "$o" 'delivered-but-unanswered')"
 
   # --- rc contract: --help is 0 ----------------------------------------------
   bash "$ME" --help >/dev/null 2>&1; chk "help-rc" 0 $?
