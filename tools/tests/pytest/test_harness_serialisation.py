@@ -63,6 +63,7 @@ CANONICAL_GROUPS = (
     "battery-pool",
     "battery-scratch",
     "battery-sigkill",
+    "cache",
     "path-restore",
 )
 
