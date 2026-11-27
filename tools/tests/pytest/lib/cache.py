@@ -652,7 +652,12 @@ def verbose(config) -> bool:
         return True
     # -v/-vv is pytest's own verbosity; a cache hit is exactly the kind of thing
     # a verbose run exists to explain.
-    return bool(getattr(config.option, "verbose", 0))
+    #
+    # The comparison is `> 0`, NOT `bool(...)`: `-q` sets verbose to -1, and
+    # bool(-1) is True, so the truthiness form treated a QUIET run as verbose
+    # and printed cache lines where today's output had none. Verified against
+    # argparse rather than assumed — -q/-qq drive verbose negative.
+    return getattr(config.option, "verbose", 0) > 0
 
 
 def cache_dir_for(config) -> Path:
@@ -685,7 +690,17 @@ def pytest_configure(config) -> None:
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
+    """The run's cache tally — VERBOSE ONLY.
+
+    Rule 1 is that default behaviour is byte-identical to no-cache, and the
+    battery runs ``-q``. An unconditional summary line is exactly the kind of
+    extra output that rule forbids, so the tally is gated the same way a hit
+    line is: ``-v`` or ``--oc-cache-verbose``. Nothing is lost — the same
+    numbers are in the entries themselves and in the hit lines.
+    """
     cache = getattr(config, "_oc_cache", None)
     if cache is None or hasattr(config, "workerinput"):
+        return
+    if not verbose(config):
         return
     terminalreporter.write_line(cache.summary())
