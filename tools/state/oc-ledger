@@ -965,19 +965,34 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
     return 3
   fi
   if ! jq -e . "$next" >/dev/null 2>&1; then rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; fi
-  # TRUE APPEND when the program pushed exactly ONE event onto the END — that is
-  # the entire point of #149 (one ~200-byte line per stamp instead of a fresh
-  # 2.8MB blob). Anything else (a non-event mutation, or an event edit) falls
-  # back to rewriting the record wholesale, which is still one small file.
+  # TRUE APPEND only when the program pushed exactly ONE event onto the END AND
+  # left every NON-EVENT field alone. The event delta alone is NOT sufficient
+  # (factory #193): enroll/promote/ack/retire/confirm each append one event and
+  # ALSO mutate .workers[] — the roster row, last_acked, confirmed — and sync
+  # stamps .current_skill_version / .meta.*. On an event-count-only predicate
+  # every one of those took this branch, appended its line, and DISCARDED the
+  # roster change while printing success: retire even reported "row removed,
+  # signing revoked" with the uuid still resolving a .role, so it kept signing.
+  # The guard is therefore a comparison of the non-event projection, which is
+  # exactly the state the else-arm below writes to workers.json.
+  #   * .updated_at is DELIBERATELY EXCLUDED from the comparison: every mutation
+  #     bumps it, #177 drops it on the append path, and including it would send
+  #     every stamp down the full-rewrite path — the 2.8MB-blob regression #149
+  #     exists to prevent. A stamp therefore still never touches workers.json.
+  # Anything else (a non-event mutation, an event edit, a multi-event program)
+  # falls back to rewriting the record wholesale, which is still one small file.
   jq -c --slurpfile o "$base" '
-      (.events // []) as $new | ($o[0].events // []) as $old
+      . as $n
+      | ($n.events // []) as $new | ($o[0].events // []) as $old
       | if ($new|length) == (($old|length) + 1) and ($new[0:($old|length)] == $old)
+           and (($n|del(.events)|del(.updated_at)) == ($o[0]|del(.events)|del(.updated_at)))
         then $new[-1] else empty end' "$next" > "$app" 2>/dev/null
   local ev; ev="$(_JSONL_EVENTS)"
   if [ -s "$app" ]; then
     # #177: a stamp is an append + fsync of one line. The view is not written,
-    # and workers.json is left alone — an event-only mutation does not change
-    # non-event state (the jq program may bump .updated_at, which we drop).
+    # and workers.json is left alone — the predicate above has PROVEN the
+    # non-event projection is unchanged (modulo .updated_at, which is excluded
+    # by design and dropped here), so there is nothing to write.
     cat "$app" >> "$ev" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
     sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
   else
@@ -2336,6 +2351,23 @@ cmd_enroll() {
   _is_uuid "$uuid" \
     || die 2 "enroll: uuid shape invalid: '$uuid'"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # THE DUPLICATE GUARD KEYS ON THE ROSTER (`.workers[]`), NOT ON THE EVENT LOG —
+  # deliberately, and it is what makes the #193 orphans repairable. The roster is
+  # the AUTHORITATIVE state (cmd_worker, `roster`, and oc-verify-order's sign gate
+  # all resolve through it); events.jsonl is HISTORY. A guard that keyed on a
+  # `roster-enroll` EVENT would refuse exactly the uuids that need repairing: four
+  # live uuids (359fe71b, 53322531, 776a1fe5, e14ea3a3) carry a roster-enroll row
+  # and NO roster row, because the pre-#193 fast path appended the event and
+  # discarded the row. Under a roster-keyed guard a plain `enroll <uuid> <role>`
+  # creates the missing row and the uuid becomes resolvable again; under an
+  # event-keyed guard it would die "already enrolled" while still unresolvable,
+  # which is the worse of the two failures — a guard that protects a record that
+  # does not exist. Verified after the #193 predicate fix: all four take the row
+  # and `worker --uuid <u> --json` returns rc 0 with a non-empty .role.
+  # The cost of the choice, stated: a uuid that was retired and then re-enrolled
+  # keeps both roster-enroll events (history is append-only) and gets a fresh row,
+  # which is the intended reading — retire removes a row, never a uuid's right to
+  # be enrolled again.
   jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
     && die 2 "enroll: uuid already enrolled: $uuid"
   # TOPIC EXISTENCE GUARD (fork #503, Toolsmith 2026-09-22). --topic used to be
@@ -5550,6 +5582,140 @@ M149EOF
   OC_LEDGER="$R177/noview/events.jsonl" bash "$ME" stamp note "no-view stamp" --by hq --allow-unattributed --allow-no-ref >/dev/null
   chk "r177-stamp-jsonl-no-view-file" 1 "$([ ! -e "$R177/noview/workers-ledger.json" ] && echo 1 || echo 0)"
   chk "r177-stamp-jsonl-appended" 2 "$(wc -l < "$R177/noview/events.jsonl" | tr -d ' ')"
+
+  # ---- #193: the TRUE-APPEND fast path must not discard NON-EVENT state ------
+  # atomic_jq's predicate once tested ONLY the .events delta, so any verb that
+  # appended exactly one event AND ALSO mutated non-event state took the append
+  # branch and silently dropped the mutation: enroll lost its roster row,
+  # promote its role/feature, ack its last_acked, confirm its .confirmed, sync
+  # its three version fields — and retire printed "row removed, signing revoked"
+  # while the uuid kept its .role and went on signing (the sign gate keys on
+  # roster presence). These arms pin every one of those on the REAL JSONL write
+  # path, plus three controls that must keep working: a stamp still takes the
+  # fast path (workers.json byte-identical, #177 — a fix that sent every write
+  # down the full-rewrite path would fail this), and the two ZERO-event paths
+  # (ack dup, sync re-sync) still reach the full rewrite and repair their fields.
+  local J193="$T/j193" J193S="$T/j193-sync"
+  local JU1="11111111-1111-4111-8111-111111111111"
+  local JU2="22222222-2222-4222-8222-222222222222"
+  local JU3="33333333-3333-4333-8333-333333333333"
+  local _j193_saved_ledger="$OC_LEDGER" _wsha_b _wsha_a _ev_b _ev_a
+  _j193_sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
+  mkdir -p "$J193/state" "$J193/skill/tools/tests"
+  printf '%s\n' \
+    '{"n":1,"t":"2026-01-01T00:00:00Z","by":"hq","kind":"note","what":"seed"}' \
+    '{"n":2,"t":"2026-01-01T00:00:01Z","by":"11111111-1111-4111-8111-111111111111","kind":"claim","what":"CLAIM #999 — fixture claim"}' \
+    > "$J193/state/events.jsonl"
+  printf '%s' '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[{"uuid":"11111111-1111-4111-8111-111111111111","role":"editor","topic_id":1,"feature":"f-old","confirmed":false,"last_acked":{"version":"0.4.0","at":"2026-01-01T00:00:00Z"},"notes":[],"events":[]},{"uuid":"22222222-2222-4222-8222-222222222222","role":"editor","topic_id":2,"feature":"f-two","confirmed":false,"last_acked":null,"notes":[],"events":[]}]}' \
+    > "$J193/state/workers.json"
+  # (1) STAMP keeps the fast path: +1 event line, workers.json BYTE-IDENTICAL.
+  # The sha comparison is the throughput half of the contract — a stamp that
+  # took the full rewrite would land its bumped .updated_at in workers.json and
+  # change this hash (#149/#177: one ~200-byte line, never a fresh 2.8MB blob).
+  _wsha_b="$(_j193_sha "$J193/state/workers.json")"
+  _ev_b="$(wc -l < "$J193/state/events.jsonl" | tr -d ' ')"
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" stamp note "j193 fast-path probe" >/dev/null 2>&1
+  chk "j193-stamp-rc" 0 $?
+  _wsha_a="$(_j193_sha "$J193/state/workers.json")"
+  _ev_a="$(wc -l < "$J193/state/events.jsonl" | tr -d ' ')"
+  chk "j193-stamp-fast-path-events-plus-one" "$((_ev_b + 1))" "$_ev_a"
+  chk "j193-stamp-fast-path-workers-byte-identical" "$_wsha_b" "$_wsha_a"
+  # (2) ENROLL persists — the issue's own repro: one event + one .workers row.
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" enroll "$JU3" auditor --feature f-193 >/dev/null 2>&1
+  chk "j193-enroll-rc" 0 $?
+  chk "j193-enroll-row-persists" 1 \
+    "$(jq --arg u "$JU3" '[.workers[]?|select(.uuid==$u)]|length' "$J193/state/workers.json")"
+  chk "j193-enroll-worker-resolvable" 0 \
+    "$(OC_LEDGER="$J193/state/events.jsonl" bash "$ME" worker --uuid "$JU3" --json >/dev/null 2>&1; echo $?)"
+  chk "j193-enroll-role-nonempty" "auditor" \
+    "$(OC_LEDGER="$J193/state/events.jsonl" bash "$ME" worker --uuid "$JU3" --json 2>/dev/null | jq -r '.role // ""')"
+  # (2b) THE ISSUE'S SECOND HALF: an ORPHAN uuid — a roster-enroll EVENT and NO
+  # roster row, which is exactly the shape the pre-#193 fast path produced — must
+  # be repairable by a plain `enroll <uuid> <role>`. enroll's dup guard keys on
+  # `.workers[]` (the roster), not on events, so the orphan is admitted; a guard
+  # keyed on the event log would refuse it and the uuid would stay unresolvable
+  # forever (a guard protecting a record that does not exist). The event seeded
+  # below is the orphan's only surviving trace, as in the four live cases.
+  local JO="44444444-4444-4444-8444-444444444444"
+  printf '%s\n' "{\"n\":3,\"t\":\"2026-01-01T00:00:02Z\",\"by\":\"oc-ledger enroll\",\"kind\":\"roster-enroll\",\"what\":\"enrolled editor $JO\"}" \
+    >> "$J193/state/events.jsonl"
+  chk "j193-orphan-row-absent-before" 0 \
+    "$(jq --arg u "$JO" '[.workers[]?|select(.uuid==$u)]|length' "$J193/state/workers.json")"
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" enroll "$JO" editor --feature f-orphan >/dev/null 2>&1
+  chk "j193-orphan-enroll-admitted-rc" 0 $?
+  chk "j193-orphan-row-created" 1 \
+    "$(jq --arg u "$JO" '[.workers[]?|select(.uuid==$u)]|length' "$J193/state/workers.json")"
+  chk "j193-orphan-now-resolvable" 0 \
+    "$(OC_LEDGER="$J193/state/events.jsonl" bash "$ME" worker --uuid "$JO" --json >/dev/null 2>&1; echo $?)"
+  # ...and the guard still REFUSES a second enroll of the row that now exists.
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" enroll "$JO" editor >/dev/null 2>&1
+  chk "j193-orphan-second-enroll-refused" 2 $?
+  # (3) PROMOTE persists — role and feature actually change on disk.
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" promote "$JU1" reviewer --feature f-new >/dev/null 2>&1
+  chk "j193-promote-rc" 0 $?
+  chk "j193-promote-role-persists" "reviewer" \
+    "$(jq -r --arg u "$JU1" '.workers[]|select(.uuid==$u)|.role' "$J193/state/workers.json")"
+  chk "j193-promote-feature-persists" "f-new" \
+    "$(jq -r --arg u "$JU1" '.workers[]|select(.uuid==$u)|.feature' "$J193/state/workers.json")"
+  # (4) RETIRE persists — the row is GONE. Under the old predicate this verb
+  # printed "row removed, signing revoked" and left the uuid resolving a .role,
+  # so the "revoked" uuid kept signing; the row count is the honest assertion.
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" retire "$JU2" --why "j193 arm" >/dev/null 2>&1
+  chk "j193-retire-rc" 0 $?
+  chk "j193-retire-row-removed" 0 \
+    "$(jq --arg u "$JU2" '[.workers[]?|select(.uuid==$u)]|length' "$J193/state/workers.json")"
+  # (5) ACK persists last_acked on the append path...
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" ack "$JU1" 0.4.1 >/dev/null 2>&1
+  chk "j193-ack-rc" 0 $?
+  chk "j193-ack-last-acked-persists" "0.4.1" \
+    "$(jq -r --arg u "$JU1" '.workers[]|select(.uuid==$u)|.last_acked.version' "$J193/state/workers.json")"
+  # ...and the CONTROL: a duplicate ack appends NO event, so the predicate must
+  # still fall through to the full rewrite and refresh the field.
+  _ev_b="$(wc -l < "$J193/state/events.jsonl" | tr -d ' ')"
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" ack "$JU1" 0.4.1 --at 2026-02-02T00:00:00Z >/dev/null 2>&1
+  chk "j193-ack-dup-rc" 0 $?
+  _ev_a="$(wc -l < "$J193/state/events.jsonl" | tr -d ' ')"
+  chk "j193-ack-dup-appends-no-event" "$_ev_b" "$_ev_a"
+  chk "j193-ack-dup-refreshes-last-acked" "2026-02-02T00:00:00Z" \
+    "$(jq -r --arg u "$JU1" '.workers[]|select(.uuid==$u)|.last_acked.at' "$J193/state/workers.json")"
+  # (6) CONFIRM persists .confirmed AND the worker-scoped event.
+  printf '#!/bin/sh\nexit 0\n' > "$J193/gh-ok.sh"; chmod +x "$J193/gh-ok.sh"
+  OC_LEDGER="$J193/state/events.jsonl" bash "$ME" confirm "$JU1" --gh "$J193/gh-ok.sh" >/dev/null 2>&1
+  chk "j193-confirm-rc" 0 $?
+  chk "j193-confirm-flag-persists" "true" \
+    "$(jq -r --arg u "$JU1" '.workers[]|select(.uuid==$u)|.confirmed' "$J193/state/workers.json")"
+  chk "j193-confirm-worker-event-persists" "confirm" \
+    "$(jq -r --arg u "$JU1" '[.workers[]|select(.uuid==$u)|(.events//[])[]][-1].kind' "$J193/state/workers.json")"
+  # (7) SYNC persists its three version fields. check-version reads the FIELDS,
+  # not the event, so a first sync that appended its row and dropped the fields
+  # left the record contradicting its own audit trail (measured live: state
+  # commit 853c2a8d3 touched only events.jsonl and the fields stayed at the old
+  # version until the re-sync in 13bbddb43 repaired them).
+  mkdir -p "$J193S/state" "$J193S/skill/tools/tests" "$J193S/shd"
+  printf '%s\n' '{"n":1,"t":"2026-01-01T00:00:00Z","by":"hq","kind":"note","what":"seed"}' > "$J193S/state/events.jsonl"
+  printf '%s' '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[]}' > "$J193S/state/workers.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$J193S/skill/SKILL.md"
+  printf '# fixture changelog\n\n## v0.4.2\nfixture receipt\n' > "$J193S/skill/CHANGELOG.md"
+  printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$J193S/skill/tools/tests/battery-last.json"
+  OC_LEDGER="$J193S/state/events.jsonl" OC_SKILL_DIR="$J193S/skill" OC_DEPLOY_STATE_DIR="$J193S/shd" \
+    bash "$ME" sync --version 0.4.2 --why "j193 arm" >/dev/null 2>&1
+  chk "j193-sync-rc" 0 $?
+  chk "j193-sync-version-fields-persist" "0.4.2 0.4.2 0.4.2" \
+    "$(jq -r '[.current_skill_version, .meta.current_skill_version, .meta.skill_version]|join(" ")' "$J193S/state/workers.json")"
+  chk "j193-sync-event-appended" "skill-bump" \
+    "$(tail -1 "$J193S/state/events.jsonl" | jq -r '.kind // ""')"
+  # CONTROL: the re-sync path appends NO event; it must still repair the fields.
+  jq '.current_skill_version="0.4.0"|.meta.current_skill_version="0.4.0"' "$J193S/state/workers.json" > "$J193S/w.json" \
+    && mv "$J193S/w.json" "$J193S/state/workers.json"
+  _ev_b="$(wc -l < "$J193S/state/events.jsonl" | tr -d ' ')"
+  OC_LEDGER="$J193S/state/events.jsonl" OC_SKILL_DIR="$J193S/skill" OC_DEPLOY_STATE_DIR="$J193S/shd" \
+    bash "$ME" sync --version 0.4.2 --why "j193 resync" >/dev/null 2>&1
+  chk "j193-resync-rc" 0 $?
+  _ev_a="$(wc -l < "$J193S/state/events.jsonl" | tr -d ' ')"
+  chk "j193-resync-appends-no-event" "$_ev_b" "$_ev_a"
+  chk "j193-resync-repairs-fields" "0.4.2 0.4.2 0.4.2" \
+    "$(jq -r '[.current_skill_version, .meta.current_skill_version, .meta.skill_version]|join(" ")' "$J193S/state/workers.json")"
+  OC_LEDGER="$_j193_saved_ledger"
 
   echo "oc-ledger selftest: PASS=$P FAIL=$F"
   [ "$F" -eq 0 ]
