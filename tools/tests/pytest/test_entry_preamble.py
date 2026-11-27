@@ -46,14 +46,16 @@ THE BOUND, AND WHY IT IS NOT A CPU LIMIT
     here FIRST, then rejected on measurement. This defect's spin is a FORK LOOP:
     each iteration forks a ``dirname``, so the CPU is spread across thousands of
     short-lived children each inside any sane limit while the parent accrues its
-    own slowly. ``ulimit -t 5`` needed **93 s of wall** to fire.
+    own slowly. ``ulimit -t 5`` needed **47-65 s of wall** to fire (three runs,
+    load 7.3; the parent burns its 5 s budget while the forked ``dirname``s
+    burn the rest).
 
     So the bound is wall time with headroom sized from MEASURED healthy cost:
-    the fleet samples burn 0.015-0.125 s CPU and return in 0.05-0.3 s, making a
-    20 s bound 60-400x headroom. A sample that hits it is INCONCLUSIVE, never
-    accused of hanging. What licenses the verdict is the CONTROL, below: the
-    broken fixture never returns at all, so the instrument is proven able to see
-    the class it is aimed at rather than assumed to be.
+    the fleet samples burn 0.10-0.41 s CPU and return in 0.17-0.66 s wall (load
+    7.3), making a 20 s bound 30-120x headroom. A sample that hits it is
+    INCONCLUSIVE, never accused of hanging. What licenses the verdict is the
+    CONTROL, below: the broken fixture never returns at all, so the instrument
+    is proven able to see the class it is aimed at rather than assumed to be.
 """
 
 from __future__ import annotations
@@ -93,17 +95,17 @@ SAMPLE_COUNT = 9
 # Measured on this box: the broken fixture is not a tight loop in one process —
 # every iteration forks a `dirname`. So the spin's CPU is spread across thousands
 # of short-lived children, each far inside any sane limit, while the parent
-# accumulates its own CPU slowly: with `ulimit -t 5` the parent took **93 s of
-# wall** to burn its 5 s budget. That is slower than the wall bound it was meant
-# to replace, and it made the leg slower than the 60 s `slow` threshold on its
-# own.
+# accumulates its own CPU slowly: with `ulimit -t 5` the parent took **47-65 s of
+# wall** to burn its 5 s budget (three runs, load 7.3). That is slower than the
+# wall bound it was meant to replace, and it made the leg slower than the 60 s
+# `slow` threshold on its own.
 #
 # So the bound is wall time, with headroom sized from MEASURED healthy cost:
-# the fleet samples burn 0.015-0.125 s CPU and return in ~0.05-0.3 s wall. A 20 s
-# bound is therefore 60-400x headroom, and a sample that hits it is reported
-# INCONCLUSIVE rather than accused of hanging (#83). The negative control proves
-# the instrument can see a real hang, because the broken fixture never returns at
-# all.
+# the fleet samples burn 0.10-0.41 s CPU and return in ~0.17-0.66 s wall (load
+# 7.3). A 20 s bound is therefore 30-120x headroom, and a sample that hits it is
+# reported INCONCLUSIVE rather than accused of hanging (#83). The negative
+# control proves the instrument can see a real hang, because the broken fixture
+# never returns at all.
 WALL_BOUND_S = 20
 
 # The control's bound. The fixed half returns in ~0.05 s, so 10 s is ~200x
@@ -155,6 +157,37 @@ def test_the_sample_is_complete():
         % (len(SAMPLES), SAMPLE_COUNT))
     missing = [rel for rel, _ in SAMPLES if not (cf.TOOLS_DIR / rel).is_file()]
     assert not missing, "relative-invocation sample missing: %s" % ", ".join(missing)
+
+def test_the_harness_delivers_a_relative_dollar0(tmp_path, run_tool):
+    """CANARY: the drive below is only §84's drive if ``$0`` arrives RELATIVE.
+
+    The whole section rests on one premise — that ``cwd=<tool dir>`` plus argv
+    ``./name`` reaches the tool as ``$0='./name'``, so ``dirname "$0"`` is ``.``
+    and the fixpoint is reproducible. Every other leg in this module *assumes*
+    that premise. This one measures it.
+
+    It is here because the premise has already been lost once, silently: a
+    wrapper of the form ``bash -c 'ulimit -t N; exec "$@"' _ ./tool`` REBUILDS
+    ``$0`` as an ABSOLUTE path, so the broken fixture walked up to ``/`` and
+    printed ``reached`` — and the dynamic arm, still green, was then testing
+    absolute invocation, i.e. the exact class it exists to rule out. Nothing
+    failed; only the instrument had quietly turned into a different instrument.
+
+    So: a fixture that PRINTS ``$0`` and exits. If a future harness change
+    absolutizes argv, this leg reds with the reason instead of the control
+    above reding with a mystery.
+    """
+    probe = _fixture(tmp_path, "probe", '#!/usr/bin/env bash\nprintf "%s" "$0"\n')
+    res = run_tool(["./" + probe.name], timeout=CONTROL_BOUND_S, cwd=tmp_path)
+
+    assert res.rc == 0, (
+        "the $0 probe did not run (rc=%s): %s" % (res.rc, res.combined[-300:]))
+    assert res.out.startswith("./"), (
+        "argv[0] reached the tool as %r, not './%s' — the harness ABSOLUTIZED it, "
+        "so `dirname \"$0\"` is a real directory rather than '.', the fixpoint "
+        "cannot be reproduced, and the dynamic arm below silently stops testing "
+        "the relative-invocation class it exists for (#708)"
+        % (res.out, probe.name))
 
 
 # =============================================================================
