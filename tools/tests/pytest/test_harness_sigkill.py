@@ -78,6 +78,30 @@ esac
 
 KILL_SECONDS = 10
 
+def derive_control(src: str) -> str:
+    """The DERIVED control: invert the line-buffering mechanism at its ONE site.
+
+    A module-level function so the derivation's own invariant is testable BY
+    NAME (``test_the_control_derivation_inverts_exactly_one_site``). While it
+    lived inline in ``DispatchStub.__init__`` a tool edit that moved or removed
+    the ``line_buffering=True`` site surfaced as "3 errors" from fixture setup,
+    with the reason buried in a traceback — the assertion was real but it had no
+    name to fail under.
+
+    Raises ``AssertionError`` rather than returning a sentinel: a control that
+    cannot be derived means the discriminator is unsound, and a leg that skipped
+    instead of failing would report the pair as green.
+    """
+    mutated = src.replace("line_buffering=True", "line_buffering=False")
+    assert mutated != src, (
+        "the control derivation found no line_buffering=True site — the "
+        "#451 discriminator cannot be built against this tool version")
+    assert mutated.count("line_buffering=False") == 1, (
+        "the control derivation inverted %d line_buffering sites, expected 1 "
+        "— the discriminator is unsound"
+        % mutated.count("line_buffering=False"))
+    return mutated
+
 
 class DispatchStub:
     """A hermetic copy of the tool tree, its stubs, and the two dispatch cells."""
@@ -118,22 +142,23 @@ class DispatchStub:
             '{"workers":[],"events":[]}\n', encoding="utf-8")
 
         # THE DERIVED CONTROL: invert the line-buffering mechanism at its one
-        # site. Asserted to hit exactly once, or the discriminator is unsound.
+        # site. The invariant is asserted inside derive_control, which also has
+        # its own named leg — see test_the_control_derivation_inverts_exactly_one_site.
         src = (tools / "issue" / "oc-issue-dispatch").read_text(encoding="utf-8")
-        mutated = src.replace("line_buffering=True", "line_buffering=False")
-        assert mutated != src, (
-            "the control derivation found no line_buffering=True site — the "
-            "#451 discriminator cannot be built against this tool version")
-        assert mutated.count("line_buffering=False") == 1, (
-            "the control derivation inverted %d line_buffering sites, expected 1 "
-            "— the discriminator is unsound"
-            % mutated.count("line_buffering=False"))
+        mutated = derive_control(src)
         self.nolb = self.tools / "oc-issue-dispatch-nolb"
         self.nolb.write_text(mutated, encoding="utf-8")
         self.nolb.chmod(0o755)
 
-    def dispatch(self, script: Path, label: str) -> tuple[int, int, int]:
-        """Run one cell; return ``(rc, stdout_bytes, budget_announcements)``.
+    def dispatch(self, script: Path, label: str) -> tuple[int, int, int, bool]:
+        """Run one cell; return ``(rc, stdout_bytes, budget_announcements, reached_send)``.
+
+        ``reached_send`` is RETURNED, not just used to decide the kill, because it
+        is the precondition the two cells rest on: "killed mid-send" must be an
+        OBSERVATION the leg asserts, never an inference from ``rc == 137``. Both
+        the sentinel kill and the 120 s backstop produce 137, so rc alone cannot
+        tell "the kill landed inside the send" from "the cell hung and was
+        backstopped" — the second is a broken fixture, not a #451 observation.
 
         The cell is killed by a SENTINEL: the notify stub touches
         ``$OC_D451_SENTINEL`` as its first act, and this method kills the process
@@ -208,7 +233,8 @@ class DispatchStub:
         if rc < 0:
             rc = 128 - rc
         return (rc, len(data),
-                len(re.findall(rb"notify budget", data)))
+                len(re.findall(rb"notify budget", data)),
+                reached_send)
 
     def close(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
@@ -229,8 +255,12 @@ def test_the_dispatch_narrative_survives_a_sigkill_mid_send(dispatch):
     rc 137 is the precondition, not a nice-to-have: if the kill did not land
     mid-send the leg is not testing SIGKILL survival at all.
     """
-    rc, nbytes, announcements = dispatch.dispatch(
+    rc, nbytes, announcements, reached_send = dispatch.dispatch(
         dispatch.tools / "issue" / "oc-issue-dispatch", "postfix")
+    assert reached_send, (
+        "post-fix: the notify stub never dropped its sentinel, so the kill came "
+        "from the backstop rather than from INSIDE the send — the cell is not a "
+        "#451 observation, it is a hung fixture")
     assert rc == 137, (
         "post-fix: rc=%d, want 137 — the kill did not land mid-send, so this "
         "leg tests nothing (#451 precondition)" % rc)
@@ -245,7 +275,12 @@ def test_without_line_buffering_the_same_run_leaves_nothing(dispatch):
     post-fix assertion could be green because the tool is chatty rather than
     because the narrative is durable.
     """
-    rc, nbytes, announcements = dispatch.dispatch(dispatch.nolb, "prefix")
+    rc, nbytes, announcements, reached_send = dispatch.dispatch(
+        dispatch.nolb, "prefix")
+    assert reached_send, (
+        "control: the notify stub never dropped its sentinel, so this cell was "
+        "backstopped rather than killed mid-send — it is not comparable to the "
+        "post-fix cell")
     assert rc == 137, (
         "control: rc=%d, want 137 — the cells are not comparable (the kill did "
         "not land mid-send in the mutant either)" % rc)
@@ -261,11 +296,47 @@ def test_the_two_cells_are_actually_different_runs(dispatch):
     discriminator was dead (e.g. both cells accidentally ran the same script).
     This is the assertion that the PAIR discriminates.
     """
-    rc_a, bytes_a, _ = dispatch.dispatch(
+    rc_a, bytes_a, _, send_a = dispatch.dispatch(
         dispatch.tools / "issue" / "oc-issue-dispatch", "pair-fix")
-    rc_b, bytes_b, _ = dispatch.dispatch(dispatch.nolb, "pair-ctl")
+    rc_b, bytes_b, _, send_b = dispatch.dispatch(dispatch.nolb, "pair-ctl")
+    assert send_a and send_b, (
+        "the pair was not killed inside the send on both sides (reached=%s/%s) "
+        "— the comparison is between two backstopped runs" % (send_a, send_b))
     assert (rc_a, rc_b) == (137, 137), (
         "the pair did not both die mid-send (rc=%d/%d)" % (rc_a, rc_b))
     assert bytes_a > 0 and bytes_b == 0, (
         "the pair does not discriminate: post-fix left %dB, control left %dB"
         % (bytes_a, bytes_b))
+
+# =============================================================================
+# the derivation invariant, BY NAME
+# =============================================================================
+def test_the_control_derivation_inverts_exactly_one_site():
+    """run.sh §61's FIRST assertion: the control is derivable, and sound.
+
+    ``run.sh`` asserts ``grep -c 'line_buffering=False' == 1`` on the derived
+    file and calls a miss "the discriminator is unsound". That assertion used to
+    live only inside ``DispatchStub.__init__``, where a tool edit that moved or
+    removed the site surfaced as three setup ERRORs and the reason had to be dug
+    out of a traceback.
+
+    Named here so the fault reports as itself. ``derive_control`` is the SAME
+    function the fixture uses, so this leg cannot drift from the construction it
+    describes — it is a direct probe of the shipped tool, not a re-implementation.
+    """
+    src = (H.TOOLS_DIR / "issue" / "oc-issue-dispatch").read_text(encoding="utf-8")
+    # Precondition stated separately so a rename reports as a rename, not as an
+    # "unsound discriminator" — the two faults want different fixes.
+    assert src.count("line_buffering=True") == 1, (
+        "the shipped tool carries %d line_buffering=True sites, expected exactly "
+        "1 — #451's durability mechanism moved or was duplicated, so the derived "
+        "control no longer isolates it" % src.count("line_buffering=True"))
+    mutated = derive_control(src)
+    assert mutated.count("line_buffering=False") == 1, (
+        "the derivation inverted %d sites, expected 1"
+        % mutated.count("line_buffering=False"))
+    # The mutation must be the ONLY difference: a control that also changed
+    # something else would not be a single-variable discriminator.
+    assert mutated.replace("line_buffering=False", "line_buffering=True") == src, (
+        "the derived control differs from the shipped tool in more than the "
+        "line_buffering site — it is not a single-variable mutant")
