@@ -31,6 +31,23 @@ WHAT THIS MODULE PROTECTS
       appear on a plain sweep — an unconditional sentence is noise on every
       commit, which is how a disclosure stops being read.
 
+    * (#508/#80) THE AUTO-COMMIT TAIL COVERS THE TRACKED NAMESPACE, NOT THE
+      LEDGER ALONE. Before #508 ``git_state_commit`` staged
+      ``workers-ledger.json`` ONLY, while the whitelist sat inside
+      ``commit-pending --bundle`` — a verb NO cron invokes — so ``tools.log`` sat
+      modified-uncommitted in the live state dir for days. Then #177 removed the
+      per-stamp sweep again, so a stamp must now leave tracked files DIRTY and
+      only an explicit ``--bundle`` sweeps them. Both halves are asserted, and
+      ``baseline.json`` is the POSITIVE CONTROL throughout: it is still in
+      ``STATE_TRACKED_PATHS``, so a green result cannot be vacuous.
+    * (#80) ``tools.log`` is NOT swept any more — the real state repo untracked
+      and ``.gitignore``d it, so the mechanism must not claim it. The fixture
+      carries the same ``.gitignore`` and the leg asserts the NEW contract
+      (ignored, never staged, and STILL ON DISK — rotation, never deletion).
+    * (32c) A configured origin receives the skill branch. The bare fixture
+      remote stands in for GitHub, per the offline-selftest rule; the leg
+      asserts the remote RECEIVED a commit, not merely that the tool said so.
+
 DELIBERATELY NOT PORTED
     * ``commit-pending-clean`` (the first leg) is folded into the help test's
       negative half and into ``test_a_dirty_ledger_is_committed``'s pre-state:
@@ -244,19 +261,21 @@ def test_the_bundle_sweeps_each_runtime_artifact_class_and_leaves_it_clean(pendi
     """
     sb = pending.sandbox
     probes = [
-        # (relative path, body, needle, clean-path, name)
+        # (relative path, body, needle, clean-path, sweep-name, left-dirty-name)
         ("baseline.json", '{"sha":"fixture"}', "baseline.json", "baseline.json",
-         "commit-pending-baseline-sweep"),
+         "commit-pending-baseline-sweep", "commit-pending-baseline-left-dirty"),
         ("journal/sweep-probe.json", '{"probe":true}', "journal",
-         "journal", "commit-pending-journal-sweep"),
+         "journal", "commit-pending-journal-sweep", None),
         ("341-harvest-state.md", "# probe", "lane state records committed",
-         "341-harvest-state.md", "commit-pending-harvest-state-sweep"),
+         "341-harvest-state.md", "commit-pending-harvest-state-sweep",
+         "commit-pending-harvest-state-left-dirty"),
         ("444-ship-state.md", "# probe", "lane state records committed",
-         "444-ship-state.md", "commit-pending-ship-state-sweep"),
+         "444-ship-state.md", "commit-pending-ship-state-sweep",
+         "commit-pending-ship-state-left-dirty"),
         ("reviews/2026probe/p.md", "probe", "reviews", "reviews",
-         "commit-pending-reviews-sweep"),
+         "commit-pending-reviews-sweep", "commit-pending-reviews-left-dirty"),
     ]
-    for rel, body, needle, clean_path, name in probes:
+    for rel, body, needle, clean_path, name, dirty_name in probes:
         target = sb.state / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(body, encoding="utf-8")
@@ -265,9 +284,12 @@ def test_the_bundle_sweeps_each_runtime_artifact_class_and_leaves_it_clean(pendi
         assert needle in res.combined, (
             "[%s] the sweep did not report %r for %s:\n%s"
             % (name, needle, rel, res.combined[-1200:]))
+        # The shell splits each sweep into two chk names: the sweep reports the
+        # file, and the file is clean afterwards. Printing a name is not carrying
+        # the file, so the second leg is the one with teeth.
         assert not L.porcelain(sb.state, clean_path).strip(), (
-            "[%s] %s is still dirty — the sweep named it and did not carry it"
-            % (name.replace("-sweep", "-left-dirty"), clean_path))
+            "[%s] [%s] %s is still dirty — the sweep named it and did not carry "
+            "it" % (dirty_name or name, name, clean_path))
 
 
 def test_the_skill_runtime_artifacts_are_swept(pending):
@@ -331,3 +353,110 @@ def test_the_append_only_disclosure_is_conditional(pending):
         "[commit-pending-disclosure-unconditional] the disclosure sentence "
         "rode a commit that staged no shared log — an unconditional sentence "
         "is noise on every commit: %r" % (L.log_subject(sb.state, 1),))
+
+
+# =============================================================================
+# 32c — the mirror push, and #508/#80 — the tracked-namespace tail
+# =============================================================================
+def test_a_configured_origin_receives_the_skill_branch(pending, run_tool):
+    """``commit-pending-mirror-push`` + ``commit-pending-mirror-received``.
+
+    v0.4.50: a configured origin receives the skill branch. The second leg is
+    the one that matters — "the tool said it pushed" is a claim, and a bare
+    fixture remote's own HEAD is the receipt. Without it, a push that no-ops on
+    a missing ref would read as success forever.
+
+    The bare remote stands in for GitHub: the offline-selftest rule forbids
+    reaching the network from the battery.
+    """
+    sb = pending.sandbox
+    mirror = sb.path / "mirror.git"
+
+    res = run_tool(["git", "init", "-q", "--bare", str(mirror)], timeout=60)
+    assert res.rc == 0, "fixture: bare remote init failed\n%s" % res.combined[-600:]
+
+    res = run_tool(["git", "-C", str(sb.skill), "remote", "add", "origin",
+                    str(mirror)], timeout=60)
+    assert res.rc == 0, "fixture: remote add failed\n%s" % res.combined[-600:]
+
+    receipt = sb.skill / "tools" / "tests" / "battery-last.json"
+    receipt.write_text('{"verdict":"PASS","fail":0,"mirror":"probe"}',
+                       encoding="utf-8")
+
+    res = pending("--bundle")
+    assert "mirror: skill pushed" in res.combined, (
+        "[commit-pending-mirror-push] the tool did not report pushing to the "
+        "configured origin:\n%s" % (res.combined[-1500:],))
+
+    res = run_tool(["git", "-C", str(mirror), "rev-parse", "--verify", "HEAD"],
+                   timeout=60)
+    assert res.rc == 0, (
+        "[commit-pending-mirror-received] the bare remote has no HEAD — the "
+        "tool reported a push and the remote received nothing:\n%s"
+        % (res.combined[-900:]))
+
+
+def test_a_stamp_leaves_tracked_files_dirty_and_only_bundle_sweeps_them(
+        pending, run_tool):
+    """``auto-commit-probe-still-dirty`` + ``auto-commit-control-not-dirty`` +
+    ``auto-commit-tail-still-sweeps`` + ``commit-pending-bundle-inert``.
+
+    #508 made the auto-commit tail cover the TRACKED namespace instead of the
+    ledger alone; #177 then took the per-stamp sweep OUT again, so a stamp must
+    leave tracked files dirty and only an explicit ``--bundle`` carries them.
+    Both halves are asserted because either alone is satisfiable by the other
+    defect: a tail that never sweeps passes the first, a tail that sweeps on
+    every stamp passes the second.
+
+    ``baseline.json`` is the POSITIVE CONTROL. It is still in
+    ``STATE_TRACKED_PATHS``, so if the sweep stopped running entirely the
+    ``bundle-inert`` leg reddens — a green result here cannot be vacuous.
+    """
+    sb = pending.sandbox
+
+    # The fixture carries the REAL repo's .gitignore: tools.log is ignored there
+    # since #80, and a fixture that tracked it would assert a contract the live
+    # tree no longer has.
+    (sb.state / ".gitignore").write_text("tools.log\ntools.log.*\n",
+                                         encoding="utf-8")
+    res = run_tool(["git", "-C", str(sb.state), "add", ".gitignore"], timeout=60)
+    assert res.rc == 0, "fixture: git add .gitignore failed\n%s" % res.combined[-600:]
+    res = run_tool(["git", "-C", str(sb.state), "-c", "user.email=t@t",
+                    "-c", "user.name=t", "commit", "-q", "-m",
+                    "probe: gitignore tools.log (#80)"], timeout=60)
+    assert res.rc == 0, "fixture: gitignore commit failed\n%s" % res.combined[-600:]
+
+    with (sb.state / "tools.log").open("a", encoding="utf-8") as fh:
+        fh.write("probe\n")
+    assert not L.porcelain(sb.state, "tools.log").strip(), (
+        "[auto-commit-probe-still-dirty] tools.log is NOT ignored in the "
+        "fixture, so the vacuity guard would pass for the wrong reason (#80)")
+
+    (sb.state / "baseline.json").write_text('{"probe":"#80 control"}\n',
+                                            encoding="utf-8")
+    assert L.porcelain(sb.state, "baseline.json").strip(), (
+        "[auto-commit-control-not-dirty] the control was not dirty to begin "
+        "with, so a green sweep result below would prove nothing")
+
+    stamp = run_tool([str(TOOL), "stamp", "note", "#508/#80 auto-commit probe"],
+                     timeout=180)
+    assert stamp.rc == 0, "fixture: the probe stamp failed\n%s" % stamp.combined[-900:]
+
+    assert L.porcelain(sb.state, "baseline.json").strip(), (
+        "[auto-commit-tail-still-sweeps] the STAMP committed baseline.json — "
+        "#177 removed the per-stamp sweep, so the tail is back")
+
+    pending("--bundle")
+    assert not L.porcelain(sb.state, "baseline.json").strip(), (
+        "[commit-pending-bundle-inert] baseline.json is still dirty after "
+        "--bundle — the sweep stopped running, and it is a listed path, so this "
+        "is not a whitelist question")
+
+    res = run_tool(["git", "-C", str(sb.state), "ls-files", "--error-unmatch",
+                    "tools.log"], timeout=60)
+    assert res.rc != 0, (
+        "[auto-commit-tools-log-tracked] the ignored log was COMMITTED — the "
+        "#80 regression, where the mechanism claims a file the repo untracked")
+    assert "probe" in (sb.state / "tools.log").read_text(encoding="utf-8"), (
+        "[auto-commit-tools-log-lost] the log was DELETED, not rotated — an "
+        "ignored file must survive on disk")
