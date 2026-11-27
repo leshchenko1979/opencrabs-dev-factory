@@ -245,9 +245,34 @@ harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
 | 59–60 | lib/oc-snap.sh mirror age; reap | `test_snap.py` |
 | 63 | lib/oc-root.sh resolver coherence (F-L1/F-L2) — stated as a PROPERTY over depth × invocation shape, not transliterated | `test_oc_root_resolver.py` |
 | 64 | shell-quoting guard — the four scanner arms (backtick in a `-c` body, unquoted heredoc fence, `$` in a `-c` body, `bash -n` over the fleet) plus the live fleet sweep | `test_quoting_guard.py` |
+| 64 | **oc-vendor-drift** (§83 by header — the census charges its nine sites to §64, see below) — IN_SYNC / DRIFTED / LOCAL_MISSING / `UPSTREAM_UNREACHABLE` rc=3, and the selftest's `0 failed` + pass floor | `test_vendor_drift.py` |
+| **62** | **red-receipt transcript (fail log)** — `bad()` writes the row to the transcript **and** stdout, `record()` tees, `finalize_fail_log` both directions, the single-writer ratchets, and the #614 self-contained receipt (the row survives the next run's truncate) | `test_receipt_transcript.py` |
 | 65 | entry-preamble fixpoint + relative invocation (#708) — the 9-sample relative drive (cwd = tool dir, `./name`), the two-sided fixpoint control, and a `$0` canary proving the drive really delivers a RELATIVE argv[0]. The static break-presence census lives in `test_oc_root_resolver.py` (row 63) — one invariant, one owner | `test_entry_preamble.py` |
 | per-tool argv | the `ok`/`bad` usage/rc legs beside each `run_selftest` | `test_usage_rc.py` |
 
+
+### §62 — a deferral that was withdrawn (the second one)
+
+The register said §62 "asserts `run.sh`'s own `bad()` accumulator by running a
+synthetic failing section in a subshell. There is no `run.sh` accumulator inside
+pytest to assert." The second sentence is true and irrelevant: it is a claim
+about WHERE THE FUNCTIONS LIVE, not about whether their behaviour can be driven.
+`bad()`, `record()`, `finalize_fail_log()`, `battery_capture_fail_rows()` and
+`emit_summary()` are TEXT in `tools/tests/run.sh`, so `lib/harness` extracts the
+definitions verbatim and `test_receipt_transcript.py` drives the real ones under
+`set -u`. Nothing is retyped, so the port cannot keep passing after the block it
+describes regresses.
+
+This is the same mistake §33 made, one section over: a limitation of the
+MEASURING INSTRUMENT misread as a property of the subject. Both deferrals are
+gone; §18 is the only one left, and it is retired rather than deferred.
+
+The port is also stronger in one place the shell could not reach: the shell runs
+each transcript leg with its stdout sent to `/dev/null` (so a synthetic failure
+cannot corrupt its own receipt), which means "the `FAIL - ` row reaches STDOUT"
+was never actually asserted there — only the file half was. Here stdout is
+captured, so the two-sink claim is a real assertion, and a `bad()` that wrote
+only to the file reds it.
 
 ### §33 — a deferral that was withdrawn
 
@@ -297,4 +322,3 @@ Each of these is a deliberate decision, with the reason — not an omission.
 | **18** | **oc-consent-check** | **RETIRED 2026-08-28 (owner order 18:50Z).** The consent process was eliminated and the tool archived to `tools/archive/`. The shell section is a `section` header with no body — it asserts nothing, so a port would be an empty test that inflates the pass count. Deleted rather than ported. |
 | 14, 15, 20, 21, 27, 28, 31, 36–42, 54 | — | Each is a `run_selftest` line plus at most one argv leg, and both halves are already covered: the selftest by the parametrized `run_selftest` legs, the argv leg by `test_usage_rc.py`'s `RC_CASES` table. A port would duplicate an existing leg verbatim. |
 | 66–68 | cgroup isolation, battery lock fd, scratch root | Harness infrastructure, not tool behaviour — ported as `test_cgroup.py` and `test_fixtures.py`, which assert the pytest harness's own equivalents. |
-| 62 | red-receipt transcript (fail log) | Asserts `run.sh`'s own `bad()` accumulator by running a synthetic failing section in a subshell. There is no `run.sh` accumulator inside pytest to assert — the equivalent claim is pytest's own exit code, which every module already depends on. |

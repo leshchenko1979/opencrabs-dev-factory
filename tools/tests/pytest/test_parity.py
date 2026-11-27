@@ -42,7 +42,7 @@ reproducible one and its totals are stated with it.
 
 WHY THE REGISTER, NOT A BLANKET FAILURE
 ---------------------------------------
-Eight sections currently assert FEWER things in pytest than in shell. That is a
+Seven sections currently assert FEWER things in pytest than in shell. That is a
 real, honest finding — not a reason to weaken the check and not a reason to make
 the suite red. So the deficits are a **pinned register** (``KNOWN_THIN``) and the
 test asserts the live measurement equals it EXACTLY. The register is a ratchet:
@@ -79,6 +79,15 @@ SHELL_SITES: dict[int, int] = {
     63: 27, 64: 28, 65: 17, 66: 65, 67: 26, 68: 16,
 }
 
+# §64 maps to TWO modules for a reason worth stating, because the number it
+# produces is otherwise unexplainable. The census bounds a section's body by the
+# NEXT ``section "..."`` CALL, and run.sh's oc-vendor-drift block (#700) opens on
+# a bare ``# ---- 83.`` header with NO call of its own — so its nine ok/bad sites
+# are charged to §64, the section that precedes them. They were never
+# quoting-guard sites. Rather than re-bound every section (which would re-break
+# §67 — see the docstring), the nine are paid back by ``test_vendor_drift.py``,
+# which ports that block properly.
+#
 # Which pytest modules carry each section — read from each module's OWN docstring
 # ("Ported: ... run.sh §N"), never from a second hand-written list. A module that
 # renumbers without updating its docstring fails ``test_mapping_agrees_with_module_docstrings``.
@@ -110,8 +119,9 @@ SECTION_MODULES: dict[int, tuple[str, ...]] = {
     57: ("test_notify_lib.py",), 58: ("test_notify_lib.py",),
     59: ("test_snap.py",), 60: ("test_snap.py",),
     61: ("test_harness_sigkill.py",),
+    62: ("test_receipt_transcript.py",),
     63: ("test_oc_root_resolver.py",),
-    64: ("test_quoting_guard.py",),
+    64: ("test_quoting_guard.py", "test_vendor_drift.py"),
     65: ("test_entry_preamble.py", "test_harness_pool_mech.py"),
     66: ("test_cgroup.py", "test_harness_cgroup.py", "test_harness_pool.py",
          "test_harness_serialisation.py"),
@@ -126,10 +136,6 @@ DEFERRED: dict[int, str] = {
         "eliminated and the tool archived. The shell section is a header with no "
         "body: it asserts nothing, so a port would be an empty test inflating the "
         "pass count.",
-    62: "red-receipt transcript (fail log) — asserts run.sh's OWN bad() accumulator "
-        "by running a synthetic failing section in a subshell. There is no run.sh "
-        "accumulator inside pytest to assert; the equivalent claim is pytest's own "
-        "exit code, which every module already depends on.",
 }
 
 # Sections whose pytest mass is currently BELOW their shell site count. Pinned,
@@ -143,7 +149,6 @@ KNOWN_THIN: dict[int, tuple[int, int]] = {
     43: (10, 5),    # rc --help fleet sweep — parametrized, mass undercounts
     52: (6, 5),     # oc-lint-laws — one law-shape leg short
     53: (7, 5),     # oc-fmt — one identity leg short
-    64: (28, 19),   # quoting guard — 3 parametrized arms; AST mass undercounts them
     68: (16, 14),   # scratch root — two legs short
 }
 
@@ -287,9 +292,13 @@ def test_deferred_sections_are_named_with_a_reason():
         assert reason and len(reason) > 40, (
             "§%d is deferred with %r — every deferral needs the reason a reader "
             "would otherwise have to guess" % (sec, reason))
-    # §18 asserts nothing at all (retired header); §62's subject is run.sh's own
-    # bad() accumulator, which has no pytest-side equivalent to assert.
-    assert set(DEFERRED) == {18, 62}, (
+    # §18 asserts nothing at all (a retired header with no body). §62 was the
+    # last other entry: its deferral claimed run.sh's own bad() accumulator had no
+    # pytest-side equivalent, but that was a claim about WHERE THE FUNCTIONS LIVE.
+    # They are text in run.sh, so lib/harness extracts them verbatim and
+    # test_receipt_transcript.py drives the real ones (§33's deferral was
+    # withdrawn for the same reason).
+    assert set(DEFERRED) == {18}, (
         "the deferred set changed to %r — update the README's 'Not ported' table "
         "in the same commit" % (sorted(DEFERRED),))
 
