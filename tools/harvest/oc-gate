@@ -156,13 +156,19 @@ PROG="$(basename "$0")"
 GH_BIN="${OC_GH:-gh}"
 GH_RETRIES="${OC_PRCHECKS_GH_RETRIES:-3}"
 GH_BACKOFF="${OC_PRCHECKS_GH_BACKOFF:-5}"
+# Transport retries are a SEPARATE, shorter budget (factory #206). A quota error
+# means "wait longer"; a dropped packet means "ask again". Sharing one budget
+# would either make a blip retry for 35 s or make a real quota wall give up.
+GH_TRANSPORT_RETRIES="${OC_PRCHECKS_GH_TRANSPORT_RETRIES:-4}"
 # gh_retry (Cycle c14): 403/rate-limit exponential backoff wrapper. Transient
 # GitHub quota errors (rate limit / secondary rate / abuse / 403) sleep with
-# exponential backoff instead of hard-failing the poll loop; any other error
-# passes through immediately with its original rc. Poll loops MUST call this,
-# never $GH_BIN directly.
+# exponential backoff instead of hard-failing the poll loop. TRANSPORT errors
+# (TLS handshake timeout, connection reset, edge 5xx, DNS) retry on their own
+# bounded budget — see the second case arm. Any other error passes through
+# immediately with its original rc. Poll loops MUST call this, never $GH_BIN.
 gh_retry() {
   local attempt=0 delay="$GH_BACKOFF" _rc=0 _out="" _e=""
+  local t_attempt=0 t_delay=2
   local _errf; _errf="$(mktemp)" || return 1
   while :; do
     _out="$("$GH_BIN" "$@" 2>"$_errf")"; _rc=$?
@@ -176,6 +182,21 @@ gh_retry() {
         oc_log_extra "gh_backoff" "$attempt" 2>/dev/null || :
         sleep "$delay" 2>/dev/null || sleep 1
         delay=$((delay*2));;
+      # TRANSPORT / transient-network (factory #206): one dropped connection must
+      # not cost a verdict. Measured 2026-11-27 — the watch loop's `run view` hit
+      # `net/http: TLS handshake timeout`, fell to the catch-all below, returned
+      # immediately, and the loop `exit 4`'d while the run itself went on to
+      # GREEN. Receipts are written at VERDICT time, so nothing survived: the
+      # green verdict was lost to every consumer, not just to that watcher.
+      # Patterns stay NARROW (exact gh/Go transport wording) so a genuine refusal
+      # — a 404, an unknown ref, a bad argument — still fails fast on the arm below.
+      *"TLS handshake timeout"*|*"i/o timeout"*|*"connection reset"*|*"Connection reset"*|*"unexpected EOF"*|*"net/http"*|*"dial tcp"*|*"no such host"*|*"502 Bad Gateway"*|*"503 Service"*|*"504 Gateway"*|*"connection refused"*)
+        t_attempt=$((t_attempt+1))
+        if [ "$t_attempt" -gt "$GH_TRANSPORT_RETRIES" ]; then cat "$_errf" >&2; rm -f "$_errf"; printf '%s' "$_out"; return "$_rc"; fi
+        echo "$PROG: gh transport error (attempt $t_attempt/$GH_TRANSPORT_RETRIES) - retry in ${t_delay}s: $(printf '%s' "$_e" | head -1)" >&2
+        oc_log_extra "gh_transport_retry" "$t_attempt" 2>/dev/null || :
+        sleep "$t_delay" 2>/dev/null || sleep 1
+        t_delay=$((t_delay*2)); [ "$t_delay" -gt 30 ] && t_delay=30;;
       *) cat "$_errf" >&2; rm -f "$_errf"; printf '%s' "$_out"; return "$_rc";;
     esac
   done
@@ -630,6 +651,25 @@ YEOF
         _cf="\$0.count"; _nn="\$(cat "\$_cf" 2>/dev/null || echo 0)"; _nn=\$((_nn+1)); printf '%s' "\$_nn" > "\$_cf";
         if [ "\$_nn" -le 2 ]; then echo "gh: API rate limit exceeded (403 secondary rate limit, abuse detection)" >&2; exit 1; fi;
         printf '{"status":"completed","conclusion":"success","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      transport_blip)
+        # factory #206: the LIVE failure shape, verbatim from oc-gate's own log
+        # (/tmp/oc-gate-detached-334000.log): `failed to get run: Post
+        # "https://api.github.com/…": net/http: TLS handshake timeout`. Transient
+        # transport, NOT a refusal — the run itself went on to GREEN while the
+        # watcher exited 4 and wrote no receipt.
+        _cf="\$0.count"; _nn="\$(cat "\$_cf" 2>/dev/null || echo 0)"; _nn=\$((_nn+1)); printf '%s' "\$_nn" > "\$_cf";
+        if [ "\$_nn" -le 2 ]; then echo 'failed to get run: Post "https://api.github.com/graphql": net/http: TLS handshake timeout' >&2; exit 1; fi;
+        printf '{"status":"completed","conclusion":"success","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
+      transport_dead)
+        # CONTROL: a transport error that NEVER recovers must still fail, and must
+        # fail on the transport budget rather than hanging the watch loop forever.
+        _cf="\$0.tdead"; _nn="\$(cat "\$_cf" 2>/dev/null || echo 0)"; _nn=\$((_nn+1)); printf '%s' "\$_nn" > "\$_cf";
+        echo 'failed to get run: Post "https://api.github.com/graphql": net/http: TLS handshake timeout' >&2; exit 1 ;;
+      refuse_hard)
+        # CONTROL: a genuine REFUSAL (not transport) must still fail FAST on the
+        # first attempt — the narrow-pattern arm must not swallow real errors.
+        _cf="\$0.tref"; _nn="\$(cat "\$_cf" 2>/dev/null || echo 0)"; _nn=\$((_nn+1)); printf '%s' "\$_nn" > "\$_cf";
+        echo 'HTTP 404: Not Found (https://api.github.com/repos/x/y)' >&2; exit 1 ;;
       adopt_mismatch) printf '{"status":"completed","conclusion":"success","headBranch":"main","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
       *)              printf '{"status":"completed","conclusion":"success","headBranch":"ci/quick-build-linux","event":"workflow_dispatch","headSha":"ffffffffffffffffffffffffffffffffffffffff"}\n' ;;
     esac ;;
@@ -985,6 +1025,46 @@ do_selftest() {
   if [ "$T_RC" -eq 0 ] && [ "$_b" -eq 1 ] && [ "$_g" -eq 1 ]; then
     t_ok "gh 403 backoff: 2x transient rate-limit retried -> GREEN"
   else t_bad "gh 403 backoff (rc=$T_RC out=$T_OUT)"; fi
+  # TRANSPORT retry (factory #206). The 403 arm above proves the QUOTA budget
+  # works; it proves nothing about a dropped connection, because a TLS handshake
+  # timeout never matched that predicate — it fell to `*)` and returned at once.
+  # Live cost, measured 2026-11-27: a GREEN run whose verdict was never written
+  # because the watcher exited 4 on one blip.
+  rm -f "$D/gh.count"
+  mk_shim "$D/gh" transport_blip
+  T_OUT="$(OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_PRCHECKS_GH_BACKOFF=1 OC_TOOLS_NOLOG=1 "$SELF" "$SHA" 2>&1)" && T_RC=0 || T_RC=$?
+  _t=0; _g=0
+  case "$T_OUT" in *"transport error"*) _t=1;; esac
+  case "$T_OUT" in *"VERDICT GREEN"*) _g=1;; esac
+  if [ "$T_RC" -eq 0 ] && [ "$_t" -eq 1 ] && [ "$_g" -eq 1 ]; then
+    t_ok "gh transport retry: 2x TLS handshake timeout retried -> GREEN (not exit 4)"
+  else t_bad "gh transport retry (rc=$T_RC transport_seen=$_t green=$_g out=$T_OUT)"; fi
+  # CONTROL A — a transport error that never recovers must still FAIL. Without
+  # this arm the retry above could be satisfied by swallowing the error entirely
+  # and reporting GREEN from nothing, which is the opposite defect.
+  rm -f "$D/gh.tdead"
+  mk_shim "$D/gh" transport_dead
+  T_OUT="$(OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_PRCHECKS_GH_BACKOFF=1 OC_PRCHECKS_GH_TRANSPORT_RETRIES=2 OC_TOOLS_NOLOG=1 \
+    "$SELF" "$SHA" 2>&1)" && T_RC=0 || T_RC=$?
+  if [ "$T_RC" -ne 0 ] && ! case "$T_OUT" in *"VERDICT GREEN"*) true;; *) false;; esac; then
+    t_ok "gh transport CONTROL: a permanent transport error still fails, no GREEN emitted"
+  else t_bad "gh transport CONTROL (rc=$T_RC out=$T_OUT)"; fi
+  # CONTROL B — a genuine REFUSAL (404, bad arg) must still fail FAST, on the
+  # first attempt. This is what keeps the new predicate NARROW: if it widened to
+  # "any stderr", every real error would burn the retry budget before surfacing.
+  rm -f "$D/gh.tref"
+  mk_shim "$D/gh" refuse_hard
+  T_OUT="$(OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_PRCHECKS_GH_BACKOFF=1 OC_TOOLS_NOLOG=1 "$SELF" "$SHA" 2>&1)" && T_RC=0 || T_RC=$?
+  _rc_n="$(cat "$D/gh.tref" 2>/dev/null || echo 0)"
+  if [ "$T_RC" -ne 0 ] && [ "$_rc_n" -le 2 ]; then
+    t_ok "gh refusal CONTROL: a 404 is NOT retried (attempts=$_rc_n, fails fast)"
+  else t_bad "gh refusal CONTROL (rc=$T_RC attempts=$_rc_n out=$T_OUT)"; fi
   # journal line present (extra.verdict)
   mk_shim "$D/gh" green
   OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
