@@ -45,10 +45,19 @@ faithful port, not a vacuous one. Non-vacuity lives in three other places:
 TIMEOUTS ARE PER-TOOL AND MEASURED (probe: 2026-11-27, this worktree)
 ---------------------------------------------------------------------
 A blanket short bound would red a slow-but-legitimate selftest: run.sh's own
-1800 s default exists because the longest measured section is 296.5 s. Each
-bound below is ~2-5x its measured wall time, and the tools that take minutes
-carry ``@pytest.mark.slow`` so ``-m "not slow"`` deselects them rather than
-stalling a quick gate.
+1800 s default exists because the longest measured section is 296.5 s.
+
+Two measurements, because they differ by up to 5x: a quiet-box probe and the
+same tools under the load of a real pytest run on a shared box (several sibling
+worktrees were running their own suites). ``oc-wt`` is 21 s quiet and 118 s
+loaded; ``oc-upstream-delta`` 12 s quiet and 60 s loaded. Bounds are sized
+against the LOADED figure, with >= 2x headroom on it, because the loaded figure
+is the regime this module actually runs in. A bound sized on the quiet number
+would have red `oc-wt` at 118 s against 180 s -- a spurious failure, which is
+the exact defect run.sh:294-300 documents.
+
+The tools that take minutes carry ``@pytest.mark.slow`` so ``-m "not slow"``
+deselects them rather than stalling a quick gate.
 """
 from __future__ import annotations
 
@@ -61,7 +70,7 @@ import pytest
 # headroom instead of trusting the number.
 # ---------------------------------------------------------------------------
 TOOLS = [
-    # -- fast (< 30 s) ------------------------------------------------------
+    # -- fast: seconds. Loaded-box headroom in the comment ------------------
     ("oc-verify-order",         120),   #   2.1 s
     ("oc-verify-job",           120),   #   5.7 s
     ("oc-verify-artifact",      120),   #   4.6 s
@@ -71,8 +80,8 @@ TOOLS = [
     ("oc-features",             120),   #   3.5 s
     ("oc-issue-sweep",          120),   #   5.6 s
     ("oc-review-persist",       120),   #   5.8 s
-    ("oc-upstream-delta",       120),   #  12.1 s
-    ("oc-wt",                   180),   #  21.1 s
+    ("oc-upstream-delta",       300),   #  12.1 s quiet / 60.5 s loaded
+    ("oc-wt",                   400),   #  21.1 s quiet / 118.1 s loaded
     ("oc-drift-check",          180),   #  38.3 s
     ("oc-branch-sweep",         120),   #   7.1 s
     ("oc-pr-fault-scope",       120),   #   6.7 s
@@ -87,10 +96,15 @@ TOOLS = [
     ("oc-log-search",           120),   #   3.3 s
     ("oc-census",               180),   #   7.0 s
     ("oc-claims-single-source", 120),   #   3.6 s
-    ("oc-start",                300),   #  53.8 s
-    ("oc-smoke",                300),   #  73.6 s
-    ("oc-notify-fanout",        300),   #  103 cases; needs a real ledger file
+    ("oc-start",                300),   #  14.8 s
+    ("oc-smoke",                300),   #  37.3 s
     # -- slow: minutes, not seconds. Deselected by -m "not slow" -----------
+    # oc-notify-fanout belongs HERE, not with the fast tools: measured 266 s
+    # standalone and 223 s under load, i.e. SLOWER than oc-gate. It first
+    # carried a 300 s bound, which is 1.13x headroom -- one loaded box away
+    # from a spurious red, the exact defect run.sh:294-300 documents. 600 s is
+    # 2.3x and the slow marker keeps it out of a quick gate.
+    ("oc-notify-fanout",        600),   # 266 s; 103 cases; needs a real ledger file
     ("oc-gate",                 600),   # 118.4 s
     ("oc-commit",               600),   # 124.2 s
     ("oc-ledger",               600),   # ~296 s   the longest in the battery
@@ -99,6 +113,7 @@ TOOLS = [
 ]
 
 SLOW = frozenset({
+    "oc-notify-fanout",
     "oc-gate",
     "oc-commit",
     "oc-ledger",
