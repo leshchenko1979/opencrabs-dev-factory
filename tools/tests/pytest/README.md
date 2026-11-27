@@ -25,7 +25,6 @@ python3 -m pytest tools/tests/pytest/ -k ledger
 # by marker
 python3 -m pytest tools/tests/pytest/ -m "not slow"
 python3 -m pytest tools/tests/pytest/ -m serial
-python3 -m pytest tools/tests/pytest/ -m "not network and not live_state"
 
 # one subject folder (harness/ tools/ infra/ e2e/ — see the layout below)
 python3 -m pytest tools/tests/pytest/harness/
@@ -68,12 +67,18 @@ fixture is wrong.*
 | marker | meaning | in the gate? |
 |---|---|---|
 | `serial` | mutually-exclusive legs: flock, live ports, the canonical receipt | yes |
-| `network` | reaches the network (github, the A2A endpoint, registries) | no |
-| `live_state` | reads or writes a REAL store (fleet ledger, `workers.json`, the production checkout) | **never** |
 | `slow` | more than a few seconds | on request |
 
 Markers are `strict_markers = true`, so an unregistered marker is an error
 rather than a silent no-op that makes `-m serial` look like it selected nothing.
+
+There is deliberately **no `network` and no `live_state` marker** (deleted in
+factory #203). Both were registered and selected nothing — zero uses, and no leg
+qualifies: every `gh` call goes through `gh_stub`, `_assert_no_live_state`
+refuses a production path at launch, `allow_live_state=True` appears in zero
+tests, and nothing runs `curl`/`urllib`/`requests`/`socket`. A registered marker
+that selects nothing is the same lie as `-m serial` matching nothing, one layer
+up.
 
 ### `serial` needs `xdist_group`
 

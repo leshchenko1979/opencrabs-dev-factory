@@ -542,14 +542,14 @@ def _assert_no_live_state(cmd: list[str], env: dict, allow_live_state: bool):
         if s == prod or s.startswith(prod + "/"):
             raise LiveStateLeak(
                 "run_tool: argument reaches the PRODUCTION checkout (%s). Pass a "
-                "fixture repo, or mark the test live_state and pass "
-                "allow_live_state=True." % s)
+                "fixture repo, or pass allow_live_state=True if the leg genuinely "
+                "means to read the real store." % s)
     hits = _live_hits(env)
     if hits:
         raise LiveStateLeak(
             "run_tool: live fleet state reachable: %s. env_guard should have "
-            "redirected these; if a test set them on purpose, mark it live_state "
-            "and pass allow_live_state=True." % ", ".join(hits))
+            "redirected these; if a test set them on purpose, pass "
+            "allow_live_state=True." % ", ".join(hits))
 
 
 def _run(cmd, *, timeout, cwd=None, env=None, allow_live_state=False,
