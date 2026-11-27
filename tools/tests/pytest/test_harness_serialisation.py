@@ -58,6 +58,7 @@ from lib import harness as H
 # only a canonical set can notice it.
 CANONICAL_GROUPS = (
     "battery-cgroup",
+    "battery-ledger-lock",
     "battery-lock",
     "battery-nested",
     "battery-pool",
