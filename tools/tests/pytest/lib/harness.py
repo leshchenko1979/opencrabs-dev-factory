@@ -29,9 +29,11 @@ WHY A ``flock`` WITNESS
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -172,6 +174,73 @@ def extract_chunk(want: int | str, text: str | None = None) -> str:
 
 
 # =============================================================================
+# forking on a box other lanes share
+# =============================================================================
+# ``fork()`` returns EAGAIN — "Resource temporarily unavailable" — when the
+# kernel refuses a new task RIGHT NOW. It is TRANSIENT by definition: the same
+# fork succeeds a moment later. Measured 2026-11-27 on this host: 3 GB RAM,
+# four cores, load 18 from three peer lanes, and 522 threads against a 31064
+# ceiling, so the refusal is pressure and not a configured limit. Under
+# ``-n auto`` the suite's own workers multiply that pressure and the failures
+# ROTATE between runs (a different leg each time, always at a fork), which is
+# the signature of contention rather than a logic defect.
+#
+# Retrying an EAGAIN is therefore NOT a weakened assertion: the child never
+# started, so nothing was observed and no verdict was reached. A retry that
+# eventually forks tests exactly what a first-try fork would have tested. What
+# would be wrong is retrying a NON-zero exit from a child that DID run — that
+# is a result, and it is never retried here.
+EAGAIN_RETRIES = 12
+EAGAIN_BACKOFF_S = 0.25
+
+
+def _is_fork_pressure(exc: BaseException) -> bool:
+    """True for the two shapes a refused fork takes in CPython."""
+    if isinstance(exc, BlockingIOError):          # OSError EAGAIN subclass
+        return True
+    return isinstance(exc, OSError) and exc.errno in (errno.EAGAIN, errno.ENOMEM)
+
+
+def spawn(cmd, **kwargs):
+    """``subprocess.Popen`` with a bounded retry on fork pressure.
+
+    Only the FORK is retried. Once a child exists its exit status is returned
+    untouched, because a child that ran and exited non-zero has produced a
+    verdict and retrying it would be the suite lying to itself.
+    """
+    last: BaseException | None = None
+    for attempt in range(EAGAIN_RETRIES):
+        try:
+            return subprocess.Popen(cmd, **kwargs)
+        except (BlockingIOError, OSError) as exc:
+            if not _is_fork_pressure(exc):
+                raise
+            last = exc
+            time.sleep(EAGAIN_BACKOFF_S * (attempt + 1))
+    raise AssertionError(
+        "could not fork after %d attempts — the host is out of task slots "
+        "(%s); this is host pressure, not a test result"
+        % (EAGAIN_RETRIES, last))
+
+
+def run(cmd, **kwargs):
+    """``subprocess.run`` with the same bounded fork retry as :func:`spawn`."""
+    last: BaseException | None = None
+    for attempt in range(EAGAIN_RETRIES):
+        try:
+            return subprocess.run(cmd, **kwargs)
+        except (BlockingIOError, OSError) as exc:
+            if not _is_fork_pressure(exc):
+                raise
+            last = exc
+            time.sleep(EAGAIN_BACKOFF_S * (attempt + 1))
+    raise AssertionError(
+        "could not fork after %d attempts — the host is out of task slots "
+        "(%s); this is host pressure, not a test result"
+        % (EAGAIN_RETRIES, last))
+
+
+# =============================================================================
 # the --resolve-jobs probe
 # =============================================================================
 def resolve_jobs(*, pids_max: str, jobs: str | None, tmp: Path,
@@ -196,8 +265,6 @@ def resolve_jobs(*, pids_max: str, jobs: str | None, tmp: Path,
         ``--resolve-jobs`` removes its own root on exit (it does).
       * any other string — an explicit inherited root path (the ownership legs).
     """
-    import subprocess
-
     tmp = Path(tmp)
     tmp.mkdir(parents=True, exist_ok=True)
     pm = tmp / "pids.max"
@@ -254,8 +321,8 @@ def resolve_jobs(*, pids_max: str, jobs: str | None, tmp: Path,
             except OSError:
                 pass
 
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env,
-                       preexec_fn=preexec)
+    p = run(cmd, capture_output=True, text=True, timeout=120, env=env,
+            preexec_fn=preexec)
     fields = {}
     for line in p.stdout.splitlines():
         m = re.match(r"^(jobs|pids_max|capped|nice|ioprio)=(.*)$", line)

@@ -206,7 +206,7 @@ def test_python_extractor_matches_run_sh_awk():
     # it; we drive the function directly through bash -c to avoid a full battery.
     for want in (1, total // 2, total):
         got_py = H.extract_chunk(want, text)
-        proc = subprocess.run(
+        proc = H.run(
             ["bash", "-c",
              'extract_chunk() { awk -v want="$1" \'/^# ---- [0-9]/ { n++; insec = (n == want); next } '
              '/^verdict=PASS/ { exit } n == 0 || insec { print }\' "${2:-$0}"; }; extract_chunk "$@"',

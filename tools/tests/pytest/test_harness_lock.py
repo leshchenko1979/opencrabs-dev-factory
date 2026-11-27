@@ -102,7 +102,7 @@ class LockProbe:
     def launch(self, *, extra_env: dict | None = None,
                script: Path | None = None) -> subprocess.Popen:
         """Start the probe detached (own process group) and track it for cleanup."""
-        p = subprocess.Popen(
+        p = H.spawn(
             ["bash", str(script or self.script)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=self._env(extra_env), start_new_session=True)
@@ -170,7 +170,7 @@ def verdict(out: str, name: str) -> str | None:
 def lock_is_free(lock: Path, tries: int = 100) -> bool:
     """True once ``flock -n`` succeeds; polls because release is asynchronous."""
     for _ in range(tries):
-        r = subprocess.run(["flock", "-n", str(lock), "true"],
+        r = H.run(["flock", "-n", str(lock), "true"],
                            capture_output=True)
         if r.returncode == 0:
             return True
@@ -351,7 +351,7 @@ def test_a_chunk_child_never_opens_the_lock_file(probe):
     env = {k: v for k, v in os.environ.items() if k != "BATTERY_IN_CHUNK"}
     env["OC_BATTERY_LOCK"] = str(fresh)
     env["OC_BATTERY_NO_CGROUP"] = "1"
-    r = subprocess.run(["bash", str(H.RUN_SH), "--chunk", "999"],
+    r = H.run(["bash", str(H.RUN_SH), "--chunk", "999"],
                        capture_output=True, text=True, timeout=120, env=env)
     assert not fresh.exists(), (
         "a --chunk child opened the lock file %s — it would deadlock against "
@@ -415,7 +415,7 @@ def test_the_driver_terminates_while_the_old_shape_hangs(probe):
 
     # The old shape MUST hang. `timeout 4` gives it well over the 3 s its six
     # 1 s chunks need even at jobs=2, so rc 124 means "hung", not "slow".
-    r_old = subprocess.run(["timeout", "4", "bash", str(old), str(d / "o.lock")],
+    r_old = H.run(["timeout", "4", "bash", str(old), str(d / "o.lock")],
                            capture_output=True, timeout=30)
     assert r_old.returncode == 124, (
         "the OLD driver shape did NOT hang (rc=%d) — the control is broken, so "
@@ -424,7 +424,7 @@ def test_the_driver_terminates_while_the_old_shape_hangs(probe):
     # The fixed shape must terminate. Bound is generous (20 s for ~3 s of work)
     # because the assertion is TERMINATION, not a wall window — a wall window
     # reds under -n N for the same reason it reddened under --jobs 2.
-    r_new = subprocess.run(["timeout", "20", "bash", str(fixed),
+    r_new = H.run(["timeout", "20", "bash", str(fixed),
                             str(d / "f.lock"), str(log)],
                            capture_output=True, timeout=40)
     assert r_new.returncode == 0, (
@@ -446,7 +446,7 @@ def test_the_fixed_driver_respects_the_jobs_throttle(probe):
     fixed.chmod(0o755)
     log = d / "concurrency.log"
     log.write_text("", encoding="utf-8")
-    r = subprocess.run(["timeout", "20", "bash", str(fixed),
+    r = H.run(["timeout", "20", "bash", str(fixed),
                         str(d / "f.lock"), str(log)],
                        capture_output=True, timeout=40)
     assert r.returncode == 0, "the fixed driver did not terminate: rc=%d" % r.returncode

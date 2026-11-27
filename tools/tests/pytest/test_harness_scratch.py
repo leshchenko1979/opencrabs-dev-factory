@@ -121,7 +121,7 @@ def _tmpfs_candidate() -> str | None:
     """``/dev/shm`` when it is genuinely tmpfs here, else None."""
     if not os.path.isdir("/dev/shm"):
         return None
-    r = subprocess.run(["stat", "-f", "-c", "%T", "/dev/shm"],
+    r = H.run(["stat", "-f", "-c", "%T", "/dev/shm"],
                        capture_output=True, text=True)
     return "/dev/shm" if r.returncode == 0 and "tmpfs" in r.stdout else None
 

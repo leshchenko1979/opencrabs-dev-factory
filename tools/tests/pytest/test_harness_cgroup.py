@@ -142,7 +142,7 @@ class CgroupSandbox:
         })
         if extra_env:
             env.update({k: str(v) for k, v in extra_env.items()})
-        p = subprocess.run(["bash", str(self.harness)], capture_output=True,
+        p = H.run(["bash", str(self.harness)], capture_output=True,
                            text=True, timeout=60, env=env)
         return p.returncode, (p.stdout + p.stderr)
 

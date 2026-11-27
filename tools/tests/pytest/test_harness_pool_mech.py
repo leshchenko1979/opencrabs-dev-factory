@@ -129,7 +129,7 @@ def test_a_chunk_child_does_not_recurse(tmp_path):
     (tmp_path / "pm").write_text("max\n", encoding="utf-8")
     # An ordinal past the last section selects nothing, so the child runs the
     # prelude and exits — the cheapest possible probe of the guard.
-    r = subprocess.run(["bash", str(H.RUN_SH), "--chunk", "999"],
+    r = H.run(["bash", str(H.RUN_SH), "--chunk", "999"],
                        capture_output=True, text=True, timeout=120, env=env)
     assert r.returncode == 0, (
         "a --chunk child did not exit cleanly (rc=%d): %r"
@@ -194,7 +194,7 @@ def _cpu_seconds(cmd: list[str], cwd: Path, env: dict, timeout: int = 200) -> tu
     import resource
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
-        p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+        p = H.run(cmd, cwd=str(cwd), capture_output=True, text=True,
                            timeout=timeout, env=env)
         rc = p.returncode
     except subprocess.TimeoutExpired:

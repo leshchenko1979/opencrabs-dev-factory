@@ -98,7 +98,7 @@ def scan_arg_arms(root: Path) -> list[str]:
     and ``${2:-}`` suppresses the unbound-variable error that would have killed
     it. 59 arms across 14 tools had this; every one reachable by a typo.
     """
-    r = subprocess.run([sys.executable, "-c", HG_SCANNER, str(root)],
+    r = H.run([sys.executable, "-c", HG_SCANNER, str(root)],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, "the arg-arm scanner failed: %r" % r.stderr[-500:]
     return [l for l in r.stdout.splitlines() if l.strip()]
@@ -168,7 +168,7 @@ def law_scan(root: Path) -> dict:
     (the tool-fleet surface).
     """
     tool = H.TOOLS_DIR / "state" / "oc-ledger"
-    r = subprocess.run([sys.executable, "-c", LAW_SCANNER, str(tool), str(root)],
+    r = H.run([sys.executable, "-c", LAW_SCANNER, str(tool), str(root)],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, "the law scanner failed: %r" % r.stderr[-500:]
     out = r.stdout
@@ -405,7 +405,7 @@ def _oc_job_sha(job_name: str) -> tuple[str, int]:
     The ASSIGNMENT form, not a printf argument — only the assignment trips
     ``set -e``, and that distinction is the whole defect.
     """
-    r = subprocess.run(
+    r = H.run(
         ["bash", "-c",
          'set -e; set -o pipefail; . "$1" || exit 9; '
          'js="$(oc_job_sha "$2")"; printf "%s" "$js"',
@@ -456,7 +456,7 @@ def test_a_sha_less_job_sorting_first_does_not_kill_the_loop():
         '  [ -n "$js" ] || continue\n'
         '  printf "%%s" "$js"\n'
         'done\n' % sha)
-    r = subprocess.run(["bash", "-c", script, "_", str(OP_LIB)],
+    r = H.run(["bash", "-c", script, "_", str(OP_LIB)],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, (
         "the loop died when a sha-less job sorted first (rc=%d): %r"
@@ -474,7 +474,7 @@ def test_oc_patch_id_has_the_same_empty_contract():
     ``oc_same_patch``'s own refusal cannot discriminate — both paths end rc 1 —
     so the direct leg is the one that proves the abort is gone.
     """
-    r = subprocess.run(
+    r = H.run(
         ["bash", "-c",
          'set -e; set -o pipefail; . "$1" || exit 9\n'
          'p="$(oc_patch_id "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"\n'
@@ -489,9 +489,9 @@ def test_oc_patch_id_has_the_same_empty_contract():
 @pytest.mark.xdist_group("battery-pool")
 def test_oc_same_patch_still_refuses_an_unknown_sha():
     """CONTROL — unknown is never "same"."""
-    head = subprocess.run(["git", "-C", str(H.tools_root()), "rev-parse", "HEAD"],
+    head = H.run(["git", "-C", str(H.tools_root()), "rev-parse", "HEAD"],
                           capture_output=True, text=True, timeout=60).stdout.strip()
-    r = subprocess.run(
+    r = H.run(
         ["bash", "-c",
          'set -e; set -o pipefail; . "$1" || exit 9\n'
          'if oc_same_patch "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef "$3"; '

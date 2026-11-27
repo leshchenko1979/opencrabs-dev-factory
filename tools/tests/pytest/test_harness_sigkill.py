@@ -165,7 +165,7 @@ class DispatchStub:
             "OC_DISPATCH_RECEIPT_GRACE": "5",
         }
         with open(out, "wb") as fo, open(err, "wb") as fe:
-            p = subprocess.Popen(
+            p = H.spawn(
                 [str(script), "451",
                  "--to", "deadbeef-0000-0000-0000-000000000000",
                  "--allow-landed", "--redispatch",

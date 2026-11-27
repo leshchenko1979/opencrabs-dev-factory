@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from lib import harness as H
+
 import conftest as cf
 
 
@@ -42,7 +44,7 @@ def test_scratch_isolates_tmpdir_and_snap_root(scratch):
     assert (root / "oc-snap").is_dir()
 
     # A real mktemp, the way a ported leg would make one.
-    out = subprocess.run(["mktemp", "-d"], capture_output=True, text=True, check=True)
+    out = H.run(["mktemp", "-d"], capture_output=True, text=True, check=True)
     made = Path(out.stdout.strip())
     assert str(made).startswith(str(root)), (
         "mktemp escaped the scratch root: %s (TMPDIR=%s)" % (made, os.environ["TMPDIR"]))
@@ -170,7 +172,7 @@ def test_run_tool_refuses_a_live_env_value(monkeypatch):
 def test_run_tool_kills_the_grandchild_on_timeout(run_tool, tmp_path):
     """A two-level process tree must be GONE after the bound fires (#753).
 
-    ``subprocess.run(timeout=)`` signals only the direct child: the selftest's
+    ``H.run(timeout=)`` signals only the direct child: the selftest's
     grandchildren survive, keep burning the box, and nothing reaps them
     (measured 2026-10-01: six orphans at 37-39 % CPU for ~5 h). The fixture
     uses ``start_new_session=True`` + ``os.killpg``, which is what

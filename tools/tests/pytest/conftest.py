@@ -555,7 +555,13 @@ def _run(cmd, *, timeout, cwd=None, env=None, allow_live_state=False,
     _assert_no_live_state(cmd, full_env, allow_live_state)
 
     t0 = time.monotonic()
-    p = subprocess.Popen(
+    # H.spawn retries ONLY a refused fork (EAGAIN). Measured 2026-11-27: this
+    # box runs three peer lanes at load 18 on four cores, so a fork is
+    # intermittently refused and the failures ROTATE between runs — the
+    # signature of pressure, not of a logic defect. A fork that never happened
+    # observed nothing, so retrying it weakens no assertion; a child that RAN
+    # and exited non-zero is a verdict and is never retried.
+    p = H.spawn(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

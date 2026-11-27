@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from lib import harness as H
+
 import conftest as cf
 
 
@@ -114,7 +116,7 @@ def test_git_repo_has_pinned_identity(git_repo):
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_SYSTEM"] = "/dev/null"
 
-    out = subprocess.run(
+    out = H.run(
         ["git", "-C", str(repo), "log", "-1", "--format=%an <%ae>"],
         capture_output=True, text=True, env=env, check=True)
     assert out.stdout.strip() == "t <t@t>", (
@@ -125,7 +127,7 @@ def test_git_repo_has_pinned_identity(git_repo):
     (repo / "b.txt").write_text("b\n")
     repo.git("add", "-A")
     repo.git("commit", "-q", "-m", "second")
-    log = subprocess.run(["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
+    log = H.run(["git", "-C", str(repo), "rev-list", "--count", "HEAD"],
                          capture_output=True, text=True, check=True)
     assert log.stdout.strip() == "2"
 
@@ -134,7 +136,7 @@ def test_git_repo_bare_and_branch(git_repo):
     bare = git_repo(bare=True, branch="main")
     assert (bare / "HEAD").is_file(), "not a bare repo"
     work = git_repo(branch="trunk")
-    head = subprocess.run(["git", "-C", str(work), "rev-parse", "--abbrev-ref", "HEAD"],
+    head = H.run(["git", "-C", str(work), "rev-parse", "--abbrev-ref", "HEAD"],
                           capture_output=True, text=True, check=True)
     assert head.stdout.strip() == "trunk"
 
@@ -155,31 +157,31 @@ def test_gh_stub_wires_all_three_seams(gh_stub):
 
     # All three seams reach the SAME stub, which logs what it was asked.
     for call in (["issue", "list"], ["issue", "view", "7"], ["api", "x"]):
-        out = subprocess.run([str(stub.path), *call],
+        out = H.run([str(stub.path), *call],
                              capture_output=True, text=True, check=True)
         assert out.returncode == 0
     calls = stub.calls()
     assert calls == [["issue", "list"], ["issue", "view", "7"], ["api", "x"]]
 
     # The rule fired for the matching call and not for the others.
-    assert subprocess.run([str(stub.path), "issue", "list"],
+    assert H.run([str(stub.path), "issue", "list"],
                           capture_output=True, text=True).stdout == '[{"number":1}]'
 
 
 def test_gh_stub_rc_and_rerules(gh_stub):
     """A leg can drive a FAILING gh, and re-rule without a new stub dir."""
     stub = gh_stub(default_rc=1)
-    assert subprocess.run([str(stub.path), "release", "view"],
+    assert H.run([str(stub.path), "release", "view"],
                           capture_output=True).returncode == 1
     stub.set_rules([("release view", "", 0)])
-    assert subprocess.run([str(stub.path), "release", "view"],
+    assert H.run([str(stub.path), "release", "view"],
                           capture_output=True).returncode == 0
 
 
 def test_gh_stub_is_reachable_as_a_bare_gh(gh_stub):
     """The PATH seam: a tool that calls a bare ``gh`` gets the stub, not the real one."""
     stub = gh_stub(rules=[("--version", "gh stub 0.0.0", 0)])
-    out = subprocess.run(["gh", "--version"], capture_output=True, text=True, check=True)
+    out = H.run(["gh", "--version"], capture_output=True, text=True, check=True)
     assert "gh stub" in out.stdout, "bare `gh` did not resolve to the stub"
     assert stub.calls() == [["--version"]]
 
