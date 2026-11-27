@@ -43,3 +43,12 @@ tools/tests/.reap.*
 # "delete" and "rehome" would have destroyed a real submission. Ignoring the class
 # is non-destructive: the stray file stays on disk and on someone's record.
 reviews/
+
+# The pytest migration's run artifacts (tools/tests/pytest/). Both are per-run
+# state, not source: `pytest-receipt.json` is rewritten by every run (the
+# tracked counterpart `tools/tests/battery-last.json` is the SHELL harness's and
+# stays tracked until parity flips), and `.pytest_cache/` is pytest's own
+# bookkeeping. Untracked they are invisible to the stray-guard (die 7) — the
+# same class this file already ignores for `battery-last-fail.log` and `.reap.*`.
+tools/tests/pytest-receipt.json
+tools/tests/pytest/.pytest_cache/
