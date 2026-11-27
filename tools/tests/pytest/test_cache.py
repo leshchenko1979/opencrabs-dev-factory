@@ -111,6 +111,22 @@ class Runner:
         return _R()
 
 
+def stub_tool_for(tmp_path, monkeypatch, *, rc=0, sources=(), name="oc-stub"):
+    """Point ``cf.tool_path`` at a STUB so a fixture leg is hermetic.
+
+    The fixture legs below exercise the WIRING (does ``cached_selftest`` call
+    ``run_cached`` with the right tool, does a hit reach ``Result.cached``), not
+    a real tool's health. Using a real tool made them fail whenever the box was
+    loaded enough for its selftest to time out — a flake about the machine, not
+    about the cache. The stub counts its own executions, so "did it run" is a
+    counter, never a clock.
+    """
+    tool, counter = make_stub_tool(tmp_path, rc=rc, sources=sources, name=name)
+    real = cf.tool_path
+    monkeypatch.setattr(cf, "tool_path",
+                        lambda n: tool if n == name else real(n))
+    return tool, counter
+
 def new_cache(tmp_path, **kw):
     return oc_cache.Cache(tmp_path / "cache", **kw)
 
@@ -655,12 +671,15 @@ def test_resolve_tool_refuses_a_missing_name():
 # =============================================================================
 # end to end — the FIXTURE, not just the library
 # =============================================================================
-def test_fixture_is_a_passthrough_when_the_cache_is_off(cached_selftest):
-    """No flag: the fixture returns a real run, and says so via ``.cached``."""
-    res = cached_selftest("oc-issue-scope", timeout=120)
+def test_fixture_is_a_passthrough_when_the_cache_is_off(
+        cached_selftest, tmp_path, monkeypatch):
+    """No flag: the fixture executes, and says so via ``.cached``."""
+    tool, counter = stub_tool_for(tmp_path, monkeypatch)
+    res = cached_selftest("oc-stub", timeout=120)
     assert res.rc == 0
     assert res.cached is False, "a cache-off run must never report a hit"
     assert "--selftest" in res.cmd
+    assert count(counter) == 1, "the cache-off path must really execute"
 
 def test_fixture_skips_the_subprocess_on_a_second_identical_call(
         request, cached_selftest, monkeypatch, tmp_path):
@@ -671,30 +690,34 @@ def test_fixture_skips_the_subprocess_on_a_second_identical_call(
     """
     cache = new_cache(tmp_path)
     monkeypatch.setattr(request.config, "_oc_cache", cache, raising=False)
+    tool, counter = stub_tool_for(tmp_path, monkeypatch)
 
-    first = cached_selftest("oc-issue-scope", timeout=120)
+    first = cached_selftest("oc-stub", timeout=120)
     assert first.rc == 0 and first.cached is False
+    assert count(counter) == 1
 
-    second = cached_selftest("oc-issue-scope", timeout=120)
+    second = cached_selftest("oc-stub", timeout=120)
     assert second.rc == 0
     assert second.cached is True, "an unchanged tool must hit the cache"
     # The hit replays the STORED duration (rounded on store), so a skipped 300 s
     # leg still reports what it cost — the saving is legible from the result.
     assert second.duration_ms == pytest.approx(first.duration_ms, abs=0.5)
+    assert count(counter) == 1, "a HIT must not spawn the subprocess again"
 
 def test_fixture_still_runs_when_the_previous_run_failed(
         request, cached_selftest, monkeypatch, tmp_path):
     """A failing leg is never memoised: both calls execute for real."""
     cache = new_cache(tmp_path)
     monkeypatch.setattr(request.config, "_oc_cache", cache, raising=False)
-    # A tool whose selftest is red — oc-issue-scope with a bogus arg is enough
-    # to produce a non-zero rc without depending on any real tool's health.
-    first = cached_selftest("oc-issue-scope", timeout=120,
-                            extra_args=("--no-such-flag",))
+    # A stub whose selftest is RED: rc=1 with no dependency on any real tool.
+    tool, counter = stub_tool_for(tmp_path, monkeypatch, rc=1)
+
+    first = cached_selftest("oc-stub", timeout=120)
     assert first.rc != 0 and first.cached is False
-    second = cached_selftest("oc-issue-scope", timeout=120,
-                             extra_args=("--no-such-flag",))
+    second = cached_selftest("oc-stub", timeout=120)
     assert second.cached is False, "a FAIL must never be served from cache"
+    assert second.rc != 0
+    assert count(counter) == 2, "a red leg must re-run every time"
 
 def test_fixture_hit_prints_its_key_when_verbose(
         request, cached_selftest, monkeypatch, tmp_path, capsys):
@@ -710,16 +733,18 @@ def test_fixture_hit_prints_its_key_when_verbose(
     monkeypatch.setattr(request.config.option, "oc_cache_verbose", True,
                         raising=False)
     monkeypatch.setattr(request.config.option, "verbose", 1, raising=False)
+    tool, counter = stub_tool_for(tmp_path, monkeypatch)
 
-    first = cached_selftest("oc-issue-scope", timeout=120)
+    first = cached_selftest("oc-stub", timeout=120)
     assert first.cached is False
     capsys.readouterr()          # drop the first call's output
 
-    second = cached_selftest("oc-issue-scope", timeout=120)
+    second = cached_selftest("oc-stub", timeout=120)
     assert second.cached is True
     err = capsys.readouterr().err
-    assert "oc-cache: HIT oc-issue-scope" in err, err
-    assert oc_cache.cache_key(oc_cache.resolve_tool("oc-issue-scope"))[:12] in err
+    assert "oc-cache: HIT oc-stub" in err, err
+    assert oc_cache.cache_key(tool)[:12] in err
+    assert count(counter) == 1
 
 def test_fixture_hit_is_silent_without_verbose(
         request, cached_selftest, monkeypatch, tmp_path, capsys):
@@ -729,10 +754,11 @@ def test_fixture_hit_is_silent_without_verbose(
     monkeypatch.setattr(request.config.option, "oc_cache_verbose", False,
                         raising=False)
     monkeypatch.setattr(request.config.option, "verbose", 0, raising=False)
+    tool, counter = stub_tool_for(tmp_path, monkeypatch)
 
-    cached_selftest("oc-issue-scope", timeout=120)
+    cached_selftest("oc-stub", timeout=120)
     capsys.readouterr()
-    second = cached_selftest("oc-issue-scope", timeout=120)
+    second = cached_selftest("oc-stub", timeout=120)
     assert second.cached is True
     captured = capsys.readouterr()
     assert "oc-cache: HIT" not in captured.err
