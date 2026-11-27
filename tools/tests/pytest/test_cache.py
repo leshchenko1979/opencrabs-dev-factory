@@ -737,3 +737,58 @@ def test_fixture_hit_is_silent_without_verbose(
     captured = capsys.readouterr()
     assert "oc-cache: HIT" not in captured.err
     assert "oc-cache" not in captured.out
+
+def test_quiet_runs_are_not_treated_as_verbose():
+    """``-q`` sets verbose to -1; ``bool(-1)`` is True, so truthiness lied.
+
+    A quiet run must never grow cache output: that is rule 1 ("byte-identical
+    by default") read strictly, and the whole battery runs with ``-q``. The
+    bug this pins was live — every ``-q`` run printed the enabled/summary
+    lines — so it is worth a leg rather than a comment.
+    """
+    class _Opt:
+        oc_cache_verbose = False
+        verbose = -1                       # exactly what `-q` produces
+    class _Cfg:
+        option = _Opt()
+
+    assert oc_cache.verbose(_Cfg()) is False
+    _Opt.verbose = 0                       # the default
+    assert oc_cache.verbose(_Cfg()) is False
+    _Opt.verbose = 1                       # -v
+    assert oc_cache.verbose(_Cfg()) is True
+    _Opt.oc_cache_verbose = True           # --oc-cache-verbose wins regardless
+    _Opt.verbose = -1
+    assert oc_cache.verbose(_Cfg()) is True
+
+def test_terminal_summary_is_verbose_only(tmp_path):
+    """The run tally must not appear in a quiet run either.
+
+    Rule 1 is byte-identical default output, and the battery runs ``-q``. The
+    summary hook printed unconditionally, so every quiet ``--oc-cache`` run
+    grew a line today's output never had. A HIT line is not the only way the
+    cache can speak; the tally is the other one.
+    """
+    class _Reporter:
+        def __init__(self):
+            self.lines = []
+        def write_line(self, line):
+            self.lines.append(line)
+    class _Opt:
+        oc_cache_verbose = False
+        verbose = -1                       # -q
+    class _Cfg:
+        option = _Opt()
+
+    cfg = _Cfg()
+    cache = oc_cache.Cache(tmp_path / "c", cap=5, verbose=False)
+    cfg._oc_cache = cache
+
+    reporter = _Reporter()
+    oc_cache.pytest_terminal_summary(reporter, 0, cfg)
+    assert reporter.lines == [], "a quiet run must emit no cache tally"
+
+    _Opt.verbose = 1                       # -v
+    oc_cache.pytest_terminal_summary(reporter, 0, cfg)
+    assert len(reporter.lines) == 1
+    assert "oc-cache: hits=" in reporter.lines[0]
