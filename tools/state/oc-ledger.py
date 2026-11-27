@@ -298,6 +298,11 @@ def _workers_eval(ledger: str, docs, verb: str, uuid: str):
     rows = []
     last_failed = False
     for doc, line in docs:
+        if doc is None:
+            # `null` is INDEXABLE in jq — `.workers` on it is null, so `// []`
+            # answers `[]`. Only booleans/numbers/strings/arrays raise.
+            outputs.append([])
+            continue
         if not isinstance(doc, dict):
             errln('jq: error (at %s:%d): Cannot index %s with string "workers"'
                   % (ledger, line, L._jq_type(doc)))
@@ -877,20 +882,36 @@ def cmd_workers(ledger, args):
     outputs, rows = _workers_eval(ledger, docs, "workers", uuid)
 
     if as_tsv:
-        # The bash pipes the JSON through a SECOND jq for the TSV form, so a
-        # non-object element dies there; `.[] | [...]` over the collected rows
-        # is the same projection.
-        for row in rows:
-            if not isinstance(row, dict):
-                die(L.RC_REFUSED, "workers: jq failed — ledger unreadable or "
-                    "query error")
-            outln(L.tsv_row([
-                L.to_string(_keep(row.get("uuid"), "")),
-                L.to_string(_keep(row.get("role"), "editor")),
-                L.to_string(_keep(row.get("topic_id"), 0)),
-                L.to_string(_keep(row.get("feature"), "-")),
-                L.to_string(_keep(row.get("state"), "ACTIVE")),
-            ]))
+        # The bash pipes the JSON through a SECOND jq for the TSV form and then
+        # `exit 0`s UNCONDITIONALLY, so a projection failure prints jq's error
+        # and still exits 0 — the opposite of the first stage, which dies rc 3.
+        # Both halves are reproduced. The error's `<stdin>:N` counter is jq's
+        # own numbering of the PIPED stream, and it counts a value only once
+        # the next one has been read — so a failure in the LAST array reports
+        # one less than its index (measured: `[]`+`"x"` -> :1, `[]`+`[]`+`"x"`
+        # -> :2, `"x"`+`[]` -> :1, `[]`+`"x"`+`[]` -> :2).
+        emitted = 0
+        total = len(outputs)
+        for proj in outputs:
+            emitted += 1
+            reported = emitted if emitted < total else emitted - 1
+            if not isinstance(proj, list):
+                errln('jq: error (at <stdin>:%d): Cannot iterate over %s (%s)'
+                      % (reported, L._jq_type(proj), L.dumps_compact(proj)))
+                continue
+            for row in proj:
+                if not isinstance(row, dict):
+                    errln('jq: error (at <stdin>:%d): Cannot index %s with '
+                          'string "uuid"'
+                          % (reported, L._jq_type(row)))
+                    break
+                outln(L.tsv_row([
+                    L.to_string(_keep(row.get("uuid"), "")),
+                    L.to_string(_keep(row.get("role"), "editor")),
+                    L.to_string(_keep(row.get("topic_id"), 0)),
+                    L.to_string(_keep(row.get("feature"), "-")),
+                    L.to_string(_keep(row.get("state"), "ACTIVE")),
+                ]))
         return L.RC_OK
     # One line per DOCUMENT: jq emits one array per input value, and an EMPTY
     # record yields no value at all, which `printf '%s\n' ""` renders as one
