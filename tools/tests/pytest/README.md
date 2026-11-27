@@ -179,6 +179,26 @@ too late: workers already exist by then.
 
 ---
 
+## Findings the port produced
+
+Two defects surfaced only because the legs drive the REAL blocks instead of
+grepping them. Both were in this suite's own tooling, not in `run.sh`:
+
+1. **The section-marker regex missed 10 of 73 sections.** `\d+[a-z]?\.` matches
+   `3.`, `9b.` but not `00a2.` (two digits), and it cannot match the retired
+   aliases `9g`/`9h`. `lib/harness.py`'s twin extractor therefore disagreed
+   with `run.sh`'s awk by ten sections while looking correct. Caught by
+   `test_the_section_count_matches_the_marker_count`, which compares the twin
+   against the awk it emulates — a comparison of two implementations, not a
+   grep of one.
+
+2. **The `missing-systemd` legs were creating real transient scopes.** Unlinking
+   the stub did not hide `/usr/bin/systemd-run`, so the block found the host's
+   real binary and registered a scope on the live user manager. Fixed with a
+   restricted `CI_UTIL` PATH; verified zero leaks with
+   `systemctl --user list-units 'run-*'`. A negative test that removes a stub
+   must control the whole search path, or it tests the host.
+
 ## Adding a ported section
 
 ```python
@@ -194,7 +214,24 @@ def test_oc_ledger_stamp(ledger_sandbox, run_tool):
 Rules that are not negotiable:
 
 - **Every subprocess goes through `run_tool`/`run_selftest`.** No bare
-  `subprocess.run` — the bound and the group kill are the point.
+  `subprocess.run` — the bound and the group kill are the point. Where a leg
+  needs raw `Popen`/`run` (a detached probe, a scanner), use `H.spawn`/`H.run`:
+  they are the same call plus a bounded retry on a REFUSED FORK.
+
+  Why that retry exists, measured 2026-11-27: three peer lanes on four cores
+  and 3 GB RAM held load at 18, and `-n auto` reds **rotated** between runs —
+  a different leg each time, always at a fork, always `BlockingIOError:
+  [Errno 11]`. A rotating identity is the discriminator: a logic defect fails
+  the SAME leg every run. The ceiling was never the limit (cgroup pids
+  343/10251, 522 threads against 31064), so the refusal is transient pressure.
+  Only the fork is retried — a child that RAN and exited non-zero is a verdict
+  and is never retried, because retrying it would be the suite lying to itself.
+
+  **A generated script is not a caller.** A rewrite that adds `H.` inside a
+  string literal handed to `write_text` produces a child that dies on
+  `NameError` while the parent test still passes its own assertions — the
+  grandchild never starts and the leg proves nothing. Generated code keeps
+  plain `subprocess`.
 - **Never hardcode `/root/opencrabs` or a `$HOME/.opencrabs/...` path.** Use
   `scratch`, `state_dir`, `ledger_sandbox`, `git_repo`, `gh_stub`.
 - **`timeout` is a number, not a guess.** 1800 s for a real selftest; tens of
