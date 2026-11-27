@@ -230,6 +230,14 @@ Rules that are not negotiable:
   seconds for a fixture-level tool call.
 - **A leg that writes the canonical receipt must be `serial`.** The lock is the
   only thing preventing two lanes from interleaving writes.
+- **A dedicated module never repeats the selftest blanket.** `<tool> --selftest`
+  exits 0 is owned by `tools/test_tool_wrappers.py`, once per tool, slow-marked.
+  A section module exists to assert what the blanket CANNOT see about its
+  subject — argv/rc vocabulary, a state-dir containment, a counter read as a
+  field. Three modules used to drive a selftest a second time (`test_gate.py`
+  ~118 s, `test_notify_fanout.py` ~266 s, `test_verify_trio.py` ~12 s × 3) and
+  the duplicate legs were deleted in factory #203: the second site bought one
+  extra `rc == 0` for minutes of wall.
 
 ---
 
