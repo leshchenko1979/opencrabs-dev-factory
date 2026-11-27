@@ -111,7 +111,15 @@ INSERT INTO sessions VALUES ('e2222222-2222-4222-8222-222222222222','subagent: f
   cat > "$SD/notify" <<'NSTUB'
 #!/usr/bin/env bash
 echo "$*" >> "${NOTIFY_LOG:?}"
+# (#192) The ADDRESS, on its own stream. `$*` carries --title/--text too, and the
+# TEXT quotes commit bodies -- which contain the very Session-Id trailer these
+# legs are about. Grepping the full argv for a uuid therefore answers with the
+# QUOTE, not the address: a leg asserting "the child was not woken" reddens on
+# the text that describes the child, and a leg asserting "the phantom WAS sent"
+# passes even when nothing was addressed to it. That is a disarmed control, so
+# the address gets its own line and the legs read THIS.
 for last; do :; done
+printf '%s\n' "$last" >> "${NOTIFY_LOG:?}.addr"
 [ "$last" = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" ] && exit 2
 exit 0
 NSTUB
@@ -185,7 +193,7 @@ case "$*" in
   *actions/runs/333/jobs*) echo '{"jobs":[{"name":"ORDER gates"},{"name":"Linux amd64 (dddddddddddddddddddddddddddddddddddddddd, telegram)"}]}' ;;
   *actions/runs/668/jobs*) echo '{"jobs":[{"name":"Linux amd64 (ffffffffffffffffffffffffffffffffffffffff, telegram)","conclusion":"failure","check_run_url":"https://api.github.com/repos/leshchenko1979/opencrabs/check-runs/9002"}]}' ;;
   *check-runs/9002/annotations*) echo '[]' ;;
-  *actions/runs/666/jobs*|*actions/runs/667/jobs*|*actions/runs/669/jobs*|*actions/runs/670/jobs*|*actions/runs/676/jobs*) echo '{"jobs":[{"name":"ORDER gates","conclusion":"success"},{"name":"Linux amd64 (eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, telegram)","conclusion":"failure","check_run_url":"https://api.github.com/repos/leshchenko1979/opencrabs/check-runs/9001"}]}' ;;
+  *actions/runs/672/jobs*|*actions/runs/673/jobs*|*actions/runs/674/jobs*|*actions/runs/666/jobs*|*actions/runs/667/jobs*|*actions/runs/669/jobs*|*actions/runs/670/jobs*|*actions/runs/676/jobs*) echo '{"jobs":[{"name":"ORDER gates","conclusion":"success"},{"name":"Linux amd64 (eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, telegram)","conclusion":"failure","check_run_url":"https://api.github.com/repos/leshchenko1979/opencrabs/check-runs/9001"}]}' ;;
   *check-runs/9001/annotations*) echo '[{"path":"bad.txt","start_line":3}]' ;;
   *actions/runs/444*) echo '{"status":"in_progress","conclusion":null}' ;;
   *actions/runs/222*|*actions/runs/333*|*actions/runs/555*|*actions/runs/789*|*actions/runs/790*|*actions/runs/791*|*actions/runs/774*) echo '{"status":"completed","conclusion":"success"}' ;;
@@ -1420,13 +1428,19 @@ Session-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 Session-Id: e1111111-1111-4111-8111-111111111111"
   git -C "$T/redw6" push -q origin HEAD
   printf '%s\n' "$(git -C "$T/redw6" rev-parse HEAD)" > "$SD/red-head"
-  : > "$NOTIFY_LOG"
+  : > "$NOTIFY_LOG"; : > "$NOTIFY_LOG.addr"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc6" OC_DEPLOY_REMOTE="$T/red6.git" \
     OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 672 2>&1)"; rc=$?
   check_rc "fanout-child-resolve-rc" $rc 0
+  # The blame path must actually have run: a zero-site fallback quotes commit
+  # bodies in the TEXT, and the bodies carry the very trailer under test — so a
+  # leg that reaches the fallback is asserting on prose. Assert the path.
+  check_has "fanout-child-resolve-blame-path" "$(ls "$SD/oc-deploy/journal/"fanout-672-*.jsonl 2>/dev/null | head -1 | xargs -r cat)" '"step":"attributed"' 
   check_has "fanout-child-resolve-counts" "$out" "notified=1 skipped=0 unowned=0 unresolved=0"
-  grep -q "aaaaaaaa-1111" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the child's LANE was not notified"; }
-  grep -q "e1111111-1111" "$NOTIFY_LOG" && { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the CHILD session was notified (the bug this fixes)"; } || pass=$((pass+1))
+  grep -qx "aaaaaaaa-1111-2222-3333-444444444444" "$NOTIFY_LOG.addr" && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the child's LANE was not notified (addressed: $(tr '\n' ' ' < "$NOTIFY_LOG.addr" 2>/dev/null))"; }
+  grep -qx "e1111111-1111-4111-8111-111111111111" "$NOTIFY_LOG.addr" \
+    && { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the CHILD session was notified (the bug this fixes)"; } || pass=$((pass+1))
   FJ6="$(ls "$SD/oc-deploy/journal/"fanout-672-*.jsonl 2>/dev/null | head -1)"
   grep '"step":"notified"' "$FJ6" 2>/dev/null | grep -q '"resolved_from":"e1111111-1111-4111-8111-111111111111"' \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the delivery row does not record resolved_from"; }
@@ -1486,13 +1500,13 @@ Session-Id: e2222222-2222-4222-8222-222222222222"
 Session-Id: 77777777-1111-2222-3333-444444444444"
   git -C "$T/redw8" push -q origin HEAD
   printf '%s\n' "$(git -C "$T/redw8" rev-parse HEAD)" > "$SD/red-head"
-  : > "$NOTIFY_LOG"
+  : > "$NOTIFY_LOG"; : > "$NOTIFY_LOG.addr"
   out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc8" OC_DEPLOY_REMOTE="$T/red8.git" \
     OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 674 2>&1)"; rc=$?
   check_rc "fanout-phantom-rc" $rc 0
   check_has "fanout-phantom-counts" "$out" "unresolved=1"
-  grep -q "77777777-1111" "$NOTIFY_LOG" && pass=$((pass+1)) \
-    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 an UNKNOWN trailer was suppressed — the transport owns that verdict, not the store"; }
+  grep -qx "77777777-1111-2222-3333-444444444444" "$NOTIFY_LOG.addr" && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 an UNKNOWN trailer was suppressed — the transport owns that verdict, not the store (addressed: $(tr '\n' ' ' < "$NOTIFY_LOG.addr" 2>/dev/null))"; }
   FJ8="$(ls "$SD/oc-deploy/journal/"fanout-674-*.jsonl 2>/dev/null | head -1)"
   grep '"step":"unresolved"' "$FJ8" 2>/dev/null | grep -q '"reason":"not-in-store"' \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 no unresolved/not-in-store journal line"; }
