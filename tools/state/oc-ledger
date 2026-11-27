@@ -2351,6 +2351,23 @@ cmd_enroll() {
   _is_uuid "$uuid" \
     || die 2 "enroll: uuid shape invalid: '$uuid'"
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # THE DUPLICATE GUARD KEYS ON THE ROSTER (`.workers[]`), NOT ON THE EVENT LOG —
+  # deliberately, and it is what makes the #193 orphans repairable. The roster is
+  # the AUTHORITATIVE state (cmd_worker, `roster`, and oc-verify-order's sign gate
+  # all resolve through it); events.jsonl is HISTORY. A guard that keyed on a
+  # `roster-enroll` EVENT would refuse exactly the uuids that need repairing: four
+  # live uuids (359fe71b, 53322531, 776a1fe5, e14ea3a3) carry a roster-enroll row
+  # and NO roster row, because the pre-#193 fast path appended the event and
+  # discarded the row. Under a roster-keyed guard a plain `enroll <uuid> <role>`
+  # creates the missing row and the uuid becomes resolvable again; under an
+  # event-keyed guard it would die "already enrolled" while still unresolvable,
+  # which is the worse of the two failures — a guard that protects a record that
+  # does not exist. Verified after the #193 predicate fix: all four take the row
+  # and `worker --uuid <u> --json` returns rc 0 with a non-empty .role.
+  # The cost of the choice, stated: a uuid that was retired and then re-enrolled
+  # keeps both roster-enroll events (history is append-only) and gets a fresh row,
+  # which is the intended reading — retire removes a row, never a uuid's right to
+  # be enrolled again.
   jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
     && die 2 "enroll: uuid already enrolled: $uuid"
   # TOPIC EXISTENCE GUARD (fork #503, Toolsmith 2026-09-22). --topic used to be
