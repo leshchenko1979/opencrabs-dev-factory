@@ -1026,3 +1026,15 @@ _OC_NOTIFY_LIB="$OC_TOOLS_DIR/lib/oc-notify.sh"
 # NOTIFY_RETRY_BUDGET (180 s) re-sending through a library that cannot appear.
 _OC_NOTIFY_MISSING=0
 if [ -f "$_OC_NOTIFY_LIB" ]; then source "$_OC_NOTIFY_LIB"; else _OC_NOTIFY_MISSING=1; fi   # E-F4 (v0.4.97): shared wake contract
+# (#192) The THIRD optional library, and the same defect class as the two above:
+# an absent oc-sessions.sh leaves `oc_sessions_kind`/`oc_sessions_lane`
+# UNDEFINED, so the fan-out's child->lane resolution would answer rc 127 for
+# every session and the fan-out would have to read that as... what? Every reading
+# is wrong: "not a session" re-opens the exact hole #192 closes, and "skip"
+# throws away a ship's notifications over a missing FILE. So the absence is
+# recorded ONCE here and turned into a NAMED, stated degradation at the use site
+# (`resolve_lane` journals `sessions-lib-missing` and notifies the trailer uuid
+# verbatim, which is today's behaviour) rather than an undeclared code.
+_OC_SESSIONS_LIB="$OC_TOOLS_DIR/lib/oc-sessions.sh"
+_OC_SESSIONS_MISSING=0
+if [ -f "$_OC_SESSIONS_LIB" ]; then source "$_OC_SESSIONS_LIB"; else _OC_SESSIONS_MISSING=1; fi

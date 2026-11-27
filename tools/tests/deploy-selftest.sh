@@ -45,6 +45,32 @@
   export OC_SWAP_IN_UNIT_CGROUP=0
   local SD="$T/state"
   mkdir -p "$SD/tools" "$SD/backups" "$T/bin"
+  # (#192) HERMETIC session store for the fan-out's child->lane resolution. The
+  # fan-out now asks the SESSION STORE what a commit trailer names, and every leg
+  # below runs it as a CHILD PROCESS — so without this export the suite would
+  # read the LIVE ops DB. That is the same non-hermeticity the notify stub and the
+  # gh stub exist to prevent, one layer down, and it fails BOTH ways: it reddens
+  # on a box whose profile differs, and it PASSES on a box whose DB happens to
+  # hold the fixture uuids.
+  #   aaaaaaaa/cccccccc/dddddddd/99999999  lanes — the uuids the pre-existing
+  #       legs already notify, so their counts are UNCHANGED by this feature. That
+  #       is deliberate: those legs must keep measuring what they were written to
+  #       measure, and a resolver that rewrote a lane would redden them.
+  #   e1111111  child WITH a parent lane (aaaaaaaa) — the #192 fix path
+  #   e2222222  child with NO parent — the unresolvable path
+  #   bbbbbbbb  deliberately ABSENT: the dead-uuid legs assert the TRANSPORT's
+  #       rc 2 `no_route`, and a row here would mask it as a resolution.
+  SDB="$SD/sessions.db"
+  "$OC_TOOLS_DIR/lib/oc_sqlite" "$SDB" "
+CREATE TABLE sessions (id TEXT PRIMARY KEY NOT NULL, title TEXT, model TEXT, created_at INTEGER NOT NULL, parent_session_id TEXT);
+INSERT INTO sessions VALUES ('aaaaaaaa-1111-2222-3333-444444444444','lane fixture A','m',0,NULL);
+INSERT INTO sessions VALUES ('cccccccc-1111-2222-3333-444444444444','lane fixture C','m',0,NULL);
+INSERT INTO sessions VALUES ('dddddddd-1111-2222-3333-444444444444','lane fixture D','m',0,NULL);
+INSERT INTO sessions VALUES ('99999999-8888-7777-6666-555555555555','lane fixture 9','m',0,NULL);
+INSERT INTO sessions VALUES ('e1111111-1111-4111-8111-111111111111','subagent: fanout-child','m',0,'aaaaaaaa-1111-2222-3333-444444444444');
+INSERT INTO sessions VALUES ('e2222222-2222-4222-8222-222222222222','subagent: fanout-orphan','m',0,NULL);" >/dev/null 2>&1 \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 could not plant the fan-out session store"; }
+  export OC_SESSIONS_DB="$SDB"
   # #168 cut 5: the DISPATCHER is gone, so the children below name the tool that
   # OWNS each verb. This is deliberately NOT a router function: a leg that called
   # a shim could pass while the file that owns the behaviour was broken, which is
@@ -1373,6 +1399,116 @@ Session-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
   [ "$_n623_rc" = '"verb_rc":2' ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: skip row does not carry verb_rc:2 (got '$_n623_rc')"; }
   grep -q '"retries":0' "$(ls "$SD/oc-deploy/journal/"fanout-669-*.jsonl | head -1)" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: rc 2 (no_route) RETRIED -- it is permanent, a re-send cannot help"; }
+
+  # 17k. (#192) A CHILD TRAILER IS WALKED TO ITS LANE. Before this, the fan-out
+  #      handed every trailer uuid to notify_one verbatim, so a commit stamped by
+  #      a sub-agent woke a session no lane reads — and journalled `notified`,
+  #      which is a durable claim of success. The fixture's culprit carries
+  #      `Session-Id: e1111111…`, a `subagent:` row whose parent is lane
+  #      `aaaaaaaa…`: the wake must go to the LANE, the child must appear nowhere
+  #      in the notify log, and the delivery row must record `resolved_from` so a
+  #      rewritten address is auditable rather than inferred.
+  git init -q --bare -b main "$T/red6.git"
+  git init -q -b main "$T/redc6"; git -C "$T/redc6" remote add origin "$T/red6.git"; git -C "$T/redc6" config user.email t@t; git -C "$T/redc6" config user.name t
+  printf 'l1\nl2\nv1\nl4\nl5\nl6\nl7\n' > "$T/redc6/bad.txt"
+  git -C "$T/redc6" add bad.txt; git -C "$T/redc6" commit -qm base
+  git -C "$T/redc6" push -q "$T/red6.git" HEAD
+  git clone -q "$T/red6.git" "$T/redw6"; git -C "$T/redw6" config user.email t@t; git -C "$T/redw6" config user.name t
+  sed -i 's/^v1$/v2/' "$T/redw6/bad.txt"; git -C "$T/redw6" add bad.txt
+  git -C "$T/redw6" commit -qm "feat: sub-agent authored change
+
+Session-Id: e1111111-1111-4111-8111-111111111111"
+  git -C "$T/redw6" push -q origin HEAD
+  printf '%s\n' "$(git -C "$T/redw6" rev-parse HEAD)" > "$SD/red-head"
+  : > "$NOTIFY_LOG"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc6" OC_DEPLOY_REMOTE="$T/red6.git" \
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 672 2>&1)"; rc=$?
+  check_rc "fanout-child-resolve-rc" $rc 0
+  check_has "fanout-child-resolve-counts" "$out" "notified=1 skipped=0 unowned=0 unresolved=0"
+  grep -q "aaaaaaaa-1111" "$NOTIFY_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the child's LANE was not notified"; }
+  grep -q "e1111111-1111" "$NOTIFY_LOG" && { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the CHILD session was notified (the bug this fixes)"; } || pass=$((pass+1))
+  FJ6="$(ls "$SD/oc-deploy/journal/"fanout-672-*.jsonl 2>/dev/null | head -1)"
+  grep '"step":"notified"' "$FJ6" 2>/dev/null | grep -q '"resolved_from":"e1111111-1111-4111-8111-111111111111"' \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the delivery row does not record resolved_from"; }
+  jq -e '.runs["672"].notified == 1' "$SD/fanout.state" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 resolved run not marked done"; }
+  # 17l. (#192) A CHILD WITH NO PARENT RECORDED — the pre-ship row shape (240 of
+  #      them on the live box) — is UNRESOLVABLE: no lane exists to walk to, and
+  #      waking the child is a guaranteed no-op. So it is NOT sent, it is counted
+  #      in its OWN tally (`unresolved`, never folded into `skipped`, which is the
+  #      transport's verdict about a lane), and it is journalled with the reason.
+  #      The run still completes rc 0 — an unattributable trailer is a defect in
+  #      the COMMIT, not a reason to abandon a ship's notifications.
+  git init -q --bare -b main "$T/red7.git"
+  git init -q -b main "$T/redc7"; git -C "$T/redc7" remote add origin "$T/red7.git"; git -C "$T/redc7" config user.email t@t; git -C "$T/redc7" config user.name t
+  printf 'l1\nl2\nv1\nl4\nl5\nl6\nl7\n' > "$T/redc7/bad.txt"
+  git -C "$T/redc7" add bad.txt; git -C "$T/redc7" commit -qm base
+  git -C "$T/redc7" push -q "$T/red7.git" HEAD
+  git clone -q "$T/red7.git" "$T/redw7"; git -C "$T/redw7" config user.email t@t; git -C "$T/redw7" config user.name t
+  sed -i 's/^v1$/v2/' "$T/redw7/bad.txt"; git -C "$T/redw7" add bad.txt
+  git -C "$T/redw7" commit -qm "feat: orphan sub-agent change
+
+Session-Id: e2222222-2222-4222-8222-222222222222"
+  git -C "$T/redw7" push -q origin HEAD
+  printf '%s\n' "$(git -C "$T/redw7" rev-parse HEAD)" > "$SD/red-head"
+  : > "$NOTIFY_LOG"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc7" OC_DEPLOY_REMOTE="$T/red7.git" \
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 673 2>&1)"; rc=$?
+  check_rc "fanout-child-orphan-rc" $rc 0
+  check_has "fanout-child-orphan-counts" "$out" "notified=0 skipped=0 unowned=0 unresolved=1"
+  [ ! -s "$NOTIFY_LOG" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 an orphan child was NOTIFIED (a wake nobody can read)"; }
+  FJ7="$(ls "$SD/oc-deploy/journal/"fanout-673-*.jsonl 2>/dev/null | head -1)"
+  grep '"step":"unresolved"' "$FJ7" 2>/dev/null | grep -q '"reason":"no-parent"' \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 no unresolved/no-parent journal line"; }
+  grep '"step":"unresolved"' "$FJ7" 2>/dev/null | grep -q '"notified":false' \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the unresolved row must state it did NOT notify"; }
+  jq -e '.runs["673"].unresolved == 1' "$SD/fanout.state" >/dev/null 2>&1 \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the unresolvable count is not in fanout.state"; }
+  # 17m. (#192) A PHANTOM TRAILER (a uuid in NO store row — issue #192's own
+  #      measured case: an external agent invented one) is COUNTED but STILL SENT.
+  #      That asymmetry is the contract, not an oversight: `unknown` is a fact
+  #      about the store that has innocent causes (another profile, a rotated DB),
+  #      while the transport owns the verdict on a dead address (rc 2 no_route,
+  #      #623). Pre-empting it here would re-label a transport verdict as a store
+  #      verdict — so it is reported and delivered, and the tally is where a ship
+  #      says "one trailer in this range names no session".
+  #      Its OWN fixture and its OWN uuid (77777777…), deliberately NOT any uuid a
+  #      previous leg uses: reusing one would silently test a lane.
+  git init -q --bare -b main "$T/red8.git"
+  git init -q -b main "$T/redc8"; git -C "$T/redc8" remote add origin "$T/red8.git"; git -C "$T/redc8" config user.email t@t; git -C "$T/redc8" config user.name t
+  printf 'l1\nl2\nv1\nl4\nl5\nl6\nl7\n' > "$T/redc8/bad.txt"
+  git -C "$T/redc8" add bad.txt; git -C "$T/redc8" commit -qm base
+  git -C "$T/redc8" push -q "$T/red8.git" HEAD
+  git clone -q "$T/red8.git" "$T/redw8"; git -C "$T/redw8" config user.email t@t; git -C "$T/redw8" config user.name t
+  sed -i 's/^v1$/v2/' "$T/redw8/bad.txt"; git -C "$T/redw8" add bad.txt
+  git -C "$T/redw8" commit -qm "feat: phantom-session change
+
+Session-Id: 77777777-1111-2222-3333-444444444444"
+  git -C "$T/redw8" push -q origin HEAD
+  printf '%s\n' "$(git -C "$T/redw8" rev-parse HEAD)" > "$SD/red-head"
+  : > "$NOTIFY_LOG"
+  out="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$T/redc8" OC_DEPLOY_REMOTE="$T/red8.git" \
+    OC_DEPLOY_NOTIFY="$SD/notify" "$FANOUT_BIN" fanout --run 674 2>&1)"; rc=$?
+  check_rc "fanout-phantom-rc" $rc 0
+  check_has "fanout-phantom-counts" "$out" "unresolved=1"
+  grep -q "77777777-1111" "$NOTIFY_LOG" && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 an UNKNOWN trailer was suppressed — the transport owns that verdict, not the store"; }
+  FJ8="$(ls "$SD/oc-deploy/journal/"fanout-674-*.jsonl 2>/dev/null | head -1)"
+  grep '"step":"unresolved"' "$FJ8" 2>/dev/null | grep -q '"reason":"not-in-store"' \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 no unresolved/not-in-store journal line"; }
+  grep '"step":"unresolved"' "$FJ8" 2>/dev/null | grep -q '"notified":true' \
+    && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the not-in-store row must state it WAS still sent"; }
+  # 17n. (#192) THE DEGRADATION IS LOUD, and it is the OLD behaviour — a missing
+  #      session library must not read as a clean resolution. Asserted on the
+  #      SOURCE rather than by deleting the library from a live tree: the leg
+  #      proves the guard exists AND names the consequence, and the negative
+  #      control is that the guard text is absent from the resolve step's happy
+  #      path (so the warning cannot fire on every run and become noise).
+  grep -q '_OC_SESSIONS_MISSING' "$SRC_FANOUT" && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 resolve_lane has no missing-library guard (a broken tree would read as a clean resolution)"; }
+  grep -q 'child->lane resolution (#192) did NOT run' "$SRC_FANOUT" && pass=$((pass+1)) \
+    || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the degradation does not NAME what did not run"; }
+
   # 17e2. (#623) a TRANSIENT code RETRIES and the recovery is journaled. The stub
   #      exits 4 (transport) once, then 0 -- so this leg proves the re-send both
   #      FIRES and is VISIBLE, which is the whole point (a silent recovery would
