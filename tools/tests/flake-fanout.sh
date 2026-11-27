@@ -143,6 +143,15 @@ for last; do :; done
 exit 0
 NSTUB
   chmod +x "$sd/notify"
+  # (#192) HERMETIC session store. `oc-fanout` now asks the SESSION STORE what a
+  # trailer uuid names, so without this the harness would read the LIVE ops DB on
+  # every iteration — and a harness whose verdict depends on the box's session
+  # history is measuring the box, not the tool. The table is deliberately EMPTY:
+  # the fixture uuid then resolves to `unknown`, which is SENT (the transport owns
+  # the rc 2 verdict), so the counts this harness asserts are unchanged.
+  "$TOOLS_DIR/lib/oc_sqlite" "$sd/sessions.db" \
+    "CREATE TABLE sessions (id TEXT PRIMARY KEY NOT NULL, title TEXT, model TEXT, created_at INTEGER NOT NULL, parent_session_id TEXT);" \
+    >/dev/null 2>&1 || { echo "fixture: could not plant sessions.db"; exit 1; }
   # gh stub: run 669 is RED with one annotation at bad.txt:3 (the blamed site).
   cat > "$sd/gh" <<'GSTUB'
 #!/usr/bin/env bash
@@ -179,6 +188,7 @@ one_run() { # $1 = iteration, $2 = result file, $3 = out file
   o="$(OC_TOOLS_NOLOG=1 OC_NO_FLOODGUARD=1 \
        OC_DEPLOY_STATE_DIR="$sd" OC_DEPLOY_GH="$sd/gh" OC_DEPLOY_REPO="$T/redc5" \
        OC_DEPLOY_REMOTE="$T/red5.git" OC_DEPLOY_NOTIFY="$sd/notify" NOTIFY_LOG="$nlog" \
+       OC_SESSIONS_DB="$sd/sessions.db" \
        "$SELF_BIN" fanout --run 669 2>&1)"; rc=$?
   printf '%s\n' "$o" > "$out"
   if [ "$rc" -ne 0 ]; then

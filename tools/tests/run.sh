@@ -2275,6 +2275,30 @@ fi
 section "oc-fanout + attribution (#24)"
 if tool oc-fanout; then
   d="$(mktemp -d)"; SD="$d/state"; mkdir -p "$SD/tools"
+  # (#192) HERMETIC session store for the fan-out's child->lane resolution. The
+  # fan-out asks the SESSION STORE what a commit trailer names, and every leg in
+  # this section runs it as a CHILD PROCESS — so without an explicit store the
+  # suite would read the LIVE ops DB. That is the same non-hermeticity the notify
+  # and gh stubs above exist to prevent, one layer down, and it fails BOTH ways:
+  # it reddens on a box whose profile differs, and it silently PASSES on a box
+  # whose DB happens to hold these fixture uuids. The uuids below are the ones
+  # these legs already notify, and every one of them is planted as a LANE, so
+  # their counts are UNCHANGED by the resolver — that is the point: these legs
+  # must keep measuring what they were written to measure. A resolver that
+  # rewrote one of them would redden them, which is the control this store gives.
+  SDB="$SD/sessions.db"
+  "$TOOLS_DIR/lib/oc_sqlite" "$SDB" "
+CREATE TABLE sessions (id TEXT PRIMARY KEY NOT NULL, title TEXT, model TEXT, created_at INTEGER NOT NULL, parent_session_id TEXT);
+INSERT INTO sessions VALUES ('aaaaaaaa-1111-2222-3333-444444444444','lane fixture A','m',0,NULL);
+INSERT INTO sessions VALUES ('bbbbbbbb-1111-2222-3333-444444444444','lane fixture B','m',0,NULL);
+INSERT INTO sessions VALUES ('cccccccc-1111-2222-3333-444444444444','lane fixture C','m',0,NULL);
+INSERT INTO sessions VALUES ('99999999-8888-7777-6666-555555555555','lane fixture 9','m',0,NULL);" >/dev/null 2>&1 \
+    || bad "#192 could not plant the fan-out session store (child->lane resolution would read the LIVE DB)"
+  # Deliberately NOT exported: this section `rm -rf`s "$d" at its end, and an
+  # exported path to a deleted store would make every LATER section's fan-out
+  # print the loud "store not readable ... did NOT run" warning. The store is
+  # passed INLINE on each invocation instead, so its lifetime is exactly the
+  # legs that use it.
   # contributors: real oc-attrib over a trailer fixture -> uuid + issue + sha7
   git init -q -b main "$d/crepo"
   git -C "$d/crepo" config user.email t@t; git -C "$d/crepo" config user.name t
@@ -2321,7 +2345,7 @@ NOTIFYSHIM
   chmod +x "$SD/notify"
   : > "$d/notify.log"
   OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-fanout" fanout --run 222 2>&1)"; rck=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" OC_SESSIONS_DB="$SDB" "$TOOLS_DIR/ship/oc-fanout" fanout --run 222 2>&1)"; rck=$?
   if [ "$rck" -eq 0 ] && case "$OUTK" in *"notified=1 skipped=1"*) true ;; *) false ;; esac; then
     ok "fanout GREEN: notified=1 skipped=1"
   else
@@ -2332,7 +2356,7 @@ NOTIFYSHIM
   jq -e '.runs["222"]' "$SD/fanout.state" >/dev/null 2>&1 && ok "fanout GREEN: state marked" || bad "fanout GREEN: state unmarked"
   grep -q '"reason":"dead"' "$SD"/oc-deploy/journal/fanout-222-*.jsonl 2>/dev/null && ok "dead uuid: skip journaled" || bad "dead uuid: no skip journal line"
   OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_ATTRIB="$SD/tools/attrib-stub" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-fanout" fanout --run 222 2>&1)"; rck=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" OC_SESSIONS_DB="$SDB" "$TOOLS_DIR/ship/oc-fanout" fanout --run 222 2>&1)"; rck=$?
   [ "$rck" -eq 0 ] && case "$OUTK" in *"reason=done"*) true ;; *) false ;; esac \
     && ok "fanout idempotent rerun: reason=done" || bad "fanout idempotent rerun (rc=$rck)"
   # RED leg: culprit commit (trailer cccccccc-1111) blamed at bad.txt:3
@@ -2350,7 +2374,7 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
   git -C "$d/redw1" push -q "$d/red1.git" HEAD
   git -C "$d/redw1" rev-parse HEAD > "$SD/red-head"
   OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_REPO="$d/redc1" OC_DEPLOY_REMOTE="$d/red1.git" \
-    OC_DEPLOY_NOTIFY="$SD/notify" "$TOOLS_DIR/ship/oc-fanout" fanout --run 666 2>&1)"; rck=$?
+    OC_DEPLOY_NOTIFY="$SD/notify" OC_SESSIONS_DB="$SDB" "$TOOLS_DIR/ship/oc-fanout" fanout --run 666 2>&1)"; rck=$?
   if [ "$rck" -eq 0 ] && case "$OUTK" in *"notified=1 skipped=0 unowned=0"*) true ;; *) false ;; esac; then
     ok "fanout RED: blamed culprit notified=1"
   else
@@ -2364,7 +2388,7 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
     bad "fanout RED: attributed line missing/wrong"
   fi
   jq -e '.runs["666"].notified == 1' "$SD/fanout.state" >/dev/null 2>&1 && ok "fanout RED: state marked" || bad "fanout RED: state unmarked"
-  OUTK="$(OC_DEPLOY_STATE_DIR="$SD" "$TOOLS_DIR/ship/oc-fanout" fanout 2>&1)"; rck=$?
+  OUTK="$(OC_DEPLOY_STATE_DIR="$SD" OC_SESSIONS_DB="$SDB" "$TOOLS_DIR/ship/oc-fanout" fanout 2>&1)"; rck=$?
   [ "$rck" -eq 2 ] && ok "fanout without --run -> 2 (usage)" || bad "fanout usage (rc=$rck, want 2)"
   rm -rf "$d"
 fi
