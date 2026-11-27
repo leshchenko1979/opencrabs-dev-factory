@@ -96,6 +96,7 @@ SECTION_MODULES: dict[int, tuple[str, ...]] = {
     24: ("test_ledger_edge.py",), 25: ("test_review_persist.py",), 26: ("test_gate.py",),
     27: ("test_post_receipts.py",), 28: ("test_usage_rc.py",), 29: ("test_usage_rc.py",),
     30: ("test_branch_sweep.py",), 31: ("test_usage_rc.py",), 32: ("test_ledger_edge.py",),
+    33: ("test_ledger_lock_budget.py",),
     34: ("test_shadow_rotate.py",), 35: ("test_smoke_evidence.py",),
     36: ("test_usage_rc.py",), 37: ("test_usage_rc.py",), 38: ("test_usage_rc.py",),
     39: ("test_usage_rc.py",), 40: ("test_usage_rc.py",), 41: ("test_usage_rc.py",),
@@ -109,7 +110,9 @@ SECTION_MODULES: dict[int, tuple[str, ...]] = {
     57: ("test_notify_lib.py",), 58: ("test_notify_lib.py",),
     59: ("test_snap.py",), 60: ("test_snap.py",),
     61: ("test_harness_sigkill.py",),
-    65: ("test_harness_pool_mech.py",),
+    63: ("test_oc_root_resolver.py",),
+    64: ("test_quoting_guard.py",),
+    65: ("test_entry_preamble.py", "test_harness_pool_mech.py"),
     66: ("test_cgroup.py", "test_harness_cgroup.py", "test_harness_pool.py",
          "test_harness_serialisation.py"),
     67: ("test_harness_lock.py",), 68: ("test_harness_scratch.py",),
@@ -123,21 +126,10 @@ DEFERRED: dict[int, str] = {
         "eliminated and the tool archived. The shell section is a header with no "
         "body: it asserts nothing, so a port would be an empty test inflating the "
         "pass count.",
-    33: "oc-ledger lock budget (#619) — 131 lines driving concurrent lock "
-        "contention. Its own --selftest covers the kernel; a port would need the "
-        "same wall-clock budget to assert anything new. Deferred, not dropped.",
     62: "red-receipt transcript (fail log) — asserts run.sh's OWN bad() accumulator "
         "by running a synthetic failing section in a subshell. There is no run.sh "
         "accumulator inside pytest to assert; the equivalent claim is pytest's own "
         "exit code, which every module already depends on.",
-    63: "lib/oc-root.sh resolver coherence (F-L1/F-L2) — 378 lines / 44 assertions "
-        "building a synthetic tree and walking every entry preamble through depth "
-        "permutations. A property test that needs the whole block rewritten, not "
-        "transliterated. Deferred, not dropped.",
-    64: "shell-quoting guard — 250 lines / 32 assertions whose subject is the "
-        "SOURCE TEXT of every tool: it scans for python3 -c strings and heredoc "
-        "fences that break under quoting. A port would scan the same corpus with "
-        "the same scanner. Deferred, not dropped.",
 }
 
 # Sections whose pytest mass is currently BELOW their shell site count. Pinned,
@@ -151,7 +143,7 @@ KNOWN_THIN: dict[int, tuple[int, int]] = {
     43: (10, 5),    # rc --help fleet sweep — parametrized, mass undercounts
     52: (6, 5),     # oc-lint-laws — one law-shape leg short
     53: (7, 5),     # oc-fmt — one identity leg short
-    65: (17, 13),   # entry-preamble fixpoint — per-tool loop, mass undercounts
+    64: (28, 19),   # quoting guard — 3 parametrized arms; AST mass undercounts them
     68: (16, 14),   # scratch root — two legs short
 }
 
@@ -295,10 +287,65 @@ def test_deferred_sections_are_named_with_a_reason():
         assert reason and len(reason) > 40, (
             "§%d is deferred with %r — every deferral needs the reason a reader "
             "would otherwise have to guess" % (sec, reason))
-    # §18 is the only section that asserts NOTHING in shell and is not a port.
-    assert set(DEFERRED) == {18, 33, 62, 63, 64}, (
+    # §18 asserts nothing at all (retired header); §62's subject is run.sh's own
+    # bad() accumulator, which has no pytest-side equivalent to assert.
+    assert set(DEFERRED) == {18, 62}, (
         "the deferred set changed to %r — update the README's 'Not ported' table "
         "in the same commit" % (sorted(DEFERRED),))
+
+def test_no_deferred_section_has_a_pytest_module_that_ports_it():
+    """THE STALENESS GUARD: a ported section may not stay in ``DEFERRED``.
+
+    This is the failure mode that made this census lie. §33, §63 and §64 each
+    landed as a real module on their own branch while this register still said
+    "no pytest module, here is why" — so the census reported ZERO coverage for
+    three sections that were fully covered, and every test above stayed GREEN
+    because a deferred section is never asked for its mass. A register that is
+    only checked for internal consistency cannot notice the world moving.
+
+    The check is deliberately mechanical: take the section's title from run.sh,
+    strip the parenthesised issue refs and glosses, and ask whether any mapped
+    module's own docstring already carries those words. A module whose docstring
+    names the subject is a module that ports it. Requiring the FULL token set
+    keeps this off accidental neighbours: measured, the true match scores 1.0
+    while the best false candidate scores 0.5 (§62 vs the harness modules, which
+    share only "transcript"-adjacent words).
+
+    What this cannot see is a section ported under a title that shares no words
+    with run.sh's — no mechanical check can, and inventing a fuzzy threshold to
+    cover it would red on legitimate near-misses instead.
+    """
+    titles, _counts = shell_census()
+    stop = {"the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with",
+            "not", "is", "are", "it", "no", "every", "all", "one", "per", "by",
+            "from", "as", "at", "that", "this", "its"}
+
+    def tokens(text: str) -> set[str]:
+        text = re.sub(r"\(#[^)]*\)", "", text)          # (issues)
+        text = re.sub(r"\([^)]*\)", "", text)           # (glosses)
+        return {w for w in re.findall(r"[a-z0-9][a-z0-9_.-]*", text.lower())
+                if w not in stop and len(w) > 2}
+
+    docs = {}
+    for mod in {m for mods in SECTION_MODULES.values() for m in mods}:
+        doc = ast.get_docstring(ast.parse(
+            (PYTEST_DIR / mod).read_text(encoding="utf-8", errors="replace"))) or ""
+        docs[mod] = tokens(doc)
+
+    ported = []
+    for sec in sorted(DEFERRED):
+        want = tokens(titles[sec - 1])
+        if not want:
+            continue
+        for mod, have in docs.items():
+            if want <= have:
+                ported.append("§%d (%r) is DEFERRED but %s already ports it"
+                              % (sec, titles[sec - 1], mod))
+    assert not ported, (
+        "the deferred register is STALE — these sections now have a module of "
+        "their own, so the census is reporting zero coverage that exists:\n  %s\n"
+        "Move each to SECTION_MODULES, drop its DEFERRED entry, and re-derive "
+        "KNOWN_THIN in the same commit." % "\n  ".join(ported))
 
 def test_zero_assertion_sections_are_the_declared_ones():
     """Exactly §18 and §32 assert nothing in shell — and both are deliberate.
@@ -383,8 +430,8 @@ def test_pytest_total_does_not_regress():
     module nobody thought to re-map.
     """
     total = sum(module_mass(m) for m in {m for mods in SECTION_MODULES.values() for m in mods})
-    assert total >= 480, (
-        "the mapped modules now carry %d assertion sites, down from the 480 "
+    assert total >= 560, (
+        "the mapped modules now carry %d assertion sites, down from the 560 "
         "floor — assertions were deleted somewhere" % total)
 
 # =============================================================================
