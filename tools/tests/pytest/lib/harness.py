@@ -332,22 +332,33 @@ class SerialWitness:
         return False
 
     @staticmethod
-    def overlaps(directory, group: str) -> list[tuple[float, float, float, float]]:
-        """``[(a_enter, a_exit, b_enter, b_exit)]`` for every overlapping pair."""
+    def spans(directory, group: str) -> list[tuple[float, float]]:
+        """``[(enter, exit)]`` for every completed hold of ``group``'s witness.
+
+        The ONE parser for the interval log — ``overlaps`` and ``peak`` both read
+        through it, so the observation and the census can never disagree about
+        what the legs did.
+        """
         log = Path(directory) / ("intervals.%s" % group)
         if not log.is_file():
             return []
-        spans = []
-        stack = []
+        out = []
+        stack: list[float] = []
         for line in log.read_text().splitlines():
             parts = line.split()
             if len(parts) < 3:
                 continue
-            kind, _grp, ts = parts[0], parts[1], float(parts[2])
+            kind, ts = parts[0], float(parts[2])
             if kind == "enter":
                 stack.append(ts)
             elif kind == "exit" and stack:
-                spans.append((stack.pop(), ts))
+                out.append((stack.pop(), ts))
+        return out
+
+    @staticmethod
+    def overlaps(directory, group: str) -> list[tuple[float, float, float, float]]:
+        """``[(a_enter, a_exit, b_enter, b_exit)]`` for every overlapping pair."""
+        spans = SerialWitness.spans(directory, group)
         bad = []
         for i in range(len(spans)):
             for j in range(i + 1, len(spans)):
@@ -355,6 +366,25 @@ class SerialWitness:
                 if a[0] < b[1] and b[0] < a[1]:
                     bad.append((a[0], a[1], b[0], b[1]))
         return bad
+
+    @staticmethod
+    def peak(directory, group: str) -> int:
+        """Peak number of legs of ``group`` holding the witness at one instant.
+
+        The witness-side twin of ``lib/receipt.py``'s ``max_concurrency``: the
+        receipt counts what the SCHEDULER reported, this counts what the LEGS
+        observed. A group pinned correctly reads 1 from both.
+        """
+        events = []
+        for start, stop in SerialWitness.spans(directory, group):
+            events.append((start, 1))
+            events.append((stop, -1))
+        events.sort()
+        depth = peak = 0
+        for _, delta in events:
+            depth += delta
+            peak = max(peak, depth)
+        return peak
 
 
 # =============================================================================
