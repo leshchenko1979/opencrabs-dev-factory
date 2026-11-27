@@ -825,6 +825,15 @@ def cached_selftest(request, run_selftest):
         # its cache honoured, and the fixture is set up before that install.
         cache = getattr(request.config, "_oc_cache", None)
 
+        # Rule 5: a HIT is never invisible. When the caller passes no emitter
+        # and the cache is on, the default emitter writes the hit line to
+        # stderr — but ONLY when the run is verbose, so a normal (non -v) run's
+        # output stays byte-identical to today's (rule 1). Without this the
+        # fixture's own hits would be silent, which is exactly the failure mode
+        # the requirement exists to prevent.
+        if emit is None and cache is not None and _cache.verbose(request.config):
+            emit = lambda line: sys.stderr.write(line + "\n")  # noqa: E731
+
         def _runner():
             return run_selftest(tool, timeout=timeout, extra_args=extra_args,
                                 env=env, allow_live_state=allow_live_state)

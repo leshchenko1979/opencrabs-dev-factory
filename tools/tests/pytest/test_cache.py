@@ -695,3 +695,45 @@ def test_fixture_still_runs_when_the_previous_run_failed(
     second = cached_selftest("oc-issue-scope", timeout=120,
                              extra_args=("--no-such-flag",))
     assert second.cached is False, "a FAIL must never be served from cache"
+
+def test_fixture_hit_prints_its_key_when_verbose(
+        request, cached_selftest, monkeypatch, tmp_path, capsys):
+    """Rule 5 through the FIXTURE: a verbose hit names the key on stderr.
+
+    The library-level leg (``test_a_hit_is_never_invisible``) proves ``emit``
+    works when a caller supplies one. This leg proves the FIXTURE supplies one
+    by default — without it a real run's hits were silent, which is the exact
+    "hit indistinguishable from a 0 ms pass" failure the rule exists to stop.
+    """
+    cache = new_cache(tmp_path, verbose=True)
+    monkeypatch.setattr(request.config, "_oc_cache", cache, raising=False)
+    monkeypatch.setattr(request.config.option, "oc_cache_verbose", True,
+                        raising=False)
+    monkeypatch.setattr(request.config.option, "verbose", 1, raising=False)
+
+    first = cached_selftest("oc-issue-scope", timeout=120)
+    assert first.cached is False
+    capsys.readouterr()          # drop the first call's output
+
+    second = cached_selftest("oc-issue-scope", timeout=120)
+    assert second.cached is True
+    err = capsys.readouterr().err
+    assert "oc-cache: HIT oc-issue-scope" in err, err
+    assert oc_cache.cache_key(oc_cache.resolve_tool("oc-issue-scope"))[:12] in err
+
+def test_fixture_hit_is_silent_without_verbose(
+        request, cached_selftest, monkeypatch, tmp_path, capsys):
+    """Rule 1 + 5 together: no ``-v`` means no extra output, even on a hit."""
+    cache = new_cache(tmp_path, verbose=False)
+    monkeypatch.setattr(request.config, "_oc_cache", cache, raising=False)
+    monkeypatch.setattr(request.config.option, "oc_cache_verbose", False,
+                        raising=False)
+    monkeypatch.setattr(request.config.option, "verbose", 0, raising=False)
+
+    cached_selftest("oc-issue-scope", timeout=120)
+    capsys.readouterr()
+    second = cached_selftest("oc-issue-scope", timeout=120)
+    assert second.cached is True
+    captured = capsys.readouterr()
+    assert "oc-cache: HIT" not in captured.err
+    assert "oc-cache" not in captured.out
