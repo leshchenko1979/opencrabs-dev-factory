@@ -53,8 +53,21 @@ _PYTEST_DIR = Path(__file__).resolve().parent
 if str(_PYTEST_DIR) not in sys.path:
     sys.path.insert(0, str(_PYTEST_DIR))
 
+from lib import cache as _cache  # noqa: E402
 from lib import cgroup as _cgroup  # noqa: E402
 from lib import receipt as _receipt  # noqa: E402
+
+# --- the opt-in content-hash selftest cache (#197) ---------------------------
+# ``lib/cache.py`` carries pytest hookimpls (``pytest_addoption`` and friends),
+# so it has to be REGISTERED as a plugin. ``-p lib.cache`` cannot work: ``-p``
+# is resolved at preparse, before this conftest has put ``lib/`` on sys.path, so
+# it dies with "No module named 'lib'". ``pytest_plugins`` here is loaded after
+# this module is imported, i.e. after the sys.path insert above.
+#
+# This is ADDITIVE and INERT: the plugin adds four options and, with none of
+# them and no ``OC_PYTEST_CACHE=1``, ``from_config`` returns ``None`` — no read,
+# no write, no output. Registration alone changes no existing test's behaviour.
+pytest_plugins = ("lib.cache",)
 
 # =============================================================================
 # Constants
@@ -487,15 +500,21 @@ def git_repo(scratch, monkeypatch):
 class Result:
     """Small result object: ``.rc .out .err .duration_ms`` (+ ``.timed_out``)."""
 
-    __slots__ = ("rc", "out", "err", "duration_ms", "timed_out", "cmd")
+    __slots__ = ("rc", "out", "err", "duration_ms", "timed_out", "cmd",
+                 "cached")
 
-    def __init__(self, rc, out, err, duration_ms, timed_out, cmd):
+    def __init__(self, rc, out, err, duration_ms, timed_out, cmd,
+                 cached=False):
         self.rc = rc
         self.out = out
         self.err = err
         self.duration_ms = duration_ms
         self.timed_out = timed_out
         self.cmd = cmd
+        # True only when a cache HIT produced this Result, i.e. no subprocess
+        # ran. Always False for a real run, so `assert not res.cached` is the
+        # "this leg actually executed" assertion the cache tests use.
+        self.cached = cached
 
     @property
     def combined(self):
@@ -782,6 +801,45 @@ def battery_lock(request):
     request.addfinalizer(_release)
     return BATTERY_LOCK_PATH
 
+
+# =============================================================================
+# 8. cached_selftest — the OPT-IN content-hash cache (#197)
+# =============================================================================
+@pytest.fixture
+def cached_selftest(request, run_selftest):
+    """Callable: ``cached_selftest("oc-ledger", timeout=900)`` -> ``Result``.
+
+    A thin wrapper over ``run_selftest`` that, WHEN the cache is enabled, skips
+    the subprocess on a byte-identical PASS. With no ``--oc-cache`` and no
+    ``OC_PYTEST_CACHE=1`` the cache object is ``None`` and this is a pure
+    passthrough — the returned ``Result`` is the one ``run_selftest`` produced,
+    with nothing added, so today's behaviour is unchanged (rule 1).
+
+    A cache HIT returns a ``Result`` with ``rc=0`` and the STORED duration, and
+    ``.cached`` set, so a caller can assert "this did not run" without a clock.
+    """
+    def _call(tool, *, timeout=None, extra_args=(), env=None,
+              allow_live_state=False, emit=None):
+        # Read the cache at CALL time, not at setup time: a test that installs
+        # its own cache on the config (the cache module's own legs do) must see
+        # its cache honoured, and the fixture is set up before that install.
+        cache = getattr(request.config, "_oc_cache", None)
+
+        def _runner():
+            return run_selftest(tool, timeout=timeout, extra_args=extra_args,
+                                env=env, allow_live_state=allow_live_state)
+
+        outcome = _cache.run_cached(
+            cache, tool=tool, tool_path=tool_path(tool), runner=_runner,
+            args=extra_args, emit=emit)
+
+        return Result(rc=outcome.rc, out=getattr(outcome, "out", ""),
+                      err=getattr(outcome, "err", ""),
+                      duration_ms=outcome.duration_ms, timed_out=False,
+                      cmd=[str(tool_path(tool)), "--selftest", *extra_args],
+                      cached=outcome.cached)
+
+    return _call
 
 # =============================================================================
 # hooks — pytest only sees hooks defined in a conftest or a plugin, so the
