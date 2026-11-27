@@ -37,6 +37,13 @@ REPO = HERE.parent.parent.parent
 CHK_RE = re.compile(r'\bchk\s+"([^"]+)"')
 BAD_RE = re.compile(r'\bbad\s+"([^"$]+)')
 
+# A shell name often carries a DIAGNOSTIC suffix: ``bad "c8-anchor-not-sync-under-flags
+# ($C8D2SHA)"`` or ``bad "reconcile-remedy-runs: uuid NOT parsed"``. The name is the
+# part before it; keeping the suffix makes every such assertion look unported while
+# the leg exists. Splitting is safe because no real ``chk`` name contains `` (`` or
+# ``: `` — the roster was checked against /tmp/chkmap.tsv.
+_NAME_TAIL = re.compile(r"\s*\(.*$|:.*$")
+
 # Blocks that are DELIBERATELY not ported, with the reason. A name here is
 # reported as ``unported`` with its reason rather than silently missing — the
 # report's honesty requirement is that every absent name is accounted for.
@@ -92,7 +99,7 @@ def shell_names(path: Path) -> list[tuple[int, str, str]]:
     for lineno, line in enumerate(body.splitlines(), start=text[:start].count("\n") + 1):
         for kind, rx in (("chk", CHK_RE), ("bad", BAD_RE)):
             for m in rx.finditer(line):
-                name = m.group(1).strip()
+                name = _NAME_TAIL.sub("", m.group(1)).strip()
                 if name:
                     out.append((lineno, name, kind))
     return out
