@@ -234,24 +234,101 @@ def _unified(ledger: str):
         die(L.RC_REFUSED, "ledger_load failed: %s" % exc)
 
 
-def _workers(ledger: str):
-    """``.workers`` from workers.json (JSONL) or the compact file (legacy)."""
+def _workers_docs(ledger: str, verb: str = "workers"):
+    """``[(document, source_line)]`` — what a workers read opens, jq-stream-wise.
+
+    Three shapes, and they are NOT interchangeable (each measured against the
+    bash, because each one produced a real divergence the first time this file
+    was written):
+
+    * JSONL mode WITH ``workers.json``: ONE document — that file.
+    * JSONL mode WITHOUT it: ``$LEDGER`` read as a jq STREAM, so a multi-row
+      ``events.jsonl`` yields one document per row and each is projected
+      independently. A ``workers`` read there prints one array PER ROW, which
+      is what the bash prints; collapsing it to a single array would be a
+      silent divergence (and on an EMPTY record the bash prints one blank line,
+      not ``[]``).
+    * Legacy mode: the compact file, one document.
+
+    A record that will not parse is rc 3 with jq's own diagnostic printed
+    first, exactly as the bash does (jq writes the parse error to stderr, then
+    the verb dies rc 3 with "jq failed").
+    """
     if L.jsonl_mode(ledger) and os.path.isfile(L.workers_path(ledger)):
         try:
-            doc = json.loads(_read(L.workers_path(ledger)))
-        except ValueError:
-            die(L.RC_REFUSED, "workers: ledger missing or unparseable: %s"
-                % ledger)
-        except OSError:
-            die(L.RC_REFUSED, "workers: ledger missing or unparseable: %s"
-                % ledger)
-        return doc
+            return [(json.loads(_read(L.workers_path(ledger))), 1)]
+        except (ValueError, OSError):
+            die(L.RC_REFUSED, "%s: ledger missing or unparseable: %s"
+                % (verb, ledger))
     if not os.path.isfile(ledger):
-        die(L.RC_REFUSED, "workers: ledger missing or unparseable: %s" % ledger)
+        die(L.RC_REFUSED, "%s: ledger missing or unparseable: %s"
+            % (verb, ledger))
     try:
-        return json.loads(_read(ledger))
-    except (ValueError, OSError):
-        die(L.RC_REFUSED, "workers: ledger missing or unparseable: %s" % ledger)
+        return L.parse_stream_lines(_read(ledger), ledger)
+    except L.JqParseError as exc:
+        errln(exc.jq_line)
+        die(L.RC_REFUSED, "%s: jq failed — ledger unreadable or query error"
+            % verb)
+    except OSError:
+        die(L.RC_REFUSED, "%s: ledger missing or unparseable: %s"
+            % (verb, ledger))
+
+
+def _workers_eval(ledger: str, docs, verb: str, uuid: str):
+    """jq's own per-document evaluation of ``(.workers // [])``.
+
+    Returns ``(outputs, rows)``: one projection per document jq could index,
+    and their flattening. A document jq cannot index contributes NO output but
+    prints its own error line, and the verb's exit status follows jq's, which
+    is the status of the **LAST** document only:
+
+    * ``good, bad, good`` -> rc 0, both arrays printed, one error on stderr.
+    * ``good, bad``       -> rc 5, and the good array is DISCARDED.
+
+    That last clause is the bash's, not jq's: ``out="$(jq …)" || die 3`` keeps
+    nothing from a failed run, so partial output never escapes. Reproducing
+    "any failure fails the verb" instead would break ``bad, good`` (rc 0) and
+    reproducing "errors abort the scan" would lose the trailing documents.
+
+    The uuid form is a different program — ``[.workers[]? | select(…)]`` — so a
+    non-array ``.workers`` yields nothing there while the plain form passes a
+    non-array through unchanged (both measured).
+    """
+    outputs = []
+    rows = []
+    last_failed = False
+    for doc, line in docs:
+        if not isinstance(doc, dict):
+            errln('jq: error (at %s:%d): Cannot index %s with string "workers"'
+                  % (ledger, line, L._jq_type(doc)))
+            last_failed = True
+            continue
+        last_failed = False
+        value = doc.get("workers")
+        if value is None or value is False:      # `// []`
+            proj = []
+        elif uuid:                               # `[.workers[]? | select(…)]`
+            proj = [] if not isinstance(value, list) else [
+                row for row in value
+                if isinstance(row, dict)
+                and L.to_string(_keep(row.get("uuid"), "")) == uuid]
+        else:
+            proj = value                         # jq keeps a non-array as-is
+        outputs.append(proj)
+        if isinstance(proj, list):
+            rows.extend(proj)
+        else:
+            rows.append(proj)
+    if last_failed:
+        die(L.RC_REFUSED, "%s: jq failed — ledger unreadable or query error"
+            % verb)
+    return outputs, rows
+
+def _workers_source(ledger: str) -> str:
+    """The path jq would have been handed (for its own error messages)."""
+    if L.jsonl_mode(ledger) and os.path.isfile(L.workers_path(ledger)):
+        return L.workers_path(ledger)
+    return ledger
 
 
 def _read(path: str) -> str:
@@ -796,18 +873,17 @@ def cmd_workers(ledger, args):
             die(L.RC_USAGE, "workers: unknown arg '%s' (usage: oc-ledger workers "
                 "[--json|--tsv] [--uuid U])" % head)
 
-    doc = _workers(ledger)
-    rows = doc.get("workers") if isinstance(doc, dict) else None
-    rows = rows if isinstance(rows, list) else []
-    if uuid:
-        rows = [row for row in rows
-                if isinstance(row, dict)
-                and L.to_string(_keep(row.get("uuid"), "")) == uuid]
+    docs = _workers_docs(ledger, "workers")
+    outputs, rows = _workers_eval(ledger, docs, "workers", uuid)
 
     if as_tsv:
+        # The bash pipes the JSON through a SECOND jq for the TSV form, so a
+        # non-object element dies there; `.[] | [...]` over the collected rows
+        # is the same projection.
         for row in rows:
             if not isinstance(row, dict):
-                continue
+                die(L.RC_REFUSED, "workers: jq failed — ledger unreadable or "
+                    "query error")
             outln(L.tsv_row([
                 L.to_string(_keep(row.get("uuid"), "")),
                 L.to_string(_keep(row.get("role"), "editor")),
@@ -816,7 +892,14 @@ def cmd_workers(ledger, args):
                 L.to_string(_keep(row.get("state"), "ACTIVE")),
             ]))
         return L.RC_OK
-    outln(L.dumps_compact(rows))
+    # One line per DOCUMENT: jq emits one array per input value, and an EMPTY
+    # record yields no value at all, which `printf '%s\n' ""` renders as one
+    # blank line — reproduced rather than "tidied" into `[]`.
+    if not outputs:
+        outln("")
+        return L.RC_OK
+    for proj in outputs:
+        outln(L.dumps_compact(proj))
     return L.RC_OK
 
 
@@ -846,12 +929,12 @@ def cmd_worker(ledger, args):
     if not uuid:
         die(L.RC_USAGE, "worker: --uuid is required")
 
-    doc = _workers(ledger)
-    rows = doc.get("workers") if isinstance(doc, dict) else None
-    rows = rows if isinstance(rows, list) else []
+    # `[.workers[]? | select(...)][0] // empty` runs PER DOCUMENT and jq emits
+    # the first match across the whole stream, so the scan is document-ordered.
+    docs = _workers_docs(ledger, "worker")
     found = None
-    for row in rows:
-        if isinstance(row, dict) and L.to_string(_keep(row.get("uuid"), "")) == uuid:
+    for row in _workers_eval(ledger, docs, "worker", uuid)[1]:
+        if isinstance(row, dict):
             found = row
             break
     if found is None:
@@ -1171,8 +1254,11 @@ def cmd_roster(ledger, args):
     if lrole == "hq-supervisor":
         lrole = "hq"
 
-    doc = _workers(ledger)
-    workers = _iter_values(doc.get("workers") if isinstance(doc, dict) else None)
+    # `roster` reads through `jq_ledger` — the UNIFIED dict — NOT through
+    # `_workers_source`. That is not cosmetic: with a record present and no
+    # `workers.json` sidecar the unified path answers "no rows" (rc 1), while a
+    # sidecar read dies rc 3, and the bash does the former.
+    workers = _iter_values(_unified(ledger).get("workers"))
 
     def matches_role(worker) -> bool:
         if not lrole:

@@ -379,37 +379,160 @@ def index(obj, key):
 _JSON_DECODER = json.JSONDecoder()
 
 
-def _parse_stream(text: str, path: str):
-    """Parse a JSON *stream* the way ``jq`` does, and report a bad token's line.
+_WS = " \t\r\n"
+
+
+def _jq_position(text: str, pos: int, exc=None):
+    """jq's own ``(line, column, at_eof)`` for a failure at ``pos``.
+
+    jq does not report where the bad TOKEN starts. Its lexer consumes a run of
+    characters, then trailing whitespace (newlines included), and reports
+    ``line`` = the line it has reached with ``column`` = the characters
+    consumed on that line. Two consequences, both measured against jq-1.7:
+
+    * A failure AT EOF (``pos >= len(text)``) means the token ran into the end
+      of the input with no delimiter after it — jq calls that ``at EOF``.
+    * Otherwise the reported position is the end of the token RUN, not the
+      character Python stopped on: ``{"a":1} zzz`` reports column 0 of the
+      NEXT line (the run ``zzz`` plus its newline were consumed), not column 7.
+
+    The run is the union of the bareword set (``[A-Za-z0-9_-+.]``) and — for
+    the *Expecting value* failures — every character that cannot END a JSON
+    value, which is what makes ``{"a":1} "xy`` report *Unfinished string at
+    EOF* while ``{"a":1} @foo`` stays *Invalid numeric literal*.
+    """
+    end = len(text)
+    if pos >= end:
+        return _jq_line_column(text, end) + (True,)
+
+    raw = str(exc) if exc is not None else ""
+    stop = pos
+    if "Expecting value" in raw:
+        # a value-position failure consumes until something that could legally
+        # follow a value: whitespace, a delimiter, or a closing bracket
+        while stop < end and text[stop] not in _WS and text[stop] not in "{}[],:":
+            stop += 1
+    else:
+        while stop < end and (text[stop].isalnum()
+                              or text[stop] in "_-+."):
+            stop += 1
+    truncated = stop >= end and stop > pos
+    cursor = stop
+    while cursor < end and text[cursor] in _WS:
+        cursor += 1
+    return _jq_line_column(text, cursor) + (truncated,)
+
+def _jq_line_column(text: str, cursor: int):
+    line = text.count("\n", 0, cursor) + 1
+    column = cursor - (text.rfind("\n", 0, cursor) + 1)
+    return line, column
+
+def _jq_parse_message(text: str, pos: int, exc: ValueError) -> str:
+    """The ``jq: parse error: …`` line for a failure at ``pos``.
+
+    jq's lexer names its own failures and Python's decoder names different
+    ones for the same byte, so the mapping is measured, not derived. The
+    corpus behind each arm (jq-1.7): ``{not json}``/``{a:1}``/``[1,x]``/
+    ``{'a':1}`` all read *Invalid numeric literal*; ``{"a":1,}`` is *Expected
+    another key-value pair*; ``[1,]`` is *Expected another array element*;
+    ``{"a" 1}`` is *Expected separator between values*; a stray ``}`` or ``]``
+    is *Unmatched*; anything whose token ran into EOF is *… at EOF*, and an
+    unterminated string is *Unfinished string*.
+    """
+    raw = str(exc)
+    line, column, truncated = _jq_position(text, pos, exc)
+    at = text[pos] if pos < len(text) else ""
+
+    if "Unterminated string" in raw or "Invalid control character" in raw:
+        kind = "Unfinished string"
+        truncated = True
+    elif "Expecting value" in raw:
+        kind = "Unfinished JSON term" if truncated else "Invalid numeric literal"
+    elif "Expecting property name" in raw:
+        if truncated:
+            kind = "Unfinished JSON term"
+        elif at == "}":
+            kind = "Expected another key-value pair"
+        elif at == "]":
+            kind = "Expected another array element"
+        else:
+            kind = "Invalid numeric literal"
+    elif "Expecting ',' delimiter" in raw:
+        if at == "}":
+            kind = "Unmatched '}'"
+        elif at == "]":
+            kind = "Unmatched ']'"
+        else:
+            kind = "Expected separator between values"
+    elif "Expecting ':' delimiter" in raw:
+        kind = "Expected separator between values"
+    else:
+        kind = "Invalid numeric literal"
+
+    if truncated:
+        return ("jq: parse error: %s at EOF at line %d, column %d"
+                % (kind, line, column))
+    return ("jq: parse error: %s at line %d, column %d" % (kind, line, column))
+
+def parse_stream_lines(text: str, path: str):
+    """``[(value, line_number)]`` — a jq STREAM, with each value's start line.
 
     Line-based reading is NOT equivalent: jq parses a stream of values, so a
     pretty-printed record still loads and a whitespace-only line is skipped.
-    ``raw_decode`` over the whole text reproduces both, and lets the error name
-    the line the way jq's own "at line N" does.
+    ``raw_decode`` over the whole text reproduces both, and tracking the start
+    line lets a per-value jq error name the input the way jq does
+    (``jq: error (at <path>:<line>): …``).
+
+    Raises :class:`JqParseError` (rc 3) carrying jq's own diagnostic line.
     """
-    values = []
+    pairs = []
     pos = 0
     end = len(text)
     while pos < end:
         # skip inter-value whitespace (jq skips blank lines silently)
-        while pos < end and text[pos] in " \t\r\n":
+        while pos < end and text[pos] in _WS:
             pos += 1
         if pos >= end:
             break
+        line = text.count("\n", 0, pos) + 1
         try:
             value, pos = _JSON_DECODER.raw_decode(text, pos)
         except ValueError as exc:
-            line = text.count("\n", 0, pos) + 1
-            col = pos - (text.rfind("\n", 0, pos) + 1) + 1
-            raise LedgerError(
-                RC_REFUSED,
-                "ledger_load REFUSED — malformed JSONL in %s. A partial read "
-                "would make a corrupt row look like a missing event (a false "
-                "'no claim'): jq: parse error: %s at line %d, column %d"
-                % (path, exc.msg if hasattr(exc, "msg") else str(exc),
-                   line, col))
-        values.append(value)
-    return values
+            raise JqParseError(path, _jq_parse_message(
+                text, getattr(exc, "pos", pos), exc))
+        pairs.append((value, line))
+    return pairs
+
+
+def _parse_stream_raw(text: str, path: str):
+    """Just the values of :func:`parse_stream_lines`."""
+    return [value for value, _ in parse_stream_lines(text, path)]
+
+
+class JqParseError(LedgerError):
+    """A malformed stream, carrying jq's own diagnostic line.
+
+    The ONE reader refuses it (rc 3) with the ledger_load message; the file
+    readers (`workers`, `worker`) render ``jq_line`` instead, because that is
+    what the bash's jq prints on its own stderr before the verb dies.
+    """
+
+    def __init__(self, path: str, jq_line: str):
+        super().__init__(RC_REFUSED, jq_line)
+        self.path = path
+        self.jq_line = jq_line
+
+
+def _parse_stream(text: str, path: str):
+    """Parse a stream, translating a bad token into the ledger_load refusal."""
+    try:
+        return _parse_stream_raw(text, path)
+    except JqParseError as exc:
+        raise LedgerError(
+            RC_REFUSED,
+            "ledger_load REFUSED — malformed JSONL in %s. A partial read would "
+            "make a corrupt row look like a missing event (a false 'no claim'): "
+            "%s" % (path, exc.jq_line)) from exc
 
 
 def _read_text(path: str) -> str:
