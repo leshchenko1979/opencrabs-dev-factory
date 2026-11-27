@@ -243,6 +243,9 @@ harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
 | 53 | oc-fmt installed/repo identity (#88) | `test_fmt.py` |
 | 57–58 | lib/oc-notify.sh CLI budget; per-send sender | `test_notify_lib.py` |
 | 59–60 | lib/oc-snap.sh mirror age; reap | `test_snap.py` |
+| 63 | lib/oc-root.sh resolver coherence (F-L1/F-L2) — stated as a PROPERTY over depth × invocation shape, not transliterated | `test_oc_root_resolver.py` |
+| 64 | shell-quoting guard — the four scanner arms (backtick in a `-c` body, unquoted heredoc fence, `$` in a `-c` body, `bash -n` over the fleet) plus the live fleet sweep | `test_quoting_guard.py` |
+| 65 | entry-preamble fixpoint + relative invocation (#708) — the 9-sample relative drive (cwd = tool dir, `./name`), the two-sided fixpoint control, and a `$0` canary proving the drive really delivers a RELATIVE argv[0]. The static break-presence census lives in `test_oc_root_resolver.py` (row 63) — one invariant, one owner | `test_entry_preamble.py` |
 | per-tool argv | the `ok`/`bad` usage/rc legs beside each `run_selftest` | `test_usage_rc.py` |
 
 
@@ -294,7 +297,4 @@ Each of these is a deliberate decision, with the reason — not an omission.
 | **18** | **oc-consent-check** | **RETIRED 2026-08-28 (owner order 18:50Z).** The consent process was eliminated and the tool archived to `tools/archive/`. The shell section is a `section` header with no body — it asserts nothing, so a port would be an empty test that inflates the pass count. Deleted rather than ported. |
 | 14, 15, 20, 21, 27, 28, 31, 36–42, 54 | — | Each is a `run_selftest` line plus at most one argv leg, and both halves are already covered: the selftest by the parametrized `run_selftest` legs, the argv leg by `test_usage_rc.py`'s `RC_CASES` table. A port would duplicate an existing leg verbatim. |
 | 66–68 | cgroup isolation, battery lock fd, scratch root | Harness infrastructure, not tool behaviour — ported as `test_cgroup.py` and `test_fixtures.py`, which assert the pytest harness's own equivalents. |
-| **63** | **lib/oc-root.sh resolver coherence (F-L1/F-L2)** | **Deferred, not dropped.** 378 lines / 44 assertions: builds a synthetic tree, then walks every entry preamble through depth permutations to prove the resolver converges. It is a property test of the resolver, and the shell's own construction (copy a tree, mutate one file, re-run the tool) maps onto a pytest fixture — but it needs the whole 378 lines read and rewritten, not transliterated. |
-| **64** | **shell-quoting guard (`python3 -c` / heredoc fences)** | **Deferred, not dropped.** 250 lines / 32 assertions, and its subject is the SOURCE TEXT of every tool: it scans for `python3 -c` strings and heredoc fences that would break under quoting. A pytest port would scan the same corpus with the same scanner; the value is in the scanner's own fixture, which the section already carries. |
-| **65** | **entry-preamble fixpoint + relative invocation (#708)** | **Deferred, not dropped.** 160 lines / 17 assertions. The defect: `cd` into a tool's dir and run `./name` spun forever because `dirname "$0"` yields `.` — a fixpoint. The leg drives each tool from its own directory under a timeout and requires it to terminate. Needs the same per-tool drive loop. |
 | 62 | red-receipt transcript (fail log) | Asserts `run.sh`'s own `bad()` accumulator by running a synthetic failing section in a subshell. There is no `run.sh` accumulator inside pytest to assert — the equivalent claim is pytest's own exit code, which every module already depends on. |
