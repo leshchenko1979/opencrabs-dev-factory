@@ -257,9 +257,17 @@ does cheaply: HOLD the lock and read the budget the tool reports.
 The wall clock was never the subject. The shell spent 4 s per leg on
 `( flock -x 9; sleep 4 ) &` plus `sleep 0.5` because a shell has no synchronous
 flock; `fcntl.flock` holds the same lock with no latency, so §33's contention
-costs milliseconds here. Ported as `test_ledger_lock_budget.py` — 9 legs, ~23 s
-total, of which 7 s is a deliberate 3 s `pre-commit` hook (the instrument, not a
-measurement).
+costs milliseconds here. Ported as `test_ledger_lock_budget.py` — 9 legs,
+**44.40 s** serially and **64.13 s** under `-n 2` (both measured 2026-11-27 at
+load 26.10 / 22.66 on 4 cores; the numbers are wall clock under that regime, not
+a claim about a quiet box). No single leg asserts elapsed time — see the module
+docstring's TIMING HONESTY section — and the only sleep is the deliberate 3 s
+`pre-commit` hook that makes the git tail observably slow.
+
+The legs are also mutation-checked: making the budget flat reds the three
+derivation legs, running the tail under the ledger lock reds the #95 leg, and
+dropping the `OC_SKILL_DIR` seam reds the #171 positive leg (with the negative
+control still green).
 
 The port is also STRONGER than the shell in three places, each of which the
 shell could not reach:
