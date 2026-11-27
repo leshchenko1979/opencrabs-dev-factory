@@ -1,4 +1,7 @@
-"""Ported: entry-preamble fixpoint + relative invocation (#708) — run.sh §65.
+"""Ported: entry-preamble fixpoint + relative invocation (#708) — run.sh §84.
+
+    (README coverage row 65. The brief's "§63/§64/§65" are README rows; the
+    shell's own section numbers are §77/§82/§84 — this module is run.sh §84.)
 
 THE DEFECT
     Every fleet tool carried the same copy-pasted entry preamble, which walks UP
@@ -24,12 +27,12 @@ WHY THIS SECTION EXISTS AT ALL
     would leave a green leg that tests nothing.
 
 SCOPE — THE BEHAVIOURAL HALF ONLY
-    §65 has two arms in the shell and only one belongs in this module.
+    §84 has two arms in the shell and only one belongs in this module.
 
       static   every walk-up carrier must carry the ``.`` break. Already owned
                by ``test_oc_root_resolver.py::test_every_walkup_carrier_has_the
                _fixpoint_break``, because the walk-up preamble IS the resolver's
-               bootstrap — §63 and §65 are two views of one line of code. Two
+               bootstrap — §77 and §84 are two views of one line of code. Two
                ports of one invariant drift: the first to be sharpened leaves the
                other asserting a stale floor.
       dynamic  drive one representative per tool KIND by RELATIVE path and
@@ -122,24 +125,24 @@ def _tool_env():
     return {"BATTERY_IN_CHUNK": ""}
 
 
-# SCOPE: THE BEHAVIOURAL ARM ONLY — §63'S MODULE OWNS THE STATIC CENSUS
+# SCOPE: THE BEHAVIOURAL ARM ONLY — §77'S MODULE OWNS THE STATIC CENSUS
 #
-# §65 has two halves and only one of them belongs here.
+# §84 has two halves and only one of them belongs here.
 #     ``test_oc_root_resolver.py::test_every_walkup_carrier_has_the_fixpoint_break``
 #     asserts the same invariant (every walk-up carrier carries the ``.`` break,
 #     keyed on the fix's presence, with the same floor), because the walk-up
-#     preamble IS the resolver's bootstrap: §63 and §65 are two views of one line
+#     preamble IS the resolver's bootstrap: §77 and §84 are two views of one line
 #     of code. Porting it twice gives the suite two half-rules that drift apart —
 #     the first to be sharpened leaves the other asserting a stale floor.
 #
-# This module therefore owns only §65's reason for existing: the BEHAVIOURAL arm.
+# This module therefore owns only §84's reason for existing: the BEHAVIOURAL arm.
 # The battery's other invocation legs drive tools by ABSOLUTE path, so none of
 # them can observe a relative-path fixpoint at all.
 # =============================================================================
 # the sample's own integrity
 # =============================================================================
 def test_the_sample_is_complete():
-    """§65: the relative-invocation sample runs 9 of 9 (``EP_DYN -ne 9 -> bad``).
+    """§84: the relative-invocation sample runs 9 of 9 (``EP_DYN -ne 9 -> bad``).
 
     The shell reds when the sample covered fewer than nine, so a silently
     shrunk arm cannot read as a green one. Pinning the count AND checking each
@@ -158,7 +161,7 @@ def test_the_sample_is_complete():
 # DYNAMIC ARM — behavioural, by RELATIVE path from the tool's OWN directory
 # =============================================================================
 def test_relative_invocation_returns(run_tool):
-    """§65 dynamic: ``cd <tool dir> && ./name --help`` must TERMINATE.
+    """§84 dynamic: ``cd <tool dir> && ./name --help`` must TERMINATE.
 
     The exact invocation that hung. The sample is driven with ``cwd`` set to the
     tool's own directory and ``./name`` as argv[0] — converting either to an
