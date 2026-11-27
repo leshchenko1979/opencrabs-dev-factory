@@ -224,7 +224,8 @@ harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
 | 13 | lib/oc_claims.py canonical predicate | `test_claims_predicate.py` |
 | 16–17 | oc-attrib join; #407 novelty filter (re-sha'd + empty commits) | `test_attrib.py` |
 | 22 | oc-fanout + attribution (#24) | `test_fanout.py` |
-| 23 | deploy stage tools (oc-build / oc-status) | `test_deploy_stage.py` |
+| 23 | deploy stage tools (oc-build / oc-status) — fast boundary legs | `test_deploy_stage.py` |
+| 23 | deploy stage tools — real-subprocess legs (selftest, dispatched-sha, stale ref) | `test_e2e_deploy_stage.py` (`slow`) |
 | 24, 32 | oc-ledger edge legs; confirm + derive_by | `test_ledger_edge.py` |
 | 25 | oc-review-persist | `test_review_persist.py` |
 | 26 | oc-gate | `test_gate.py` |
