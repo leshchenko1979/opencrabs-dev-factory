@@ -58,6 +58,13 @@ the exact defect run.sh:294-300 documents.
 
 The tools that take minutes carry ``@pytest.mark.slow`` so ``-m "not slow"``
 deselects them rather than stalling a quick gate.
+
+EVERY LEG IS `serial` IN ONE `xdist_group` -- see the measured note beside
+``WRAPPER_GROUP``. A ``--selftest`` is a process TREE, this box's cgroup caps
+``pids`` at 64, and two concurrent legs already peak at 41, so overlapping legs
+fork-fail rather than run faster. ``-n N`` therefore runs them in order on one
+worker; ``-n 0`` is unchanged. The bound is a property of the box, not of the
+tools, so the marker is the honest statement of it.
 """
 from __future__ import annotations
 
@@ -123,11 +130,56 @@ SLOW = frozenset({
 
 TIMEOUTS = dict(TOOLS)
 
+# ---------------------------------------------------------------------------
+# WHY EVERY LEG IS `serial` + ONE xdist_group: the pids cap, measured
+# ---------------------------------------------------------------------------
+# A `--selftest` is not one process. Every tool here forks git, mktemp, grep,
+# jq and often its own sub-selftests, so ONE leg is a process TREE, and the
+# trees of two legs overlap the instant they run concurrently.
+#
+# This box runs under a cgroup with `pids.max = 64` (`ulimit -u` is 15532, so
+# the LIMIT THAT BITES is the cgroup, not the login limit -- read the former,
+# never the latter). Measured 2026-11-27 in this worktree, sampling
+# pids.current once a second while running JUST TWO legs (`oc-ledger` and
+# `oc-wt`, `-n 2`): PEAK 41 of 64. Two legs already sit at 64% of the cap, so
+# any third concurrent leg is over it and `fork()` starts returning EAGAIN.
+#
+# That is not a theory, it is what a `-n 4` run of this module did: 17 of 33
+# legs reddened, and 17 of them carried
+#     error: cannot fork() for maintenance: Resource temporarily unavailable
+# (git's own message; `rev-list`, `gc`, `pack-objects`, `symbolic-ref` the
+# same). The tools were healthy -- `oc-ledger` reported PASS=737 and failed 4
+# legs on fork errors alone; `oc-wt`, `oc-upstream-delta` and `oc-branch-sweep`
+# failed the same way. It reads as seventeen broken tools and is ONE stated cap,
+# which is the defect test_cgroup.py::test_caps_scale_with_worker_count already
+# names for the shell harness ("read as EIGHT broken tools rather than one
+# stated cap").
+#
+# The remedy is the repo's OWN documented convention for exactly this case
+# (pytest.ini § xdist_group USAGE): a `serial` marker states "must not overlap"
+# and a shared `xdist_group` is the mechanism that makes the claim true under
+# `-n N`, by pinning every member onto the SAME worker, in order. Under `-n 0`
+# both are inert, so the serial fallback needs no changes -- the acceptance bar
+# pytest.ini sets.
+#
+# Sharing ONE group name across all 33 is deliberate: these legs contend for a
+# single box-wide process budget, so the budget is the unit of mutual exclusion,
+# not the tool. Two groups would still collide with each other.
+#
+# The cost is that `-n N` buys nothing for this module -- correct, and the point:
+# the resource these legs contend for is shared, so parallelism here converts
+# into fork failures rather than wall-clock savings.
+WRAPPER_GROUP = "tool-selftests"
+
 PARAMS = [
     pytest.param(
         tool,
         id=tool,
-        marks=(pytest.mark.slow,) if tool in SLOW else (),
+        marks=(
+            pytest.mark.serial,
+            pytest.mark.xdist_group(WRAPPER_GROUP),
+            *((pytest.mark.slow,) if tool in SLOW else ()),
+        ),
     )
     for tool, _ in TOOLS
 ]
