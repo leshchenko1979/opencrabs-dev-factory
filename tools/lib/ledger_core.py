@@ -901,8 +901,13 @@ def _atomic_write_legacy(ledger: str, transform, *, fsync: bool = True) -> dict:
                           "modified: %s" % (exc or "<no message>")) from exc
     after = working if result is None else result
 
+    # jq's DEFAULT output is pretty (two spaces, ``": "``), and the bash legacy
+    # path is ``jq "$@" "$LEDGER" > tmp`` — so the legacy record is written
+    # PRETTY. Emitting compact here kept the JSON semantically right and made
+    # every legacy-mode verb's file byte-different from the bash's, which is the
+    # one comparison the differential harness exists to make.
     try:
-        payload = dumps_compact(after) + "\n"
+        payload = dumps_pretty(after) + "\n"
     except JqError as exc:
         raise LedgerError(RC_REFUSED,
                           "atomic_write failed (rc=3) — the ledger was NOT "

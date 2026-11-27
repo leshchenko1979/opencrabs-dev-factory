@@ -2,16 +2,20 @@
 # =============================================================================
 # oc-ledger (python) — the ONE sanctioned write path for the workers ledger.
 #
-# PHASE 2 OF THE PORT (factory #204): READ-ONLY VERBS ONLY.
-#   ok · law-digest · check-version · cadence · events · tail · workers ·
-#   worker · roster · claims · lessons · duplicates · mode
+# PORT STATUS (factory #204).
+#   PHASE 2 — read verbs (DONE): ok · law-digest · check-version · cadence ·
+#     events · tail · workers · worker · roster · claims · lessons ·
+#     duplicates · mode
+#   PHASE 3 — write verbs (IN PROGRESS): stamp · fixture landed; sync · ack ·
+#     enroll · promote · retire · commit-pending · confirm · migrate · claim ·
+#     claim-ref · sweep-closed-claims still refuse rc 2 by name.
 #
 # The bash tool at tools/state/oc-ledger is UNCHANGED and remains the live
 # write path until the flip. This file is additive: it shares the store + lock
-# layer in tools/lib/ledger_core.py, and every read verb here is required to be
+# layer in tools/lib/ledger_core.py, and every verb here is required to be
 # OUTPUT-IDENTICAL to its bash counterpart on the same fixture — that identity
-# is the phase-2 gate, not a nicety. Where the bash emits JSON, so does this;
-# where it emits TSV or prose, the bytes match.
+# is the gate, not a nicety. Where the bash emits JSON, so does this; where it
+# emits TSV or prose, the bytes match.
 #
 # rc vocabulary (tools/docs/RC-CONTRACT.md) — the SAME numbers, never
 # renumbered, because every lane in the fleet keys on them:
@@ -23,11 +27,16 @@
 
 from __future__ import annotations
 
+import datetime
+import fnmatch
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TOOLS = os.path.dirname(_HERE)
@@ -1481,6 +1490,1766 @@ def cmd_mode(ledger, args):
     return L.RC_OK
 
 
+# ===========================================================================
+# PHASE 3 — THE WRITE VERBS (factory #204)
+#
+# Everything below is a faithful port of the corresponding ``cmd_*`` in
+# ``tools/state/oc-ledger``. The store layer is NOT reimplemented: every
+# mutation goes through ``ledger_core.atomic_write`` (the ONE writer) under
+# ``ledger_core.with_lock`` (the ONE lock), and the git tail is queued by
+# ``ledger_core.git_state_commit`` and flushed by ``with_lock`` AFTER the
+# release — which is the #95/#641 contract, structurally: ``child_process``
+# refuses to spawn under the lock, so the ordering cannot silently regress.
+#
+# The four semantics the port must not break, restated where they bite:
+#   1. a malformed JSONL line RAISES rc 3 (load_ledger), never skipped;
+#   2. one event pushed on the END is a TRUE APPEND (atomic_write's prefix
+#      check) — one line + fsync, never a 2.8 MB rewrite;
+#   3. no child process while the lock is held (child_process refuses);
+#   4. the git tail runs after release, on its own lock, and is NEVER fatal.
+# ===========================================================================
+
+# The closed kind enum. ``skill-bump`` is deliberately ABSENT: it is sync-only,
+# and both ``stamp`` and ``fixture`` refuse it by name so a hand-written bump
+# row can never bypass the digest stamp that sync records with it.
+KINDS = ("ruling idea idea-verdict design-feedback design-locked review-battery "
+         "incident lesson note ack roster-enroll roster-retire claim hold "
+         "confirm close done unclaim reject swap-result notify-fanout "
+         "shipchain proposal").split()
+
+# KINDS that CLOSE an issue. A ref-less row of this kind closes NOTHING while
+# reporting success, so ``stamp`` WARNs (never refuses — see cmd_stamp).
+LANDED_KINDS = ("done", "close")
+
+# The two-stream issue routing (SKILL.md; owner order 2026-10-09): BINARY is
+# the FORK, FACTORY is leshchenko1979/opencrabs-dev-factory, and UPSTREAM takes
+# no new issues but is probed for its legacy number space.
+HOME_REPOS = ("leshchenko1979/opencrabs",
+              "leshchenko1979/opencrabs-dev-factory",
+              "opencrabs/opencrabs")
+
+# The TRACKED-namespace whitelist (#508/#514/#540/#80). ONE home, consumed by
+# the state commit tail and by ``commit-pending --bundle``.
+STATE_TRACKED_PATHS = (
+    "baseline.json orders.json journal deployed.sha deployed.meta.json "
+    "fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log "
+    "health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off "
+    "runs reports questions base-red.json harvest-registry.json").split()
+
+# The harvest-state class carries glob metacharacters and must reach git
+# QUOTED and DIRECTLY (an unquoted expansion pathname-expands against cwd).
+STATE_TRACKED_GLOB = "*-state.md"
+
+RUNTIME_ARTIFACTS = ("tools/tests/battery-last.json",)
+
+# The stray-guard's exempt list (v0.4.157): the version docs and the battery
+# receipt, which IS the bump's evidence.
+STRAY_EXEMPT = ("SKILL.md", "CHANGELOG.md", "tools/tests/battery-last.json",
+                "tools/tests/battery-last-fail.log")
+
+
+def oc_clip_chars(text: str, cap: int) -> str:
+    """``oc_clip_chars`` from tools/lib/oc-log.sh — at most ``cap`` CHARACTERS.
+
+    The bash fixed this for #588 because ``cut -c1-80`` counts BYTES under
+    C.UTF-8 and clipped a non-ASCII ``what`` mid-character on the one line
+    whose whole purpose is to let an operator see what landed.
+    """
+    if cap <= 0 or len(text) <= cap:
+        return text
+    return text[:cap]
+
+
+def _sha256_8(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()[:8]
+
+
+def _strip_trailing_newlines(text: str) -> str:
+    """bash ``$(...)``: command substitution strips ALL trailing newlines."""
+    return text.rstrip("\n")
+
+
+# ---------------------------------------------------------------------------
+# issue-ref tokens — the canonical tokenizer (tools/lib/oc_claims.py)
+#
+# The bash DELEGATES these to oc_claims rather than carrying a copy of the
+# pattern, and the reason is load-bearing in BOTH directions: ``claim-ref``
+# derives the issue from the very text ``claims`` scans, so a tokenizer that
+# drifts by one character makes the tool DERIVE an issue the scanner cannot see
+# (the #106/#107 false-clean). One owner, both sides.
+# ---------------------------------------------------------------------------
+def _oc_claims():
+    try:
+        import oc_claims as oc
+    except ImportError as exc:                  # pragma: no cover - tree fault
+        die(L.RC_REFUSED, "cannot load the canonical claim predicate: %s" % exc)
+    return oc
+
+
+def _issue_ref_tokens(text: str) -> list:
+    if not text:
+        return []
+    return _oc_claims().issue_ref_tokens(text)
+
+
+def _primary_issue_tokens(text: str) -> list:
+    if not text:
+        return []
+    return _oc_claims().primary_issue_tokens(text)
+
+
+# ---------------------------------------------------------------------------
+# actor resolution — ``derive_by`` and the A1b SELF-verb rule
+# ---------------------------------------------------------------------------
+def _ambient_uuid() -> str:
+    """The SAME ambient source everywhere: OPENCRABS_SESSION_ID then OC_ACTOR.
+
+    ``derive_by`` (attribution label) and ``_self_uuid`` (SELF verbs) must not
+    resolve to two different actors for one caller, which is why this is one
+    function rather than two inline lookups.
+    """
+    return os.environ.get("OPENCRABS_SESSION_ID", "") or os.environ.get(
+        "OC_ACTOR", "")
+
+
+def _roster_hit(workers, predicate) -> str:
+    """``[.workers[] | select(…)] | if length == 1 then role + " " + uuid``."""
+    hits = [row for row in workers
+            if isinstance(row, dict) and predicate(L.to_string(
+                _keep(row.get("uuid"), "")))]
+    if len(hits) != 1:
+        return ""
+    row = hits[0]
+    return "%s %s" % (L.to_string(_keep(row.get("role"), "")),
+                      L.to_string(_keep(row.get("uuid"), "")))
+
+
+def derive_by(ledger: str) -> str:
+    """The default stamp attribution — roster role + uuid, or a LOUD sentinel.
+
+    OC_ACTOR wins here BY DESIGN: this is the ``--by`` ATTRIBUTION-LABEL path,
+    not a self-identifying verb, so an explicit label must outrank the ambient.
+    """
+    uuid = _actor_label_uuid()
+    if not uuid or not (os.path.isfile(ledger) or L.jsonl_mode(ledger)):
+        return "(unattributed — pass --by or export OC_ACTOR)"
+    workers = _unified(ledger).get("workers") or []
+    if not isinstance(workers, list):
+        workers = []
+    # M2-3: uuids are lowercase; an UPPERCASE actor could never match.
+    uuid = _ascii_lower_af(uuid)
+    for row in workers:
+        if isinstance(row, dict) and L.to_string(_keep(row.get("uuid"), "")) == uuid:
+            return "%s %s" % (L.to_string(_keep(row.get("role"), "")), uuid)
+    # M2-3 census: the exact compare above cannot match a FRAGMENT, and 8 live
+    # rows carry a bare 8-char prefix whose full uuid IS rostered. Those are an
+    # UNRESOLVABLE LOOKUP, not "unrostered lanes" — resolve the unique fragment.
+    if not _carries_non_hex(uuid):
+        if len(uuid) >= 4:
+            hit = _roster_hit(workers, lambda u: u.startswith(uuid))
+            if hit:
+                return hit
+    # M2-23: the sentinel is IDEMPOTENT. A value that already carries it is
+    # echoed VERBATIM — otherwise feeding a prior row's `by` back produced
+    # 'unrostered-actor unrostered-actor 2fae1230'.
+    if uuid.startswith("unrostered-actor "):
+        errln("oc-ledger: WARNING — actor '%s' already carries the "
+              "'unrostered-actor' sentinel — echoed VERBATIM, never "
+              "double-prefixed." % uuid)
+        errln("  Pass a roster role label or a session uuid as OC_ACTOR/--by.")
+        return uuid
+    # M2-24: the value derive_by PRODUCES must be round-trippable. It emits the
+    # composed form, and feeding it back is the natural caller pattern (roster
+    # --live prints exactly that TSV). Resolve the TRAILING token.
+    if " " in uuid:
+        tail = uuid.rsplit(" ", 1)[1]
+        if not _carries_non_hex(tail) and len(tail) >= 4:
+            hit = _roster_hit(workers, lambda u: u.startswith(tail))
+            if hit:
+                return hit
+    # An unresolvable actor is LOUD and names the remedy — never a silent label.
+    errln("oc-ledger: WARNING — actor '%s' is not in the roster (%s) — row "
+          "stamped 'unrostered-actor %s'." % (uuid, ledger, uuid))
+    errln("  If it is a session: oc-ledger enroll %s <role> [--topic N]. A "
+          "factory/lane LABEL is not an actor — stamp as your ROSTER ROLE."
+          % uuid)
+    return "unrostered-actor %s" % uuid
+
+
+def _ascii_lower_af(text: str) -> str:
+    """``tr 'A-F' 'a-f'`` — NOT a full lowercase (only A-F, as the bash does)."""
+    return text.translate(str.maketrans("ABCDEF", "abcdef"))
+
+
+def _carries_non_hex(value: str) -> bool:
+    """bash ``*[!0-9a-f-]*`` — true when the value is a LABEL, not a uuid."""
+    return any(ch not in "0123456789abcdef-" for ch in value)
+
+
+def _by_uuid_shaped_unresolvable(ledger: str, value: str) -> None:
+    """WARN-ONLY guard for an explicit ``--by`` (#320). Never refuses.
+
+    ``--by`` bypasses derive_by entirely, so a hand-assembled uuid-format value
+    (a remembered PREFIX plus an invented TAIL) landed as a phantom actor that
+    is indistinguishable from a legitimate attribution. WARN, never REFUSE: 64
+    of the 86 full-uuid sentinel rows belong to uuids that ARE rostered today,
+    and oc-ship passes an explicit ``--by`` fallback whose refusal would trade
+    its whole ledger trail for a warning.
+    """
+    if not value:
+        return
+    cand = value.rsplit(" ", 1)[1] if " " in value else value
+    if _carries_non_hex(cand):
+        return
+    if len(cand) < 4:
+        return
+    workers = _unified(ledger).get("workers") or []
+    if not isinstance(workers, list):
+        workers = []
+    if any(isinstance(row, dict)
+           and L.to_string(_keep(row.get("uuid"), "")).startswith(cand)
+           for row in workers):
+        return
+    errln("oc-ledger: WARNING — --by '%s' is UUID-SHAPED but resolves to NO "
+          "roster worker; the row is stamped VERBATIM and is indistinguishable "
+          "from a legitimate attribution." % value)
+    errln("  A hand-assembled uuid (remembered prefix + invented tail) is the "
+          "usual cause. Fix: copy the uuid from a LIVE read — oc-ledger roster "
+          "--live, or $OPENCRABS_SESSION_ID. A genuine label is fine as-is (it "
+          "carries a non-hex char).")
+
+
+def _self_uuid(verb: str, given: str) -> str:
+    """A1b: a SELF verb acts on the CALLER, so the uuid comes from the ambient.
+
+    A1b's second half is a WARNING, not a refusal (#657): a refusal REMOVES A
+    DOCUMENTED CAPABILITY — ``ack``/``enroll`` act on ANOTHER lane's uuid as a
+    roster-admin action, and the selftest exercises that deliberately (60 legs
+    redden under a hard cross-check, incl. ``ack2-otheruuid-rc0``).
+    """
+    if given:
+        if not L.is_uuid(given):
+            die(L.RC_USAGE, "%s: uuid shape invalid (want 8-4-4-4-12 hex): '%s'"
+                % (verb, given))
+        amb = _ambient_uuid()
+        if amb and L.is_uuid(amb) and amb != given:
+            errln("note: %s acts on '%s', which is NOT the ambient session "
+                  "'%s' -- correct for a roster-admin action; a mistake if you "
+                  "meant yourself (omit the uuid to default to the ambient)."
+                  % (verb, given, amb))
+        return given
+    env_id = _ambient_uuid()
+    if not env_id:
+        die(L.RC_USAGE, "%s: no uuid supplied and no ambient session id. Fix: "
+            "run inside a lane turn (OPENCRABS_SESSION_ID is set), or pass the "
+            "uuid explicitly." % verb)
+    return env_id
+
+
+# ---------------------------------------------------------------------------
+# claim -> issue derivation (single owner; cmd_claim_ref + cmd_confirm)
+# ---------------------------------------------------------------------------
+def _latest_claim_issue(ledger: str, uuid: str):
+    """(issue, None) or (None, diagnostic) — the claim->issue derivation.
+
+    The ref is extracted by the SINGLE OWNER (``_issue_ref_tokens``), never by a
+    bare ``#<digits>`` grep: a claim written "issue 76" carries no '#' at all
+    (rc 3 for a claim that EXISTS), and the old grep took the first '#<digits>'
+    ANYWHERE in the prose (n=1585 derived 93 from a passing mention of #93).
+    """
+    claim = ""
+    for row in (_unified(ledger).get("events") or []):
+        if not isinstance(row, dict):
+            continue
+        if row.get("kind") != "claim":
+            continue
+        by = L.to_string(_keep(row.get("by"), ""))
+        if uuid in by:
+            claim = L.to_string(_keep(row.get("what"), ""))
+    if not claim:
+        return None, "no claim event by %s" % uuid
+    tokens = _issue_ref_tokens(claim)
+    if not tokens:
+        return None, "latest claim by %s carries no numeric issue ref: %s" % (
+            uuid, claim)
+    return tokens[0], None
+
+
+def _age_days(ts) -> float | None:
+    """Days between the row stamp and now, or None when it cannot be READ.
+
+    None is UNDECIDABLE, never 0: a row whose age cannot be read is not
+    evidence of freshness, and the fail-open direction here writes a false
+    trailer into git history.
+    """
+    import datetime
+    text = (ts or "").strip() if isinstance(ts, str) else ""
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc)
+            - stamp).total_seconds() / 86400.0
+
+
+def _latest_open_claim_issue(ledger: str, uuid: str, max_age_d: float = 0.0):
+    """(issue, None) or (None, diagnostic) — the NEWEST claim row STILL OPEN.
+
+    #492: the selection is the newest claim ROW THAT IS STILL OPEN, not the
+    newest claim row. The two coincide only while a lane's newest claim is also
+    its newest open one; the moment a lane closes a newer claim, a
+    latest-row-only scan answers rc 3 and HIDES every older claim still open.
+    #631: ``max_age_d`` > 0 REFUSES rather than answering when the newest open
+    claim is older, because a wrong Issue-Ref outlives the commit carrying it.
+    """
+    oc = _oc_claims()
+    events = _unified(ledger).get("events") or []
+    rows = oc.parse_events(events)
+    idxs = [i for i, row in enumerate(rows)
+            if row["kind"] == "claim" and uuid in row["by"]]
+    if not idxs:
+        return None, "no claim event by %s" % uuid
+    for idx in reversed(idxs):
+        row = rows[idx]
+        for tok in row["targets"]:
+            if not oc.claim_is_closed(rows, idx, row["by"], tok):
+                if max_age_d > 0:
+                    age = _age_days(row["t"])
+                    if age is None:
+                        return None, (
+                            "cannot DATE the newest open claim (#%d by %s, "
+                            "t=%r), so its age is UNDECIDABLE and an Issue-Ref "
+                            "cannot be derived from it safely\npass --issue <N> "
+                            "to name the intended issue, or --session-id-only "
+                            "if this commit belongs to none"
+                            % (tok, uuid, row["t"]))
+                    if age > max_age_d:
+                        return None, (
+                            "the newest open claim is STALE — #%d was claimed "
+                            "%.1f days ago (bound %.1f d, %.0f h): %s\n"
+                            "refusing to derive an Issue-Ref from an abandoned "
+                            "claim; pass --issue <N> to name the intended "
+                            "issue, or --session-id-only if this commit "
+                            "belongs to none"
+                            % (tok, age, max_age_d, max_age_d * 24.0,
+                               row["what"]))
+                return tok, None
+    row = rows[idxs[-1]]
+    if not row["targets"]:
+        return None, ("latest claim by %s carries no numeric issue ref: %s"
+                      % (uuid, row["what"]))
+    detail = ("latest claim by %s is CLOSED (#%s — a done/close row for it "
+              "follows): %s"
+              % (uuid, ", #".join(str(t) for t in row["targets"]), row["what"]))
+    older = len(idxs) - 1
+    if older:
+        detail += ("\n%d older claim row(s) by %s were also scanned and none "
+                   "is open" % (older, uuid))
+    return None, detail
+
+
+# ---------------------------------------------------------------------------
+# git helpers for the commit-pending / sync tails (never under the fleet lock)
+# ---------------------------------------------------------------------------
+_CW_ERR = ""
+STATE_SWEEP_ERR = ""
+
+
+def _git_run(directory: str, *args, timeout: int | None = None):
+    """(rc, stdout, stderr) for a git call. Never raises."""
+    try:
+        proc = L.child_process(["git", "-C", directory] + list(args),
+                               capture_output=True, text=True, timeout=timeout)
+    except (OSError, RuntimeError, L.LedgerError, Exception):   # noqa: BLE001
+        return 1, "", ""
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _commit_with_retry(directory: str, subject: str) -> bool:
+    """#116: a commit that FAILS must never read as a clean tree.
+
+    ONE bounded retry first — git's own advice for ``.git/index.lock``, which a
+    live concurrent commit releases in seconds. Bounded, so a genuine failure
+    reports instead of spinning. The failure text lands in ``_CW_ERR`` so each
+    call site can name the path it was committing.
+    """
+    global _CW_ERR
+    import time
+    rc, _, err = _git_run(directory, "commit", "-q", "-m", subject)
+    if rc == 0:
+        return True
+    time.sleep(2)
+    rc, _, err = _git_run(directory, "commit", "-q", "-m", subject)
+    if rc == 0:
+        return True
+    _CW_ERR = " ".join((err or "").split("\n"))[:300]
+    return False
+
+
+def _ledger_tracked_names(ledger: str) -> str:
+    """The basenames the state commit actually stages, mode-aware (#149).
+
+    Spec trap 4: the audit's ``mech`` strings once hardcoded
+    workers-ledger.json, so after cutover they compared a declaration against a
+    file no longer tracked — a guard that cannot see its target and reports
+    clean.
+    """
+    if os.path.isfile(L.events_path(ledger)):
+        return "events.jsonl workers.json"
+    return "workers-ledger.json"
+
+
+def state_sweep_tracked(directory: str, ledger: str, label: str = "state") -> bool:
+    """Commit the TRACKED namespace. True iff something was committed."""
+    global STATE_SWEEP_ERR
+    STATE_SWEEP_ERR = ""
+    did = False
+    rc, out, _ = _git_run(directory, "status", "--porcelain", "--",
+                          *STATE_TRACKED_PATHS)
+    hits = []
+    if rc == 0:
+        for line in out.split("\n"):
+            if len(line) < 4:
+                continue
+            path = line[3:]
+            if " -> " in path:
+                path = path.rsplit(" -> ", 1)[1]
+            hits.append(path)
+    if hits:
+        note = ""
+        if " smoke-verdicts.log " in (" %s " % " ".join(hits)):
+            # The append-only carve-out (toolsmith.md) exempts a
+            # self-attributing shared log ONLY on condition that foreign rows
+            # are explicitly disclosed; the sweep is the one actor that stages
+            # rows it did not write, so it owes the sentence.
+            note = (" [disclose foreign rows: smoke-verdicts.log rows "
+                    "self-attribute via actor=]")
+        rc, _, _ = _git_run(directory, "add", "--", *hits)
+        if rc == 0:
+            if _commit_with_retry(directory, "state sweep:%s (%s)%s"
+                                  % (" ".join(hits), label, note)):
+                outln("sweep: state runtime files committed:%s"
+                      % " ".join(hits))
+                did = True
+            else:
+                STATE_SWEEP_ERR = ("state sweep:%s — %s"
+                                   % (" ".join(hits), _CW_ERR))
+        else:
+            STATE_SWEEP_ERR = "git add refused:%s" % " ".join(hits)
+    rc, out, _ = _git_run(directory, "status", "--porcelain", "--",
+                          STATE_TRACKED_GLOB)
+    if rc == 0 and out.strip():
+        rc, _, _ = _git_run(directory, "add", "--", STATE_TRACKED_GLOB)
+        if rc == 0:
+            if _commit_with_retry(directory, "state sweep: %s (%s)"
+                                  % (STATE_TRACKED_GLOB, label)):
+                outln("sweep: lane state records committed")
+                did = True
+            else:
+                STATE_SWEEP_ERR = ("state sweep:%s — %s"
+                                   % (STATE_TRACKED_GLOB, _CW_ERR))
+        else:
+            STATE_SWEEP_ERR = "git add refused:%s" % STATE_TRACKED_GLOB
+    return did
+
+
+# ---------------------------------------------------------------------------
+# the declared-vs-mechanism audit (#514) and its inverse (#540)
+# ---------------------------------------------------------------------------
+_TRACKED_BULLET_START = re.compile(r"^  - \*\*TRACKED\*\* —")
+_TRACKED_BULLET_STOP = re.compile(r"^  - |^  [A-Za-z]")
+_BACKTICKED = re.compile(r"`([^`]*)`")
+
+
+def _tracked_bullet(skill_root: str):
+    """(bullet_text, source_file) from the LAW CORPUS, or ("", "").
+
+    #71: the declaration legitimately MOVES (v0.4.310 moved this bullet into
+    reference-glossary.md), and a reader pinned to one filename goes blind the
+    moment the law is reorganised, then reports SKIP while the audit it exists
+    to perform has silently stopped. The audit must follow the DECLARATION.
+    """
+    for name in LAW_FILES:
+        path = os.path.join(skill_root, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="surrogateescape") as fh:
+                lines = fh.read().split("\n")
+        except OSError:
+            continue
+        collected = []
+        inside = False
+        for line in lines:
+            if not inside:
+                if _TRACKED_BULLET_START.match(line):
+                    inside = True
+                    collected.append(line)
+                continue
+            if _TRACKED_BULLET_STOP.match(line):
+                break
+            collected.append(line)
+        if collected:
+            return "\n".join(collected), name
+    return "", ""
+
+
+def state_tracked_audit(ledger: str) -> None:
+    """declaration -> mechanism: a name the glossary declares that the sweep
+    does not carry. WARN-only, always rc 0."""
+    skill_root = L.skill_dir()
+    bullet, found = _tracked_bullet(skill_root)
+    if not bullet:
+        errln("state-tracked: NOTE — declared-vs-mechanism check SKIPPED: no "
+              "'  - **TRACKED** —' bullet in any of the %d LAW_FILES. This is "
+              "NOT a clean result and NOT a finding." % len(LAW_FILES))
+        return
+    mech = (STATE_TRACKED_PATHS + STATE_TRACKED_GLOB.split()
+            + _ledger_tracked_names(ledger).split())
+    gap = 0
+    unclass = 0
+    for token in _BACKTICKED.findall(bullet):
+        if not token:
+            continue
+        if any(not ch.isprintable() for ch in token):
+            continue
+        # A backticked span containing whitespace is a COMMAND documented in the
+        # bullet's parenthetical, not a path.
+        if any(ch.isspace() for ch in token):
+            unclass += 1
+            continue
+        token = token[:-1] if token.endswith("/") else token
+        hit = False
+        for name in mech:
+            if token == name or token.endswith("/" + name) \
+                    or name.endswith("/" + token):
+                hit = True
+                break
+            # a leading-dot token is the second half of a slash-pair in the
+            # prose ('deployed.sha'/'.meta.json' -> deployed.meta.json)
+            if token.startswith(".") and token in name:
+                hit = True
+                break
+        if hit:
+            continue
+        errln("state-tracked: WARN — '%s' is declared TRACKED in %s's state-dir "
+              "glossary but carried by NEITHER STATE_TRACKED_PATHS nor "
+              "STATE_TRACKED_GLOB. Add it to the list, or amend the glossary "
+              "(#514)." % (token, found))
+        gap += 1
+    if unclass > 0:
+        errln("state-tracked: note — %d backticked span(s) in the TRACKED "
+              "bullet are not path-shaped (commands/parentheticals) and were "
+              "not classified. Disclosed so the skip is never silent."
+              % unclass)
+    if gap == 0:
+        errln("state-tracked: every name declared TRACKED in %s is carried by "
+              "the sweep list." % found)
+
+
+def state_out_of_scope_audit(ledger: str) -> None:
+    """mechanism -> its own blind spot (#540). WARN-only, always rc 0.
+
+    A tracked file that NEITHER the sweep list NOR the glossary names is
+    unreachable by EVERY commit path (there is no ``git add -A`` on the state
+    repo), so it can be DELETED and the sanctioned verb still reports success.
+    DIRTY out-of-scope files are FINDINGS; the untouched remainder is a COUNT —
+    the mass is historical evidence, and a leg that cried wolf on it would be
+    ignored, which is worse than no leg.
+    """
+    sd = L.state_dir(ledger)
+    if not L.is_git_repo(sd):
+        errln("state-out-of-scope: NOTE — inverse check SKIPPED: %s is not a "
+              "git repo. This is NOT a clean result and NOT a finding." % sd)
+        return
+    rc, out, _ = _git_run(sd, "ls-files")
+    if rc != 0:
+        errln("state-out-of-scope: NOTE — inverse check SKIPPED: 'git "
+              "ls-files' failed in %s. This is NOT a clean result." % sd)
+        return
+    tracked = [line for line in out.split("\n") if line]
+    # The basename test applies to the GLOB ONLY: `*-state.md` is a pathspec
+    # whose `*` crosses directories, while the literal list entries match the
+    # ROOT only (`archive/orders.json` is genuinely unswept).
+    mech = STATE_TRACKED_PATHS + _ledger_tracked_names(ledger).split()
+    outside = []
+    for path in tracked:
+        top = path.split("/", 1)[0]
+        hit = path in mech or top in mech
+        if not hit:
+            base = path.rsplit("/", 1)[-1]
+            if _glob_match(base, STATE_TRACKED_GLOB):
+                hit = True
+        if not hit:
+            outside.append(path)
+    total = len(tracked)
+    if not outside:
+        errln("state-out-of-scope: every one of the %d tracked file(s) is "
+              "carried by a commit path." % total)
+        return
+    rc, status, _ = _git_run(sd, "status", "--porcelain")
+    dirty = []
+    if rc == 0:
+        for line in status.split("\n"):
+            if len(line) < 4:
+                continue
+            path = line[3:]
+            if " -> " in path:
+                path = path.rsplit(" -> ", 1)[1]
+            if path in outside:
+                dirty.append(path)
+                errln("state-out-of-scope: WARN — '%s' is tracked but carried by "
+                      "NO commit path, and is DIRTY in the worktree; no commit "
+                      "path can reconcile it (#540)." % path)
+    if not dirty:
+        errln("state-out-of-scope: %d of %d tracked file(s) sit outside every "
+              "commit path, none DIRTY — historical mass, a count and not a "
+              "finding (#540)." % (len(outside), total))
+    else:
+        errln("state-out-of-scope: %d DIRTY out-of-scope file(s) reported above; "
+              "%d further file(s) sit outside every commit path untouched "
+              "(historical mass, a count and not a finding)."
+              % (len(dirty), len(outside) - len(dirty)))
+
+
+def _glob_match(name: str, pattern: str) -> bool:
+    """bash ``case $name in $pattern`` — fnmatch is the same semantics here."""
+    import fnmatch
+    return fnmatch.fnmatchcase(name, pattern)
+
+
+def oc_ship_audit_chain() -> None:
+    """C-F4 tail-chain: rc 1 = findings -> a loud stderr pointer.
+
+    The audit's own invocation is journaled by lib/oc-log.sh; rc 2/other is a
+    fixture/env condition and is ignored. OC_SHIP_AUDIT_CHAIN=0 disables it.
+    """
+    if os.environ.get("OC_SHIP_AUDIT_CHAIN", "1") != "1":
+        return
+    audit = os.path.join(L.state_dir(os.path.join(L.skill_dir(), "x")),
+                         "oc-audit-ship")
+    audit = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "oc-audit-ship")
+    if not os.access(audit, os.X_OK):
+        return
+    try:
+        proc = L.child_process([audit, "--grace", "120"],
+                               capture_output=True, text=True)
+        rc = proc.returncode
+    except (OSError, RuntimeError):
+        return
+    if rc == 1:
+        errln("oc-ledger: SHIP-AUDIT rc=1 - ORPHANED/failed deploy legs "
+              "detected; run: tools/ship/oc-audit-ship --grace 120")
+
+
+# ===========================================================================
+# PHASE 3 — THE WRITE VERBS (factory #204)
+#
+# Every verb below is a port of the corresponding ``cmd_*`` in
+# ``tools/state/oc-ledger``. The store layer is NOT reimplemented: each
+# mutation goes through ``ledger_core.atomic_write`` (the ONE writer) under
+# ``ledger_core.with_lock`` (the ONE lock), and the git tail is QUEUED by
+# ``ledger_core.git_state_commit`` and run by ``with_lock`` AFTER the release —
+# which is the #95/#641 contract, enforced structurally: ``child_process``
+# REFUSES to spawn while the lock is held, so the ordering cannot silently
+# regress the way the bash's ``9>&-`` could be dropped in an edit.
+#
+# The four semantics the port must not break, restated where they bite:
+#   1. a malformed JSONL line RAISES rc 3 (load_ledger), never skipped — a
+#      skipped line turns a corrupt row into a MISSING row, and every closure
+#      predicate then reads "no claim" (a false green);
+#   2. one event pushed on the END is a TRUE APPEND (atomic_write's prefix
+#      check) — one line + fsync, never a 2.8 MB rewrite;
+#   3. no child process while the lock is held;
+#   4. the git tail runs after release, on its own lock, and is NEVER fatal.
+# ===========================================================================
+
+# The closed kind enum, verbatim from the bash's ``KINDS``. ``skill-bump`` is
+# deliberately ABSENT: it is sync-only, and both ``stamp`` and ``fixture``
+# refuse it BY NAME so a hand-written bump row can never bypass the law digest
+# that ``sync`` records in the same act.
+KINDS = ("ruling idea idea-verdict design-feedback design-locked review-battery "
+         "incident lesson note ack roster-enroll roster-retire claim hold "
+         "confirm close done unclaim reject swap-result notify-fanout "
+         "shipchain proposal").split()
+
+# KINDS that CLOSE an issue. A ref-less row of this kind closes NOTHING while
+# reporting success, so ``stamp`` WARNS (never refuses: of the 22 ref-less
+# closing rows in the live ledger, 16 are ``done`` while 6 are ``confirm``
+# ship records that legitimately carry no issue).
+LANDED_KINDS = ("done", "close")
+
+# The three home trackers, whose number spaces OVERLAP (v0.4.284). A claim
+# token is a bare integer, so it cannot say which tracker it means — which is
+# why a release requires "closed on a home repo AND open on NONE".
+HOME_REPOS = ("leshchenko1979/opencrabs",
+              "leshchenko1979/opencrabs-dev-factory",
+              "opencrabs/opencrabs")
+
+# The TRACKED-namespace whitelist (#508/#514/#540/#80). ONE home, consumed by
+# the state-sweep tail here and by ``commit-pending --bundle``.
+STATE_TRACKED_PATHS = (
+    "baseline.json orders.json journal deployed.sha deployed.meta.json "
+    "fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log "
+    "health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off "
+    "runs reports questions base-red.json harvest-registry.json").split()
+
+# The harvest-state class carries glob metacharacters and must reach git
+# QUOTED and DIRECTLY — an unquoted expansion pathname-expands against the
+# CALLER's cwd. A parked harvest's state file is its ONLY resume record.
+STATE_TRACKED_GLOB = "*-state.md"
+
+# The skill repo's whitelisted runtime artifacts (never doc edits).
+RUNTIME_ARTIFACTS = ("tools/tests/battery-last.json",)
+
+# The stray-guard's exempt list (v0.4.157): the version docs and the battery
+# receipt, which IS the bump's evidence.
+STRAY_EXEMPT = ("SKILL.md", "CHANGELOG.md", "tools/tests/battery-last.json",
+                "tools/tests/battery-last-fail.log")
+
+
+def oc_clip_chars(text: str, cap: int) -> str:
+    """``oc_clip_chars`` (tools/lib/oc-log.sh) — at most ``cap`` CHARACTERS.
+
+    The bash fixed this for #588 because ``cut -c1-80`` counts BYTES under
+    C.UTF-8 and clipped a non-ASCII ``what`` mid-character, printing a dangling
+    lead byte on the one line whose whole purpose is to show what landed.
+    """
+    if cap <= 0 or len(text) <= cap:
+        return text
+    return text[:cap]
+
+
+def _sha256_8(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()[:8]
+
+
+# ---------------------------------------------------------------------------
+# the canonical issue tokenizer (tools/lib/oc_claims.py — never a copy)
+#
+# The bash DELEGATES these rather than carrying the pattern, and agreement is
+# load-bearing in BOTH directions: ``claim-ref`` derives the issue from the very
+# text ``claims`` scans, so a tokenizer that drifts by one character makes the
+# tool DERIVE an issue the scanner cannot see — the #106/#107 false-clean.
+# ---------------------------------------------------------------------------
+def _oc_claims():
+    try:
+        import oc_claims as oc
+    except ImportError as exc:                  # pragma: no cover - tree fault
+        die(L.RC_REFUSED, "cannot load the canonical claim predicate: %s" % exc)
+    return oc
+
+
+def _issue_ref_tokens(text) -> list:
+    """Every HOME-space issue reference in ``text``, as INTEGERS, in order."""
+    if not text:
+        return []
+    return _oc_claims().issue_ref_tokens(text)
+
+
+def _primary_issue_tokens(text) -> list:
+    """The issue(s) ``text`` CLAIMS — its leading reference cluster (#329)."""
+    if not text:
+        return []
+    return _oc_claims().primary_issue_tokens(text)
+
+
+# ---------------------------------------------------------------------------
+# actor resolution — ``derive_by`` (attribution label) and ``_self_uuid``
+# ---------------------------------------------------------------------------
+def _ambient_uuid() -> str:
+    """``${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}`` — the SELF-verb precedence.
+
+    ``_self_uuid`` reads this order and ``derive_by`` reads the OPPOSITE one
+    (``${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}``, bash :1060 vs :2235). That is
+    not an oversight to be "unified": ``derive_by`` is the ATTRIBUTION-LABEL
+    path where an explicit label must outrank the ambient, while a self verb
+    acts on the SESSION and the session id is the stronger identity. Collapsing
+    the two into one helper made ``stamp`` stamp the wrong actor whenever both
+    variables were set — caught by the differential on the first run.
+    """
+    return (os.environ.get("OPENCRABS_SESSION_ID")
+            or os.environ.get("OC_ACTOR") or "")
+
+
+def _actor_label_uuid() -> str:
+    """``${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}`` — the ``derive_by`` precedence."""
+    return (os.environ.get("OC_ACTOR")
+            or os.environ.get("OPENCRABS_SESSION_ID") or "")
+
+
+def _ascii_lower_af(text: str) -> str:
+    """``tr 'A-F' 'a-f'`` — NOT a full lowercase (only A-F, as the bash does)."""
+    return text.translate(str.maketrans("ABCDEF", "abcdef"))
+
+
+def _carries_non_hex(value: str) -> bool:
+    """bash ``*[!0-9a-f-]*`` — true when the value is a LABEL, not a uuid."""
+    return any(ch not in "0123456789abcdef-" for ch in value)
+
+
+def _roster_unique(workers, prefix: str) -> str:
+    """``[.workers[] | select(uuid startswith $p)] | length == 1`` -> "role uuid"."""
+    hits = [row for row in workers
+            if isinstance(row, dict)
+            and L.to_string(_keep(row.get("uuid"), "")).startswith(prefix)]
+    if len(hits) != 1:
+        return ""
+    return "%s %s" % (L.to_string(_keep(hits[0].get("role"), "")),
+                      L.to_string(_keep(hits[0].get("uuid"), "")))
+
+
+def derive_by(ledger: str) -> str:
+    """The default stamp attribution: roster ``role uuid``, or a LOUD sentinel.
+
+    ``OC_ACTOR`` wins here BY DESIGN — this is the ``--by`` ATTRIBUTION-LABEL
+    path, not a self-identifying verb, so an explicit label must outrank the
+    ambient.
+    """
+    uuid = _actor_label_uuid()
+    if not uuid or not (os.path.isfile(ledger) or L.jsonl_mode(ledger)):
+        return "(unattributed — pass --by or export OC_ACTOR)"
+    workers = _unified(ledger).get("workers")
+    if not isinstance(workers, list):
+        workers = []
+    # M2-3: uuids are lowercase; an UPPERCASE actor could never match a row.
+    uuid = _ascii_lower_af(uuid)
+    for row in workers:
+        if isinstance(row, dict) and L.to_string(_keep(row.get("uuid"), "")) == uuid:
+            return "%s %s" % (L.to_string(_keep(row.get("role"), "")), uuid)
+    # M2-3 census: the exact compare above cannot match a FRAGMENT, and 8 live
+    # rows carry a bare 8-char prefix whose full uuid IS rostered. Those are an
+    # UNRESOLVABLE LOOKUP, not "unrostered lanes" — resolve the unique fragment.
+    # NOT a refusal: 64 of the 86 full-uuid sentinel rows belong to uuids that
+    # ARE rostered today (stamped inside the pre-`enroll` window).
+    if not _carries_non_hex(uuid) and len(uuid) >= 4:
+        hit = _roster_unique(workers, uuid)
+        if hit:
+            return hit
+    # M2-23: the sentinel is IDEMPOTENT. A value that already carries it is
+    # echoed VERBATIM — otherwise feeding a prior row's `by` back produced
+    # 'unrostered-actor unrostered-actor 2fae1230', which is unattributable AND
+    # breaks an exact-string grep for the actor.
+    if uuid.startswith("unrostered-actor "):
+        errln("oc-ledger: WARNING — actor '%s' already carries the "
+              "'unrostered-actor' sentinel — echoed VERBATIM, never "
+              "double-prefixed." % uuid)
+        errln("  Pass a roster role label or a session uuid as OC_ACTOR/--by.")
+        return uuid
+    # M2-24: the value derive_by PRODUCES must be round-trippable. It emits the
+    # composed ``<role> <uuid>`` form, and feeding it back is the natural caller
+    # pattern (``roster --live`` prints exactly that TSV). Resolve the TRAILING
+    # token; when it names exactly one worker, stamp the CANONICAL composed form
+    # from the roster — the roster's role, never the caller's guess.
+    if " " in uuid:
+        tail = uuid.rsplit(" ", 1)[1]
+        if not _carries_non_hex(tail) and len(tail) >= 4:
+            hit = _roster_unique(workers, tail)
+            if hit:
+                return hit
+    # An unresolvable actor is LOUD and names the remedy — never a silent label.
+    errln("oc-ledger: WARNING — actor '%s' is not in the roster (%s) — row "
+          "stamped 'unrostered-actor %s'." % (uuid, ledger, uuid))
+    errln("  If it is a session: oc-ledger enroll %s <role> [--topic N]. A "
+          "factory/lane LABEL is not an actor — stamp as your ROSTER ROLE."
+          % uuid)
+    return "unrostered-actor %s" % uuid
+
+
+def _by_uuid_shaped_unresolvable(ledger: str, value: str) -> None:
+    """WARN-ONLY guard for an explicit ``--by`` (#320). Never refuses.
+
+    ``--by`` bypasses derive_by entirely, so a hand-assembled uuid-format value
+    (a remembered PREFIX plus an invented TAIL) landed as a phantom actor
+    indistinguishable from a legitimate attribution. WARN, never REFUSE: 64 of
+    the 86 full-uuid sentinel rows belong to uuids that ARE rostered today, and
+    ``oc-ship`` passes an explicit ``--by`` fallback whose refusal would trade
+    its whole ledger trail for a warning.
+    """
+    if not value:
+        return
+    cand = value.rsplit(" ", 1)[1] if " " in value else value
+    if _carries_non_hex(cand):                  # a LABEL — silent, verbatim
+        return
+    if len(cand) < 4:
+        return
+    workers = _unified(ledger).get("workers")
+    if not isinstance(workers, list):
+        workers = []
+    if any(isinstance(row, dict)
+           and L.to_string(_keep(row.get("uuid"), "")).startswith(cand)
+           for row in workers):
+        return
+    errln("oc-ledger: WARNING — --by '%s' is UUID-SHAPED but resolves to NO "
+          "roster worker; the row is stamped VERBATIM and is indistinguishable "
+          "from a legitimate attribution." % value)
+    errln("  A hand-assembled uuid (remembered prefix + invented tail) is the "
+          "usual cause. Fix: copy the uuid from a LIVE read — oc-ledger roster "
+          "--live, or $OPENCRABS_SESSION_ID. A genuine label is fine as-is (it "
+          "carries a non-hex char).")
+
+
+def _self_uuid(verb: str, given: str) -> str:
+    """A1b: a SELF verb acts on the CALLER, so the uuid comes from the ambient.
+
+    The second half is a WARNING, not a refusal (#657): a refusal would REMOVE A
+    DOCUMENTED CAPABILITY — ``ack``/``enroll`` act on ANOTHER lane's uuid as a
+    roster-admin action, and the tool's own selftest exercises that deliberately
+    (60 legs redden under a hard cross-check, including ``ack2-otheruuid-rc0``).
+    """
+    if given:
+        if not L.is_uuid(given):
+            die(L.RC_USAGE, "%s: uuid shape invalid (want 8-4-4-4-12 hex): '%s'"
+                % (verb, given))
+        ambient = _ambient_uuid()
+        if ambient and L.is_uuid(ambient) and ambient != given:
+            errln("note: %s acts on '%s', which is NOT the ambient session "
+                  "'%s' — correct for a roster-admin action; a mistake if you "
+                  "meant yourself (omit the uuid to default to the ambient)."
+                  % (verb, given, ambient))
+        return given
+    env_id = _ambient_uuid()
+    if not env_id:
+        die(L.RC_USAGE, "%s: no uuid supplied and no ambient session id. Fix: "
+            "run inside a lane turn (OPENCRABS_SESSION_ID is set), or pass the "
+            "uuid explicitly." % verb)
+    return env_id
+
+
+# ---------------------------------------------------------------------------
+# claim -> issue derivation (single owner; cmd_claim_ref and cmd_confirm)
+# ---------------------------------------------------------------------------
+def _latest_claim_issue(ledger: str, uuid: str):
+    """(issue, None) on success, (None, diagnostic) on failure.
+
+    The ref is extracted by the SINGLE OWNER (``_issue_ref_tokens``), never by a
+    bare ``#<digits>`` grep. Both failure modes are live in the ledger: a claim
+    written "issue 76" carries NO '#' at all (the old grep answered rc 3 for a
+    claim that EXISTS), and the old grep took the first '#<digits>' ANYWHERE in
+    the prose, so n=1585 ("...issue 94 ... reusable for the #93 options hook")
+    derived 93 — the WRONG issue, which ``confirm`` would then verify and close.
+    """
+    claim = ""
+    events = _unified(ledger).get("events")
+    for row in (events if isinstance(events, list) else []):
+        if not isinstance(row, dict) or row.get("kind") != "claim":
+            continue
+        if uuid in L.to_string(_keep(row.get("by"), "")):
+            claim = L.to_string(_keep(row.get("what"), ""))
+    if not claim:
+        return None, "no claim event by %s" % uuid
+    tokens = _issue_ref_tokens(claim)
+    if not tokens:
+        return None, "latest claim by %s carries no numeric issue ref: %s" % (
+            uuid, claim)
+    return tokens[0], None
+
+
+def _age_days(ts) -> float | None:
+    """Days between the row stamp and now, or None when it cannot be READ.
+
+    None is UNDECIDABLE, never 0: a row whose age cannot be read is not
+    evidence of freshness, and the fail-open direction here writes a false
+    Issue-Ref trailer into git history.
+    """
+    text = ts.strip() if isinstance(ts, str) else ""
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc)
+            - stamp).total_seconds() / 86400.0
+
+
+def _latest_open_claim_issue(ledger: str, uuid: str, max_age_d: float = 0.0):
+    """(issue, None) or (None, diagnostic) — the NEWEST claim row STILL OPEN.
+
+    #492: the selection is the newest claim ROW THAT IS STILL OPEN, not the
+    newest claim row. The two coincide only while a lane's newest claim is also
+    its newest open one; the moment a lane closes a newer claim, a
+    latest-row-only scan answers rc 3 and HIDES every older claim still open.
+    #631: ``max_age_d`` > 0 REFUSES rather than answering when the newest open
+    claim is older — a wrong Issue-Ref outlives the commit carrying it.
+    """
+    oc = _oc_claims()
+    events = _unified(ledger).get("events")
+    rows = oc.parse_events(events if isinstance(events, list) else [])
+    idxs = [i for i, row in enumerate(rows)
+            if row["kind"] == "claim" and uuid in row["by"]]
+    if not idxs:
+        return None, "no claim event by %s" % uuid
+    # Newest-first, so the FIRST open candidate is also the YOUNGEST open one:
+    # if it is already over the bound, every older candidate is too.
+    for idx in reversed(idxs):
+        row = rows[idx]
+        for tok in row["targets"]:
+            if oc.claim_is_closed(rows, idx, row["by"], tok):
+                continue
+            if max_age_d > 0:
+                age = _age_days(row["t"])
+                if age is None:
+                    return None, (
+                        "cannot DATE the newest open claim (#%d by %s, t=%r), "
+                        "so its age is UNDECIDABLE and an Issue-Ref cannot be "
+                        "derived from it safely\npass --issue <N> to name the "
+                        "intended issue, or --session-id-only if this commit "
+                        "belongs to none" % (tok, uuid, row["t"]))
+                if age > max_age_d:
+                    return None, (
+                        "the newest open claim is STALE — #%d was claimed "
+                        "%.1f days ago (bound %.1f d, %.0f h): %s\n"
+                        "refusing to derive an Issue-Ref from an abandoned "
+                        "claim; pass --issue <N> to name the intended issue, "
+                        "or --session-id-only if this commit belongs to none"
+                        % (tok, age, max_age_d, max_age_d * 24.0, row["what"]))
+            return tok, None
+    row = rows[idxs[-1]]
+    if not row["targets"]:
+        return None, ("latest claim by %s carries no numeric issue ref: %s"
+                      % (uuid, row["what"]))
+    detail = ("latest claim by %s is CLOSED (#%s — a done/close row for it "
+              "follows): %s"
+              % (uuid, ", #".join(str(t) for t in row["targets"]), row["what"]))
+    older = len(idxs) - 1
+    if older:
+        detail += ("\n%d older claim row(s) by %s were also scanned and none "
+                   "is open" % (older, uuid))
+    return None, detail
+
+
+# ---------------------------------------------------------------------------
+# git helpers for the tails. NONE of these may run under the fleet lock —
+# ``L.child_process`` raises rather than inheriting the lock fd (#641), so the
+# ordering is enforced rather than documented.
+# ---------------------------------------------------------------------------
+_CW_ERR = ""
+STATE_SWEEP_ERR = ""
+
+
+def _git_run(directory: str, *args, timeout: int | None = None):
+    """(rc, stdout, stderr) for a git call. Never raises; rc 1 on spawn failure."""
+    try:
+        proc = L.child_process(["git", "-C", directory] + list(args),
+                               capture_output=True, text=True, timeout=timeout)
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return 1, "", ""
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def _git_out(directory: str, *args) -> tuple:
+    rc, out, _ = _git_run(directory, *args)
+    return rc, out.strip()
+
+
+def _commit_with_retry(directory: str, subject: str) -> bool:
+    """#116: a commit that FAILS must never read as a clean tree.
+
+    ONE bounded retry first — git's own advice for ``.git/index.lock``, which a
+    live concurrent commit releases in seconds. Bounded, so a genuine failure
+    reports instead of spinning. The failure text lands in ``_CW_ERR`` so each
+    call site can name the path it was committing.
+    """
+    global _CW_ERR
+    rc, _, err = _git_run(directory, "commit", "-q", "-m", subject)
+    if rc == 0:
+        return True
+    time.sleep(2)
+    rc, _, err = _git_run(directory, "commit", "-q", "-m", subject)
+    if rc == 0:
+        return True
+    _CW_ERR = " ".join((err or "").split())[:300]
+    return False
+
+
+def _ledger_tracked_names(ledger: str) -> str:
+    """The basenames the state commit actually stages, mode-aware (#149).
+
+    Spec trap 4: the audit's mechanism list once hardcoded workers-ledger.json,
+    so after cutover it compared a declaration against a file no longer tracked
+    — a guard that cannot see its target and reports clean.
+    """
+    if os.path.isfile(L.events_path(ledger)):
+        return "events.jsonl workers.json"
+    return "workers-ledger.json"
+
+
+def _porcelain_paths(directory: str, *pathspecs) -> list:
+    """``git status --porcelain -- <specs> | cut -c4- | sed 's/^.* -> //'``."""
+    rc, out, _ = _git_run(directory, "status", "--porcelain", "--", *pathspecs)
+    if rc != 0:
+        return []
+    paths = []
+    for line in out.split("\n"):
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.rsplit(" -> ", 1)[1]
+        paths.append(path)
+    return paths
+
+
+def state_sweep_tracked(directory: str, ledger: str,
+                        label: str = "state") -> bool:
+    """Commit the TRACKED namespace; True iff something was committed.
+
+    ``git add`` DIES on a pathspec that matches nothing (rc 128, staging
+    NOTHING at all), so the whitelist is never handed to git wholesale — the
+    dirty subset is derived from ONE porcelain read first.
+    """
+    global STATE_SWEEP_ERR
+    STATE_SWEEP_ERR = ""
+    did = False
+    hits = _porcelain_paths(directory, *STATE_TRACKED_PATHS)
+    if hits:
+        note = ""
+        if "smoke-verdicts.log" in hits:
+            # The append-only carve-out (toolsmith.md) exempts a self-attributing
+            # shared log ONLY on condition that foreign rows are explicitly
+            # disclosed; the sweep is the one actor that stages rows it did not
+            # write, so it is the one that owes the sentence.
+            note = (" [disclose foreign rows: smoke-verdicts.log rows "
+                    "self-attribute via actor=]")
+        rc, _, _ = _git_run(directory, "add", "--", *hits)
+        if rc == 0:
+            if _commit_with_retry(directory, "state sweep:%s (%s)%s"
+                                  % (" ".join(hits), label, note)):
+                outln("sweep: state runtime files committed:%s"
+                      % " ".join(hits))
+                did = True
+            else:
+                STATE_SWEEP_ERR = "state sweep:%s — %s" % (
+                    " ".join(hits), _CW_ERR)
+        else:
+            STATE_SWEEP_ERR = "git add refused:%s" % " ".join(hits)
+    if _porcelain_paths(directory, STATE_TRACKED_GLOB):
+        rc, _, _ = _git_run(directory, "add", "--", STATE_TRACKED_GLOB)
+        if rc == 0:
+            if _commit_with_retry(directory, "state sweep: %s (%s)"
+                                  % (STATE_TRACKED_GLOB, label)):
+                outln("sweep: lane state records committed")
+                did = True
+            else:
+                STATE_SWEEP_ERR = "state sweep:%s — %s" % (STATE_TRACKED_GLOB,
+                                                          _CW_ERR)
+        else:
+            STATE_SWEEP_ERR = "git add refused:%s" % STATE_TRACKED_GLOB
+    return did
+
+
+# ---------------------------------------------------------------------------
+# declared-vs-mechanism audit (#514) and its inverse (#540)
+# ---------------------------------------------------------------------------
+_BULLET_START = re.compile(r"^  - \*\*TRACKED\*\* —")
+_BULLET_STOP = re.compile(r"^  - |^  [A-Za-z]")
+_BACKTICKED = re.compile(r"`([^`]*)`")
+
+
+def _tracked_bullet(skill_root: str):
+    """(bullet_text, source_file) from the LAW CORPUS, or ("", "").
+
+    #71: the declaration legitimately MOVES (v0.4.310 moved this bullet into
+    reference-glossary.md), and a reader pinned to one filename goes blind the
+    moment the law is reorganised — then reports SKIP while the audit it exists
+    to perform has silently stopped. The audit follows the DECLARATION, and
+    LAW_FILES is the authority on what the corpus IS, so an unlisted new law
+    file cannot hide a declaration from this scan.
+    """
+    for name in LAW_FILES:
+        path = os.path.join(skill_root, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8",
+                      errors="surrogateescape") as fh:
+                lines = fh.read().split("\n")
+        except OSError:
+            continue
+        collected = []
+        inside = False
+        for line in lines:
+            if not inside:
+                if _BULLET_START.match(line):
+                    inside = True
+                    collected.append(line)
+                continue
+            if _BULLET_STOP.match(line):
+                break
+            collected.append(line)
+        if collected:
+            return "\n".join(collected), name
+    return "", ""
+
+
+def state_tracked_audit(ledger: str) -> None:
+    """declaration -> mechanism: a name declared TRACKED that the sweep does not
+    carry. WARN-only, rc 0 always (#514): the declaration is HQ's law surface
+    and the list is this tool's, so a hard failure would let one side's edit
+    block the other's work at a boundary it does not own."""
+    bullet, found = _tracked_bullet(L.skill_dir())
+    if not bullet:
+        errln("state-tracked: NOTE — declared-vs-mechanism check SKIPPED: no "
+              "'  - **TRACKED** —' bullet in any of the %d LAW_FILES. This is "
+              "NOT a clean result and NOT a finding." % len(LAW_FILES))
+        return
+    mech = (STATE_TRACKED_PATHS + STATE_TRACKED_GLOB.split()
+            + _ledger_tracked_names(ledger).split())
+    gap = 0
+    unclass = 0
+    for token in _BACKTICKED.findall(bullet):
+        if not token:
+            continue
+        if any(not ch.isprintable() for ch in token):
+            continue
+        # A backticked span containing whitespace is a COMMAND documented in the
+        # bullet's parenthetical, not a path.
+        if any(ch.isspace() for ch in token):
+            unclass += 1
+            continue
+        # The glossary writes directory entries with a trailing slash while the
+        # mechanism stores them bare; an unnormalised compare reports both.
+        if token.endswith("/"):
+            token = token[:-1]
+        hit = False
+        for name in mech:
+            if token == name or token.endswith("/" + name) \
+                    or name.endswith("/" + token):
+                hit = True
+                break
+            # a leading-dot token is the second half of a slash-pair in the
+            # prose ('deployed.sha'/'.meta.json' -> deployed.meta.json)
+            if token.startswith(".") and token in name:
+                hit = True
+                break
+        if hit:
+            continue
+        errln("state-tracked: WARN — '%s' is declared TRACKED in %s's state-dir "
+              "glossary but carried by NEITHER STATE_TRACKED_PATHS nor "
+              "STATE_TRACKED_GLOB. Add it to the list, or amend the glossary "
+              "(#514)." % (token, found))
+        gap += 1
+    if unclass > 0:
+        errln("state-tracked: note — %d backticked span(s) in the TRACKED "
+              "bullet are not path-shaped (commands/parentheticals) and were "
+              "not classified. Disclosed so the skip is never silent." % unclass)
+    if gap == 0:
+        errln("state-tracked: every name declared TRACKED in %s is carried by "
+              "the sweep list." % found)
+
+
+def state_out_of_scope_audit(ledger: str) -> None:
+    """mechanism -> its own blind spot (#540). WARN-only, rc 0 always.
+
+    A tracked file that NEITHER the sweep list NOR the glossary names is
+    unreachable by EVERY commit path (there is no ``git add -A`` on the state
+    repo), so it can be DELETED while the sanctioned verb still reports
+    success. DIRTY out-of-scope files are FINDINGS; the untouched remainder is a
+    COUNT — the mass is historical evidence, and a leg that cried wolf on it
+    would be ignored, which is worse than no leg.
+    """
+    sd = L.state_dir(ledger)
+    if not L.is_git_repo(sd):
+        errln("state-out-of-scope: NOTE — inverse check SKIPPED: %s is not a "
+              "git repo. This is NOT a clean result and NOT a finding." % sd)
+        return
+    rc, out, _ = _git_run(sd, "ls-files")
+    if rc != 0:
+        errln("state-out-of-scope: NOTE — inverse check SKIPPED: 'git ls-files' "
+              "failed in %s. This is NOT a clean result." % sd)
+        return
+    tracked = [line for line in out.split("\n") if line]
+    # The basename test applies to the GLOB ONLY: `*-state.md` is a pathspec
+    # whose `*` crosses directories, while the literal list entries match the
+    # ROOT only — `archive/orders.json` is genuinely unswept and must not read
+    # as carried (a false NEGATIVE, i.e. a clean receipt over an unswept file).
+    mech = STATE_TRACKED_PATHS + _ledger_tracked_names(ledger).split()
+    outside = []
+    for path in tracked:
+        top = path.split("/", 1)[0]
+        if path in mech or top in mech:
+            continue
+        base = path.rsplit("/", 1)[-1]
+        if fnmatch.fnmatchcase(base, STATE_TRACKED_GLOB):
+            continue
+        outside.append(path)
+    total = len(tracked)
+    if not outside:
+        errln("state-out-of-scope: every one of the %d tracked file(s) is "
+              "carried by a commit path." % total)
+        return
+    dirty = []
+    for path in _porcelain_paths(sd):
+        if path in outside:
+            dirty.append(path)
+            errln("state-out-of-scope: WARN — '%s' is tracked but carried by NO "
+                  "commit path, and is DIRTY in the worktree; no commit path "
+                  "can reconcile it (#540)." % path)
+    if not dirty:
+        errln("state-out-of-scope: %d of %d tracked file(s) sit outside every "
+              "commit path, none DIRTY — historical mass, a count and not a "
+              "finding (#540)." % (len(outside), total))
+    else:
+        errln("state-out-of-scope: %d DIRTY out-of-scope file(s) reported above; "
+              "%d further file(s) sit outside every commit path untouched "
+              "(historical mass, a count and not a finding)."
+              % (len(dirty), len(outside) - len(dirty)))
+
+
+def oc_ship_audit_chain() -> None:
+    """C-F4 tail-chain: rc 1 = findings -> a loud stderr pointer.
+
+    rc 2/other is a fixture/env condition and is ignored. Runs OUTSIDE the lock
+    (the dispatcher calls it after the verb returns). ``OC_SHIP_AUDIT_CHAIN=0``
+    disables it, as every fixture does.
+    """
+    if os.environ.get("OC_SHIP_AUDIT_CHAIN", "1") != "1":
+        return
+    audit = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "oc-audit-ship")
+    if not os.access(audit, os.X_OK):
+        return
+    try:
+        proc = L.child_process([audit, "--grace", "120"],
+                               capture_output=True, text=True)
+        rc = proc.returncode
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return
+    if rc == 1:
+        errln("oc-ledger: SHIP-AUDIT rc=1 - ORPHANED/failed deploy legs "
+              "detected; run: tools/ship/oc-audit-ship --grace 120")
+
+
+# ---------------------------------------------------------------------------
+# stamp — the ONE verb that mints a normal event row
+# ---------------------------------------------------------------------------
+STAMP_HELP = ('usage: oc-ledger stamp <kind> "<what>" [--by <actor>] '
+              '[--what <text>|--what-file <path>|--what-stdin] '
+              '[--allow-unattributed] [--allow-no-ref]')
+
+FIXTURE_HELP = (
+    'usage: oc-ledger fixture --n N --t <RFC3339> --kind K --by B '
+    '(--what "<text>"|--what-file <path>|--what-stdin)',
+    '',
+    'Append a row with a FORCED ordinal and stamp — test fixtures only.',
+    '--n and --t are REQUIRED (stamp derives both; a fixture exists to pin them).',
+    'rc 0 appended + read-back ok · 2 usage · 3 ledger unreadable · 4 '
+    'read-back/write failure',
+)
+
+
+def _read_text_source(verb: str, what_file: str, what_stdin: bool,
+                      what: str) -> str:
+    """Resolve ``--what`` / ``--what-file`` / ``--what-stdin`` (#341).
+
+    Text passed on a BASH COMMAND LINE is expanded by the CALLER's shell before
+    this tool sees it: backticks and ``$(...)`` run command substitution, and a
+    substitution yielding EMPTY output leaves NO trace in the stored row. The
+    read-back cannot catch that — it compares the already-expanded value against
+    the already-expanded stored copy, so it is blind to caller-side expansion BY
+    CONSTRUCTION. Both alternatives are mutually exclusive with each other and
+    with ``--what``; command substitution strips ALL trailing newlines, so
+    ``printf 'x\\n' > f`` and ``--what x`` agree byte-for-byte.
+    """
+    sources = (1 if what else 0) + (1 if what_file else 0) + (1 if what_stdin else 0)
+    if sources > 1:
+        die(L.RC_USAGE, "%s: give the text ONE way (--what | --what-file | "
+            "--what-stdin), not %d" % (verb, sources))
+    if what_file:
+        try:
+            with open(what_file, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            die(L.RC_USAGE, "%s: --what-file not readable: %s"
+                % (verb, what_file))
+        return raw.decode("utf-8", "surrogateescape").rstrip("\n")
+    if what_stdin:
+        raw = sys.stdin.buffer.read()
+        return raw.decode("utf-8", "surrogateescape").rstrip("\n")
+    return what
+
+
+def _issues_json(kind: str, what: str):
+    """The structured ``issues`` field a claim records at WRITE time (#329).
+
+    The prose is what a human reads; ``issues`` is what the scanner keys on, so
+    the target is a FACT recorded now rather than an inference re-made from the
+    sentence on every read. ``None`` (field absent) is the correct shape for
+    non-claims and for a deliberately ref-less claim.
+    """
+    if kind != "claim":
+        return None
+    tokens = _primary_issue_tokens(what)
+    return tokens or None
+
+
+def _row(n, t: str, by: str, kind: str, what: str, issues):
+    row = {"n": n, "t": t, "by": by, "kind": kind, "what": what}
+    if issues is not None:
+        row["issues"] = issues
+    return row
+
+
+def _last_event_on_disk(ledger: str):
+    """The last row the RECORD holds — read BACK OFF DISK, never from memory.
+
+    ``tail -n 1`` in the bash: a torn write or a concurrent append (impossible
+    under the lock, but this is the check that would catch a broken lock) fails
+    the same way a view-file mismatch used to.
+    """
+    if L.jsonl_mode(ledger):
+        path = L.events_path(ledger)
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return None
+        text = data.decode("utf-8", "surrogateescape")
+        lines = [line for line in text.split("\n") if line.strip()]
+        if not lines:
+            return None
+        try:
+            return json.loads(lines[-1])
+        except ValueError:
+            return None
+    try:
+        doc = json.loads(_read(ledger))
+    except (ValueError, OSError):
+        return None
+    events = doc.get("events")
+    if isinstance(events, list) and events:
+        return events[-1]
+    return None
+
+
+def cmd_stamp(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(STAMP_HELP)
+        return L.RC_OK
+    kind = ""
+    what = ""
+    by = ""
+    by_explicit = False
+    allow_unattr = False
+    allow_noref = False
+    what_file = ""
+    what_stdin = False
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--by":
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "--by needs a value")
+            by = args[i + 1]
+            by_explicit = True
+            i += 2
+        elif arg == "--allow-unattributed":
+            allow_unattr = True
+            i += 1
+        elif arg == "--allow-no-ref":
+            allow_noref = True
+            i += 1
+        elif arg == "--what":
+            what = args[i + 1] if i + 1 < len(args) else ""
+            if not what:
+                die(L.RC_USAGE, "--what needs a value")
+            i += 2
+        elif arg == "--what-file":
+            what_file = args[i + 1] if i + 1 < len(args) else ""
+            if not what_file:
+                die(L.RC_USAGE, "--what-file needs a path")
+            i += 2
+        elif arg == "--what-stdin":
+            what_stdin = True
+            i += 1
+        elif arg.startswith("--"):
+            die(L.RC_USAGE, "stamp: unknown flag '%s' (forms: stamp <kind> "
+                "\"<what>\" | stamp <kind> --what \"<text>\" | stamp <kind> "
+                "--what-file <path> | stamp <kind> --what-stdin)" % arg)
+        else:
+            if not kind:
+                kind = arg
+            elif not what:
+                what = arg
+            i += 1
+
+    what = _read_text_source("stamp", what_file, what_stdin, what)
+    if not kind:
+        die(L.RC_USAGE, "usage: oc-ledger stamp <kind> \"<what>\" [--by "
+            "<label>] [--allow-unattributed] [--allow-no-ref]")
+    if not what:
+        die(L.RC_USAGE, "stamp: what must be non-empty")
+    if not by:
+        by = derive_by(ledger)
+    # C-#7 (v0.4.77): underscore input normalises to the enum hyphen form.
+    kind = kind.replace("_", "-")
+    if kind == "skill-bump":
+        die(L.RC_USAGE, "stamp: kind skill-bump is sync-only — use: oc-ledger "
+            "sync --version <v>")
+    if kind not in KINDS:
+        die(L.RC_USAGE, "stamp: unknown kind '%s' (v1.3 vocabulary — see "
+            "header)" % kind)
+    if what.startswith("--"):
+        # glitched-argv class, ledger n=1361/n=1372: a lost flag landed as the
+        # row's text, and the read-back could not see it.
+        die(L.RC_USAGE, "stamp: what looks like a lost flag (\"%s\") — pass "
+            "text with --what explicitly (glitched-argv class, ledger "
+            "n=1361/n=1372)" % what)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    if by_explicit:
+        _by_uuid_shaped_unresolvable(ledger, by)
+    # #19: an anonymous row IS a defect — it cannot be traced to a lane or a
+    # tool, which is the whole point of the `by` field. derive_by() correctly
+    # refused to invent an actor, but writing the sentinel anyway made the
+    # defect the DEFAULT. Placed AFTER the ledger gate so a missing/corrupt
+    # ledger is still rc 3, never masked by an rc 2 actor refusal.
+    if not allow_unattr and by.startswith("(unattributed"):
+        die(L.RC_USAGE, "stamp: REFUSED — no actor, and an anonymous row is a "
+            "defect (it cannot be traced to a lane or a tool). Fix: pass --by "
+            "\"<label>\" (e.g. --by \"<role> <uuid>\"), or export "
+            "OC_ACTOR=<your session uuid>. If the anonymous row is deliberate: "
+            "--allow-unattributed. (kind=%s)" % kind)
+    # RESIDUAL (D-2 family): every consumer of a claim keys on the issue
+    # reference, so a claim carrying NONE is a DEAD LETTER — and a silent one:
+    # cmd_claims cannot see the row, so the verify-unclaimed dispatch gate
+    # answers "clean" for an issue that IS claimed (#106/#107).
+    if kind == "claim" and not allow_noref and not _issue_ref_tokens(what):
+        die(L.RC_USAGE, "stamp: REFUSED — a claim must carry a numeric issue "
+            "reference the scanner can see (\"CLAIM #<N> — ...\"; also "
+            "accepted: \"issue <N>\", \"issue=#N\"). Every consumer keys on "
+            "the ref, so a claim without one is a DEAD LETTER: cmd_claims "
+            "cannot see the row, and the verify-unclaimed gate reports the "
+            "issue CLEAN. If the row is deliberately ref-less: --allow-no-ref. "
+            "(kind=%s)" % kind)
+    # A LANDED row is a closing row and is supposed to address the issue it
+    # lands, so a ref-less one closes NOTHING while reporting success (measured
+    # 2026-09-25: `stamp done "592 landed: b9ee661cc"` returned "read-back ok"
+    # rc 0 and left the claim OPEN). "(read-back ok)" confirms the WRITE, never
+    # the ADDRESSING. WARN, scoped to LANDED_KINDS.
+    if not allow_noref and kind in LANDED_KINDS and not _issue_ref_tokens(what):
+        errln("oc-ledger: WARN — a '%s' row carries NO parseable issue "
+              "reference, so it closes NOTHING while reporting success. The "
+              "predicate accepts \"#<N>\" or \"issue <N>\" — BARE DIGITS ARE "
+              "NOT A REF (\"592 landed: ...\" does not close #592; \"#592 "
+              "landed: ...\" does). If the row deliberately addresses no "
+              "issue: --allow-no-ref. (what=%s)" % (kind, what[:80]))
+
+    def _stamp_locked():
+        n = L.max_n(ledger) + 1
+        t = L.now_iso()
+        issues = _issues_json(kind, what)
+        row = _row(n, t, by, kind, what, issues)
+
+        def transform(doc):
+            events = doc.get("events")
+            if events is None:
+                events = doc["events"] = []
+            elif not isinstance(events, list):
+                raise L.LedgerError(
+                    L.RC_REFUSED, "atomic_write failed (rc=3) — the ledger was "
+                    "NOT modified: .events is not an array")
+            events.append(dict(row))
+            # In JSONL mode atomic_write's TRUE-APPEND branch drops non-event
+            # state, so this assignment is discarded there and lands only on the
+            # wholesale path — exactly the bash's split between the two branches.
+            doc["updated_at"] = t
+            return None
+
+        L.atomic_write(ledger, transform)
+
+        # read-back self-verify (Duty-6 lens C2): never trust the write.
+        last = _last_event_on_disk(ledger)
+        if not isinstance(last, dict):
+            die(L.RC_IO, "stamp READ-BACK MISMATCH: the last row of the record "
+                "is unreadable — ledger corruption; investigate before further "
+                "stamps")
+        r_n = last.get("n")
+        if r_n is None or L.to_string(r_n) != L.to_string(n):
+            die(L.RC_IO, "stamp READ-BACK MISMATCH: sent n=%s, last line has "
+                "n=%s — ledger corruption; investigate before further stamps"
+                % (n, "" if r_n is None else L.to_string(r_n)))
+        r_kind = L.to_string(_keep(last.get("kind"), ""))
+        # ``$(jq -r ...)`` strips trailing newlines, so a `what` ending in one
+        # fails this comparison in the bash too. Reproduce, do not "fix".
+        r_what = L.to_string(_keep(last.get("what"), "")).rstrip("\n")
+        if r_kind != kind or r_what != what:
+            die(L.RC_IO, "stamp READ-BACK MISMATCH: sent kind=%s what=%s, disk "
+                "has kind=%s what=%s — ledger corruption; investigate before "
+                "further stamps" % (kind, what, r_kind, r_what))
+        # The structured field is verified too: it is what the scan keys on, so
+        # a silently-dropped `issues` array would reintroduce the prose
+        # inference this field exists to replace.
+        if kind == "claim":
+            r_iss = L.dumps_compact(last.get("issues"))
+            if r_iss != L.dumps_compact(issues):
+                die(L.RC_IO, "stamp READ-BACK MISMATCH: sent issues=%s, disk "
+                    "has issues=%s — the claim's target is not what was "
+                    "written; investigate before further stamps"
+                    % (L.dumps_compact(issues), r_iss))
+        # Surface WHAT WAS STORED, not merely that something was stored (#341):
+        # the read-back above compares two values that were BOTH already expanded
+        # by the caller's shell, so it cannot see caller-side expansion; this
+        # line is the last place a silently-corrupted `what` is catchable by eye.
+        w_show = oc_clip_chars(r_what.replace("\n", " "), 80)
+        outln("stamped n=%s kind=%s (read-back ok) what=\"%s\" len=%d hash8=%s"
+              % (n, kind, w_show, len(r_what), _sha256_8(r_what)))
+        L.git_state_commit(ledger, "ledger n=%s: %s (oc-ledger stamp)"
+                           % (n, kind))
+
+    L.with_lock(ledger, _stamp_locked)
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
+# fixture — a row whose n and t are FORCED (test fixtures only)
+# ---------------------------------------------------------------------------
+def cmd_fixture(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        for line in FIXTURE_HELP:
+            outln(line)
+        return L.RC_OK
+    n = ""
+    t = ""
+    kind = ""
+    by = ""
+    what = ""
+    what_file = ""
+    what_stdin = False
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        pairs = {"--n": (n, "--n needs a value"),
+                 "--t": (t, "--t needs a value"),
+                 "--kind": (kind, "--kind needs a value"),
+                 "--by": (by, "--by needs a value"),
+                 "--what": (what, "--what needs a value"),
+                 "--what-file": (what_file, "--what-file needs a path")}
+        if arg in pairs:
+            _, message = pairs[arg]
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "fixture: " + message)
+            value = args[i + 1]
+            if arg == "--n":
+                n = value
+            elif arg == "--t":
+                t = value
+            elif arg == "--kind":
+                kind = value
+            elif arg == "--by":
+                by = value
+            elif arg == "--what":
+                what = value
+            else:
+                what_file = value
+            i += 2
+        elif arg == "--what-stdin":
+            what_stdin = True
+            i += 1
+        else:
+            die(L.RC_USAGE, "fixture: unknown arg '%s' (usage: oc-ledger "
+                "fixture --n N --t <RFC3339> --kind K --by B --what \"<text>\")"
+                % arg)
+
+    if not n:
+        die(L.RC_USAGE, "fixture: --n N is REQUIRED — a fixture row exists to "
+            "FORCE its ordinal (stamp derives one)")
+    if not re.fullmatch(r"[0-9]+", n):
+        die(L.RC_USAGE, "fixture: --n must be a non-negative integer (got '%s')"
+            % n)
+    if not t:
+        die(L.RC_USAGE, "fixture: --t <RFC3339> is REQUIRED — a fixture row "
+            "exists to FORCE its stamp (stamp writes now)")
+    # Shape, not normalisation: the value is stored VERBATIM (the read-back pins
+    # byte equality). A stamp outside the ISO-8601 UTC family would be
+    # unrankable by `events --since`, which is exactly what a seeded fixture is
+    # for.
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                        t):
+        die(L.RC_USAGE, "fixture: --t must be RFC3339 UTC "
+            "(YYYY-MM-DDTHH:MM:SSZ), got '%s'" % t)
+    if not kind:
+        die(L.RC_USAGE, "fixture: --kind K is REQUIRED")
+    kind = kind.replace("_", "-")
+    if kind == "skill-bump":
+        die(L.RC_USAGE, "fixture: kind skill-bump is sync-only — it is not a "
+            "fixture row")
+    if kind not in KINDS:
+        die(L.RC_USAGE, "fixture: unknown kind '%s' (v1.3 vocabulary — see "
+            "header)" % kind)
+    if not by:
+        die(L.RC_USAGE, "fixture: --by B is REQUIRED — a fixture row names its "
+            "planter, it is never derived")
+    what = _read_text_source("fixture", what_file, what_stdin, what)
+    if not what:
+        die(L.RC_USAGE, "fixture: what must be non-empty")
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "fixture: ledger missing or unparseable: %s" % ledger)
+
+    def _fixture_locked():
+        forced_n = int(n)
+        issues = _issues_json(kind, what)
+        row = _row(forced_n, t, by, kind, what, issues)
+
+        def transform(doc):
+            events = doc.get("events")
+            if events is None:
+                events = doc["events"] = []
+            elif not isinstance(events, list):
+                raise L.LedgerError(
+                    L.RC_REFUSED, "atomic_write failed (rc=3) — the ledger was "
+                    "NOT modified: .events is not an array")
+            events.append(dict(row))
+            doc["updated_at"] = t
+            return None
+
+        L.atomic_write(ledger, transform)
+
+        # The read-back resolves through the RECORD and compares the LAST row
+        # against all four forced values, so a verb that quietly derived n or t
+        # cannot report success.
+        last = _last_event_on_disk(ledger)
+        ok = (isinstance(last, dict)
+              and L.dumps_compact(last.get("n")) == L.dumps_compact(forced_n)
+              and L.to_string(_keep(last.get("t"), "")) == t
+              and L.to_string(_keep(last.get("kind"), "")) == kind
+              and L.to_string(_keep(last.get("what"), "")).rstrip("\n") == what)
+        if not ok:
+            disk_n = last.get("n") if isinstance(last, dict) else None
+            die(L.RC_IO, "fixture READ-BACK MISMATCH sent n=%s t=%s kind=%s "
+                "disk n=%s t=%s kind=%s what=%s — the forced n/t did not land; "
+                "investigate before further fixture rows"
+                % (n, t, kind,
+                   "<none>" if disk_n is None else L.to_string(disk_n),
+                   L.to_string(_keep((last or {}).get("t"), "<none>")),
+                   L.to_string(_keep((last or {}).get("kind"), "<none>")),
+                   oc_clip_chars(L.to_string(
+                       _keep((last or {}).get("what"), "<none>")), 60)))
+        w_show = oc_clip_chars(what.replace("\n", " "), 80)
+        outln("fixtured n=%s kind=%s t=%s (read-back ok) what=\"%s\" len=%d "
+              "hash8=%s" % (n, kind, t, w_show, len(what), _sha256_8(what)))
+        L.git_state_commit(ledger, "ledger n=%s: %s (oc-ledger fixture)"
+                           % (n, kind))
+
+    L.with_lock(ledger, _fixture_locked)
+    return L.RC_OK
+
+
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
@@ -1509,14 +3278,15 @@ _HANDLERS = {
     "lessons": cmd_lessons,
     "duplicates": cmd_duplicates,
     "mode": cmd_mode,
+    # --- phase 3: the write verbs ---
+    "stamp": cmd_stamp,
+    "fixture": cmd_fixture,
 }
 
-# The verbs this file does NOT implement yet (phase 3) plus the two verbs the
-# bash keeps for the flip. Naming them explicitly means a caller gets the same
-# rc 2 and a message that says WHY, instead of a bare "unknown verb".
-_WRITE_VERBS = ("stamp", "fixture", "sync", "ack", "enroll", "promote",
-                "retire", "commit-pending", "confirm", "migrate", "claim",
-                "claim-ref", "sweep-closed-claims", "selftest")
+# The verbs this file does NOT implement yet plus the one verb the bash keeps
+# for the flip. Naming them explicitly means a caller gets the same rc 2 and a
+# message that says WHY, instead of a bare "unknown verb".
+_WRITE_VERBS = ("selftest",)
 
 _HINTS = {
     "note": "unknown verb '%s' — did you mean 'events' or 'stamp note'?",
