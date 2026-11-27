@@ -10,12 +10,15 @@ couple of seconds — no carrier read, no fanout sweep, no network:
 * ``--wait`` validated BEFORE any RED-scan side effect — a bad ``--wait`` must
   die rc 1 having written nothing but the shadow log
 
-The legs that carry real weight — the log-hermetic ``oc-build --selftest`` (561
-assertions, measured 898 s standalone on 2026-11-27), the dispatched-sha
-SWAP-PENDING probe and the stale-pinned-ref round-trip — are in
-``test_e2e_deploy_stage.py``. They drive real subprocesses for minutes and are
-EXCLUDED from the fast gate for the same reason ``test_e2e_cache.py`` is: a gate
-that waits 15 minutes for one assertion is a gate nobody runs.
+The legs that carry real weight are in ``test_e2e_deploy_stage.py``: the
+log-hermetic ``oc-build --selftest`` (561 assertions, measured 898 s standalone
+on 2026-11-27), the dispatched-sha SWAP-PENDING probe (3.2 s measured) and the
+stale-pinned-ref round-trip (11.7 s measured). Only the selftest is genuinely
+slow; all three are excluded together because they drive REAL subprocesses and
+build real git repos, so their cost tracks machine load rather than the code
+under test — under load 16 on 4 cores the same two legs blew past 200 s. Same
+reason ``test_e2e_cache.py`` is excluded: a gate that waits 15 minutes for one
+assertion is a gate nobody runs.
 """
 
 from __future__ import annotations
