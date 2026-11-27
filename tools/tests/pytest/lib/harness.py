@@ -388,6 +388,80 @@ class SerialWitness:
 
 
 # =============================================================================
+# the PRELUDE's receipt apparatus, extracted (§62)
+# =============================================================================
+# WHY THIS EXISTS AT ALL. run.sh §75 (red-receipt transcript) was deferred from
+# the migration on the grounds that it "asserts run.sh's OWN bad() accumulator,
+# and there is no run.sh accumulator inside pytest to assert". That is a claim
+# about WHERE THE FUNCTIONS LIVE, not about whether the behaviour can be driven:
+# the functions are TEXT in this file, so a leg can source the real text and
+# drive it. A re-typed copy would keep passing after the real block regressed
+# (the #720/#111 lesson), so nothing here is re-typed.
+#
+# WHAT IS *NOT* EXTRACTED. The prelude is not sourced wholesale: it contains the
+# driver, the `--chunk` branch, the single-flight lock (a real flock) and the
+# cgroup re-exec, any of which would fire on a bare `bash -c`. Only the named
+# functions plus the plain state assignments below are taken.
+_FN_DEF = re.compile(r"^%s\(\)\s*\{")
+
+def extract_shell_function(name: str, text: str | None = None) -> str:
+    """The VERBATIM definition of one shell function in ``run.sh``.
+
+    Both shapes are handled: the one-line ``f() { ...; }`` form and the block
+    form, which is closed by the FIRST line that is exactly ``}`` — the
+    convention every function in this file follows.
+
+    FIRST definition only, deliberately: ``note`` is declared twice (the
+    prelude's line 91, and an identical copy inside a heredoc-fed fixture script
+    around line 4786). Only the prelude's is live, and the heredoc copy is
+    masked from the census for the same reason.
+    """
+    src = (text if text is not None else run_sh_text()).splitlines()
+    pat = re.compile(_FN_DEF.pattern % re.escape(name))
+    hits = [i for i, line in enumerate(src) if pat.match(line)]
+    if not hits:
+        raise AssertionError(
+            "run.sh no longer defines %s() — a §62 leg would drive nothing. "
+            "Update the leg, or restore the function." % name)
+    i = hits[0]
+    if src[i].rstrip().endswith("}"):
+        return src[i]
+    for j in range(i + 1, len(src)):
+        if src[j] == "}":
+            return "\n".join(src[i:j + 1])
+    raise AssertionError(
+        "the definition of %s() opened at run.sh:%d never closes — the file is "
+        "truncated or the closing '}' convention changed" % (name, i + 1))
+
+# The receipt state the prelude establishes ONCE, at top level, before any
+# section runs: PASS/FAIL, the $FAIL_LOG trio, the #614 fail-row fields, and
+# every BATTERY_* the receipt writes. Read by PREFIX so a new field is picked up
+# without editing this list.
+_PRELUDE_STATE = re.compile(r"^(?:BATTERY_[A-Z0-9_]*|FAIL[A-Z0-9_]*|PASS|FAIL)=")
+
+def prelude_state(text: str | None = None) -> str:
+    """The prelude's receipt-state assignments, verbatim, one per line.
+
+    A §62 leg runs INSIDE the battery, so it inherits this state and never sets
+    it. A port that invented its own defaults would be a SECOND copy of state
+    the real run does not have — and the copy that drifts is the one nobody
+    reads. So the assignments are read out of run.sh itself, bounded by the
+    first ``# ---- N`` chunk marker (the extractor's own boundary).
+
+    ``TOOLS_DIR`` is deliberately NOT included: it is set by the caller, so the
+    receipt is written into a throwaway tree instead of the canonical
+    ``tools/tests/battery-last.json``.
+    """
+    src = (text if text is not None else run_sh_text()).splitlines()
+    out = []
+    for line in src:
+        if re.match(r"^# ---- [0-9]", line):
+            break
+        if _PRELUDE_STATE.match(line):
+            out.append(line)
+    return "\n".join(out)
+
+# =============================================================================
 # misc
 # =============================================================================
 def pids_max_of_this_cgroup() -> str:
