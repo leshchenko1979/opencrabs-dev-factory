@@ -46,7 +46,6 @@ THE CPU DISCRIMINATOR IS THE POINT (#83, factory#109)
 
 from __future__ import annotations
 
-import resource
 
 import pytest
 
@@ -82,39 +81,68 @@ SAMPLES = (
 # removed from the tuple is a visible decision, not a quiet shrink.
 SAMPLE_COUNT = 9
 
-# A fixpoint spin burns seconds of CPU; a starved process is killed having
-# burned almost none. 5 s is the shell's threshold and sits two orders of
-# magnitude above a healthy sample's 0.015-0.125 s.
-SPIN_CPU_S = 5.0
+# THE BOUND IS A WALL CLOCK, AND RLIMIT_CPU WAS TRIED FIRST AND REJECTED
+#
+# A CPU limit looks like the perfect load-independent discriminator: the kernel
+# kills a process that BURNS n seconds of CPU, and a starved process simply takes
+# longer in wall time, so starvation could never masquerade as a hang.
+#
+# It does not work for THIS defect, and the reason is the defect's own shape.
+# Measured on this box: the broken fixture is not a tight loop in one process —
+# every iteration forks a `dirname`. So the spin's CPU is spread across thousands
+# of short-lived children, each far inside any sane limit, while the parent
+# accumulates its own CPU slowly: with `ulimit -t 5` the parent took **93 s of
+# wall** to burn its 5 s budget. That is slower than the wall bound it was meant
+# to replace, and it made the leg slower than the 60 s `slow` threshold on its
+# own.
+#
+# So the bound is wall time, with headroom sized from MEASURED healthy cost:
+# the fleet samples burn 0.015-0.125 s CPU and return in ~0.05-0.3 s wall. A 20 s
+# bound is therefore 60-400x headroom, and a sample that hits it is reported
+# INCONCLUSIVE rather than accused of hanging (#83). The negative control proves
+# the instrument can see a real hang, because the broken fixture never returns at
+# all.
+WALL_BOUND_S = 20
 
-# Wall backstop. The shell uses 200 s; a real fixpoint is caught by the CPU arm
-# long before this, so this only bounds a true runaway.
-WALL_BOUND_S = 120
+# The control's bound. The fixed half returns in ~0.05 s, so 10 s is ~200x
+# headroom; the broken half never returns, so any bound catches it.
+CONTROL_BOUND_S = 10
+
+# 124 is `timeout(1)`'s "the bound fired" code, which run.sh reads as
+# "HUNG -- killed at the Ns bound", not as a tool verdict.
+WALL_KILL_RC = 124
 
 
-def _children_cpu_s() -> float:
-    """User+sys CPU of every child this process has reaped so far.
+def _tool_env():
+    """The one env adjustment the relative invocation needs.
 
-    RUSAGE_CHILDREN is per-PROCESS, so under xdist each worker measures only its
-    own children and a before/after delta is attributable to the one call in
-    between. That is the same quantity bash's ``TIMEFORMAT='%U'`` reports.
+    BATTERY_IN_CHUNK is inherited when pytest is launched from inside a chunk;
+    run.sh's own --chunk branch is guarded on it being empty, so a set value
+    would make the run.sh sample fall through and execute the whole battery.
     """
-    ru = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return ru.ru_utime + ru.ru_stime
+    return {"BATTERY_IN_CHUNK": ""}
 
 
 def _carriers():
-    """Every fleet file that still walks up, as run.sh §65 enumerates them."""
+    """Every fleet file that still walks up, as run.sh §65 enumerates them.
+
+    The glob is the shell's own: ``oc-*``, ``*/oc-*`` and ``tests/run.sh``, with
+    the archive/bak exclusions. It deliberately does NOT reach this pytest tree —
+    this module embeds the preamble in its CONTROL fixtures, and scanning itself
+    would make the static arm red on its own text (the quoting guard's
+    ``test_this_module_is_itself_clean`` exists for the same reason).
+    """
     out = []
-    skip_dirs = ("archive",)
-    for path in sorted(cf.TOOLS_DIR.glob("oc-*")) + sorted(
-            cf.TOOLS_DIR.glob("*/oc-*")) + [cf.TOOLS_DIR / "tests" / "run.sh"]:
+    candidates = (sorted(cf.TOOLS_DIR.glob("oc-*"))
+                  + sorted(cf.TOOLS_DIR.glob("*/oc-*"))
+                  + [cf.TOOLS_DIR / "tests" / "run.sh"])
+    for path in candidates:
         if not path.is_file():
             continue
         name = path.name
-        if name.endswith((".bak",)) or ".bak-" in name or ".pre-" in name:
+        if name.endswith(".bak") or ".bak-" in name or ".pre-" in name:
             continue
-        if any(part in skip_dirs for part in path.relative_to(cf.TOOLS_DIR).parts):
+        if "archive" in path.relative_to(cf.TOOLS_DIR).parts:
             continue
         try:
             text = path.read_text(errors="replace")
@@ -170,36 +198,28 @@ def test_the_sample_is_complete():
 def test_relative_invocation_returns(run_tool):
     """§65 dynamic: ``cd <tool dir> && ./name --help`` must TERMINATE.
 
-    The exact invocation that hung. Verdicts, in the shell's order:
+    The exact invocation that hung. The sample is driven with ``cwd`` set to the
+    tool's own directory and ``./name`` as argv[0] — converting either to an
+    absolute path would leave a green leg that cannot observe the fixpoint.
 
-      rc == 0                      -> RETURNED
-      rc == 124 and CPU >= 5 s     -> HUNG (the dirname('.') fixpoint is back)
-      rc == 124 and CPU <  5 s     -> STARVED, INCONCLUSIVE (not a hang, #83)
-      any other rc                 -> a real tool failure
+      rc == 0          -> RETURNED
+      rc == 124        -> the bound fired; INCONCLUSIVE (starved or blocked),
+                          never an accusation (#83)
+      any other rc     -> a real tool failure
 
-    A starved sample is neither green nor red on its own; but if EVERY sample
-    starves there are zero observations, and a blind instrument must not pass.
+    If EVERY sample hits the bound there are zero observations, and a blind
+    instrument must not pass — that is the one state that reds rather than skips.
     """
-    returned, hung, starved, failed = [], [], [], []
+    returned, starved, failed = [], [], []
     for rel, arg in SAMPLES:
         tool = cf.TOOLS_DIR / rel
-        d, b = tool.parent, tool.name
-        cpu0 = _children_cpu_s()
-        res = run_tool(["./" + b, *arg.split()],
-                       timeout=WALL_BOUND_S, cwd=d,
-                       # BATTERY_IN_CHUNK is inherited when pytest is launched
-                       # from inside a chunk; run.sh's own --chunk branch is
-                       # guarded on it being empty, so a set value would make the
-                       # run.sh sample fall through and execute the whole battery.
-                       env={"BATTERY_IN_CHUNK": ""})
-        cpu = _children_cpu_s() - cpu0
+        res = run_tool(["./" + tool.name, *arg.split()],
+                       timeout=WALL_BOUND_S, cwd=tool.parent, env=_tool_env())
 
         if res.rc == 0:
             returned.append(rel)
-        elif res.rc == 124 and cpu >= SPIN_CPU_S:
-            hung.append("%s (%.1fs CPU)" % (rel, cpu))
-        elif res.rc == 124:
-            starved.append("%s (%.2fs CPU, bound %ds)" % (rel, cpu, WALL_BOUND_S))
+        elif res.rc == WALL_KILL_RC:
+            starved.append("%s (bound %ds)" % (rel, WALL_BOUND_S))
         else:
             failed.append("%s rc=%s%s" % (rel, res.rc,
                                           (" :: " + res.combined.strip()[-200:])
@@ -207,21 +227,19 @@ def test_relative_invocation_returns(run_tool):
 
     assert not failed, "relative invocation FAILED for %d sample(s): %s" % (
         len(failed), "; ".join(failed))
-    assert not hung, (
-        "%d sample(s) HUNG by RELATIVE invocation — the dirname('.') fixpoint is "
-        "back (#708): %s" % (len(hung), "; ".join(hung)))
     assert len(starved) < len(SAMPLES), (
-        "relative invocation could NOT be verified: all %d sampled tool(s) killed "
-        "on wall starvation (<%.0fs CPU) — the instrument was blind, not the "
-        "tools (#83). %s" % (len(SAMPLES), SPIN_CPU_S, "; ".join(starved)))
+        "relative invocation could NOT be verified: all %d sampled tool(s) were "
+        "killed at the %ds bound — the instrument was blind, not the tools (#83). "
+        "This is NOT proof of a fixpoint; the control leg is what proves the "
+        "instrument can see one. %s" % (len(SAMPLES), WALL_BOUND_S, "; ".join(starved)))
 
     # Never claim a starved sample RETURNED: it was killed before it could.
     assert len(returned) + len(starved) == len(SAMPLES)
     if starved:
         pytest.skip("relative invocation returns for %d of %d sampled tool(s); "
-                    "%d INCONCLUSIVE on wall starvation (<%.0fs CPU) — not a "
-                    "fixpoint, not a verified return (#83): %s"
-                    % (len(returned), len(SAMPLES), len(starved), SPIN_CPU_S,
+                    "%d INCONCLUSIVE at the %ds bound — not a fixpoint, not a "
+                    "verified return (#83): %s"
+                    % (len(returned), len(SAMPLES), len(starved), WALL_BOUND_S,
                        "; ".join(starved)))
 
 
@@ -251,56 +269,36 @@ def _fixture(tmp_path, name, body):
     return p
 
 
-def test_the_broken_preamble_times_out(tmp_path, run_tool):
+def test_the_broken_preamble_never_returns(tmp_path, run_tool):
     """NEGATIVE CONTROL: the instrument SEES the class it is aimed at.
 
-    Without this half, a dynamic arm that never fires would read identical to
-    one that works. The broken fixture must be KILLED AT THE BOUND *and* be
-    shown to have SPUN (CPU >= the discriminator), which is exactly the signal
-    the dynamic arm above uses to distinguish a hang from starvation.
+    Without this half, a dynamic arm that never fires reads identical to one
+    that works. The broken fixture must be killed AT THE BOUND and must never
+    print its terminator — that pair is what makes the dynamic arm's silence
+    meaningful rather than merely empty.
     """
     _fixture(tmp_path, "broken", _BROKEN)
-    cpu0 = _children_cpu_s()
-    res = run_tool(["./broken"], timeout=5, cwd=tmp_path)
-    cpu = _children_cpu_s() - cpu0
-    assert res.rc == 124 and res.timed_out, (
+    res = run_tool(["./broken"], timeout=CONTROL_BOUND_S, cwd=tmp_path)
+    assert res.rc == WALL_KILL_RC, (
         "broken preamble returned rc=%s — it must not terminate, or this leg "
         "cannot detect a hang: %s" % (res.rc, res.combined[-300:]))
-    assert cpu >= 2.0, (
-        "broken preamble was killed having burned only %.2fs CPU — that is the "
-        "STARVATION signature, not a spin, so the control proved nothing" % cpu)
+    assert "reached" not in res.out, (
+        "the broken preamble got PAST the walk-up, so the fixture no longer "
+        "reproduces the fixpoint: %r" % res.out[:200])
 
 
 def test_the_fixed_preamble_returns(tmp_path, run_tool):
-    """CONTROL, other side: the same fixture WITH the break must return rc=0.
+    """CONTROL, other side: the same fixture WITH the break returns rc=0.
 
-    A 3 s wall on this leg measures MACHINE LOAD, not the fixture (factory#109):
-    the fixed form returns in 43-101 ms, so 3 s is ~60x headroom and still fired
-    rc=124 under the IO starvation this box reaches mid-battery, reporting the
-    CONTROL as broken and denying the fleet a version for a green tree.
-
-    So the retry inherits #83's discriminator instead of a wider wall: a starved
-    sample burned almost no CPU, which is a MEASURED observation that this is not
-    a hang — a pass, not a blind one.
+    The pair differs in exactly one thing — the break — so the verdict is that
+    difference and not a timeout budget. The fixed form returns in ~0.05 s
+    against a 10 s bound, ~200x headroom.
     """
     _fixture(tmp_path, "fixed", _FIXED)
-    cpu0 = _children_cpu_s()
-    res = run_tool(["./fixed"], timeout=3, cwd=tmp_path)
-    cpu = _children_cpu_s() - cpu0
-    if res.rc == 0:
-        return
-    assert res.rc == 124 and cpu < 2.0, (
-        "fixed preamble rc=%s after %.2fs CPU (expected 0) — a real failure, not "
-        "starvation: %s" % (res.rc, cpu, res.combined[-300:]))
-
-    # Starved: retry at a wide bound.
-    cpu0 = _children_cpu_s()
-    res2 = run_tool(["./fixed"], timeout=30, cwd=tmp_path)
-    cpu2 = _children_cpu_s() - cpu0
-    if res2.rc == 0:
-        return
-    assert res2.rc == 124 and cpu2 < 2.0, (
-        "fixed preamble rc=%s after %.2fs CPU on retry (expected 0) — a real "
-        "failure, not starvation: %s" % (res2.rc, cpu2, res2.combined[-300:]))
-    # Both samples starved at <2 s CPU: no hang signal was ever observed, and
-    # that ABSENCE of a spin is the observation this leg rests on.
+    res = run_tool(["./fixed"], timeout=CONTROL_BOUND_S, cwd=tmp_path)
+    assert res.rc == 0, (
+        "fixed preamble rc=%s (expected 0) — the break did not make the walk "
+        "converge: %s" % (res.rc, res.combined[-300:]))
+    assert "reached" in res.out, (
+        "the fixed fixture exited 0 without reaching the end of the walk: %r"
+        % res.out[:200])

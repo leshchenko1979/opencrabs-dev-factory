@@ -243,7 +243,7 @@ harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
 | 59–60 | lib/oc-snap.sh mirror age; reap | `test_snap.py` |
 | 63 | lib/oc-root.sh resolver coherence (F-L1/F-L2) — stated as a PROPERTY over depth × invocation shape, not transliterated | `test_oc_root_resolver.py` |
 | 64 | shell-quoting guard — the four scanner arms (backtick in a `-c` body, unquoted heredoc fence, `$` in a `-c` body, `bash -n` over the fleet) plus the live fleet sweep | `test_quoting_guard.py` |
-| 65 | entry-preamble fixpoint + relative invocation (#708) — static break-presence arm + dynamic relative-invocation arm with a CPU-spin discriminator, not a widened wall | `test_entry_preamble.py` |
+| 65 | entry-preamble fixpoint + relative invocation (#708) — static break-presence census, the 9-sample relative drive (cwd = tool dir, `./name`), and the two-sided fixpoint control | `test_entry_preamble.py` |
 | per-tool argv | the `ok`/`bad` usage/rc legs beside each `run_selftest` | `test_usage_rc.py` |
 
 ### Not ported
