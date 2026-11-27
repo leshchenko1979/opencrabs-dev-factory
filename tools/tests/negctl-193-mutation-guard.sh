@@ -52,10 +52,20 @@ export OC_REPRO_DEPTH=1
 ulimit -u $(( $(ps -e --no-headers | wc -l) + 200 )) 2>/dev/null || true
 
 SKILL_DIR="/root/.opencrabs/profiles/ops/skills/opencrabs-dev"
-#: SRC is overridable so this guard can be pointed at a DELIBERATELY REVERTED
+#: SRC DEFAULTS TO THIS GUARD'S OWN TOOLS TREE, resolved from the script's real
+#: location — never the live skill dir. A guard that copies the LIVE tree tests
+#: whatever is installed there, so run from a worktree it mutated code that did
+#: not carry the fix, found no #193 clause to rewrite, and reported itself inert
+#: ("0 #193 predicate clauses, need exactly 1") while the pristine baseline it
+#: printed came from a DIFFERENT tree than the one under review — 741 passed,
+#: against the worktree's own 772. That is the fail-loud-and-vacuous shape: it
+#: did not pass wrongly, but the only way to get a verdict was to remember the
+#: override by hand, which is the same trap one step later.
+#: SRC stays overridable so the guard can be pointed at a DELIBERATELY REVERTED
 #: tree (OC_NEGCTL_SRC=...) and shown to exit non-zero — i.e. shown to detect a
 #: real regression, not only to convict its own internal mutant.
-SRC="${OC_NEGCTL_SRC:-$SKILL_DIR/tools}"
+_HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SRC="${OC_NEGCTL_SRC:-$(cd -- "$_HERE/.." && pwd)}"
 TOOL_REL="state/oc-ledger"
 export OC_TOOLS_NOLOG=1
 #: The copied tree has no SKILL.md, so $SKILL_DIR would resolve into the temp dir
