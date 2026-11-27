@@ -60,6 +60,19 @@ oc_sessions_db() {
 # directory so a sourced copy (selftest fixtures, an immutable mirror) reads its
 # sibling and never a path baked in at authoring time.
 _oc_sessions_sqlite() {
+  # OC_SESSIONS_SQLITE is the same kind of seam OC_DEPLOY_GH and OC_NOTIFY_DB
+  # already are: a way for a SELFTEST to drive this library against an instrument
+  # it controls. It exists because the defect this library must survive — a store
+  # whose POINT lookups return zero rows with rc 0 while the FULL read fails — is
+  # a property of a particular corrupt page geometry, and a hand-corrupted sqlite
+  # file does not reproduce it reliably (measured 2026-11-27: three corruption
+  # shapes were tried and every one failed the cheap query too, i.e. none of them
+  # reproduced the ambiguous state). A stub encodes the shape exactly. Production
+  # never sets it, and the sibling resolution below stays the default.
+  if [ -n "${OC_SESSIONS_SQLITE:-}" ]; then
+    printf '%s\n' "$OC_SESSIONS_SQLITE"
+    return 0
+  fi
   local here="${BASH_SOURCE[0]%/*}"
   case "$here" in
     "${BASH_SOURCE[0]}") here="." ;;   # sourced with no slash: CWD is the lib dir
@@ -155,7 +168,29 @@ oc_sessions_kind() {
   out="$("$(_oc_sessions_sqlite)" "file:$db?mode=ro" \
     "SELECT CASE WHEN title LIKE 'subagent:%' THEN 'child' ELSE 'lane' END, COALESCE(parent_session_id,'') FROM sessions WHERE id='$uuid'")" \
     || { printf 'oc_sessions: cannot read sessions from %s\n' "$db" >&2; return 3; }
-  [ -n "$out" ] || { printf 'unknown\n'; return 0; }
+  # AN EMPTY POINT LOOKUP IS AMBIGUOUS, and this is where the ambiguity is
+  # resolved — once, for every caller. A healthy store returns zero rows only
+  # when the uuid is genuinely absent. A DAMAGED store returns zero rows too, on
+  # any page it can still read: measured 2026-11-27 on this box, the ops DB
+  # answers `count(*)` = 1917 and a point lookup for a REAL uuid with empty
+  # output, while the full table read fails `database disk image is malformed`
+  # (btreeInitPage error 11). Reporting that as `unknown` blames the ACTOR for a
+  # BOX fault (#932), and it is indistinguishable from a genuine phantom at every
+  # layer above. So the absent answer is only reported absent after a FULL read —
+  # the one that touches every page — confirms the store is intact. The common
+  # path (a row exists) never pays this: it returns above.
+  if [ -z "$out" ]; then
+    oc_sessions_load || return 3
+    # The full read just populated the cache, and THAT is the authoritative
+    # answer — the point query that returned nothing may have skipped a page the
+    # full read reached. Re-ask from the cache rather than assuming absence.
+    case "${OC_SESSION_KIND_CACHE[$uuid]:-}" in
+      child) printf 'child %s\n' "${OC_SESSION_PARENT_CACHE[$uuid]:--}" ;;
+      lane)  printf 'lane\n' ;;
+      *)     printf 'unknown\n' ;;
+    esac
+    return 0
+  fi
   kind="${out%%|*}"
   parent="${out#*|}"
   if [ "$kind" = child ]; then

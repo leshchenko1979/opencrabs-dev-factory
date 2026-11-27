@@ -632,6 +632,39 @@ Full battery on the tree carrying both fixes:
   ( cd "$R" && echo o5 > o5 && git add o5 && OC_SESSIONS_DB="$d/no-such-store.db" OC_ACTOR=f1c7c0de-0000-4000-8000-000000000149 "$OC" -m "chore(tools): unreadable store" --session-id-only --repo "$R" ) >/dev/null 2>"$d/192e.err"
   [ $? -eq 0 ] || { echo "selftest: #192-store-unreadable rc want 0 (a lookup never fails a commit)" >&2; exit 1; }
   grep -q 'did NOT run' "$d/192e.err" || { echo "selftest: #192-store-unreadable the degradation must be LOUD" >&2; exit 1; }
+  # 11f. a DAMAGED store is a BOX fault and must be NAMED as one. This is the
+  #      leg that would have caught the defect this leg exists for: a point query
+  #      against a corrupt image returns ZERO ROWS WITH rc 0 on any page it can
+  #      still read, so the gate read "actor is in NO session row" and blamed the
+  #      ACTOR for a broken file. Measured live on this box 2026-11-27: the ops DB
+  #      answers count(*)=1917 and a point lookup for a REAL uuid with EMPTY
+  #      output, while the full table read fails 'database disk image is
+  #      malformed' (btreeInitPage error 11).
+  #      The shape is encoded by a STUB rather than by a hand-corrupted file,
+  #      because the ambiguous state is a property of a particular page geometry
+  #      and three corruption shapes were tried that all failed the cheap query
+  #      too (i.e. none reproduced it). The stub answers the point query with
+  #      silence+rc 0 and the full read with the malformed error — exactly what
+  #      the live store does.
+  cat > "$d/damaged-sqlite" <<'DSQL'
+#!/usr/bin/env bash
+case "${2:-}" in
+  *"WHERE id="*) exit 0 ;;                    # point lookup: silence, rc 0 (the trap)
+  *) echo "oc_sqlite: database disk image is malformed (db=$1)" >&2; exit 3 ;;
+esac
+DSQL
+  chmod +x "$d/damaged-sqlite"
+  ( cd "$R" && echo o6 > o6 && git add o6 && OC_SESSIONS_SQLITE="$d/damaged-sqlite" OC_SESSIONS_DB="$d/sessions.db" OC_ACTOR=da203186-5271-4bc3-8fc4-ef0f5500716f "$OC" -m "chore(tools): damaged store" --session-id-only --repo "$R" ) >/dev/null 2>"$d/192f.err"
+  [ $? -eq 0 ] || { echo "selftest: #192-damaged-store rc want 0 (a lookup never fails a commit)" >&2; exit 1; }
+  grep -q 'DAMAGED' "$d/192f.err" \
+    || { echo "selftest: #192-damaged-store must NAME the store as damaged, not blame the actor" >&2; cat "$d/192f.err" >&2; exit 1; }
+  grep -q 'BOX fault' "$d/192f.err" \
+    || { echo "selftest: #192-damaged-store must say this is a box fault, not an actor problem" >&2; exit 1; }
+  # NEGATIVE CONTROL: the healthy-store phantom arm (11d) must STILL say "NO
+  # session row" and must NOT mention DAMAGED — otherwise 11f could pass on a gate
+  # that cries DAMAGED at everything, which would make 11d meaningless.
+  grep -q 'DAMAGED' "$d/192d.err" \
+    && { echo "selftest: #192-damaged-store CONTROL a healthy store must NOT be called damaged" >&2; exit 1; }
   echo "selftest OK"; exit 0
 fi
 
@@ -743,8 +776,14 @@ if [ ! -f "$_OC_SESSIONS_LIB" ]; then
 elif ! { . "$_OC_SESSIONS_LIB" && oc_sessions_available; }; then
   printf '%s: WARNING — session store not readable (%s), so the sub-agent actor gate (#192) did NOT run; OC_SESSIONS_DB overrides the path\n' "${0##*/}" "$(oc_sessions_db 2>/dev/null || printf '?')" >&2
 else
-  _actor_kind="$(oc_sessions_kind "$OC_ACTOR")" || _actor_kind=""
-  case "$_actor_kind" in
+  # rc 3 = the store could not be READ (missing page, malformed image). That is a
+  # fact about the BOX, and it must never be reported as a fact about the actor:
+  # `oc_sessions_kind` resolves the ambiguity itself (an empty point lookup is
+  # only called absent after a full read confirms the store is intact), so a
+  # nonzero rc here means the answer is genuinely unavailable, not that the uuid
+  # is missing.
+  if _actor_kind="$(oc_sessions_kind "$OC_ACTOR")"; then
+    case "$_actor_kind" in
     'child '*)
       _actor_lane="${_actor_kind#child }"
       if [ "$_actor_lane" = - ]; then
@@ -756,8 +795,19 @@ else
         exit 6
       fi ;;
     unknown)
+      # Reached ONLY for a healthy store: `oc_sessions_kind` itself performs the
+      # full-read confirmation before it will call an absent row absent, and
+      # returns rc 3 (never `unknown`) when the store is damaged. So this arm
+      # means the uuid is genuinely in no row — issue #192's phantom, an invented
+      # id — and the honest act is to say the commit will be unattributable.
       printf 'gate-warn (#192): actor %s is in NO session row of this store — the commit will be unattributable (the fan-out will report rc 2 no_route). Harmless if this is a second profile or a fresh session; otherwise check OC_ACTOR.\n' "$OC_ACTOR" >&2 ;;
-  esac
+    esac
+  else
+    # rc 3: the store exists but cannot be read. NOT an actor problem, and saying
+    # "no session row" here would be the #932 misattribution one layer out.
+    printf '%s: WARNING — session store is DAMAGED or unreadable (%s), so the sub-agent actor gate (#192) did NOT run and %s could not be checked; this is a BOX fault, not an actor problem (OC_SESSIONS_DB overrides the path)\n' \
+      "${0##*/}" "$(oc_sessions_db 2>/dev/null || printf '?')" "$OC_ACTOR" >&2
+  fi
 fi
 $G diff --cached --quiet 2>/dev/null \
   && { echo "gate-fail: nothing staged — stage your paths first (stage-only-your-paths rule)" >&2; exit 3; }
