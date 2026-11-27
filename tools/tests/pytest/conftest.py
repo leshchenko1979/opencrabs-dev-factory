@@ -55,6 +55,7 @@ if str(_PYTEST_DIR) not in sys.path:
 
 from lib import cache as _cache  # noqa: E402
 from lib import cgroup as _cgroup  # noqa: E402
+from lib import harness as H  # noqa: E402
 from lib import receipt as _receipt  # noqa: E402
 
 # --- the opt-in content-hash selftest cache (#197) ---------------------------
@@ -801,6 +802,99 @@ def battery_lock(request):
     request.addfinalizer(_release)
     return BATTERY_LOCK_PATH
 
+# =============================================================================
+# serial witness — makes "these legs never overlap" an OBSERVATION
+# =============================================================================
+# ``@pytest.mark.serial`` + ``@pytest.mark.xdist_group(g)`` is a claim about the
+# SCHEDULER: xdist promises to keep same-group legs apart. A claim about the
+# scheduler is not evidence about the legs — a mistyped group name, a worker
+# restart or a ``-p no:xdist`` run all keep the marks and drop the guarantee,
+# and every assertion in those legs then rests on a premise nobody tested.
+#
+# ``H.SerialWitness`` takes an exclusive flock for the body of a leg. Two
+# same-group legs overlapping raise ``Overlap`` from the second one, so the pin
+# FAILS rather than interleaving silently; each hold is logged, so the whole
+# session can be censused after the fact (``witness_session_report``).
+@pytest.fixture(scope="session")
+def serial_witness_dir(tmp_path_factory):
+    """ONE witness dir for the session — workers must agree on the path.
+
+    Deliberately NOT ``scratch`` (per-worker) and not ``tmp_path`` (per-test):
+    an overlap between two workers is only observable if both open the same
+    inode, which is the same reason the battery lock is TMPDIR-independent
+    (run.sh:545-549, and the trap at run.sh:674-677).
+
+    Anchored on the RUN root, never on ``basetemp``'s parent — those are two
+    different directories and only one of them is unique to this run:
+
+      * ``-n 0``          basetemp is ``/tmp/pytest-of-root/pytest-NNNN``, so
+        its PARENT is ``/tmp/pytest-of-root``: shared with every other pytest
+        run as this user, peer lanes included. Sweeping stale logs there would
+        delete a live lane's evidence.
+      * ``-n N`` (worker) basetemp is ``<run>/popen-gwK``, so the run root is
+        its parent — shared with the sibling workers, which is the point.
+    """
+    base = Path(tmp_path_factory.getbasetemp())
+    run_root = base.parent if base.name.startswith("popen-gw") else base
+    d = run_root / "oc-witness"
+    d.mkdir(parents=True, exist_ok=True)
+    # A stale interval log from an earlier session would be censused as THIS
+    # session's evidence — the from-zero defect, one surface over. Safe to
+    # sweep only because the directory is per-run (see above).
+    for f in d.glob("intervals.*"):
+        f.unlink(missing_ok=True)
+    return d
+
+@pytest.fixture(autouse=True)
+def _serial_witness(request, serial_witness_dir):
+    """Observe the claim a group marker makes, for the test's OWN group.
+
+    Reads the marker off the test node rather than taking a group from the
+    module: ``test_harness_pool_mech.py`` carries legs in TWO groups
+    (``battery-pool`` and ``battery-nested``) which are allowed to overlap each
+    other by design, so a module-wide hold would report a false overlap on a
+    correct run — measured, and the reason this is per-test.
+
+    A test with no group marker is not witnessed at all: there is no claim to
+    observe, and holding one would fence it against legs it is meant to run
+    beside.
+    """
+    marker = request.node.get_closest_marker("xdist_group")
+    if marker is None or not marker.args:
+        yield
+        return
+    with H.SerialWitness(serial_witness_dir, marker.args[0], hold_s=0.0):
+        yield
+
+def witness_session_report(directory, group: str) -> dict:
+    """The receipt-side half: what the witness OBSERVED for ``group``.
+
+    ``legs``      completed holds (a killed leg logs ``enter`` and no ``exit``)
+    ``peak``      most simultaneous holders — 1 means the pin held
+    ``overlaps``  every pair that ran at once — [] means the pin held
+    ``unclosed``  holds with no ``exit``, i.e. legs a kill cut short
+
+    An EMPTY ``legs`` is not a pass: it means no leg of that group ran, so the
+    census proves nothing. Callers assert the count they expect.
+    """
+    from lib import harness as _H
+
+    legs = _H.SerialWitness.spans(directory, group)
+    log = Path(directory) / ("intervals.%s" % group)
+    enters = exits = 0
+    if log.is_file():
+        for line in log.read_text().splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] in ("enter", "exit"):
+                enters += parts[0] == "enter"
+                exits += parts[0] == "exit"
+    return {
+        "legs": len(legs),
+        "peak": _H.SerialWitness.peak(directory, group),
+        "overlaps": _H.SerialWitness.overlaps(directory, group),
+        "unclosed": max(0, enters - exits),
+    }
+
 
 # =============================================================================
 # 8. cached_selftest — the OPT-IN content-hash cache (#197)
@@ -855,6 +949,29 @@ def cached_selftest(request, run_selftest):
 # implementations live in lib/ and are DELEGATED here.
 # =============================================================================
 def pytest_configure(config):
+    # Which xdist_group values this run actually carries. Collected from the
+    # NODES, never from a list kept by hand: a hardcoded tuple in the census
+    # module silently stops covering a group the moment someone adds one, and a
+    # census that skips a group reports clean on it forever. (Measured: the
+    # hand-kept tuple named 4 groups while the suite carried 7 — battery-nested,
+    # battery-scratch and path-restore were unwitnessed and uncensused.)
+    config._oc_witness_groups = set()
+
+
+def pytest_collection_modifyitems(session, config, items):
+    groups = getattr(config, "_oc_witness_groups", None)
+    if groups is None:
+        return
+    offenders = []
+    for item in items:
+        marked = [str(m.args[0]) for m in item.iter_markers("xdist_group") if m.args]
+        for g in marked:
+            groups.add(g)
+        if item.get_closest_marker("serial") and not marked:
+            offenders.append(item.nodeid)
+    config._oc_witness_groups = groups
+    config._oc_serial_without_group = offenders
+
     _receipt.pytest_configure(config)
 
 

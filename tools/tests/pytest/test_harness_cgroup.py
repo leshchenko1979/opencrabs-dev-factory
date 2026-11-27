@@ -36,7 +36,14 @@ import pytest
 
 from lib import harness as H
 
-pytestmark = pytest.mark.serial  # the cgroup block's own stubs live in one dir
+
+# BOTH markers: ``serial`` keeps it off the parallel pool, ``xdist_group`` keeps
+# it off every OTHER serial leg that rewrites the same stub dir. ``serial``
+# alone is half a pin — xdist may still run a same-group sibling beside it.
+pytestmark = [
+    pytest.mark.serial,
+    pytest.mark.xdist_group("battery-cgroup"),
+]  # the cgroup block's own stubs live in one dir
 
 # The synthetic cgroup paths the legs drive. They are literal, not derived: the
 # block's branch is decided by the LEAF unit name (``${cg##*/}``), so the test
