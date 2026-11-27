@@ -66,6 +66,7 @@ CANONICAL_GROUPS = (
     "battery-sigkill",
     "cache",
     "path-restore",
+    "tool-selftests",
 )
 
 # =============================================================================
