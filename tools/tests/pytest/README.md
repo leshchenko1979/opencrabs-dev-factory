@@ -27,9 +27,33 @@ python3 -m pytest tools/tests/pytest/ -m "not slow"
 python3 -m pytest tools/tests/pytest/ -m serial
 python3 -m pytest tools/tests/pytest/ -m "not network and not live_state"
 
+# one subject folder (harness/ tools/ infra/ e2e/ — see the layout below)
+python3 -m pytest tools/tests/pytest/harness/
+
 # collect only (proves the suite imports; writes no receipt)
 python3 -m pytest tools/tests/pytest/ --collect-only -q
 ```
+
+---
+
+## Layout — one folder per subject
+
+49 modules in one flat directory meant filtering by subject was `-k` guessing
+against 49 names. They are filed by the subject their own docstring states:
+
+| folder | what lives there |
+|---|---|
+| `harness/` | the pytest harness itself — `conftest` fixtures driven against real tools (`test_fixtures.py`), the battery lock/scratch/cgroup/sigkill/pool harness legs, the serial-witness census, and the receipt (`test_receipt*.py`) |
+| `tools/` | ported `run.sh` sections that drive a SHIPPED `oc-*` tool: attrib, branch-sweep, deploy stage (fast legs), fanout, fmt, gate, health, issue-dispatch, ledger, notify-fanout, receipts, quoting guard, rc contract/help, review-persist, seal, shadow-rotate, smoke-evidence, tool contracts, the `run_selftest` blanket, usage rc, vendor-drift, verify trio |
+| `infra/` | `lib/*.sh` / `lib/*.py` units — claims predicate, embed, flood guard, log lib, notify lib, root resolver, snap, unified-log wire |
+| `e2e/` | legs that build a real tree and run a real subprocess end-to-end: `test_e2e_deploy_stage.py` (slow) and the entry-preamble fixpoint drive |
+| `.` (root) | the three that are about the SUITE rather than a subject: `conftest.py`, `test_foundation.py` (fixture foundations), `test_parity.py` (the coverage census) |
+
+Basenames stay unique across the suite, so `--import-mode` needs no change and
+`-k`/`-m` selection is unaffected. **The census in `test_parity.py` resolves
+modules by basename** (`module_path()`), so a module may be refiled without
+touching the coverage map — but a module moved into a folder the resolver does
+not list raises rather than reporting zero mass.
 
 `-n 0` is a **supported mode, not an accident**. Every fixture is
 worker-agnostic — `tmp_path_factory` is per-worker under xdist and per-session

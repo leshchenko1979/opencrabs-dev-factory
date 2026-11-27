@@ -11,8 +11,8 @@ run.sh until its owning worker ports it:
 One function, one parameter per tool, so ``-k`` and ``-m`` select individual
 tools::
 
-    pytest tools/tests/pytest/test_tool_wrappers.py -k oc-seal
-    pytest tools/tests/pytest/test_tool_wrappers.py -m "not slow"
+    pytest tools/tests/pytest/tools/test_tool_wrappers.py -k oc-seal
+    pytest tools/tests/pytest/tools/test_tool_wrappers.py -m "not slow"
 
 THE CONTRACT, MEASURED NOT ASSUMED
 ----------------------------------
@@ -321,7 +321,9 @@ def serial_box():
     because ``hash()`` is randomized per process (PYTHONHASHSEED) and every
     worker would then open a DIFFERENT file -- no serialization at all.
     """
-    root = pathlib.Path(__file__).resolve().parents[3]
+    # One level deeper than the flat layout: this file is filed under
+    # ``pytest/tools/``, so the repo root is parents[4], not parents[3].
+    root = pathlib.Path(__file__).resolve().parents[4]
     digest = hashlib.sha1(str(root).encode()).hexdigest()[:12]
     lock_path = pathlib.Path(tempfile.gettempdir()) / ("oc-pytest-wrappers-%s.lock" % digest)
     fh = lock_path.open("a+")

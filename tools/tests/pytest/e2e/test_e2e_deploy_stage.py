@@ -4,7 +4,7 @@ These are the legs where a GREEN run is NOT a completed deploy, plus the one
 hermeticity assertion that costs a full selftest. All three drive REAL
 subprocesses and build real git repos, so they follow the ``test_e2e_cache.py``
 precedent: a ``test_e2e_`` filename AND ``@pytest.mark.slow``, so the fast gate
-can drop them with either ``--ignore=tools/tests/pytest/test_e2e_deploy_stage.py``
+can drop them with either ``--ignore=tools/tests/pytest/e2e/test_e2e_deploy_stage.py``
 or ``-m "not slow"``. Measured 2026-11-27: selftest 898 s, dispatched-sha 3.2 s,
 stale-pinned-ref 11.7 s — only the first is slow; the other two are excluded for
 their real-subprocess surface, not their wall time.

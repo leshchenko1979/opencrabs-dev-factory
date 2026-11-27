@@ -850,7 +850,7 @@ def _serial_witness(request, serial_witness_dir):
     """Observe the claim a group marker makes, for the test's OWN group.
 
     Reads the marker off the test node rather than taking a group from the
-    module: ``test_harness_pool_mech.py`` carries legs in TWO groups
+    module: ``harness/test_harness_pool_mech.py`` carries legs in TWO groups
     (``battery-pool`` and ``battery-nested``) which are allowed to overlap each
     other by design, so a module-wide hold would report a false overlap on a
     correct run — measured, and the reason this is per-test.
