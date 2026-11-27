@@ -201,3 +201,60 @@ Rules that are not negotiable:
   seconds for a fixture-level tool call.
 - **A leg that writes the canonical receipt must be `serial`.** The lock is the
   only thing preventing two lanes from interleaving writes.
+
+---
+
+## Coverage: what is ported, and what is not
+
+The shell battery's 68 sections are not 68 equals. Three kinds live in `run.sh`:
+a bare `run_selftest` line, bespoke `ok`/`bad` assertion legs, and the
+harness's own infrastructure (cgroup, battery lock, scratch root). Only the
+second kind needs porting — a `run_selftest` line is one pytest case and the
+harness legs are already ported as `test_cgroup.py` / `test_fixtures.py`.
+
+### Ported
+
+| run.sh § | Subject | Module |
+|---|---|---|
+| 1–6 | lib/oc-log.sh, oc_log.py retired consumers, oc-issue-dispatch availability, flood guard (both ts forms, matches-not-lines, verdict rcs) | `test_log_lib.py`, `test_flood_guard.py` |
+| 7 | unified-log wire (real tool → tmp log) | `test_wire.py` |
+| 8–10 | oc-verify-order / oc-verify-job / oc-verify-artifact | `test_verify_trio.py` |
+| 11, 19 | oc-seal IFS multi-filter merge; orders vocabulary + purge | `test_seal.py` |
+| 12 | lib/oc-embed.sh job-name decoder | `test_embed.py` |
+| 13 | lib/oc_claims.py canonical predicate | `test_claims_predicate.py` |
+| 16–17 | oc-attrib join; #407 novelty filter (re-sha'd + empty commits) | `test_attrib.py` |
+| 22 | oc-fanout + attribution (#24) | `test_fanout.py` |
+| 23 | deploy stage tools (oc-build / oc-status) | `test_deploy_stage.py` |
+| 24, 32 | oc-ledger edge legs; confirm + derive_by | `test_ledger_edge.py` |
+| 25 | oc-review-persist | `test_review_persist.py` |
+| 26 | oc-gate | `test_gate.py` |
+| 29, 48–50, 52, 55, 56 | usage/`--help` contract cluster | `test_tool_contracts.py` |
+| 30 | oc-branch-sweep incl. the #525 journal leg | `test_branch_sweep.py` |
+| 34 | oc-shadow-rotate | `test_shadow_rotate.py` |
+| 35 | oc-smoke-evidence decoy guard (M2-2) | `test_smoke_evidence.py` |
+| 43 | rc contract `--help=0` fleet-wide (C-#3) | `test_rc_help.py` |
+| 44–45 | rc contract table integrity; coverage | `test_rc_contract.py` |
+| 46 | oc-notify-fanout guards (law 1, dead targets, `--roles`) | `test_notify_fanout.py` |
+| 47 | oc-health incl. the watcher-window 24 h/0 discrimination | `test_health.py` |
+| 51 | oc-issue-dispatch role-binding edges | `test_issue_dispatch.py` |
+| 53 | oc-fmt installed/repo identity (#88) | `test_fmt.py` |
+| 57–58 | lib/oc-notify.sh CLI budget; per-send sender | `test_notify_lib.py` |
+| 59–60 | lib/oc-snap.sh mirror age; reap | `test_snap.py` |
+| per-tool argv | the `ok`/`bad` usage/rc legs beside each `run_selftest` | `test_usage_rc.py` |
+
+### Not ported
+
+Each of these is a deliberate decision, with the reason — not an omission.
+
+| run.sh § | Subject | Why not ported |
+|---|---|---|
+| **18** | **oc-consent-check** | **RETIRED 2026-08-28 (owner order 18:50Z).** The consent process was eliminated and the tool archived to `tools/archive/`. The shell section is a `section` header with no body — it asserts nothing, so a port would be an empty test that inflates the pass count. Deleted rather than ported. |
+| 14, 15, 20, 21, 27, 28, 31, 36–42, 54 | — | Each is a `run_selftest` line plus at most one argv leg, and both halves are already covered: the selftest by the parametrized `run_selftest` legs, the argv leg by `test_usage_rc.py`'s `RC_CASES` table. A port would duplicate an existing leg verbatim. |
+| 66–68 | cgroup isolation, battery lock fd, scratch root | Harness infrastructure, not tool behaviour — ported as `test_cgroup.py` and `test_fixtures.py`, which assert the pytest harness's own equivalents. |
+| 33 | oc-ledger lock budget (#619) | 131 lines of shell driving concurrent lock contention. Its own `--selftest` covers the kernel; a pytest port would need the same wall-clock budget to assert anything the selftest does not. Deferred, not dropped. |
+| **61** | **oc-issue-dispatch SIGKILL evidence (#451)** | **Deferred, not dropped — and it is a real bespoke section, not a selftest+argv pair.** 10 assertions: kill the dispatch mid-send under `timeout -s KILL 10` and require the narrative on stdout to SURVIVE (rc 137, >0 bytes, ≥1 "notify budget" line), with a derived control that inverts exactly one `line_buffering=` site and must leave 0 bytes. Porting it needs a copied tool tree (`oc-ledger` + every `lib/*.py` + `oc-root.sh` + a `sleep 30` notify stub + a two-shape gh stub) and a 10 s SIGKILL window per leg, twice. It is the strongest test in the set and the right next port. |
+| **63** | **lib/oc-root.sh resolver coherence (F-L1/F-L2)** | **Deferred, not dropped.** 378 lines / 44 assertions: builds a synthetic tree, then walks every entry preamble through depth permutations to prove the resolver converges. It is a property test of the resolver, and the shell's own construction (copy a tree, mutate one file, re-run the tool) maps onto a pytest fixture — but it needs the whole 378 lines read and rewritten, not transliterated. |
+| **64** | **shell-quoting guard (`python3 -c` / heredoc fences)** | **Deferred, not dropped.** 250 lines / 32 assertions, and its subject is the SOURCE TEXT of every tool: it scans for `python3 -c` strings and heredoc fences that would break under quoting. A pytest port would scan the same corpus with the same scanner; the value is in the scanner's own fixture, which the section already carries. |
+| **65** | **entry-preamble fixpoint + relative invocation (#708)** | **Deferred, not dropped.** 160 lines / 17 assertions. The defect: `cd` into a tool's dir and run `./name` spun forever because `dirname "$0"` yields `.` — a fixpoint. The leg drives each tool from its own directory under a timeout and requires it to terminate. Needs the same per-tool drive loop. |
+| 62 | red-receipt transcript (fail log) | Asserts `run.sh`'s own `bad()` accumulator by running a synthetic failing section in a subshell. There is no `run.sh` accumulator inside pytest to assert — the equivalent claim is pytest's own exit code, which every module already depends on. |
+
