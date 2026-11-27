@@ -60,8 +60,27 @@ import pytest
 
 import conftest as cf
 
-PYTEST_DIR = Path(__file__).resolve().parent
+# The pytest ROOT, not this file's folder — the census reads modules filed in
+# subfolders, and it stays correct if this module itself is ever refiled.
+PYTEST_DIR = cf.PYTEST_DIR
 RUN_SH = cf.REPO_ROOT / "tools" / "tests" / "run.sh"
+
+# The suite is GROUPED BY SUBJECT — harness/, tools/, infra/, e2e/ — so a
+# module's folder is a filing decision, not part of its identity. The census
+# keys modules by BASENAME (the names below are unique; a duplicate would make
+# this resolver ambiguous) and looks them up wherever they are filed.
+MODULE_DIRS = ("", "harness", "tools", "infra", "e2e")
+
+def module_path(name: str) -> Path:
+    """The path of one test module, by basename, wherever it is filed."""
+    for d in MODULE_DIRS:
+        cand = (PYTEST_DIR / d / name) if d else (PYTEST_DIR / name)
+        if cand.is_file():
+            return cand
+    raise FileNotFoundError(
+        "no module named %r under %s (looked in %r) — a rename that skipped this "
+        "census would otherwise report zero assertion mass and pass"
+        % (name, PYTEST_DIR, [d or "." for d in MODULE_DIRS]))
 
 # =============================================================================
 # the pinned census (reproducible — see the module docstring for the predicate)
@@ -232,7 +251,7 @@ def shell_census() -> tuple[list[str], dict[int, int]]:
 
 def module_mass(name: str) -> int:
     """Assertion sites in one module — a LOWER BOUND (parametrize not multiplied)."""
-    tree = ast.parse((PYTEST_DIR / name).read_text(encoding="utf-8", errors="replace"))
+    tree = ast.parse(module_path(name).read_text(encoding="utf-8", errors="replace"))
     n = 0
     for node in ast.walk(tree):
         if isinstance(node, ast.Assert):
@@ -338,7 +357,7 @@ def test_no_deferred_section_has_a_pytest_module_that_ports_it():
     docs = {}
     for mod in {m for mods in SECTION_MODULES.values() for m in mods}:
         doc = ast.get_docstring(ast.parse(
-            (PYTEST_DIR / mod).read_text(encoding="utf-8", errors="replace"))) or ""
+            module_path(mod).read_text(encoding="utf-8", errors="replace"))) or ""
         docs[mod] = tokens(doc)
 
     ported = []
@@ -404,7 +423,7 @@ def test_every_mapped_module_exists_and_declares_its_scope():
     for sec, mods in SECTION_MODULES.items():
         assert mods, "§%d has an empty module tuple — map it or defer it" % sec
         for mod in mods:
-            path = PYTEST_DIR / mod
+            path = module_path(mod)
             assert path.exists(), (
                 "§%d is mapped to %s, which does not exist — the mapping points at "
                 "a module that was renamed or removed" % (sec, mod))
@@ -495,7 +514,7 @@ def test_chunk_and_module_agree(sec, module, title, tmp_path):
         "run.sh --chunk %d (§%s) failed rc=%d\n--- tail ---\n%s"
         % (sec, title, shell.returncode, shell.stdout[-3000:]))
 
-    new = subprocess.run(["python3", "-m", "pytest", str(PYTEST_DIR / module),
+    new = subprocess.run(["python3", "-m", "pytest", str(module_path(module)),
                           "-q", "-n", "0", "-p", "no:cacheprovider"],
                          capture_output=True, text=True, cwd=str(cf.REPO_ROOT),
                          env=env, timeout=1800)

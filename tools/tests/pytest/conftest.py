@@ -542,14 +542,14 @@ def _assert_no_live_state(cmd: list[str], env: dict, allow_live_state: bool):
         if s == prod or s.startswith(prod + "/"):
             raise LiveStateLeak(
                 "run_tool: argument reaches the PRODUCTION checkout (%s). Pass a "
-                "fixture repo, or mark the test live_state and pass "
-                "allow_live_state=True." % s)
+                "fixture repo, or pass allow_live_state=True if the leg genuinely "
+                "means to read the real store." % s)
     hits = _live_hits(env)
     if hits:
         raise LiveStateLeak(
             "run_tool: live fleet state reachable: %s. env_guard should have "
-            "redirected these; if a test set them on purpose, mark it live_state "
-            "and pass allow_live_state=True." % ", ".join(hits))
+            "redirected these; if a test set them on purpose, pass "
+            "allow_live_state=True." % ", ".join(hits))
 
 
 def _run(cmd, *, timeout, cwd=None, env=None, allow_live_state=False,
@@ -850,7 +850,7 @@ def _serial_witness(request, serial_witness_dir):
     """Observe the claim a group marker makes, for the test's OWN group.
 
     Reads the marker off the test node rather than taking a group from the
-    module: ``test_harness_pool_mech.py`` carries legs in TWO groups
+    module: ``harness/test_harness_pool_mech.py`` carries legs in TWO groups
     (``battery-pool`` and ``battery-nested``) which are allowed to overlap each
     other by design, so a module-wide hold would report a false overlap on a
     correct run — measured, and the reason this is per-test.

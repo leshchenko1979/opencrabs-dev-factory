@@ -46,6 +46,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -452,7 +453,10 @@ def test_this_module_is_itself_clean():
     The shell makes the same move (``SQ_BT="$(printf '\\140')"``) and for the
     same reason; this leg is what stops a future edit from inlining one.
     """
-    me = cf.PYTEST_DIR / "test_quoting_guard.py"
+    # Anchored on ``__file__``: the module is filed by SUBJECT now, so a
+    # PYTEST_DIR / basename guess would miss and the guard below would
+    # SILENTLY SKIP — a canary that skips is a canary that is not there.
+    me = Path(__file__).resolve()
     if not me.is_file():
         pytest.skip("this module was renamed; update the leg")
     findings = scan_text(me, me.read_text())

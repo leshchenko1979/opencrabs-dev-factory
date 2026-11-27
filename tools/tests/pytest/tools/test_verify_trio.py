@@ -7,6 +7,12 @@ about itself, and a suite grading its own homework is exactly the §51 lesson
 (``oc-issue-dispatch`` counted ONE case however many asserts it made internally,
 and the crash that cost a probing cycle was invisible to it).
 
+The three ``run_selftest`` legs are NOT repeated here (factory #203):
+``tools/test_tool_wrappers.py`` drives ``oc-verify-order``, ``oc-verify-job`` and
+``oc-verify-artifact`` as parametrised cases already. What this module keeps is
+what the blanket cannot see — the two ``oc-verify-order`` argv legs and the
+artifact refusal table below.
+
 What the table pins is the SWAP GATE's refusal vocabulary, and each code is a
 different consequence:
 
@@ -39,22 +45,9 @@ import pytest
 import conftest as cf
 
 ORDER = cf.tool_path("oc-verify-order")
-JOB = cf.tool_path("oc-verify-job")
 ARTIFACT = cf.tool_path("oc-verify-artifact")
-
-# The three selftests are hermetic (each stubs gh on its own PATH), so they need
-# no network and no live-state allowance.
-SELFTESTS = [("oc-verify-order", 400), ("oc-verify-job", 400),
-             ("oc-verify-artifact", 400)]
-
-
-@pytest.mark.parametrize("tool,bound", SELFTESTS, ids=[t for t, _ in SELFTESTS])
-def test_selftest_passes(tool, bound, run_selftest):
-    """§01/§02/§03 ``run_selftest`` legs, one parametrized case each."""
-    res = run_selftest(tool, timeout=bound)
-    assert res.rc == 0, "%s --selftest rc=%s\n%s" % (
-        tool, res.rc, res.combined[-1200:])
-
+# ``oc-verify-job`` is covered by the selftest blanket in test_tool_wrappers.py
+# (factory #203) — it had no argv leg of its own here, so nothing referenced it.
 
 def test_verify_order_unknown_arg_is_rc1(run_tool):
     """§01: this tool's usage error is LEGACY rc 1, not the fleet's 2 — its own

@@ -336,7 +336,7 @@ def resolve_tool(name: str, tools_dir=None) -> Path:
 
     ``tools/`` is grouped by KIND, so a tool can be moved without touching every
     leg; the same exclusion list (lib/tests/archive/docs/instruments) applies.
-    ``test_cache.py::test_resolve_tool_matches_conftest`` fails if the two
+    ``harness/test_cache.py::test_resolve_tool_matches_conftest`` fails if the two
     implementations ever drift.
     """
     base = Path(tools_dir or TOOLS_DIR)

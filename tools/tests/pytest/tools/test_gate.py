@@ -1,30 +1,29 @@
-"""Ported: oc-gate — run.sh §26.
+"""Ported: oc-gate — run.sh §26 (the usage / state-dir legs).
 
-The selftest runs offline (a gh shim is injected by the tool itself), so it is
-safe to invoke directly; the two usage legs pin the FULL-sha shape gate, which
-is the one thing the tool refuses before it touches the network.
+``oc-gate --selftest`` is NOT driven here: ``tools/test_tool_wrappers.py``
+already runs it as one parametrised case, and it is the second-slowest selftest
+in the fleet (measured 118.4 s). Two modules driving the same selftest is a
+duplicated 118 s of wall for one extra rc assertion — the blanket owns that
+assertion (factory #203). What this module keeps is what the blanket CANNOT
+assert:
+
+* the two usage legs, which pin the FULL-sha shape gate — the one thing the
+  tool refuses before it touches the network;
+* the state-dir containment, which is the leak that forced run.sh to wrap this
+  section in a throwaway dir (goal C, 2026-08-29).
 
 The state dir matters more here than usual: ``usage()`` writes a retry-storm
-counter (``.oc-gate-rc2``) into ``$OC_DEPLOY_STATE_DIR``, which is exactly the
-leak that forced run.sh to wrap this section in a throwaway dir (goal C,
-2026-08-29). ``state_dir`` supplies it per test, so the counter can neither
-escape into the fleet nor make the second usage leg sleep.
+counter (``.oc-gate-rc2``) into ``$OC_DEPLOY_STATE_DIR``. ``state_dir`` supplies
+it per test, so the counter can neither escape into the fleet nor make the
+second usage leg sleep.
 """
 
 from __future__ import annotations
-
-import pytest
 
 import conftest as cf
 
 TOOL = cf.tool_path("oc-gate")
 
-
-def test_selftest_passes(run_selftest):
-    """Offline, shim-injected. Generous bound: the gh-shim matrix is the slowest
-    selftest in the fleet after oc-ledger."""
-    res = run_selftest("oc-gate", timeout=900)
-    assert res.rc == 0, "oc-gate --selftest rc=%s\n%s" % (res.rc, res.combined[-1200:])
 
 
 def test_no_args_is_usage_rc2(run_tool, state_dir):

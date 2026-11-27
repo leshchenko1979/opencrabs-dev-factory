@@ -591,13 +591,16 @@ def seed_plugin(pytester):
     first, then ``pytest_plugins`` — which also proves the real wiring works
     rather than proving a second, test-only path works.
     """
+    # ``lib/`` lives at the pytest ROOT, not beside this module: the nested run's
+    # sys.path entry must be the root, and this file's own parent is now a
+    # subject subfolder with no ``lib`` in it (hence cf.PYTEST_DIR, not __file__).
     pytester.makeconftest(textwrap.dedent(
         """\
         import sys
         sys.path.insert(0, %r)
         pytest_plugins = ("lib.cache",)
         """
-    ) % str(Path(__file__).resolve().parent))
+    ) % str(cf.PYTEST_DIR))
 
 @pytest.mark.serial
 @pytest.mark.xdist_group("cache")

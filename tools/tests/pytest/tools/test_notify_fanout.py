@@ -2,7 +2,7 @@
 
 The section exists because the tool's own ``--selftest`` counts ONE case however
 many assertions it makes internally: a wave that reaches nobody while reporting
-success is invisible to it. Four legs, each a different way a wave LOOKS clean
+success is invisible to it. Three legs, each a different way a wave LOOKS clean
 and is not:
 
 * **61a law 1 — placeholder-token guard.** A brief that still carries ``{{TOK}}``
@@ -14,7 +14,9 @@ and is not:
 * **61c ``--roles``.** With the invoker's own role as the only selector, the wave
   must reach NOBODY: the roster row matches, and self-exclusion is what keeps it
   from being sent to. A leg using ``--roles editor`` cannot tell those apart.
-* **61d** the tool's internal suite, which is fixture-based by construction.
+
+The tool's own ``--selftest`` is NOT driven here (factory #203) — see the SCOPE
+note at the end of this file for why and where it went.
 
 **Counters are read as FIELDS, never substrings.** ``absent=1`` CONTAINS
 ``sent=1``, so the shell's ``grep -q 'sent=1'`` arm is satisfied by a wave that
@@ -204,15 +206,13 @@ def test_roles_filter_excludes_the_invoking_lane(run_tool, wave):
         "filter, not a per-target skip, and conflating them inflates every wave's "
         "skip count:\n%s" % (_field("skipped", res.combined), res.combined[-900:]))
 
-
 # =============================================================================
-# 61d. the tool's own selftest suite
+# SCOPE — what this module deliberately does NOT do
 # =============================================================================
-@pytest.mark.slow
-def test_selftest_suite_passes(run_selftest):
-    """Fixture-based by construction (throwaway sqlite DB, fake notify binary,
-    temp ledger), so no live-state allowance is needed — and since 2026-11-21 the
-    tool exports its own isolated run dir, so it needs no help there either."""
-    res = run_selftest("oc-notify-fanout", timeout=900)
-    assert res.rc == 0, (
-        "oc-notify-fanout --selftest rc=%s\n%s" % (res.rc, res.combined[-1500:]))
+# The shell section also carried ``run_selftest oc-notify-fanout``. That leg is
+# deleted here (factory #203): ``tools/test_tool_wrappers.py`` drives the same
+# ``--selftest`` as one parametrised case, slow-marked, at a measured 266 s.
+# Driving it twice buys one extra ``rc == 0`` and costs four and a half minutes
+# of every full run. The blanket owns "the selftest exits 0"; this module owns
+# the three claims the selftest cannot make about itself — which is the whole
+# reason it exists.
