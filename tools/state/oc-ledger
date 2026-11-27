@@ -965,19 +965,34 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
     return 3
   fi
   if ! jq -e . "$next" >/dev/null 2>&1; then rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; fi
-  # TRUE APPEND when the program pushed exactly ONE event onto the END — that is
-  # the entire point of #149 (one ~200-byte line per stamp instead of a fresh
-  # 2.8MB blob). Anything else (a non-event mutation, or an event edit) falls
-  # back to rewriting the record wholesale, which is still one small file.
+  # TRUE APPEND only when the program pushed exactly ONE event onto the END AND
+  # left every NON-EVENT field alone. The event delta alone is NOT sufficient
+  # (factory #193): enroll/promote/ack/retire/confirm each append one event and
+  # ALSO mutate .workers[] — the roster row, last_acked, confirmed — and sync
+  # stamps .current_skill_version / .meta.*. On an event-count-only predicate
+  # every one of those took this branch, appended its line, and DISCARDED the
+  # roster change while printing success: retire even reported "row removed,
+  # signing revoked" with the uuid still resolving a .role, so it kept signing.
+  # The guard is therefore a comparison of the non-event projection, which is
+  # exactly the state the else-arm below writes to workers.json.
+  #   * .updated_at is DELIBERATELY EXCLUDED from the comparison: every mutation
+  #     bumps it, #177 drops it on the append path, and including it would send
+  #     every stamp down the full-rewrite path — the 2.8MB-blob regression #149
+  #     exists to prevent. A stamp therefore still never touches workers.json.
+  # Anything else (a non-event mutation, an event edit, a multi-event program)
+  # falls back to rewriting the record wholesale, which is still one small file.
   jq -c --slurpfile o "$base" '
-      (.events // []) as $new | ($o[0].events // []) as $old
+      . as $n
+      | ($n.events // []) as $new | ($o[0].events // []) as $old
       | if ($new|length) == (($old|length) + 1) and ($new[0:($old|length)] == $old)
+           and (($n|del(.events)|del(.updated_at)) == ($o[0]|del(.events)|del(.updated_at)))
         then $new[-1] else empty end' "$next" > "$app" 2>/dev/null
   local ev; ev="$(_JSONL_EVENTS)"
   if [ -s "$app" ]; then
     # #177: a stamp is an append + fsync of one line. The view is not written,
-    # and workers.json is left alone — an event-only mutation does not change
-    # non-event state (the jq program may bump .updated_at, which we drop).
+    # and workers.json is left alone — the predicate above has PROVEN the
+    # non-event projection is unchanged (modulo .updated_at, which is excluded
+    # by design and dropped here), so there is nothing to write.
     cat "$app" >> "$ev" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
     sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
   else
