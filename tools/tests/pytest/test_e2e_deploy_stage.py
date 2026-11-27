@@ -10,14 +10,16 @@ stale-pinned-ref 11.7 s — only the first is slow; the other two are excluded f
 their real-subprocess surface, not their wall time.
 
 * **log hermeticity (M2-21)**: ``oc-build --selftest`` must write ZERO rows to
-  ``OC_TOOLS_LOG``. The suite is 561 assertions; measured 2026-11-27 at 898 s
-  standalone on a box under load 21. This is the leg that made the section look
-  hung — it is SLOW, not stuck.
+  ``OC_TOOLS_LOG``. The suite is 561 assertions, 0 fail; measured ~7m45s wall on
+  2026-11-27 under load 17 on 4 cores. This is the leg that made the section
+  look hung — it is SLOW, not stuck.
 * **ship-pending (n=2003 family)**: ``poll --sha S`` with S already dispatched
   must never report "nothing new" — a dispatched-sha GREEN means SWAP PENDING,
   and rc 5 ("already deployed") is the wrong answer that reads as a no-op.
+  Measured 2.3 s.
 * **stale pinned ref**: after a diverge/restore round-trip the plan must report
   ``FF ok`` again. The old code resurrected its own stale ref and refused rc 2.
+  Measured 4.9 s.
 
 The cheap boundary legs (usage rc 1, unknown arg, the kill-file brake at 9, bad
 ``--wait``) stay in ``test_deploy_stage.py``, where they finish in seconds.
