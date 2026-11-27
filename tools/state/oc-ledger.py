@@ -3123,6 +3123,470 @@ def cmd_retire(ledger, args):
 
 
 # ---------------------------------------------------------------------------
+# claim — record a CLAIM row for an issue (delegates to stamp)
+# ---------------------------------------------------------------------------
+CLAIM_HELP = ('usage: oc-ledger claim [<uuid>] <issue-number|#N> [text...] | '
+              'oc-ledger claim --issue <N> [--what <text>]')
+
+_UUID_LOOSE = re.compile(r"^[0-9a-fA-F-]{36}$")
+_ISSUE_ARG = re.compile(r"^#?[0-9]+$")
+
+
+def cmd_claim(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(CLAIM_HELP)
+        return L.RC_OK
+    by = ""
+    issue = ""
+    what = ""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--by", "--session", "--actor"):
+            # The bash does ``by="${2:-}"; shift 2`` and ``shift 2`` FAILS
+            # ATOMICALLY with one positional left, so ``claim --by`` never
+            # leaves ``$1`` and loops forever (same defect as ``ack --at``).
+            # Refuse instead of hanging; see cmd_ack for the full note.
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "claim: %s needs a value" % arg)
+            by = args[i + 1]
+            i += 2
+        elif arg in ("--issue", "--ref"):
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "claim: %s needs a value" % arg)
+            issue = args[i + 1]
+            i += 2
+        elif arg in ("--what", "--note", "--task", "--title"):
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "claim: %s needs a value" % arg)
+            what = args[i + 1]
+            i += 2
+        elif arg in ("-h", "--help"):
+            outln(CLAIM_HELP)
+            return L.RC_OK
+        else:
+            if not issue and _UUID_LOOSE.match(arg):
+                by = arg
+            elif not issue and _ISSUE_ARG.match(arg):
+                issue = arg.lstrip("#")
+            elif not what:
+                what = arg
+            else:
+                what = what + " " + arg
+            i += 1
+    if not issue:
+        die(L.RC_USAGE, "usage: oc-ledger claim [<uuid>] <issue-number|#N> "
+            "[text...] (numeric issue ref required)")
+    # Defect #335: the prefix test must BE the consumer's predicate, not a
+    # substring search. The old ``case *"#$issue"*`` fired on a mention ANYWHERE
+    # in the prose, so ``claim --issue 299 --what "fixed #294 ... (#299)"``
+    # suppressed the prefix and the row's LEADING cluster (#294) became the
+    # claim's target — the explicit flag lost to a passing mention, and oc-commit
+    # then derived Issue-Ref #294 from that row and cross-posted onto a done
+    # issue. Suppress the prefix ONLY when the prose already LEADS with a cluster
+    # naming $issue, tested with the single owner every consumer reads the row
+    # with. ``--issue #N`` is accepted too: a stray '#' would otherwise build
+    # "CLAIM ##N" and dodge the membership test.
+    issue = issue.lstrip("#")
+    if what:
+        if issue in [str(tok) for tok in _primary_issue_tokens(what)]:
+            full_what = what
+        else:
+            full_what = "CLAIM #%s — %s" % (issue, what)
+    else:
+        full_what = "CLAIM #%s" % issue
+    stamp_args = ["claim", full_what]
+    if by:
+        stamp_args += ["--by", by]
+    return cmd_stamp(ledger, stamp_args)
+
+
+# ---------------------------------------------------------------------------
+# claim-ref — the #N a consumer may safely ACT on
+# ---------------------------------------------------------------------------
+CLAIM_REF_HELP = (
+    "usage: oc-ledger claim-ref <uuid> [--open] [--max-age-d <days>]   "
+    "(--open = the lane's NEWEST claim row that is STILL OPEN; --max-age-d > 0 "
+    "additionally REFUSES when that claim is older than <days> (#631). rc 3 = "
+    "no open claim, or one too old to act on. The composed '<role> <uuid>' is "
+    "also accepted; for an ISSUE number use: oc-ledger claims <N>)")
+
+_MAX_AGE_SHAPE = re.compile(r"^[0-9.]+$")
+
+
+def cmd_claim_ref(ledger, args):
+    open_only = False
+    uuid = ""
+    max_age_d = ""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--open":
+            open_only = True
+            i += 1
+        elif arg == "--max-age-d":
+            # #631: bound the AGE of the claim the derivation may act on.
+            # 0/absent = unbounded (the plain read); positive refuses rather
+            # than answering when the newest open claim is older.
+            if i + 1 >= len(args) or not args[i + 1]:
+                die(L.RC_USAGE, "claim-ref: --max-age-d needs a value (days; "
+                    "0 = unbounded)")
+            max_age_d = args[i + 1]
+            i += 2
+        elif arg.startswith("--max-age-d="):
+            max_age_d = arg[len("--max-age-d="):]
+            i += 1
+        elif arg in ("-h", "--help"):
+            outln(CLAIM_REF_HELP)
+            return L.RC_OK
+        elif arg.startswith("--"):
+            die(L.RC_USAGE, "claim-ref: unknown flag '%s'" % arg)
+        else:
+            if uuid:
+                die(L.RC_USAGE, "claim-ref: unexpected extra argument '%s'" % arg)
+            uuid = arg
+            i += 1
+    if not uuid:
+        die(L.RC_USAGE, "usage: oc-ledger claim-ref <uuid> [--open]")
+    # #631: the bound must be a NUMBER. A typo (``--max-age-d 7d``) used to be
+    # accepted by this parse and then read by the helper as 0 = UNBOUNDED, so a
+    # caller who believed they had a bound had none — an accepted-but-inert flag
+    # is indistinguishable from an honoured one, which is the exact class #631
+    # fixes.
+    if max_age_d and not _MAX_AGE_SHAPE.match(max_age_d) \
+            or max_age_d.count(".") > 1:
+        die(L.RC_USAGE, "claim-ref: --max-age-d must be a number of days (got "
+            "'%s'; 0 = unbounded)" % max_age_d)
+    # #441 / Design Q shape 1: enforce the DOMAIN the usage line declares. Only
+    # PRESENCE was checked before, so any non-empty string was taken as the
+    # actor and the free substring match did the rest — two plain issue numbers
+    # failed in OPPOSITE directions, rc 0 and rc 3, so a caller could not learn
+    # the failure MODE from the argument and a typo was reported as a fact about
+    # the ledger:
+    #   claim-ref 440  -> 402, rc 0   (440 sits inside 52058a75-e94b-4400-9e07-…)
+    #   claim-ref 2fae -> 436, rc 0   (a four-character fragment)
+    #   claim-ref 441  -> 393, rc 0   (this defect's OWN issue number)
+    #   claim-ref 438  -> "no claim event by 438", rc 3
+    # ACCEPTED: a canonical uuid, or the M2-24 composed '<role> <uuid>' form
+    # derive_by EMITS (round-trip guard: the TRAILING token must be a uuid).
+    if " " in uuid:
+        if not L.is_uuid(uuid.rsplit(" ", 1)[1]):
+            die(L.RC_USAGE, "claim-ref: '%s' is neither a session uuid nor the "
+                "'<role> <uuid>' form — usage: oc-ledger claim-ref <uuid> "
+                "[--open]. To resolve an ISSUE number, run: oc-ledger claims "
+                "<N>" % uuid)
+    elif not L.is_uuid(uuid):
+        die(L.RC_USAGE, "claim-ref: '%s' is not a session uuid — the ledger is "
+            "addressed by session uuid, and a bare issue number or a fragment "
+            "substring-matches a FOREIGN lane and answers with ITS claim. "
+            "Usage: oc-ledger claim-ref <uuid> [--open]. To resolve an ISSUE "
+            "number, run: oc-ledger claims <N>" % uuid)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    if open_only:
+        out, diag = _latest_open_claim_issue(
+            ledger, uuid, float(max_age_d) if max_age_d else 0.0)
+        if out is None:
+            die(L.RC_REFUSED, "claim-ref --open: %s" % diag)
+    else:
+        out, diag = _latest_claim_issue(ledger, uuid)
+        if out is None:
+            die(L.RC_REFUSED, "claim-ref: %s" % diag)
+    outln(str(out))
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
+# confirm — verify the lane's claim against the live tracker, flip confirmed
+# ---------------------------------------------------------------------------
+CONFIRM_HELP = "usage: oc-ledger confirm <uuid> [--gh <cmd>]"
+
+
+def _gh_issue_exists(gh: str, issue, repo: str) -> bool:
+    try:
+        proc = L.child_process([gh, "issue", "view", str(issue), "--repo", repo,
+                                "--json", "number"],
+                               capture_output=True, text=True)
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def cmd_confirm(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(CONFIRM_HELP)
+        return L.RC_OK
+    uuid = ""
+    gh = os.environ.get("GH_BIN") or "gh"
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--gh":
+            if i + 1 >= len(args) or not args[i + 1]:
+                die(L.RC_USAGE, "confirm: --gh needs a command")
+            gh = args[i + 1]
+            i += 2
+        elif arg.startswith("--"):
+            die(L.RC_USAGE, "confirm: unknown flag '%s'" % arg)
+        else:
+            if not uuid:
+                uuid = arg
+            i += 1
+    if not uuid:
+        die(L.RC_USAGE, CONFIRM_HELP)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    workers = _unified(ledger).get("workers")
+    rows = [row for row in (workers if isinstance(workers, list) else [])
+            if isinstance(row, dict)
+            and L.to_string(_keep(row.get("uuid"), "")) == uuid]
+    if not rows:
+        die(L.RC_REFUSED, "confirm: unknown worker uuid %s" % uuid)
+    # claim->issue derivation delegated to the single owner (E4, v0.4.77)
+    issue, diag = _latest_claim_issue(ledger, uuid)
+    if issue is None:
+        die(L.RC_REFUSED, "confirm: %s" % diag)
+    # live issue existence check, against ALL home trackers (injectable gh shim
+    # keeps the selftest offline). v0.4.284: a claim may name any of the three,
+    # so resolvable in ANY passes. Fail-safe in the direction that matters — a
+    # confirm that cannot find the issue ANYWHERE is still refused, never taken.
+    if not any(_gh_issue_exists(gh, issue, repo) for repo in HOME_REPOS):
+        die(L.RC_REFUSED, "confirm: issue #%s not resolvable on any home tracker"
+            % issue)
+    t = L.now_iso()
+    # D-2 (HQ d72bd52d, 2026-09-12): ``by`` must CONTAIN the uuid, because
+    # cmd_claims links a closure with ``(.value.by // "") | contains($u)``. The
+    # composed "<role> <uuid>" form satisfies it and stays readable.
+    role = L.to_string(_keep(rows[0].get("role"), ""))
+    by = "%s %s" % (role, uuid) if role else uuid
+
+    def _confirm_locked():
+        n = L.max_n(ledger) + 1
+
+        def transform(doc):
+            for row in doc.get("workers") or []:
+                if not (isinstance(row, dict)
+                        and L.to_string(_keep(row.get("uuid"), "")) == uuid):
+                    continue
+                row["confirmed"] = True
+                # D-2: the top-level .events row is the one cmd_claims SCANS —
+                # without it `confirm` flips .confirmed but the claim still
+                # reads OPEN forever.
+                sub = row.get("events")
+                if not isinstance(sub, list):
+                    sub = [] if sub is None else [sub]
+                row["events"] = sub + [{"t": t, "kind": "confirm",
+                                        "issue": "#%s" % issue}]
+            events_ = doc.get("events")
+            if events_ is None:
+                events_ = doc["events"] = []
+            events_.append({
+                "n": n, "t": t, "by": by, "kind": "confirm",
+                "what": "CONFIRM #%s — claim verified live "
+                        "(workers[].confirmed=true)" % issue})
+            doc["updated_at"] = t
+            return None
+        L.atomic_write(ledger, transform)
+        outln("confirmed: %s (claim #%s verified live)" % (uuid, issue))
+        L.git_state_commit(ledger, "ledger confirm %s (#%s)" % (uuid, issue))
+
+    L.with_lock(ledger, _confirm_locked)
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
+# sweep-closed-claims — release claims whose issue shipped and closed
+# ---------------------------------------------------------------------------
+SWEEP_HELP = "usage: oc-ledger sweep-closed-claims [--dry-run]"
+
+
+class _ProbeFailed(Exception):
+    """The gh probe could not answer. Converted to the bash's rc 3 by the verb.
+
+    A ``gh`` failure is LOUD, never a silent clean: an empty ``closed_map`` from
+    a failed probe used to print "All open claims map to OPEN issues." —
+    absence read as a verdict. The diagnostic has already been printed by the
+    time this is raised (see ``_probe_issue_state``).
+    """
+
+
+def _probe_issue_state(state: str) -> dict:
+    """number -> {"title", "repos"} across the three home trackers.
+
+    DELIBERATE DIVERGENCE, rc preserved: the bash captures this probe's stderr
+    into ``$TMPDIR/oc-sweep-closed-claims.$$.err`` and then ``rm -f``s it
+    WITHOUT READING, so an operator sees only "scan failed (rc 4)" and never the
+    reason — the exact silence-as-verdict class this file's own comments rail
+    against. The rc and the final message are byte-identical to the bash; the
+    gh diagnostic is ADDITIONALLY printed. Nothing the bash prints is lost.
+
+
+    #38: the three home trackers have OVERLAPPING number spaces, so one number
+    can exist on more than one of them with a DIFFERENT title on each. The claim
+    token it is matched against is a bare integer — the slug is DISCARDED — so
+    the token cannot say which tracker it means. The first-probed repo title is
+    therefore kept for display only, and the repos a number was seen on ride
+    beside it so the emit can withhold a title the token cannot support.
+    """
+    out = {}
+    for repo in HOME_REPOS:
+        try:
+            proc = L.child_process(
+                ["gh", "issue", "list", "--repo", repo, "--state", state,
+                 "--limit", "1000", "--json", "number,title"],
+                capture_output=True, text=True)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            errln("gh issue list --repo %s --state %s failed (rc 1): %s"
+                  % (repo, state, exc))
+            raise _ProbeFailed()
+        if proc.returncode != 0:
+            errln("gh issue list --repo %s --state %s failed (rc %d): %s"
+                  % (repo, state, proc.returncode,
+                     (proc.stderr or "").strip()[:200]))
+            raise _ProbeFailed()
+        try:
+            for item in json.loads(proc.stdout or "[]"):
+                ent = out.setdefault(item["number"],
+                                     {"title": item.get("title", ""),
+                                      "repos": []})
+                ent["repos"].append(repo)
+        except (ValueError, KeyError, TypeError) as exc:
+            errln("failed to parse %s issues (%s): %s" % (repo, state, exc))
+            raise _ProbeFailed()
+    return out
+
+
+def cmd_sweep_closed_claims(ledger, args):
+    """Release OPEN claim rows whose issue is CLOSED on a home tracker and OPEN
+    on none (v0.4.284 — three trackers, overlapping number spaces).
+
+    #485: the verdict is a claim about a POPULATION, so the population is read in
+    FULL. Only the CLOSED list was fetched before, which made a token absent
+    from it indistinguishable from a token whose issue is genuinely OPEN — and
+    also from a token naming an issue that does not exist on ANY home tracker,
+    which is the shape that printed "All open claims map to OPEN issues." for 15
+    days while n=1678 stayed OPEN against work that had shipped. Every token now
+    lands in exactly one of three classes: CLOSED (released), OPEN (the intended
+    clean case), UNRESOLVED (reported, never released, and it WITHHOLDS the
+    clean verdict). The summary line carries the four counts so the verdict can
+    be checked against the population it names.
+
+    #314: this verb had NO WRITE PATH in the bash — ``--dry-run`` was parsed and
+    the live branch printed the same scan and exited 0, so the flag changed
+    nothing. A claim on a shipped-and-closed issue therefore stayed OPEN until
+    its claimant hand-stamped a redundant closure.
+
+    A ``gh`` failure is LOUD (rc 4), never a silent clean: an empty closed_map
+    from a failed probe used to print the clean verdict — absence read as a
+    verdict.
+    """
+    dry_run = False
+    for arg in args:
+        if arg == "--dry-run":
+            dry_run = True
+        elif arg in ("-h", "--help"):
+            outln(SWEEP_HELP)
+            return L.RC_OK
+        else:
+            die(L.RC_USAGE, "sweep-closed-claims: unknown argument '%s'" % arg)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    oc = _oc_claims()
+    events = _unified(ledger).get("events")
+    open_rows = oc.open_claims(events if isinstance(events, list) else [])
+    if not open_rows:
+        outln("All open claims map to OPEN issues (0 0 0 0 = claim rows, open "
+              "tokens, closed tokens, unresolvable tokens).")
+        return L.RC_OK
+
+    try:
+        closed_map = _probe_issue_state("closed")
+        open_map = _probe_issue_state("open")
+    except _ProbeFailed:
+        # The bash's own rc here: the embedded python exits 4, the shell sees it
+        # and dies 3 with this message. Same rc, same words, plus the reason.
+        die(L.RC_REFUSED, "sweep-closed-claims: scan failed (rc 4) — ledger or "
+            "GitHub probe")
+
+    n_open = 0
+    closed_rows = []
+    unresolved = []
+    for claim in open_rows:
+        for tok in claim["tokens"]:
+            # OPEN WINS: tested FIRST, so a token open on ANY home repo is never
+            # released on the strength of a same-numbered CLOSED issue elsewhere.
+            if tok in open_map:
+                n_open += 1
+            elif tok in closed_map:
+                ent = closed_map[tok]
+                repos = ent["repos"]
+                # #38: print a title ONLY when the number was seen on exactly
+                # one home tracker. On an overlap the bare token names no repo,
+                # so the first-probed repo title is a specificity the claim does
+                # not carry — the release verdict is still correct (closed
+                # everywhere, open nowhere) but the title is withheld and the
+                # ambiguity named.
+                if len(repos) == 1:
+                    label = (ent["title"] or "")[:60]
+                else:
+                    label = ("no single title — #%d exists on %d home trackers "
+                             "(%s)" % (tok, len(repos), ", ".join(repos)))
+                closed_rows.append((tok, claim["by"], label))
+            else:
+                unresolved.append((tok, claim["by"], claim["what"][:60]))
+    counts = "%d %d %d %d" % (len(open_rows), n_open, len(closed_rows),
+                              len(unresolved))
+
+    # #485: report the UNRESOLVABLE class before any verdict. A token that names
+    # no fork issue in EITHER state is neither a stale claim nor a live one: it
+    # is a claim this verb cannot judge, and counting it as open is what made
+    # the clean verdict a lie.
+    if unresolved:
+        outln("UNRESOLVED: %d claim token(s) name no issue on any home tracker "
+              "(neither OPEN nor CLOSED):" % len(unresolved))
+        for tok, by, what in unresolved:
+            outln("  Issue #%s is on no home tracker — claimed by %s (%s)"
+                  % (tok, by, what))
+        outln("  These claims are NOT released and NOT clean. A common cause is "
+              "a")
+        outln("  reference to a repository we do not track (a third-party slug, "
+              "or a")
+        outln("  tracker added after this list was last updated): the number "
+              "resolves")
+        outln("  there, never here.")
+
+    if not closed_rows:
+        if unresolved:
+            return L.RC_OK
+        outln("All open claims map to OPEN issues (%s = claim rows, open "
+              "tokens, closed tokens, unresolvable tokens)." % counts)
+        return L.RC_OK
+
+    issues = sorted({row[0] for row in closed_rows})
+    outln("Found %d open claim(s) across %d CLOSED issue(s):"
+          % (len(closed_rows), len(issues)))
+    for tok, by, label in closed_rows:
+        outln("  Issue #%s (CLOSED: %s) claimed by %s" % (tok, label, by))
+
+    if dry_run:
+        outln("--dry-run: no ledger rows written. Re-run without --dry-run to "
+              "release these claims.")
+        return L.RC_OK
+
+    released = 0
+    for iss in issues:
+        rc = cmd_stamp(ledger, ["unclaim",
+                                "#%s — closed-issue stale claim sweep" % iss])
+        if rc != L.RC_OK:
+            die(L.RC_IO, "sweep-closed-claims: unclaim stamp failed for #%s"
+                % iss)
+        released += 1
+    outln("Released %d closed issue(s) — one unclaim row addressed to each."
+          % released)
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
 READ_VERBS = ("ok", "law-digest", "check-version", "cadence", "events", "tail",
@@ -3157,6 +3621,10 @@ _HANDLERS = {
     "enroll": cmd_enroll,
     "promote": cmd_promote,
     "retire": cmd_retire,
+    "claim": cmd_claim,
+    "claim-ref": cmd_claim_ref,
+    "confirm": cmd_confirm,
+    "sweep-closed-claims": cmd_sweep_closed_claims,
 }
 
 # The verbs this file does NOT implement yet plus the one verb the bash keeps
