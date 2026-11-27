@@ -68,6 +68,11 @@ tools, so the marker is the honest statement of it.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import pathlib
+import tempfile
+
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -155,12 +160,35 @@ TIMEOUTS = dict(TOOLS)
 # names for the shell harness ("read as EIGHT broken tools rather than one
 # stated cap").
 #
-# The remedy is the repo's OWN documented convention for exactly this case
-# (pytest.ini § xdist_group USAGE): a `serial` marker states "must not overlap"
-# and a shared `xdist_group` is the mechanism that makes the claim true under
-# `-n N`, by pinning every member onto the SAME worker, in order. Under `-n 0`
-# both are inert, so the serial fallback needs no changes -- the acceptance bar
-# pytest.ini sets.
+# THE REMEDY THAT ACTUALLY WORKS IS THE `serial_box` FLOCK FIXTURE, NOT THE
+# `xdist_group` MARKER -- and the difference is the whole point, because the
+# marker LOOKED sufficient and was not.
+#
+# pytest.ini documents `serial` + `xdist_group` as the mechanism, and that is
+# correct ONLY under `--dist loadgroup`. xdist's DEFAULT is `--dist load`,
+# which IGNORES groups entirely, and nothing in this directory sets `--dist`.
+# So the group marker was inert: four workers picked up four selftests and ran
+# them at once. Measured 2026-11-27 in this worktree:
+#
+#   -n auto (nproc=4) -> 19 of 33 legs FAILED, every one carrying
+#       fork: retry: Resource temporarily unavailable
+#       error: cannot fork() for ssh-keygen / rev-list / pack-objects
+#   -n 2             -> ZERO fork errors, but `oc-ledger` still flaked its own
+#       `race-max-n` case (want rc=919, got rc=916) -- two overlapping tool
+#       trees are already enough contention to red a case.
+#
+# Both runs read as broken tools. Neither was: the cgroup is `pids.max = 64`
+# (`ulimit -u` is 15532, so the limit that bites is the cgroup, never the login
+# limit -- read the former). Two legs peak at 41 of 64, so a third is over it.
+#
+# `serial_box` therefore takes an exclusive `flock` for the duration of each
+# leg. A lock is used INSTEAD OF relying on `--dist loadgroup` because it is
+# correct under any dist mode and cannot be disarmed by a later ini edit or by
+# a caller passing `--dist load` explicitly. The marker is kept as the stated
+# claim -- it is what makes the group real if `--dist loadgroup` is ever set --
+# but the lock is what enforces it today. Under `-n 0` the lock is uncontended
+# and the group inert, so the serial fallback needs no changes: the acceptance
+# bar pytest.ini sets.
 #
 # Sharing ONE group name across all 33 is deliberate: these legs contend for a
 # single box-wide process budget, so the budget is the unit of mutual exclusion,
@@ -227,8 +255,49 @@ def _env_for(tool, fanout_ledger):
         env["OC_FANOUT_LEDGER"] = str(fanout_ledger)
     return env or None
 
+@pytest.fixture
+def serial_box():
+    """Serialize every leg of THIS module across xdist workers, via a file lock.
+
+    Why a lock and not just ``@pytest.mark.xdist_group``: xdist honours groups
+    ONLY under ``--dist loadgroup``, and its DEFAULT is ``--dist load``, which
+    IGNORES them. pytest.ini does not set ``--dist``, so the group marker was
+    inert and four workers ran four selftests at once. Measured 2026-11-27,
+    this worktree, ``-n auto`` (nproc=4) on a box whose cgroup carries
+    ``pids.max = 64``: 19 of 33 legs failed, and every one of them carried
+
+        fork: retry: Resource temporarily unavailable
+        error: cannot fork() for ssh-keygen / rev-list / pack-objects
+
+    -- the SAME cap, not nineteen broken tools. ``-n 2`` had ZERO fork errors
+    but still flaked ``oc-ledger``'s own ``race-max-n`` case (want rc=919,
+    got rc=916), because two tool trees overlapping is already contention.
+
+    A lock is used rather than relying on ``--dist loadgroup`` because it is
+    correct under ANY dist mode: it cannot be disarmed by a future change to
+    the ini or by a caller passing ``--dist load`` explicitly. Under ``-n 0``
+    it is uncontended and therefore inert, which is the serial-fallback bar
+    pytest.ini sets.
+
+    Scope is the WORKTREE, not the box: the digest is taken from the repo root
+    so a sibling lane running the same module in its own worktree does not
+    block this one for twenty minutes. ``hashlib`` rather than ``hash()``
+    because ``hash()`` is randomized per process (PYTHONHASHSEED) and every
+    worker would then open a DIFFERENT file -- no serialization at all.
+    """
+    root = pathlib.Path(__file__).resolve().parents[3]
+    digest = hashlib.sha1(str(root).encode()).hexdigest()[:12]
+    lock_path = pathlib.Path(tempfile.gettempdir()) / ("oc-pytest-wrappers-%s.lock" % digest)
+    fh = lock_path.open("a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
 @pytest.mark.parametrize("tool", PARAMS)
-def test_tool_selftest(run_selftest, fanout_ledger, tool):
+def test_tool_selftest(serial_box, run_selftest, fanout_ledger, tool):
     """``<tool> --selftest`` exits 0, within its bound, having printed a verdict.
 
     Three assertions, each earned:
