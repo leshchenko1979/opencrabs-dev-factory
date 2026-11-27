@@ -1400,7 +1400,7 @@ Session-Id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
   grep -q '"retries":0' "$(ls "$SD/oc-deploy/journal/"fanout-669-*.jsonl | head -1)" \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: rc 2 (no_route) RETRIED -- it is permanent, a re-send cannot help"; }
 
-  # 17k. (#192) A CHILD TRAILER IS WALKED TO ITS LANE. Before this, the fan-out
+  # 17w. (#192) A CHILD TRAILER IS WALKED TO ITS LANE. Before this, the fan-out
   #      handed every trailer uuid to notify_one verbatim, so a commit stamped by
   #      a sub-agent woke a session no lane reads — and journalled `notified`,
   #      which is a durable claim of success. The fixture's culprit carries
@@ -1432,7 +1432,7 @@ Session-Id: e1111111-1111-4111-8111-111111111111"
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the delivery row does not record resolved_from"; }
   jq -e '.runs["672"].notified == 1' "$SD/fanout.state" >/dev/null 2>&1 \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 resolved run not marked done"; }
-  # 17l. (#192) A CHILD WITH NO PARENT RECORDED — the pre-ship row shape (240 of
+  # 17x. (#192) A CHILD WITH NO PARENT RECORDED — the pre-ship row shape (240 of
   #      them on the live box) — is UNRESOLVABLE: no lane exists to walk to, and
   #      waking the child is a guaranteed no-op. So it is NOT sent, it is counted
   #      in its OWN tally (`unresolved`, never folded into `skipped`, which is the
@@ -1464,7 +1464,7 @@ Session-Id: e2222222-2222-4222-8222-222222222222"
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the unresolved row must state it did NOT notify"; }
   jq -e '.runs["673"].unresolved == 1' "$SD/fanout.state" >/dev/null 2>&1 \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the unresolvable count is not in fanout.state"; }
-  # 17m. (#192) A PHANTOM TRAILER (a uuid in NO store row — issue #192's own
+  # 17y. (#192) A PHANTOM TRAILER (a uuid in NO store row — issue #192's own
   #      measured case: an external agent invented one) is COUNTED but STILL SENT.
   #      That asymmetry is the contract, not an oversight: `unknown` is a fact
   #      about the store that has innocent causes (another profile, a rotated DB),
@@ -1498,7 +1498,7 @@ Session-Id: 77777777-1111-2222-3333-444444444444"
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 no unresolved/not-in-store journal line"; }
   grep '"step":"unresolved"' "$FJ8" 2>/dev/null | grep -q '"notified":true' \
     && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #192 the not-in-store row must state it WAS still sent"; }
-  # 17n. (#192) THE DEGRADATION IS LOUD, and it is the OLD behaviour — a missing
+  # 17z. (#192) THE DEGRADATION IS LOUD, and it is the OLD behaviour — a missing
   #      session library must not read as a clean resolution. Asserted on the
   #      SOURCE rather than by deleting the library from a live tree: the leg
   #      proves the guard exists AND names the consequence, and the negative
