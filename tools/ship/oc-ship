@@ -1494,6 +1494,111 @@ if [ "${OC_SHIPCHAIN_DETACHED:-0}" = "1" ] && [ -n "${OC_SHIPCHAIN_LOG:-}" ]; th
 fi
 
 # ---- pre-flight -----------------------------------------------------------
+# ---- pre-flight: STALE-TOOLS (factory #217) --------------------------------
+# A chain runs the tools VENDORED IN ITS OWN TREE, so a worktree branched before
+# daf36dcb3 (2026-11-25, factory #177 "prefer events.jsonl when present, else the
+# compact view") carries a PRE-migration ledger resolver: `oc_ledger_path()`
+# there returns the RETIRED compact view ($OC_DEV_STATE/workers-ledger.json)
+# instead of the record (events.jsonl), and oc-deploy-lib's CANONICAL_LEDGER —
+# the value oc-build hands to the ORDER gate as `--ledger` — does the same.
+# #177 retired the view's WRITE path, so the view is materialized lazily and can
+# simply be ABSENT; the ORDER gate then dies `oc-verify-order: ledger not found:
+# …/workers-ledger.json` AFTER the push, with the sha already on fork main and
+# ungated (measured 2026-11-28, chain for 9d231b68e: `order-gate-failed` at
+# 16:29Z; the view was re-materialized at 16:31Z, so the retry passed and the
+# fault looked transient).
+#
+# This NAMES the stale tree instead of hiding it — candidate (c) of the three in
+# #217. (a) materializing the view on every oc-ledger append keeps a retired
+# read surface alive for every consumer, forever, to serve trees that should be
+# updated; (b) resolving the chain's tools from current main closes the whole
+# stale-tool class but its blast radius is a redesign of how a chain finds its
+# own tools, not one change. So PROBE the resolvers this tree is about to run,
+# and when one of them still names the retired file:
+#   * REFUSE rc 3 when that file does NOT exist — provably fatal, and rc 3 is
+#     the precondition class: nothing has been dispatched, so the lane fixes the
+#     tree and re-runs for free instead of spending a ~25-min gate and a push to
+#     learn the gate cannot read its own ledger.
+#   * WARN and continue when it DOES. That is the only state in which a pre-#177
+#     resolver still works (measured: a 2026-11-23 tree reads the compact view
+#     and returns VALID, and returns rc 3 UNSIGNED against the JSONL record
+#     because it slurps the file with raw jq) — refusing it would block every
+#     lane that is merely behind, which is not this defect. The warning still
+#     names the tree: the gate is then reading a snapshot nothing maintains.
+# THE PROBE IS THE RESOLVER ITSELF, sourced in a SUBSHELL against a throwaway
+# state dir holding an empty events.jsonl — the one condition under which a
+# #177+ resolver and a pre-#177 one disagree (both return the record when no
+# record exists, and both honour OC_LEDGER, so a grep for the filename would
+# prove nothing). Two resolvers, because the gate's `--ledger` comes from
+# oc-deploy-lib while oc-verify-order's own default comes from oc-log.sh.
+# An exported OC_LEDGER disables the refusal: the caller has pinned the path and
+# oc-build hands that same value to the gate, so the default resolver is not in
+# play. It does NOT disable the warning — a pinned JSONL record read by a
+# pre-#177 tree is the "UNSIGNED: not in the workers ledger" half of the same
+# class, and it must not be silent either.
+# Escape hatch: OC_SHIP_ALLOW_STALE_TOOLS=1 turns the refusal into the warning.
+_ship_probe_ledger_resolver() { # $1=lib $2=log|deploy $3=1 -> probe against a throwaway state dir
+  local _lib="$1" _kind="$2" _mode="${3:-0}" _d="" _out=""
+  local -a _env=(OC_TOOLS_DIR="$(cd "$(dirname "$_lib")/.." 2>/dev/null && pwd)")
+  [ -f "$_lib" ] || { printf '%s\n' ""; return 0; }
+  if [ "$_mode" = "1" ]; then
+    _d="$(mktemp -d 2>/dev/null)" || { printf '%s\n' ""; return 0; }
+    : > "$_d/events.jsonl"
+    # The throwaway dir must WIN over anything ambient, so both state vars and
+    # OC_LEDGER are set explicitly (empty OC_LEDGER = "not pinned").
+    _env+=(OC_DEV_STATE="$_d" OC_DEPLOY_STATE_DIR="$_d" OC_LEDGER=)
+  fi
+  # mode 0 inherits the AMBIENT environment on purpose: that is exactly what
+  # oc-build's oc-deploy-lib will see when it resolves the gate's --ledger.
+  _out="$(env "${_env[@]}" bash -c 'f="$1"; k="$2"; . "$f" >/dev/null 2>&1 || exit 0
+                                     if [ "$k" = log ]; then oc_ledger_path; else printf "%s\n" "${LEDGER:-}"; fi' \
+            _ "$_lib" "$_kind" 2>/dev/null)"
+  [ -z "$_d" ] || rm -rf "$_d"
+  printf '%s\n' "$_out"
+  return 0
+}
+
+shipchain_stale_tools_guard() { # $1 = state dir (unused by the probe; named for the reader)
+  local _i _hit="" _named="" _probed=0 _why=""
+  local -a _libs=("$TOOLS_DIR/lib/oc-log.sh" "$TOOLS_DIR/lib/oc-deploy-lib.sh")
+  local -a _kinds=(log deploy)
+  for _i in 0 1; do
+    [ -f "${_libs[$_i]}" ] || continue
+    _probed=$((_probed + 1))
+    case "$(_ship_probe_ledger_resolver "${_libs[$_i]}" "${_kinds[$_i]}" 1)" in
+      */workers-ledger.json) _hit="$_i"; break ;;
+    esac
+  done
+  if [ -z "$_hit" ]; then
+    # "Could not probe" must not read as "clean": a tool tree with neither lib
+    # cannot be checked at all, and silence there would be the same false pass
+    # #217 exists to end. Not fatal — the selftest's own fixture copies are
+    # exactly this shape and never ship.
+    if [ "$_probed" = "0" ]; then
+      printf 'oc-ship: WARNING — STALE-TOOLS: %s/lib carries neither oc-log.sh nor oc-deploy-lib.sh, so this tree could not be checked for the #177 ledger migration\n' "$TOOLS_DIR" >&2
+      journal "STALE-TOOLS UNPROBEABLE — no lib/oc-log.sh and no lib/oc-deploy-lib.sh under $TOOLS_DIR"
+    fi
+    return 0
+  fi
+  _named="$(_ship_probe_ledger_resolver "${_libs[$_hit]}" "${_kinds[$_hit]}" 0)"
+  if [ "${OC_SHIP_ALLOW_STALE_TOOLS:-0}" = "1" ]; then
+    _why="OC_SHIP_ALLOW_STALE_TOOLS=1"
+  elif [ -n "${OC_LEDGER:-}" ]; then
+    _why="OC_LEDGER is pinned to $OC_LEDGER, so this chain's gate uses that path"
+  elif [ -f "$_named" ]; then
+    _why="that file exists, so the gate can still read it"
+  fi
+  if [ -n "$_why" ]; then
+    journal "STALE-TOOLS WARN resolver=${_libs[$_hit]} names=$_named — tree predates daf36dcb3 (#177); continuing because $_why"
+    printf 'oc-ship: WARNING — STALE-TOOLS: %s predates daf36dcb3 (#177), so this tree reads the workers ledger the pre-#177 way. It resolves to %s%s. Continuing because %s. That reader slurps the ledger with raw jq, so it cannot parse the events.jsonl record and returns UNSIGNED against it; where the resolved path is the retired compact view, nothing maintains it either (#177 retired its write path). Either way this chain gates against a snapshot. Merge current main into this branch to clear this.\n' \
+      "${_libs[$_hit]}" "$_named" "$([ -f "$_named" ] && printf ' (which exists)' || printf ' (which does NOT exist)')" "$_why" >&2
+    return 0
+  fi
+  journal "STALE-TOOLS REFUSED resolver=${_libs[$_hit]} names=$_named (absent) — tree predates daf36dcb3 (#177)"
+  die "STALE-TOOLS (rc 3, caught BEFORE any dispatch): this chain's own tree predates daf36dcb3 (#177) — ${_libs[$_hit]} resolves the workers ledger to the RETIRED compact view '$_named', which does not exist, and #177 retired that view's write path so nothing will create it. Shipping from here spends a ~25-min gate and a push to end at oc-verify-order 'ledger not found', with the sha already on fork main and ungated (factory #217). FIX THE TREE, not the chain: merge current main into this branch (the resolver then defaults to the events.jsonl record) and re-run. If you mean to ship the old tree anyway, say so explicitly: OC_SHIP_ALLOW_STALE_TOOLS=1." 3
+}
+
+shipchain_stale_tools_guard
 require_fork_checkout "$FORK_REPO"
 
 # ---- actor defaulting (v0.4.152 §Attribution & Goal Hygiene A1) ------------
@@ -2470,6 +2575,66 @@ if [ -z "$_SID" ]; then
   journal "LEG3 PRE-SIGNATURE FAIL tip=$(printf '%s' "$TIP" | cut -c1-8) — no valid Session-Id trailer"
   die "UNSIGNED (rc 3, caught BEFORE the merge): $SHA carries no valid Session-Id trailer (the BARE 36-char session uuid). gate 4 would wipe it and refuse the ship at LEG4, AFTER the ff-merge — stranding main at an unattributable tip. Re-sign the commit's trailer and re-run: oc-ship --sha <re-signed-sha> --branch $BRANCH" 3
 fi
+
+# ---- factory #218: ROSTER MEMBERSHIP pre-check (BEFORE the ff-merge) -------
+# The arm above pins gate 4's SHAPE half. Its SECOND half — the Session-Id uuid
+# being PRESENT in the workers ledger roster — still ran only inside oc-build at
+# LEG4, i.e. AFTER this merge, and oc-build is push-then-validate by design. So a
+# lane that never enrolled landed its sha on fork main ungated, and the only
+# repair was ledger surgery. Measured 2026-11-28, THREE independent lanes in one
+# day: "ORDER rc 3 UNSIGNED: Session-Id … is not in the workers ledger" twice
+# (each after the sha was already on main) and one rc=4 ORDER-GATE-FAILED that
+# needed an empty commit to re-attribute three commits. The rule this enforces is
+# exactly gate 4's own: `oc-verify-order` reads the same `worker --uuid --json`
+# and fails 3 when `.role` is empty.
+#
+# FAIL OPEN on anything that is not a POSITIVE miss. The whole value of this
+# guard is refusing the one state it can PROVE is fatal; a guard that also dies
+# because the ledger was momentarily unreadable would be a new way for the chain
+# to break, which is the opposite of what #218 asks for. So: rc 1 (NO-MATCH) and
+# rc 0-with-no-role are refusals (both are what gate 4 refuses); rc 2/3/127, a
+# missing ledger tool, or an unresolvable ledger path all WARN loudly and carry
+# on, and LEG4 still makes the final call.
+#
+# The ledger path is resolved the same way oc-build's gate will resolve it — the
+# lib's own LEDGER, in this process's ambient environment — so the two cannot
+# disagree about WHICH file they are reading. When that probe comes back empty
+# the flag is omitted and oc-ledger resolves itself.
+_roster_largs=()
+_roster_ledger="$(_ship_probe_ledger_resolver "$TOOLS_DIR/lib/oc-deploy-lib.sh" deploy 0)"
+[ -n "$_roster_ledger" ] && _roster_largs=(--ledger "$_roster_ledger")
+_roster_rc=0
+_roster_json="$("$TOOLS_DIR/state/oc-ledger" "${_roster_largs[@]+"${_roster_largs[@]}"}" \
+  worker --uuid "$_SID" --json 2>/dev/null)" || _roster_rc=$?
+_roster_role=""
+[ -n "$_roster_json" ] && _roster_role="$(printf '%s' "$_roster_json" | jq -r '.role // empty' 2>/dev/null || true)"
+# rc 0 with NO output is NOT a positive miss: `oc-ledger worker` answers rc 1
+# for a uuid it cannot find and prints the row when it can, so a zero-byte
+# success means the read answered NOTHING — an instrument that could not see,
+# never a roster verdict. Folding it into the refusal arm below would let a
+# stubbed, truncated or swapped-in ledger tool refuse every lane on the box,
+# which is the one failure mode #218 explicitly forbids. Measured 2026-11-28
+# on this suite's own leg 8 fixture (a `exit 0` oc-ledger stub): the guard
+# refused a lane that IS enrolled, and the pre-existing journal-ok leg went
+# red for it.
+if [ "$_roster_rc" = 0 ] && [ -z "$_roster_json" ]; then
+  _roster_rc=3
+fi
+case "$_roster_rc" in
+  1)
+    journal "LEG3 PRE-ROSTER FAIL tip=$(printf '%s' "$TIP" | cut -c1-8) sid=$_SID ledger=${_roster_ledger:-<resolved-by-oc-ledger>} — NO-MATCH"
+    die "UNSIGNED (rc 3, caught BEFORE the merge): Session-Id $_SID is not in the workers ledger. gate 4 refuses exactly this at LEG4 — AFTER the ff-merge — which lands $SHA on fork main ungated and leaves ledger surgery as the only repair (factory #218, three lanes in one day 2026-11-28). ENROLL THE LANE, do not re-sign: oc-ledger enroll $_SID <role>   (ledger: ${_roster_ledger:-<resolved by oc-ledger>}), then re-run: oc-ship --sha $SHA --branch $BRANCH" 3 ;;
+  0)
+    if [ -z "$_roster_role" ]; then
+      journal "LEG3 PRE-ROSTER FAIL tip=$(printf '%s' "$TIP" | cut -c1-8) sid=$_SID — row present but .role is empty"
+      die "UNSIGNED (rc 3, caught BEFORE the merge): Session-Id $_SID has a roster row in the workers ledger but no .role, which gate 4 reads as a miss at LEG4 — AFTER the ff-merge (factory #218). Give the row its role: oc-ledger enroll $_SID <role>, then re-run: oc-ship --sha $SHA --branch $BRANCH" 3
+    fi
+    journal "LEG3 PRE-ROSTER OK tip=$(printf '%s' "$TIP" | cut -c1-8) sid=$_SID role=$_roster_role" ;;
+  *)
+    journal "LEG3 PRE-ROSTER UNPROBEABLE rc=$_roster_rc sid=$_SID ledger=${_roster_ledger:-<unresolved>} — failing OPEN, LEG4 keeps the final call"
+    printf 'oc-ship: WARNING — PRE-ROSTER UNPROBEABLE (rc=%s): could not read the workers ledger to confirm Session-Id %s is enrolled. Continuing (fail open — #218 must not become a new way for the chain to die); oc-build LEG4 still applies gate 4 after the merge.\n' \
+      "$_roster_rc" "$_SID" >&2 ;;
+esac
 
 set +e
 git -C "$FORK_REPO" merge --ff-only "$TIP" >/dev/null 2>&1

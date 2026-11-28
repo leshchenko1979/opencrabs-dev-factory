@@ -281,6 +281,17 @@ EOF
   git init -q "$T/state"
   git -C "$T/state" config user.email t@t
   git -C "$T/state" config user.name t
+  # ---- factory #218 fixture: THE ROSTER -----------------------------------
+  # The chain now checks gate 4's SECOND arm (the Session-Id uuid present in the
+  # workers ledger roster) BEFORE the ff-merge, so every chain leg in this suite
+  # needs the fixture lane ENROLLED or it dies rc 3 at that guard — the fixture's
+  # commits all carry `Session-Id: $FIXTURE_SESSION`. Planting it here is what
+  # keeps the pre-existing legs measuring what they were written to measure.
+  # The shape is the #177 record's: events.jsonl marks JSONL mode, workers.json
+  # carries the roster dict that `oc-ledger worker --uuid` reads.
+  : > "$T/state/events.jsonl"
+  printf '{"workers":[{"uuid":"%s","role":"editor","state":"ACTIVE"}]}\n' "$FIXTURE_SESSION" \
+    > "$T/state/workers.json"
   RC=0; OUT="$(FAKE_PRCHECKS_LOG="$T/prchecks.log" run_chain --sha "$FSHA" --branch feat --issue 42 --wait 5 2>&1)" || RC=$?
   check_rc "full-chain-green" "$RC" 0
   case "$OUT" in *SWAPPED*) ok "swapped-marker" ;; *) bad "swapped-marker: $OUT" ;; esac
@@ -690,6 +701,83 @@ FGHEOF
   grep -q "LEG3 PRE-SIGNATURE FAIL" "$T/journal.log" && ok "journal-leg3-pre-signature" || bad "journal-leg3-pre-signature"
   MA="$(git -C "$T/clone" rev-parse main)"
   [ "$MB" = "$MA" ] && ok "leg3-unsigned-main-not-advanced" || bad "leg3-unsigned-main-not-advanced (main moved $MB -> $MA)"
+
+  # 3f-bis. (factory #218) ROSTER MEMBERSHIP pre-check: the SAME gate-4 arm one
+  #     step further — the trailer is SHAPE-VALID but the uuid was never
+  #     enrolled. Measured 2026-11-28, three lanes in one day: gate 4 refused at
+  #     LEG4, AFTER the ff-merge, leaving the sha on fork main ungated with
+  #     ledger surgery as the only repair. The chain must refuse rc 3 pre-merge.
+  rm -f "$T/journal.log"
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" checkout -qb feat-unenrolled
+  echo ue > "$T/clone/ue.txt"
+  git -C "$T/clone" add -A
+  git -C "$T/clone" commit -qm "unenrolled lane tip" \
+    --trailer "Session-Id: 99999999-9999-4999-8999-999999999999"
+  USHA3="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" push -q origin feat-unenrolled
+  git -C "$T/clone" checkout -q main
+  MB="$(git -C "$T/clone" rev-parse main)"
+  RC=0; OUT="$(run_chain --sha "$USHA3" --branch feat-unenrolled --issue 42 2>&1)" || RC=$?
+  check_rc "leg3-unenrolled-pre-check" "$RC" 3
+  case "$OUT" in *"UNSIGNED (rc 3, caught BEFORE the merge)"*) ok "leg3-unenrolled-names-cause" ;; *) bad "leg3-unenrolled-names-cause: $OUT" ;; esac
+  case "$OUT" in *"not in the workers ledger"*) ok "leg3-unenrolled-names-the-miss" ;; *) bad "leg3-unenrolled-names-the-miss: $OUT" ;; esac
+  # The refusal must say WHAT TO DO. "Re-sign the commit" is the SHAPE arm's
+  # remedy and is WRONG here — the trailer is fine, the roster is not.
+  case "$OUT" in *"oc-ledger enroll"*) ok "leg3-unenrolled-prescribes-enroll" ;; *) bad "leg3-unenrolled-prescribes-enroll: $OUT" ;; esac
+  grep -q "LEG3 PRE-ROSTER FAIL" "$T/journal.log" && ok "journal-leg3-pre-roster" || bad "journal-leg3-pre-roster"
+  MA="$(git -C "$T/clone" rev-parse main)"
+  [ "$MB" = "$MA" ] && ok "leg3-unenrolled-main-not-advanced" || bad "leg3-unenrolled-main-not-advanced (main moved $MB -> $MA)"
+  # 3f-ter. POSITIVE CONTROL for 3f-bis. A guard that refuses EVERY tip would
+  #     satisfy the leg above and block the whole fleet, so the ENROLLED lane
+  #     must pass the SAME arm. The tip has to be a FRESH commit: $FSHA was
+  #     merged into origin/main by leg 1, so shipping it again dies ALREADY-
+  #     LANDED rc 5 at the ancestry pre-check and would never reach the roster
+  #     arm — the control would then pass by never running. Built here, from
+  #     whatever origin/main has become, carrying the fixture uuid.
+  _mk_enrolled_tip() {   # $1 = branch, $2 = file marker
+    git -C "$T/clone" checkout -q main
+    git -C "$T/clone" reset -q --hard origin/main
+    git -C "$T/clone" checkout -qB "$1"
+    echo "$2" > "$T/clone/$2.txt"
+    git -C "$T/clone" add -A
+    git -C "$T/clone" commit -qm "enrolled lane tip ($1)" --trailer "Session-Id: $FIXTURE_SESSION"
+    git -C "$T/clone" rev-parse HEAD
+  }
+  OKSHA="$(_mk_enrolled_tip feat-ok ok)"
+  git -C "$T/clone" push -q origin feat-ok
+  git -C "$T/clone" checkout -q main
+  rm -f "$T/journal.log"
+  RC=0; OUT="$(run_chain --sha "$OKSHA" --branch feat-ok --issue 42 --wait 5 2>&1)" || RC=$?
+  check_rc "leg3-enrolled-chain-rc" "$RC" 0
+  grep -q "LEG3 PRE-ROSTER OK" "$T/journal.log" && ok "journal-leg3-pre-roster-ok" || bad "journal-leg3-pre-roster-ok"
+  # 3f-quater. FAIL-OPEN: a ledger read that cannot ANSWER must WARN, never
+  #     refuse. #218 asks for a refusal before the merge, explicitly NOT a new
+  #     way for the chain to die — so rc 3/127 carries on and LEG4 keeps the
+  #     final call. The fixture makes the record UNPARSEABLE rather than absent:
+  #     run_chain pins OC_DEPLOY_STATE_DIR itself (an outer override is silently
+  #     discarded), and DELETING events.jsonl would make the resolver name the
+  #     retired workers-ledger.json, which reddens the #217 stale-tools guard
+  #     rc 3 instead — the leg would then prove the wrong guard fired. Garbage
+  #     in workers.json keeps the resolver on events.jsonl and makes the roster
+  #     read die 3 (`jq: parse error` -> oc-ledger rc 3). Verified by hand on a
+  #     temp state dir before this leg was written.
+  OKSHA2="$(_mk_enrolled_tip feat-ok2 ok2)"
+  git -C "$T/clone" push -q origin feat-ok2
+  git -C "$T/clone" checkout -q main
+  rm -f "$T/journal.log"
+  printf 'not json at all\n' > "$T/state/workers.json"
+  RC=0; OUT="$(run_chain --sha "$OKSHA2" --branch feat-ok2 --issue 42 --wait 5 2>&1)" || RC=$?
+  case "$RC" in
+    3) bad "leg3-roster-unprobeable-fails-open (refused rc 3 on an unreadable ledger)" ;;
+    *) ok "leg3-roster-unprobeable-fails-open (rc=$RC)" ;;
+  esac
+  case "$OUT" in *"PRE-ROSTER UNPROBEABLE"*) ok "leg3-roster-unprobeable-warns" ;; *) bad "leg3-roster-unprobeable-warns: $OUT" ;; esac
+  grep -q "LEG3 PRE-ROSTER UNPROBEABLE" "$T/journal.log" && ok "journal-leg3-roster-unprobeable" || bad "journal-leg3-roster-unprobeable"
+  # restore the ledger the remaining legs read
+  : > "$T/state/events.jsonl"
+  printf '{"workers":[{"uuid":"%s","role":"editor","state":"ACTIVE"}]}\n' "$FIXTURE_SESSION" \
+    > "$T/state/workers.json"
 
   # 4. STALE-BASE RECOVERY (T10, plan #68) -- POSITIVE CONTROL for the new arm.
   #    The leg here used to be `non-ff` and asserted ONLY rc 5, a code EIGHT

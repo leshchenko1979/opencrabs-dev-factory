@@ -31,12 +31,45 @@ trap 'oc_log_finish $?' EXIT
 
 REPO="${OC_REPO:-leshchenko1979/opencrabs}"
 LEDGER="$(oc_ledger_path)"   # v0.4.38: canonical path (skill-dir duplicate deleted 2026-08-29; oc-deploy passes OC_LEDGER explicitly in the ship chain)
+LEDGER_FROM_FLAG=0           # #217: --ledger given explicitly (see _ledger_where)
 TIP=""
 FEATURES=""
 VERBOSE=0
 
 fail() { echo "oc-verify-order: $2" >&2; exit "$1"; }
 say()  { [ "$VERBOSE" = 1 ] && echo "$*" >&2 || true; }
+
+# ---- #217: a ledger failure must name WHERE the path came from --------------
+# Measured 2026-11-28: a chain shipping from a worktree whose vendored tools
+# predate daf36dcb3 (#177) died `ledger not found:
+# …/workers-ledger.json`. The path was in the message and still told nobody
+# anything: the filename was the one piece of context the operator already had
+# and the one that did not matter. What matters is WHICH tree resolved it and
+# WHICH variable made it do so, because "the ledger is missing" reads as a
+# fleet-wide fault (escalated as one) when it actually means "this tree is old".
+# Naming the source turns that into a one-line fix and costs nothing when the
+# tree is healthy. Kept as a message helper, NOT a new gate: this tool's job is
+# to say what it saw, and the chain-side refusal for a stale tree lives in
+# oc-ship's pre-flight (which is where the push is still avoidable).
+_ledger_where() { # message fragment only: reads LEDGER/LEDGER_FROM_FLAG/env, takes no args
+  local src
+  if [ "$LEDGER_FROM_FLAG" = 1 ]; then
+    src="--ledger on the command line"
+  elif [ -n "${OC_LEDGER:-}" ]; then
+    src="OC_LEDGER=${OC_LEDGER}"
+  elif [ -n "${OC_DEV_STATE:-}" ]; then
+    src="OC_DEV_STATE=${OC_DEV_STATE} (no OC_LEDGER pinned)"
+  else
+    src="the built-in default \$HOME/.opencrabs/profiles/ops/opencrabs-dev (neither OC_LEDGER nor OC_DEV_STATE set)"
+  fi
+  printf 'resolved from %s; tools tree %s' "$src" "${OC_TOOLS_DIR:-unknown}"
+  case "$(basename -- "$LEDGER")" in
+    workers-ledger.json)
+      printf ' — and that is the RETIRED compact view, not the record (#177 retired its write path; the record is events.jsonl in the same dir): this tree predates daf36dcb3, so merge current main into the branch rather than materializing the view' ;;
+    workers.json)
+      printf ' — NOTE: workers.json is the compact VIEW, not the events.jsonl record; a tree resolving here predates daf36dcb3' ;;
+  esac
+}
 
 usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's LEGACY rc 1 on STDERR
   # Deliberately does NOT exit: the callers choose the rc (this register's usage
@@ -50,7 +83,7 @@ usage() { # C-#3: --help/-h answers 0 on STDOUT; a usage error keeps this tool's
 }
 
 selftest() {
-  local passed=0 total=9 rc d perr
+  local passed=0 total=12 rc d perr
   d="$(mktemp -d)"
   # gh is stubbed on PATH, so every gate below is driven with no network and no
   # remote: the stub answers the four call shapes the tool makes, and each
@@ -69,6 +102,7 @@ selftest() {
     || chmod +x "$d/bin/gh"
   local uuid="11111111-2222-3333-4444-555555555555"
   printf '{"workers":[{"uuid":"%s","role":"editor"}]}\n' "$uuid" > "$d/ledger.json"
+  : > "$d/events.jsonl"   # #217 leg (12): a PRESENT record, i.e. the healthy path
   local sha="aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee"
   local tip="ffffffffffffffffffffffffffffffffffffffff"
 
@@ -118,6 +152,32 @@ Session-Id: $uuid" "$0" "$sha" --repo R --ledger "$d/ledger.json" --tip "$tip" 2
   rc=$?
   [ "$rc" = 0 ] && grep -qF '"role": "editor"' <<< "$jout" && passed=$((passed+1))
 
+  # (10-12) #217: a ledger failure NAMES where the path came from. The old
+  # message was `ledger not found: …/workers-ledger.json` — the one fact it
+  # carried (the filename) was the one the operator already had, and the one
+  # that did not say "this tree is old". These legs pin the SOURCE half, which
+  # is all oc-verify-order can prove on its own: a stale tree is refused earlier
+  # by the chain's pre-flight, so this tool's duty is to make the residual
+  # failure legible instead of silent about its provenance.
+  # (10) --ledger names the flag, and a retired-view path is called out
+  perr="$("$0" "$sha" --repo R --ledger "$d/workers-ledger.json" --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 1 ] && grep -qF 'resolved from --ledger on the command line' <<< "$perr" \
+    && grep -qF 'RETIRED compact view' <<< "$perr" && grep -qF 'daf36dcb3' <<< "$perr" \
+    && passed=$((passed+1))
+  # (11) OC_LEDGER (no flag) names the variable AND its value
+  perr="$(OC_LEDGER="$d/pinned.jsonl" "$0" "$sha" --repo R --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 1 ] && grep -qF "resolved from OC_LEDGER=$d/pinned.jsonl" <<< "$perr" \
+    && passed=$((passed+1))
+  # (12) a healthy path (events.jsonl, present) carries NO retired-view clause —
+  # the negative control: without it, a message that always cries "predates
+  # daf36dcb3" would pass (10) while being useless on every real failure.
+  perr="$(PATH="$d/bin:$PATH" STUB_STATUS=ahead STUB_MSG='plain subject' \
+    OC_DEV_STATE="$d" "$0" "$sha" --repo R --ledger "$d/events.jsonl" --tip "$tip" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" = 3 ] && ! grep -qF 'RETIRED compact view' <<< "$perr" && passed=$((passed+1))
+
   rm -rf "$d"
   if [ "$passed" = "$total" ]; then
     echo "selftest OK: $passed/$total cases (no network)"
@@ -132,7 +192,7 @@ SHA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)     REPO="$2"; shift 2 ;;
-    --ledger)   LEDGER="$2"; shift 2 ;;
+    --ledger)   LEDGER="$2"; LEDGER_FROM_FLAG=1; shift 2 ;;
     --tip)      TIP="$2"; shift 2 ;;
     --features) FEATURES="$2"; shift 2 ;;
     --verbose)  VERBOSE=1; shift ;;
@@ -151,7 +211,7 @@ done
 [ -n "$SHA" ] || fail 1 "missing <sha> argument"
 printf '%s' "$SHA" | grep -Eq '^[0-9a-fA-F]{40}$' \
   || fail 1 "sha must be exactly 40 hex chars, got '${SHA:0:12}…' (short-sha input invalid — actions/checkout would fetch a literal <sha>* branch)"
-[ -f "$LEDGER" ] || fail 1 "ledger not found: $LEDGER"
+[ -f "$LEDGER" ] || fail 1 "ledger not found: $LEDGER — $(_ledger_where)"
 
 # ---- 2. EXISTENCE ----------------------------------------------------------
 say "check: sha exists on $REPO"
@@ -179,7 +239,7 @@ case "$SID" in ????????-????-????-????-????????????) : ;; *) SID="" ;; esac  # H
 _wjson="$("$OC_TOOLS_DIR/state/oc-ledger" --ledger "$LEDGER" worker --uuid "$SID" --json 2>/dev/null || true)"
 ROLE=""
 [ -n "$_wjson" ] && ROLE="$(printf '%s' "$_wjson" | jq -r '.role // empty')"
-[ -n "$ROLE" ] || fail 3 "UNSIGNED: Session-Id $SID is not in the workers ledger"
+[ -n "$ROLE" ] || fail 3 "UNSIGNED: Session-Id $SID is not in the workers ledger ($(_ledger_where))"
 
 # ---- evidence --------------------------------------------------------------
 jq -n \
