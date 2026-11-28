@@ -152,7 +152,7 @@ SKIP_DIRS = frozenset(("__pycache__", ".git", "tests"))
 
 #: The GENERATED sidecar class - a pre-image the editing tools leave beside the
 #: file they touch.  NOT source: the battery's own tree fingerprint excludes it
-#: (`-not -name '*.pre-*' -not -name '*.bak'`, tools/tests/run.sh) and the
+#: (`lib/receipt.py` skips `.pre-` and `.bak`) and the
 #: state-dir law classifies it GENERATED-IGNORED.  A sidecar of a scanned module
 #: is byte-identical to its source, so it carries the predicate's exact shape and
 #: BOTH arms fire on a copy of the canonical module - a clean tree reds the

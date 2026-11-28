@@ -63,7 +63,7 @@ def test_receipt_has_the_timing_object_shape(tmp_path):
     assert timing["section_count"] == 14
     assert timing["max_concurrency"] == 1, "non-overlapping rows cannot overlap"
     assert timing["sum_ms"] == 7000, "14 rows x 500ms"
-    assert len(timing["slowest"]) == 10, "slowest is capped at 10, like run.sh"
+    assert len(timing["slowest"]) == 10, "slowest is capped at 10"
     for entry in timing["slowest"]:
         assert set(entry) == {"n", "title", "ms", "start_ms", "end_ms"}
         assert entry["ms"] == entry["end_ms"] - entry["start_ms"]

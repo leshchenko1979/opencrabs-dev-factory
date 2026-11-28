@@ -729,7 +729,7 @@ if is_class_active "filesystem"; then
   done
 
   # 9b. Leaked mktemp WORKDIR class (M2-22). Signature-gated on purpose: the
-  #     check must name the oc-deploy/run.sh WORKDIR, never a generic mktemp dir.
+  #     check must name the oc-deploy staging WORKDIR, never a generic mktemp dir.
   n_tmp2=0; reap_tmp2=0
   for d in $TMP2_GLOB; do
     [ -d "$d" ] || continue

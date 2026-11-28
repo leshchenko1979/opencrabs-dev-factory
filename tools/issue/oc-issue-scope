@@ -161,7 +161,7 @@ def ck(name, cond):
     global ok, bad
     if cond: print(f"  ok   - {name}"); ok += 1
     else:    print(f"  FAIL - {name}"); bad += 1
-T = ns['build_index']([('skill','tools/lib/oc-notify.sh'), ('skill','tools/tests/run.sh'),
+T = ns['build_index']([('skill','tools/lib/oc-notify.sh'), ('skill','tools/tests/pytest/conftest.py'),
                        ('src','src/tests/x.rs'), ('src','.github/workflows/ci.yml')])
 ext, claims, bucket, classify = ns['extract'], ns['claims'], ns['bucket'], ns['classify']
 
@@ -229,7 +229,7 @@ ck('VICTIM control: the same sentence WITHOUT the frame still claims',
 ck('victim demotes ONLY the attached object (gap 14)', ns['VICTIM_GAP'] == 14)
 # The frame must not eat a REAL surface sitting right after it: the attached
 # object is demoted, a later claim is not.
-b530b = ('One step from filing a false defect against `oc-notify`. Fix: `tools/tests/run.sh`.')
+b530b = ('One step from filing a false defect against `oc-notify`. Fix: `tools/tests/pytest/conftest.py`.')
 ck('VICTIM does not eat a following fix surface',
    any(t.startswith('tools/tests/') for t in claims(b530b, T)))
 

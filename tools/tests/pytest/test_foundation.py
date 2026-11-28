@@ -138,11 +138,11 @@ def test_env_guard_restored_path_for_the_next_test():
     """Test 2 of the pair: the previous test's pollution is GONE.
 
     Without env_guard's post-yield restore this fails, which is the whole point:
-    the shell harness has no such restore and the leak is real.
+    the leak is real and a silent one poisons every later test in the worker.
     """
     assert STUB_DIR not in os.environ.get("PATH", ""), (
         "PATH pollution from the previous test survived — env_guard is not "
-        "restoring it (the run.sh:3412/3483/4136/4787 leak)")
+        "restoring it (the PATH leak)")
 
 
 def test_run_tool_refuses_the_production_checkout():

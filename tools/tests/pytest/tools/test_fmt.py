@@ -75,7 +75,7 @@ def test_installed_copy_is_byte_identical(scratch):
     found = shutil.which("oc-fmt")
     if not found:
         pytest.skip("oc-fmt is not installed on this host; the repo copy is the "
-                    "source of record (run.sh notes the same)")
+                    "source of record")
     installed = pathlib.Path(found)
     assert _identical(REPO_COPY, installed), \
         ("the installed copy DRIFTED from the repo copy (%s):\n%s"

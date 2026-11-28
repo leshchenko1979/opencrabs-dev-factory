@@ -8,8 +8,8 @@
 # unit cut from" — two private copies of that guess is precisely the drift
 # defect lib/oc-wt-resolve.sh exists to prevent.
 #
-# `tools/lib/` is excluded from the fleet `--help` sweep by name (run.sh
-# section 60, the `*/lib/*` arm), because the lib holds sourced helpers rather
+# `tools/lib/` is excluded from the fleet `--help` sweep by name
+# (`pytest/tools/test_rc_help.py` SKIP_PARTS), because the lib holds sourced helpers rather
 # than fleet executables.
 #
 # The store itself — its shape, its exact-sha match rule and its eviction — is

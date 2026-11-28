@@ -1,4 +1,4 @@
-"""Ported: the shell-quoting guard — run.sh §82 (``python3 -c`` / heredoc fences).
+"""The shell-quoting guard (``python3 -c`` / heredoc fences).
 
 THE SUBJECT IS SOURCE TEXT, NOT RUNTIME BEHAVIOUR
     Every other section in this suite drives a tool and reads its exit code.
