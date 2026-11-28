@@ -35,7 +35,7 @@ _battery_tree_fp() {
 BATTERY_FP_START="$(_battery_tree_fp)"
 PASS=0 FAIL=0
 # Battery stays silent in the unified tools log: every suite invocation is a
-# synthetic run, not fleet activity (KERNEL batch D0, 2026-08-28).
+# synthetic run, not fleet activity (KERNEL batch D0).
 export OC_TOOLS_NOLOG=1
 export OC_ACTOR="test-runner"
 # ---- battery timing instrumentation ----------------------------------------
@@ -202,7 +202,7 @@ section() {
 # transcript. `tee -a` is byte-transparent on stdout, so a GREEN run stays
 # byte-identical (continuations appear only under a FAIL row).
 record() { if [ -n "${FAIL_LOG:-}" ]; then tee -a "$FAIL_LOG"; else cat; fi; }
-# Fork #453 (2026-09-20): a failing --selftest used to be a dead end — the
+# Fork #453: a failing --selftest used to be a dead end — the
 # tool's own output went to /dev/null, so a flake left a bare tool name and
 # nothing to diagnose. Capture it and surface a bounded window of it under the
 # FAIL row. The success path prints NOTHING extra: parallel mode re-counts rows
@@ -214,8 +214,8 @@ record() { if [ -n "${FAIL_LOG:-}" ]; then tee -a "$FAIL_LOG"; else cat; fi; }
 # measured losing the failing assertion outright: oc-watcher-audit prints its
 # assertions in order and its summary last, so its one FAIL sat in the first 7
 # lines while tail -20 showed the 19 PASSes that followed — a live flake whose
-# diagnosis was thrown away (2026-09-20, on the very run that was to be this
-# fix's own receipt). So up to 40 lines are shown in FULL, and beyond that the
+# diagnosis was thrown away on the very run that was to be this fix's own
+# receipt. So up to 40 lines are shown in FULL, and beyond that the
 # head AND the tail are shown with the elided middle counted: a selftest marks
 # the failure at the start (assertion order) or at the end (named on the way
 # out), and which end it is cannot be known in advance.
@@ -259,7 +259,7 @@ run_selftest() {
   local t="$1"
   _tp="$(tool_path "$t" 2>/dev/null)"
   if [ -z "$_tp" ] || [ ! -x "$_tp" ]; then bad "$t missing or not executable"; return 1; fi
-  # M2-22 (2026-09-12): the state dir must be removed after the run — this was
+  # M2-22: the state dir must be removed after the run — this was
   # the volume driver of the /tmp leak (one dir per tool per battery run).
   # A plain `rm -rf` right after the call, NOT a global trap: chunk mode
   # re-extracts and sources the prelude (everything before the first `# ---- N`
@@ -268,7 +268,7 @@ run_selftest() {
   sd="$(mktemp -d)"
   # #753: every selftest is BOUNDED. run_capture() has no bound of its own, so a
   # selftest that hangs used to hang the whole battery -- silently, forever.
-  # Measured 2026-10-01: six detached oc-harvest-sweep --selftest runs spun ~5 h
+  # six detached oc-harvest-sweep --selftest runs spun ~5 h
   # at 37-39% CPU each (load ~11 on 4 cores) and nothing reaped them.
   # 1800s default: the longest battery section measured is 296.5s (oc-ledger
   # kernel, tools/tests/battery-last.json ts=2026-10-01T13:51:50Z, PASS 310/0),
@@ -308,7 +308,7 @@ fi
 # (which contains this driver) cannot recurse.
 BATTERY_MODE="sequential"
 extract_chunk() { # $1 = 1-based section chunk; $2 = file (default $0); prints prelude + that section
-  # POSITIONAL CONSTRAINT (measured 2026-09-25): the `/^verdict=PASS/ { exit }`
+  # POSITIONAL CONSTRAINT: the `/^verdict=PASS/ { exit }`
   # guard below is what stops the prelude extraction at the receipt write. A
   # numbered section placed AFTER that line therefore extracts to an EMPTY chunk
   # and runs zero legs in parallel mode -- while the run still prints a clean
@@ -731,7 +731,7 @@ if [ "${1:-}" = "--resolve-jobs" ]; then
 fi
 
 # ---- red-receipt transcript -------------------------------------------------
-# Defect (HQ item 5, 2026-09-22): emit_summary wrote battery-last.json durably
+# Defect (HQ item 5): emit_summary wrote battery-last.json durably
 # while the transcript went only to stdout, so a committed red receipt
 # (228 pass / 1 fail, commit d1f63d9f) recorded THAT a leg failed and nothing
 # about WHICH — undiagnosable by the next reader, and its /tmp transcript was
@@ -751,7 +751,7 @@ FAIL_LOG_REL="tools/tests/battery-last-fail.log"
 # child truncating it would erase rows its siblings already wrote.
 if [ -z "${BATTERY_IN_CHUNK:-}" ]; then : > "$FAIL_LOG" 2>/dev/null || true; fi
 # ---- self-contained red receipt (#614) --------------------------------------
-# Defect (measured 2026-09-26): the receipt NAMED $FAIL_LOG while the log's life
+# Defect: the receipt NAMED $FAIL_LOG while the log's life
 # was ONE RUN -- :179 truncates it the moment a queued run starts, and
 # finalize_fail_log removes it on green. A reader arriving after the next run
 # found a FAIL receipt pointing at 0 bytes: the #517 defect one step out. The
@@ -946,7 +946,7 @@ if [ "${BATTERY_IN_CHUNK:-0}" = "0" ] && [ "$JOBS" -gt 1 ]; then
   PT="$(mktemp -d -t oc-battery-pt.XXXXXX)"
   RUN_SCRIPT="$(readlink -f "$0" 2>/dev/null || echo "$0")"
   # THE LOCK COPROC IS A CHILD, AND BOTH `jobs -rp` AND A BARE `wait` SEE IT
-  # (factory #129, 2026-11-21). It holds the single-flight lock and never exits
+  # (factory #129). It holds the single-flight lock and never exits
   # until this shell does, so referencing it at either site is fatal:
   #   * a BARE `wait` blocked FOREVER once every chunk had finished -- measured
   #     73/73 chunks complete, driver in do_wait, coproc `cat` in pipe_read,
@@ -1062,7 +1062,7 @@ DEMO
   # suppression via env alone (no --selftest)
   OC_TOOLS_NOLOG=1 OC_TOOLS_LOG="$L" "$d/oc-demo" 3
   [ "$(wc -l < "$L")" -eq 2 ] && ok "OC_TOOLS_NOLOG=1 suppresses" || bad "env suppression failed"
-  # M2-21 (2026-09-12): the BARE `selftest` SUBCOMMAND must suppress too.
+  # M2-21: the BARE `selftest` SUBCOMMAND must suppress too.
   # oc-deploy:2976 used to dispatch `--selftest|selftest) selftest "$@" ;;` as
   # ONE case arm (#168 cut 5 deleted that file and the combined arm with it), so
   # a flag-only predicate let a bare-subcommand selftest log every
@@ -1512,7 +1512,7 @@ done
 # real set of arms (a new arm with no list entry, or a stale entry, FAILS here),
 # and the env-hook control must make the row VANISH -- proving the arm is what
 # suppressed it rather than something else.
-# Measured 2026-10-01: 0 rows before the fix, 2 after (the tool + its oc-ledger
+# 0 rows before the fix, 2 after (the tool + its oc-ledger
 # child), 0 again under the control.
 if [ -f "$TOOLS_DIR/lib/oc-log.sh" ]; then
   _decl="$(sed -n 's/^OC_LOG_BARE_SELFTEST_TOOLS_DEFAULT=" \(.*\) "$/\1/p' "$TOOLS_DIR/lib/oc-log.sh" | tr ' ' '\n' | grep . | sort)"
@@ -1590,7 +1590,7 @@ if [ -f "$TOOLS_DIR/lib/oc-embed.sh" ]; then
   [ -z "$out" ] && ok "embed: ORDER job without embed -> empty" || bad "embed no-embed got: '$out'"
   out="$(oc_decode_job_embed "Linux amd64 (shortsha, x)")"
   [ -z "$out" ] && ok "embed: non-40-hex parenthetical -> empty" || bad "embed short-sha got: '$out'"
-  # CALLER-PREFIXED job names (HQ request, 2026-09-21). The carrier CI refactor
+  # CALLER-PREFIXED job names (HQ request). The carrier CI refactor
   # (commit 0e81404c8 on ci/quick-build-linux) split the two lane workflows into
   # thin shells calling one shared workflow_call body, and GitHub renders every
   # called job as "<caller> / <called>": `ship / Linux amd64 (<sha>, <features>)`,
@@ -1773,7 +1773,7 @@ chk("addressed sweep form", oc.is_addressed("#2 — closed-issue stale claim swe
 chk("UNCLAIM #N is not an address (#305)", oc.is_addressed("UNCLAIM #72 — stood down in favour of editor lane X", 72), False)
 chk("addressed mid-sentence is NOT", oc.is_addressed("note: see #264 for detail", 264), False)
 chk("addressed 71 does not address 710", oc.is_addressed("#710 — x", 71), False)
-# #690 (2026-09-28, toolsmith; reported by Triage 530c29ec): the LEADING LEAD-IN
+# #690 (toolsmith): the LEADING LEAD-IN
 # form is an address too, and 42 live rows use it -- including this lane's own
 # `issue #675 landed a0931587`, which could not close its own claim. The arm is
 # BOUNDED to the start, so the #305 fence below still holds.
@@ -2319,7 +2319,7 @@ Session-Id: cccccccc-1111-2222-3333-444444444444"
 fi
 
 # ---- 10. deploy stage tools (oc-build / oc-status) ---------------------------
-# Regression pinned here (2026-08-27): after a diverged remote round-trip, the
+# Regression pinned here: after a diverged remote round-trip, the
 # non-FF fetch refspec silently rejected the update and the ref-first fallback
 # resurrected a STALE refs/oc-deploy/main — FF check saw a ghost "rebase needed".
 # #168 cut 5: the `oc-deploy` dispatcher is DELETED, so this section names the
@@ -2328,7 +2328,7 @@ fi
 # never about the router, and a leg that went through a router would now be
 # testing a file that does not exist.
 section "deploy stage tools"
-# M2-21 (2026-09-12) e2e: the selftest must be LOG-HERMETIC BY CONSTRUCTION,
+# M2-21 e2e: the selftest must be LOG-HERMETIC BY CONSTRUCTION,
 # not by argv shape. With OC_TOOLS_LOG pointed at a temp file, require ZERO
 # rows. Pre-fix this wrote 93 rows of fixture dispatches; oc-audit-ship read
 # six of them back as ORPHANED and rc=1'd a gate that fronts
@@ -2435,7 +2435,7 @@ section "oc-ledger"
 run_selftest oc-ledger
 d="$(mktemp -d)"; mkdir -p "$d/state"
 printf '{"current_skill_version":"0.0.1","meta":{"skill_version":"0.0.1","current_skill_version":"0.0.1"},"updated_at":"x","workers":[],"events":[]}' > "$d/state/workers-ledger.json"
-# #19 (2026-09-12): stamp REFUSES an anonymous row, so the battery fixture
+# #19: stamp REFUSES an anonymous row, so the battery fixture
 # carries an actor the way a lane's shell does.
 OC_LEDGER="$d/state/workers-ledger.json" OC_ACTOR="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" "$TOOLS_DIR/state/oc-ledger" stamp note "battery edge" >/dev/null 2>&1 \
   && [ "$(jq '.events[-1].n' "$d/state/workers-ledger.json")" = "1" ] \
@@ -2581,7 +2581,7 @@ if tool oc-ledger; then
   # (#619) The lock waiter budget must be DERIVED from the holder worst case, which
   # the two in-lock network pushes dominate. This leg is BEHAVIOURAL, not a grep: a
   # grep for OC_LEDGER_LOCK_WAIT self-matches the leg that contains it, which is the
-  # trap this test was written to avoid (measured 2026-09-26). Hold the lock, vary the
+  # trap this test was written to avoid. Hold the lock, vary the
   # push bound, and read the budget the tool itself reports.
   LB="$(mktemp -d)"
   printf '{"workers":[],"events":[]}' > "$LB/l.json"
@@ -2786,7 +2786,7 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   HELP_N=$((HELP_N+1))
   # (#115) The bound is 60s, not 20s, and the rc is NAMED. A bare `timeout 20`
   # reddened on whichever innocent tool landed on a loaded moment: battery-115
-  # (2026-11-20T13:32:24Z) had a tool FAIL here and PASS in its own section
+  # had a tool FAIL here and PASS in its own section
   # of the SAME run, and the victim MOVED between runs (oc-ship
   # rc=124 under load 11.66). Two measured causes: the tree had grown to 16 MB
   # on disk while the bound stayed at the 36-file figure it was set for, and
@@ -2852,7 +2852,7 @@ done
   || bad "fleet --help stdout: only $HOUT_N of $HELP_N tool(s) accounted for ($HSKIP_N skipped on a bound kill) -- the leg did not cover the fleet (#748a)"
 # #691: the edit tool writes a `.bak` pre-image beside every file it edits, and
 # those sidecars are EXECUTABLE copies of the tool, so the glob above enumerated
-# them as fleet tools and ran their --help (7 phantom PASS legs, 2026-09-28).
+# them as fleet tools and ran their --help (7 phantom PASS legs).
 # Re-evaluate the SAME skip pattern against the live sidecar population, and
 # disclose vacuity rather than passing silently when there are none.
 _BAKFIND="find \"$TOOLS_DIR\" -maxdepth 2 -type f \( -name 'oc-*.bak' -o -name 'oc-*.bak-*' -o -name 'oc-*.pre-*' \)"
@@ -3041,7 +3041,7 @@ grep -q "sent=0" <<< "$NFOUT" \
 # 61d. oc-notify-fanout internal selftest suite
 run_selftest "oc-notify-fanout" "$NF"
 
-# ---- 62. oc-health (owner-ordered hourly health & cleanliness sweep, 2026-09-11)
+# ---- 62. oc-health (owner-ordered hourly health & cleanliness sweep)
 section "oc-health (hourly health & cleanliness sweep)"
 HZ="$TOOLS_DIR/state/oc-health"
 # 62a. hermetic selftest: fixture state dir + tmp glob + sqlite DB + git repos,
@@ -3539,7 +3539,7 @@ section "oc-snap reap"
 # (a) An unrecognised flag must not BECOME the root. Mutant: delete the -* guard
 # in oc_snap_reap -- the call then scans a directory named "-v", finds nothing
 # and prints 0 with rc 0, which is the false "nothing to reap" this leg catches.
-# Measured 2026-10-20: that exact reading nearly became a filed defect.
+# that exact reading nearly became a filed defect.
 S53="$(mktemp -d)"
 mkdir -p "$S53/lib" "$S53/mir/oc-snap-999999999"
 cp "$TOOLS_DIR/lib/oc-snap.sh" "$S53/lib/oc-snap.sh"
@@ -3691,7 +3691,7 @@ d451_run "$D451STUB/tools/oc-issue-dispatch-nolb" prefix
 rm -rf "$D451STUB"
 
 # ---- 75. red-receipt transcript (fail log) ---------------------------------
-# Defect (HQ item 5, 2026-09-22): emit_summary wrote battery-last.json durably
+# Defect (HQ item 5): emit_summary wrote battery-last.json durably
 # while the transcript went only to stdout, so a committed red receipt
 # (228 pass / 1 fail, commit d1f63d9f) recorded THAT a leg failed and nothing
 # about WHICH -- undiagnosable by the next reader. Contract: a RED run leaves
@@ -3699,7 +3699,7 @@ rm -rf "$D451STUB"
 # continuation lines and the receipt JSON names it; a GREEN run removes it, so
 # the log's PRESENCE is itself the red signal.
 #
-# #614 (2026-09-26) widened it: the log's life was ONE RUN (the next run
+# #614 widened it: the log's life was ONE RUN (the next run
 # truncates it at :179, a green one removes it) while the receipt outlives it --
 # so a red receipt could name a 0-byte file and the failing leg became
 # unrecoverable. The diagnosis now rides IN the receipt (`fail_rows` +
@@ -3843,7 +3843,7 @@ fi
 #
 # The `carriers` floor is a POSITIVE CONTROL: a sweep that matched no files
 # would report zero violations and pass vacuously. 49 tools carry the bootstrap
-# as measured on 2026-11-16; the floor sits below that so ordinary churn does
+# as measured; the floor sits below that so ordinary churn does
 # not redden, while a broken enumerator does.
 pop_out="$(python3 - "$TOOLS_DIR" <<'PY'
 import os, re, sys
@@ -4174,7 +4174,7 @@ rm -rf "$_SGF2" "$_SGF3"
 # Both have cost real work here: a backtick inside a -c body ran a phantom
 # "harvest: command not found", and an unquoted heredoc carrying a doubled
 # triple-quote closed the enclosing shell string and destroyed 1607 lines of a
-# tool (2026-09-18). The fleet measures 0 sites today, so this section is a
+# tool. The fleet measures 0 sites today, so this section is a
 # CARRIER, not a sweep: the first new site reddens here instead of surfacing as
 # a phantom command in production.
 #
@@ -4983,7 +4983,7 @@ rm -f "$_o74m"
   || bad "#74 NEGATIVE CONTROL: neutered clamp still read '$(_pf_jobs "$_o74n")' — LEG 1 is inert"
 
 # ---- 89. battery default jobs=1 + low priority for the parent (#76) --------
-# Defect (measured 2026-11-17): the battery defaulted to $(nproc)=4 and ran at
+# Defect: the battery defaulted to $(nproc)=4 and ran at
 # nice 0 with I/O class none, and on this host that cost an hour of stall --
 # disk 86-95% busy, swap 250 MB -> 1 GB, ~400 pages/s swap-in, ~150 major
 # faults/s, 16 daemon Tokio threads blocked on page faults, and the 24 h
@@ -5090,7 +5090,7 @@ rm -f "$_pf_fx"
   && ok "#130 NEGATIVE CONTROL: the check flags a _pf* helper inside a section (the leg can fail)" \
   || bad "#130 NEGATIVE CONTROL: the check missed a helper placed inside a section — it is inert"
 # ---- 90. lib/oc-patch.sh: "else empty" must mean rc 0, never abort (#114) ---
-# Defect (measured 2026-11-20): oc_job_sha/oc_patch_id document "else empty" and
+# Defect: oc_job_sha/oc_patch_id document "else empty" and
 # both are PIPELINES. Under a caller's `set -e` + `set -o pipefail` a no-match
 # grep (or head's SIGPIPE, rc 141) returns non-zero, so the ASSIGNMENT fails and
 # set -e aborts the caller BEFORE the line that handles the empty case can run.
