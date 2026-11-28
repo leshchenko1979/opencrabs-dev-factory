@@ -568,6 +568,44 @@ _chain_exit_handler() {
   if command -v _chain_rearm_supervise >/dev/null 2>&1; then
     _chain_rearm_supervise "$rc" || true
   fi
+  # #205 P3b: the chain's TERMINAL ledger row. Before this, a chain's last row
+  # was whichever leg it happened to be on — so a chain that shipped, a chain
+  # killed at 03:00 and a chain still running were BYTE-IDENTICAL to a reader.
+  # Measured 2026-11-28: of 65 chains in the last 1,500 shipchain rows, ZERO
+  # ended on a terminal row.
+  #
+  # PLACEMENT IS THE WHOLE FIX: this sits AFTER _chain_rearm_supervise, which
+  # `exec`s on a re-arm and never returns. Written before it, a re-arming chain
+  # would stamp "ended" and then go on running — the exact false absence this
+  # row exists to kill, re-created by the row itself.
+  #
+  # CHAIN_TERMINAL is set by the success path right after it stamps
+  # "DONE SWAPPED", so a chain that lands keeps ONE terminal row, not two. The
+  # consumer groups by chain id and reads the NEWEST row, so a duplicate would
+  # be harmless but noisy — and it would make the row count lie about how many
+  # endings happened.
+  #
+  # HONEST LIMIT: SIGKILL and the OOM killer cannot be trapped, so this is a
+  # POST-MORTEM record, never a liveness test. A hard-killed chain still leaves
+  # no terminal row; that is what pid= + `kill -0` in --in-flight is for.
+  #
+  # ERR-EXIT SAFETY: `|| true` and the `command -v` guard are both load-bearing
+  # here. This runs from the EXIT trap, where bash adopts the trap's final
+  # status as the script's — an unguarded failure would replace the chain's own
+  # rc. journal() is also defined far below this point (1370) while the trap is
+  # installed at 612, so a chain that dies in pre-flight has no journal yet and
+  # the guard is what keeps that from erroring under `set -u`.
+  if [ "${CHAIN_TERMINAL:-0}" != "1" ] \
+     && [ -n "${CHAIN:-}" ] && [ -n "${JOURNAL_FAILS:-}" ] \
+     && command -v journal >/dev/null 2>&1; then
+    if [ "${CHAIN_SIGNALLED:-0}" = "1" ]; then
+      journal "CANCELLED rc=$rc signal=${CHAIN_SIGNAL_NAME:-TERM} — terminated by a signal (post-mortem; SIGKILL cannot be trapped)" || true
+    elif [ "$rc" -eq 0 ]; then
+      journal "DONE rc=0 — chain exited cleanly" || true
+    else
+      journal "FAIL rc=$rc — chain exited non-zero" || true
+    fi
+  fi
   if command -v _chain_wake_arming_lane >/dev/null 2>&1; then
     _chain_wake_arming_lane "$rc"
   fi
@@ -589,6 +627,10 @@ _chain_exit_handler() {
 # mechanical". CHAIN_SIGNALLED is that label, and the re-arm supervisor refuses
 # to resurrect a chain carrying it.
 CHAIN_SIGNALLED=0
+# #205 P3b: 0 until a terminal ledger row is written. The success path sets it
+# after stamping "DONE SWAPPED"; the EXIT trap stamps CANCELLED/DONE/FAIL only
+# when it is still 0, so every chain gets exactly one terminal row.
+CHAIN_TERMINAL=0
 _chain_signal_handler() {
   local sig="${1:-TERM}" rc
   case "$sig" in
@@ -596,6 +638,13 @@ _chain_signal_handler() {
     *)   rc=143 ;;
   esac
   CHAIN_SIGNALLED=1
+  # #205 P3b: name the signal in the terminal ledger row instead of assuming
+  # TERM. Read as ${CHAIN_SIGNAL_NAME:-TERM} there, so this stays optional.
+  CHAIN_SIGNAL_NAME="$sig"
+  # #205 P3b: remember WHICH signal, so the terminal ledger row can name it
+  # rather than guessing TERM for every case. `${...:-TERM}` keeps this safe
+  # under `set -u` when no terminal row is written at all.
+  CHAIN_SIGNAL_NAME="$sig"
   # #74 regression guard: lib/oc-log.sh installs its own TERM/INT traps that
   # stamp extra.signal, and this handler is installed AFTER them -- so the
   # annotation would vanish with the trap it rode on. The label is half of what
@@ -1083,7 +1132,13 @@ ship_in_flight() {
     [ -n "$cid" ] || continue
     shown=$((shown + 1))
     case "$ev" in
-      DONE|RELEASED|FAIL) verdict="ENDED" ;;
+      # #205 P3b: CANCELLED is the row _chain_exit_handler now stamps when a
+      # signal terminated the chain. Without it in this set a cancelled chain
+      # falls to the pid branch below and reads DEAD-or-UNKNOWN, which is the
+      # same answer a chain that was hard-killed gets — so the two would stay
+      # indistinguishable. ENDED is the honest verdict for a signal: the chain
+      # is over, and its own row says WHY.
+      DONE|RELEASED|FAIL|CANCELLED) verdict="ENDED" ;;
       *)
         if [ -n "$pid" ] && [ "$pid" != "none" ]; then
           if kill -0 "$pid" 2>/dev/null; then verdict="RUNNING"; else verdict="DEAD"; fi
@@ -2673,6 +2728,11 @@ if [ "$SWAPPED" != "1" ]; then
   die "swap not confirmed after 12 polls — deployed.sha is ${CUR_DEPLOYED:-none}, expected $SHA — $(leg5_host_state) — inspect via: oc-status status" 6
 fi
 journal "DONE SWAPPED sha=$SHA"
+# #205 P3b: this chain's terminal row is now written, so the EXIT trap must not
+# stamp a second one. Set BEFORE the remaining steps (sweep, gc, echo) because
+# those can still fail — and a post-swap failure is not a second ending, it is
+# the same chain ending with a different rc.
+CHAIN_TERMINAL=1
 oc_ship_leg_sweep LEG5
 # #177: drop SHIP-LOCK before launching the background gc, so the next
 # ship is not queued behind it. The EXIT trap will then see LOCK_HELD=0.
