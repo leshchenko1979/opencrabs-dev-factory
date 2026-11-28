@@ -371,8 +371,10 @@ def test_runtime_receipts_are_not_in_the_key():
     ledger = cf.tool_path("oc-ledger")
     closure = oc_cache.sourced_libs(ledger)
     assert "tools/tests/battery-last.json" not in closure
-    assert "tools/tests/run.sh" not in closure, \
-        "a die() message naming run.sh must not pull the harness into the key"
+    # The same rule for the message-only path: oc-ledger's die names the pytest
+    # battery, and a whole-file scan would pull the test tree into the key.
+    assert "tools/tests/pytest" not in closure, \
+        "a die() message naming the battery must not pull it into the key"
 
 
 # =============================================================================

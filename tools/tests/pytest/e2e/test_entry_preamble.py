@@ -66,9 +66,7 @@ import pytest
 import conftest as cf
 
 # One representative per tool KIND, so a regression in any single kind is
-# observable without paying a fleet-wide --help sweep. Kept as (relpath, argv):
-# run.sh has no --help arm (it would execute the whole battery), so it gets a
-# cheap flag that still forces the preamble to run and then exits.
+# observable without paying a fleet-wide --help sweep. Kept as (relpath, argv).
 SAMPLES = (
     ("state/oc-ledger", "--help"),
     ("ship/oc-build", "--help"),
@@ -78,12 +76,15 @@ SAMPLES = (
     ("git/oc-commit", "--help"),
     ("issue/oc-issue-scope", "--help"),
     ("notify/oc-notify-fanout", "--help"),
-    ("tests/run.sh", "--chunk 999"),
 )
 
-# The sample size the shell asserts (EP_DYN -ne 9 -> bad). Pinned so a sample
+# The sample size the shell asserts (EP_DYN -ne 8 -> bad). Pinned so a sample
 # removed from the tuple is a visible decision, not a quiet shrink.
-SAMPLE_COUNT = 9
+#
+# It was 9 while ``tests/run.sh --chunk 999`` was the ninth sample — the shell
+# harness needed a cheap flag that ran its preamble and exited. The shell is
+# retired; the preamble it exercised no longer exists.
+SAMPLE_COUNT = 8
 
 # THE BOUND IS A WALL CLOCK, AND RLIMIT_CPU WAS TRIED FIRST AND REJECTED
 #

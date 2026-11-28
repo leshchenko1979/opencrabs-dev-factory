@@ -170,8 +170,8 @@ def referenced_files(path, tools_dir=None) -> list[Path]:
     ends up spelling, which makes the set discoverable without running anything.
 
     LINE-SCOPED, NOT FILE-SCOPED, and that distinction is load-bearing:
-    oc-ledger's ``die`` message mentions ``tools/tests/run.sh`` ("run the
-    battery first"), and a whole-file scan put run.sh in oc-ledger's key — every
+    oc-ledger's ``die`` message mentions the battery path ("run the battery
+    first"), and a whole-file scan put the test tree in oc-ledger's key — every
     edit to an unrelated harness would have invalidated a 296 s selftest. So a
     ``lib/``/``tests/`` token counts only on a line that could actually source
     something: a ``.``/``source`` statement, or an ASSIGNMENT (which is where the

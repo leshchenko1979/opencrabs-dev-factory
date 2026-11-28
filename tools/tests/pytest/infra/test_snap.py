@@ -39,7 +39,6 @@ import pytest
 import conftest as cf
 
 LIB = cf.TOOLS_DIR / "lib" / "oc-snap.sh"
-RUN_SH = cf.TOOLS_DIR / "tests" / "run.sh"
 
 OLD = "2026-09-28 09:13:41"
 
@@ -200,20 +199,27 @@ def test_nonexistent_root_is_refused(reap_lib, run_tool):
         ("reap reported success on a nonexistent root — a false zero\n%s"
          % res.combined[-400:])
 
-def test_battery_wires_the_reap_onto_its_exit_path():
+def test_the_gate_wires_the_reap_onto_its_scratch_fixture():
     """SOURCE assertion, labelled as one.
 
-    A run cannot observe its own cleanup from inside itself, so the WIRING is
-    what is checkable. Mutant: delete the EXIT trap line — this reddens while
-    every other #60 leg stays green.
+    A run cannot observe its own cleanup from inside itself — the reap runs
+    after the last test — so the WIRING is what is checkable.
+
+    Retargeted from ``run.sh``'s EXIT trap, which died with the shell harness.
+    The gate's equivalent is ``conftest.scratch``: the controller sweeps roots
+    whose owner pid is dead, then claims a fresh one. Mutant: delete the
+    ``_reap_dead_roots`` calls — this reddens while every other #60 leg stays
+    green, because those legs drive ``oc_snap_reap`` directly.
     """
-    text = RUN_SH.read_text()
-    assert "^trap '_battery_reap_mirrors' EXIT" or \
-        "trap '_battery_reap_mirrors' EXIT" in text, \
-        ("the battery has no EXIT reap — every run leaves its own /tmp/oc-snap-* "
-         "mirrors behind (#53)")
-    assert "_battery_reap_mirrors() {" in text, \
-        "the EXIT trap names a function the battery does not define"
+    text = (cf.PYTEST_DIR / "conftest.py").read_text(encoding="utf-8")
+    assert "_reap_dead_roots(tmp_path_factory.getbasetemp().parent)" in text, (
+        "the scratch fixture no longer sweeps dead roots under the pytest "
+        "basetemp — every kill -9'd run leaves its mirrors behind (#53)")
+    assert '_reap_dead_roots(Path(os.environ.get("TMPDIR") or "/tmp"))' in text, (
+        "the scratch fixture no longer sweeps the shared TMPDIR — the roots a "
+        "SIGKILLed run left there are never reclaimed (#53)")
+    assert "def _reap_dead_roots(" in text, (
+        "the scratch fixture calls a reaper the gate does not define")
 
 def test_stage_dir_arm_fires_and_spares_a_live_pid(reap_lib, run_tool):
     """#131: THE STAGE-DIR ARM MUST BE ABLE TO FIRE, and must spare a live pid.

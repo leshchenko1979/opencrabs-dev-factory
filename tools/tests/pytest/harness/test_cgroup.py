@@ -87,18 +87,19 @@ def test_is_service_leaf_reads_the_leaf_only(path, expected):
     assert cgroup.is_service_leaf(path) is expected
 
 
-def test_caps_are_identical_to_run_sh_at_one_worker():
-    """At ``-n 1`` the cap set is byte-identical to run.sh:423.
+def test_the_one_worker_cap_set_is_the_measured_baseline():
+    """``-n 1`` caps are the numbers the box was profiled at.
 
-    Parity matters because a serial pytest run and the shell harness must be
-    compared on the same budget; if they differ, a red in one and a green in
-    the other is a cap difference being read as a code difference.
+    These were pinned against ``run.sh:423`` while the shell existed. The shell
+    is retired, so they are pinned HERE — as absolute values, because they are
+    the budget every past measurement was taken in. Changing one silently
+    invalidates the comparison between an old receipt and a new run.
     """
     caps = cgroup.caps_for(1)
     joined = " ".join(caps)
     for prop in ("MemoryMax=1024M", "MemorySwapMax=512M",
                  "CPUQuota=300%", "TasksMax=128"):
-        assert prop in joined, "run.sh:423 carries %s; pytest caps do not" % prop
+        assert prop in joined, "the -n 1 baseline lost %s: %r" % (prop, joined)
 
 
 @pytest.mark.parametrize("n", [1, 2, 4, 8])

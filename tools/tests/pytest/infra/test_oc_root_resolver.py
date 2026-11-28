@@ -517,7 +517,7 @@ def test_every_walkup_carrier_has_the_fixpoint_break():
     half of #708 lives in ``test_entry_preamble.py``.)
     """
     carriers, missing = 0, []
-    for path in sorted(cf.TOOLS_DIR.rglob("oc-*")) + [cf.TOOLS_DIR / "tests" / "run.sh"]:
+    for path in sorted(cf.TOOLS_DIR.rglob("oc-*")):
         if not path.is_file() or path.is_symlink():
             continue
         if "/archive/" in str(path) or ".bak" in path.name or ".pre-" in path.name:
