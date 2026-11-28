@@ -225,6 +225,14 @@ if [ "${1:-}" = "--selftest" ]; then
   # No real DB, no real sends, no real ledger touched.
   T="$(mktemp -d /tmp/fanout-selftest.XXXXXX)"
   trap 'rm -rf "$T"; oc_log_finish $?' EXIT
+  # A refusal that prints NOTHING is indistinguishable from a crash (factory
+  # #212). Under `set -e` an unguarded arm that exits non-zero kills the
+  # selftest before a single `chk` line can name it, and the caller sees rc 3
+  # with 0 bytes on BOTH streams — which is how a real leg failure got filed as
+  # a resource flake by four sessions. Name the line and the command instead.
+  # Arms that EXPECT a failure carry `|| true` or sit in a conditional, where
+  # bash never fires ERR, so this only ever speaks for the silent class.
+  trap 'rc=$?; printf "SELFTEST ABORT: rc=%s at line %s: %.160s\n" "$rc" "$LINENO" "$BASH_COMMAND"; exit "$rc"' ERR
   # ISOLATE THE RUN DIR FOR THE WHOLE SELFTEST (measured 2026-11-21).
   # The tool's production default is `$SKILL_DIR/run` (:1018), and the wave id
   # is DERIVED FROM THE BRIEF TEXT (:470) — so it is identical across every
@@ -431,11 +439,16 @@ JSON
   "$_lg" --ledger "$LEDG" events --jsonl > "$_hd/events.jsonl"
   "$_lg" --ledger "$LEDG" workers --json | jq '{workers: .}' > "$_hd/workers.json"
   : > "$T/fake-notify-log-1a2"
-  out="$(env -u OC_FANOUT_LEDGER OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
+  # ISOLATION: OC_DEV_STATE and OC_LEDGER outrank HOME in oc_ledger_path
+  # (tools/lib/oc-log.sh, v0.4.38 precedence), so an inherited value defeats the
+  # fake HOME below and the arm resolves a ledger nobody created — rc 3 before
+  # any assertion runs (factory #212). Both are unset, and the arm is `|| true`
+  # so a recurrence reports as THIS leg rather than as a silent abort.
+  out="$(env -u OC_FANOUT_LEDGER -u OC_DEV_STATE -u OC_LEDGER OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
     OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" \
     OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_SEND_TIMEOUT=5 OC_FANOUT_RUN_DIR="$T/run-home" \
     HOME="$H" FAKE_NOTIFY_LOG="$T/fake-notify-log-1a2" \
-      bash "$0" --title T --text "brief {{UUID}}" --no-stamp 2>&1)"
+      bash "$0" --title T --text "brief {{UUID}}" --no-stamp 2>&1)" || true
   oc_has "$out" "SENT $L10" && chk 0 law17-holder-from-argv-ledger || chk 1 law17-holder-from-argv-ledger
   grep -qF "$L10" "$T/fake-notify-log-1a2" && chk 0 law17-holder-notified-argv-ledger || chk 1 law17-holder-notified-argv-ledger
   # 1b. The OTHER arm of law 9: an explicitly ACTIVE row must still be
@@ -640,7 +653,12 @@ JSON
   # A missing --text-file must still die rc 2 rather than silently fall through
   # to the placeholder — the guard at 244 is the only thing standing between a
   # typo'd path and another empty-brief wave.
-  OC_NOTIFY_BIN="$T/fake-notify" bash "$0" --title T --no-stamp \
+  # OC_FANOUT_LEDGER is PINNED: without it the tool resolves oc_ledger_path()
+  # from the ambient env and an inherited OC_DEV_STATE (or a fake HOME with no
+  # ledger) kills the run at the roster check with rc 3 — so this leg measured
+  # the ENVIRONMENT and reported it as a missing-rc-2 defect (factory #212, the
+  # "got rc=3" that four sessions filed as a resource flake).
+  OC_FANOUT_LEDGER="$LEDG" OC_NOTIFY_BIN="$T/fake-notify" bash "$0" --title T --no-stamp \
     --text-file "$T/does-not-exist.md" >/dev/null 2>&1 && rc_mf=0 || rc_mf=$?
   [ "$rc_mf" = 2 ] && chk 0 text-file-missing-rc2 || chk 1 "text-file-missing-rc2 (got rc=$rc_mf)"
   # D-5 (HQ d72bd52d, 2026-09-13): the RELOAD line must NOT carry the LIVE
@@ -1062,8 +1080,11 @@ SEOF
   fi
 
   echo "oc-notify-fanout selftest: PASS=$P FAIL=$F"
-  [ "$F" -eq 0 ]
-  exit $?
+  # The red gate below is a DELIBERATE failure path, not an abort: disarm the
+  # ERR trap so a red selftest prints its FAIL lines and exits quietly instead
+  # of appending a misleading "SELFTEST ABORT" line (factory #212).
+  [ "$F" -eq 0 ] || { trap - ERR; exit 1; }
+  exit 0
 fi
 
 title="" text="" text_file="" roles="" excludes="" dry=0 stamp=1 include_self=0 verify_id="" self_uuid="" only_file="" no_reload=0

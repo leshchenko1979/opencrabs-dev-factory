@@ -15,8 +15,10 @@ and is not:
   must reach NOBODY: the roster row matches, and self-exclusion is what keeps it
   from being sent to. A leg using ``--roles editor`` cannot tell those apart.
 
-The tool's own ``--selftest`` is NOT driven here (factory #203) — see the SCOPE
-note at the end of this file for why and where it went.
+The tool's own ``--selftest`` is driven here ONCE, slow-marked, as the factory
+#212 regression (§61d). Factory #203 kept it out of the DEFAULT gate because it
+costs ~4.5 min; ``-m "not slow"`` preserves that exclusion exactly while leaving
+the case runnable on request. See the SCOPE note at the end of this file.
 
 **Counters are read as FIELDS, never substrings.** ``absent=1`` CONTAINS
 ``sent=1``, so the shell's ``grep -q 'sent=1'`` arm is satisfied by a wave that
@@ -208,12 +210,192 @@ def test_roles_filter_excludes_the_invoking_lane(run_tool, wave):
         "skip count:\n%s" % (_field("skipped", res.combined), res.combined[-900:]))
 
 # =============================================================================
+# 61d. factory #212 — the selftest must never abort SILENTLY
+# =============================================================================
+# The defect: ``oc-notify-fanout --selftest`` exited rc 3 with 0 bytes on stdout
+# AND 0 bytes on stderr when ``OC_DEV_STATE`` named a directory with no
+# ``events.jsonl``. ``set -euo pipefail`` killed the body at an unguarded
+# non-zero exit before the summary line, so an operator saw the same three bytes
+# a SIGKILL produces and four sessions filed it as a resource flake. Three
+# changes fixed it in the tool: an ERR trap that names line + command, ledger
+# isolation on the two arms that inherited ambient env, and a red-gate that
+# disarms the trap so a legitimately-red selftest exits quietly.
+#
+# WHY THE BATTERY CANNOT REPRODUCE IT BY ACCIDENT: ``env_guard`` materialises
+# ``OC_DEV_STATE/events.jsonl`` (conftest, the "must be MATERIALISED, not merely
+# named" note), so the ledger-less condition can only be built by the leg itself
+# — which is what ``test_selftest_never_aborts_silently`` does.
+#
+# The guard leg is STATIC on purpose. The failure class is SILENCE, and it can
+# only be observed from outside by re-breaking the isolation that was just
+# fixed — a leg that did so would be asserting on a mutation of the subject.
+# Reading the source for the trap's presence and reachability tests the guard
+# itself, which is the claim that can be checked without editing the tool.
+
+@pytest.mark.slow
+@pytest.mark.serial
+@pytest.mark.xdist_group("tool-selftests")
+def test_selftest_never_aborts_silently(run_tool, tmp_path):
+    """``--selftest`` against a ledger-LESS ``OC_DEV_STATE``: rc 0, ``FAIL=0``.
+
+    Pre-fix this exact invocation was rc 3 with nothing on either stream. The
+    ``env -u`` prefix is the faithful reproduction, not a convenience:
+    ``oc_ledger_path`` (tools/lib/oc-log.sh) reads ``OC_LEDGER > OC_DEV_STATE >
+    $HOME``, so an ambient ``OC_LEDGER``/``OC_FANOUT_LEDGER`` would supply a
+    path and the ledger-less condition would never be reached.
+
+    Slow-marked (~4.5 min) and pinned to the ``tool-selftests`` group: pytest.ini
+    deselects ``slow`` from the gate (factory #203's exclusion, preserved), and
+    the group keeps this instance from overlapping the wrapper blanket's.
+    """
+    ledgerless = tmp_path / "dev-state-without-events"
+    ledgerless.mkdir()                      # a directory, deliberately EMPTY
+
+    res = run_tool(
+        ["env", "-u", "OC_LEDGER", "-u", "OC_FANOUT_LEDGER",
+         str(NF), "--selftest"],
+        timeout=600,
+        env={"OC_DEV_STATE": str(ledgerless)},
+    )
+
+    assert not res.timed_out, (
+        "--selftest hit the 600 s bound (a hang, not a verdict) — #753 class")
+    assert res.rc == 0, (
+        "factory #212: --selftest with a ledger-less OC_DEV_STATE exited rc=%s "
+        "(%d bytes stdout, %d bytes stderr). A non-zero rc here is the defect "
+        "UNLESS it names itself — check for a SELFTEST ABORT line, which is the "
+        "guard doing its job and means a real arm broke:\n%s"
+        % (res.rc, len(res.out), len(res.err), res.combined[-1500:]))
+    assert "SELFTEST ABORT" not in res.combined, (
+        "the ERR trap fired on a run that should be green — an arm aborted:\n%s"
+        % res.combined[-1500:])
+    assert "FAIL=0" in res.out, (
+        "want the summary line 'oc-notify-fanout selftest: PASS=<n> FAIL=0' on "
+        "STDOUT; got %d bytes stdout:\n%s" % (len(res.out), res.combined[-1500:]))
+    assert _field("FAIL", res.out) == 0, (
+        "FAIL=%s in the summary — the selftest is legitimately red and this leg "
+        "must not paper over it:\n%s"
+        % (_field("FAIL", res.out), res.combined[-1500:]))
+
+def _selftest_branch(src):
+    """``(start, end)`` line indices of the ``--selftest`` branch, ``fi`` inclusive.
+
+    The branch opens with the argv dispatch and closes on the first column-0
+    ``fi`` — nesting inside it is indented, so a column-0 ``fi`` is the boundary.
+    """
+    start = next(i for i, ln in enumerate(src)
+                 if ln.startswith('if [ "${1:-}" = "--selftest" ]; then'))
+    end = next(i for i in range(start + 1, len(src))
+               if src[i].rstrip("\n") == "fi")
+    return start, end
+
+def test_selftest_reports_abort_instead_of_silence():
+    """The GUARD: an ERR trap inside the ``--selftest`` branch, and a disarm.
+
+    Two claims, both about silence rather than about any single arm:
+
+    1. ``trap '...SELFTEST ABORT...' ERR`` is REGISTERED between the ``--selftest``
+       dispatch and its closing ``fi``. Outside that branch it would never arm;
+       inside, any unguarded non-zero exit names its line and command instead of
+       dying with 0 bytes on both streams.
+    2. The final gate disarms it (``trap - ERR``) before exiting non-zero, so a
+       legitimately-red selftest prints its FAIL lines and exits QUIETLY — an
+       ABORT line appended after a real FAIL summary would send the next reader
+       hunting a phantom crash.
+
+    Static by design: see the §61d note above for why the class cannot be
+    observed from outside without re-breaking the isolation it protects.
+    """
+    src = NF.read_text().splitlines(keepends=True)
+    start, end = _selftest_branch(src)
+    branch = src[start:end + 1]
+    where = "lines %d-%d" % (start + 1, end + 1)
+
+    trap_lines = [ln for ln in branch if "SELFTEST ABORT" in ln]
+    assert trap_lines, (
+        "factory #212: no 'SELFTEST ABORT' ERR trap inside the --selftest "
+        "branch (%s). Without it an unguarded non-zero exit is rc 3 with 0 "
+        "bytes on BOTH streams — indistinguishable from a SIGKILL." % where)
+    trap = trap_lines[0]
+    assert trap.lstrip().startswith("trap "), (
+        "the SELFTEST ABORT text is not a trap registration: %r" % trap.strip())
+    assert trap.rstrip().endswith("ERR"), (
+        "the trap is not bound to ERR, so it cannot see a `set -e` abort: %r"
+        % trap.strip())
+    for token, why in (("LINENO", "the aborting LINE"),
+                       ("BASH_COMMAND", "the aborting COMMAND")):
+        assert token in trap, (
+            "the ERR trap does not name %s ($%s), so the message says only that "
+            "something died: %r" % (why, token, trap.strip()))
+
+    disarm = [ln for ln in branch if "trap - ERR" in ln]
+    assert disarm, (
+        "factory #212: the red gate no longer disarms the ERR trap (%s). A red "
+        "selftest would then print its FAIL lines AND a misleading SELFTEST "
+        "ABORT line, which reads as a crash rather than a verdict." % where)
+    assert any(ln.lstrip().startswith('[ "$F" -eq 0 ]') for ln in disarm), (
+        "the trap disarm is not the red gate ('[ \"$F\" -eq 0 ] || { trap - ERR; "
+        "exit 1; }'): %r" % disarm[0].strip())
+
+def test_selftest_arms_pin_the_ledger():
+    """The two ISOLATION edits, asserted where they live.
+
+    ``oc_ledger_path`` precedence is ``OC_LEDGER > OC_DEV_STATE > $HOME``
+    (tools/lib/oc-log.sh), so an inherited ``OC_DEV_STATE`` DEFEATS an arm that
+    only fakes ``HOME``, and an arm that pins nothing resolves the ambient env.
+    Both were measured failures in #212:
+
+    * arm 1a2 (law-17 holder scan) faked ``HOME`` and was killed at the roster
+      check by the inherited ``OC_DEV_STATE`` — it must ``env -u`` all three
+      ledger vars, and carry ``|| true`` so a recurrence is reported by the
+      ``chk`` that owns the claim rather than as a silent abort.
+    * the ``text-file-missing-rc2`` leg measured ``got rc=3`` (the exact line in
+      the issue body) because it pinned no ledger at all — it must pass
+      ``OC_FANOUT_LEDGER="$LEDG"`` to the child.
+    """
+    src = NF.read_text().splitlines()
+
+    # --- arm 1a2: the law-17 holder scan that fakes HOME -------------------
+    a = next((i for i, ln in enumerate(src)
+              if 'out="$(env -u OC_FANOUT_LEDGER' in ln), None)
+    assert a is not None, (
+        "arm 1a2 (law-17 holder scan) no longer unsets OC_FANOUT_LEDGER at all — "
+        "it cannot be running with a controlled ledger")
+    stmt = "\n".join(src[a:a + 8])
+    for var in ("OC_DEV_STATE", "OC_LEDGER"):
+        assert "-u %s" % var in stmt, (
+            "factory #212: arm 1a2 does not `env -u %s`. An inherited value "
+            "outranks the arm's fake HOME in oc_ledger_path and kills it rc 3 at "
+            "the roster check before any assertion runs:\n%s" % (var, stmt))
+    assert "|| true" in stmt, (
+        "arm 1a2 is not guarded with `|| true`, so a recurrence kills the whole "
+        "selftest at the assignment (set -e) instead of reddening the chk that "
+        "owns the claim:\n%s" % stmt)
+
+    # --- text-file-missing-rc2: pins the ledger on the child --------------
+    t = next((i for i, ln in enumerate(src)
+              if '--text-file "$T/does-not-exist.md"' in ln), None)
+    assert t is not None, (
+        "the text-file-missing-rc2 invocation is gone — this leg has no subject")
+    call = "\n".join(src[max(0, t - 4):t + 1])
+    assert 'OC_FANOUT_LEDGER="$LEDG"' in call, (
+        "factory #212: text-file-missing-rc2 does not pin OC_FANOUT_LEDGER. It "
+        "then measures the AMBIENT env, reports `got rc=3` from the roster check "
+        "and looks like a missing-rc-2 defect:\n%s" % call)
+    assert '[ "$rc_mf" = 2 ]' in src[t + 1] if t + 1 < len(src) else False, (
+        "the rc-2 assertion that follows the pinned invocation is gone:\n%s"
+        % "\n".join(src[t:t + 2]))
+
+# =============================================================================
 # SCOPE — what this module deliberately does NOT do
 # =============================================================================
-# The shell section also carried ``run_selftest oc-notify-fanout``. That leg is
-# deleted here (factory #203): ``tools/test_tool_wrappers.py`` drives the same
-# ``--selftest`` as one parametrised case, slow-marked, at ~266 s.
-# Driving it twice buys one extra ``rc == 0`` and costs four and a half minutes
-# of every full run. The blanket owns "the selftest exits 0"; this module owns
-# the three claims the selftest cannot make about itself — which is the whole
-# reason it exists.
+# Factory #203 removed the blanket ``run_selftest oc-notify-fanout`` leg from
+# this module: ``tools/test_tool_wrappers.py`` already drives the same
+# ``--selftest`` as one parametrised case, slow-marked, at ~266 s, and driving it
+# twice buys one extra ``rc == 0`` for four and a half minutes.
+#
+# §61d is the ONE exception, and it is not the deleted leg: it drives the
+# selftest under a condition the blanket CANNOT build (a ledger-less
+# ``OC_DEV_STATE`` — env_guard materialises the file) and asserts a claim the
+# blanket does not make (``FAIL=0`` on stdout, no ABORT). It stays slow-marked,
+# so the default gate is still exactly as fast as #203 left it.
