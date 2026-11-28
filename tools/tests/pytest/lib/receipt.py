@@ -6,9 +6,9 @@ with rc 5 unless ``verdict == "PASS"``, ``fail == 0`` and the stamp is under six
 hours old, and names it in its own die message. Every law file that says "battery
 green" (``hq.md``, ``toolsmith.md``, ``triage.md``, ``README.md``) means this file.
 So the receipt path is a CONTRACT with consumers that do not know pytest exists,
-and it does not move when the writer changes. ``pytest-receipt.json`` is retired
-with ``run.sh``; a run that wrote anywhere else would leave the bump gate reading
-a stale shell verdict forever, and reading green while the suite is red is the
+and it does not move when the writer changes. A run that wrote anywhere else
+would leave the bump gate reading a stale verdict forever, and reading green
+while the suite is red is the
 one failure mode this file exists to prevent.
 
 Two rules this module enforces:
@@ -57,7 +57,7 @@ FIELDS = (
 )
 
 FAIL_ROWS_CAP = int(os.environ.get("OC_BATTERY_FAIL_ROWS_CAP", "200"))
-SLOWEST_N = 10          # run.sh caps at 10 of 68 sections; so do we
+SLOWEST_N = 10          # ten rows is the whole receipt needs to show a trend
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -65,10 +65,10 @@ DEFAULT_RECEIPT = TOOLS_DIR / "tests" / "battery-last.json"
 
 
 # =============================================================================
-# environment probes (each mirrors a run.sh field)
+# environment probes (one per receipt field)
 # =============================================================================
 def read_cgroup() -> str:
-    """The cgroup this process is ACTUALLY in (run.sh:BATTERY_SELF_CGROUP)."""
+    """The cgroup this process is ACTUALLY in, read from /proc, never assumed."""
     try:
         for line in Path("/proc/self/cgroup").read_text().splitlines():
             if line.startswith("0::"):
@@ -113,7 +113,7 @@ def read_ioprio() -> str:
 
 
 def tree_fingerprint() -> str:
-    """md5 over the tools tree, mirroring run.sh:_battery_tree_fp.
+    """md5 over the tools tree: the fingerprint a bump receipt pins.
 
     The battery executes tools FROM THE WORKTREE, so a tool rewritten mid-run
     yields a MIXED generation whose legs fail for reasons that describe the
@@ -225,7 +225,7 @@ class Run:
 
         max_concurrency is the peak overlap of the intervals — the direct answer
         to "did the pool ever actually hold N tests?", which a duration sum
-        cannot answer (run.sh:battery_timing_json, same algorithm).
+        cannot answer.
         """
         events = []
         for _, s, e, _nid in self.rows:

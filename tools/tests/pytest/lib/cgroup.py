@@ -14,7 +14,7 @@ WHY IT MUST RE-EXEC AT ALL
     MemoryMax == 1536 MiB with swap exhausted and whose OOMPolicy=kill tears the
     WHOLE unit down on an over-limit allocation — so a test allocation does not
     merely die, it takes the daemon with it, and an OOM kill there lands during
-    a battery run (run.sh:367-440, #720).
+    a battery run (#720).
 
 CAPS SCALE WITH ``-n N``
     ``TasksMax``, ``CPUQuota`` and ``MemoryMax`` are TREE-WIDE: they bound the
@@ -115,7 +115,7 @@ def _mem_caps(n: int) -> tuple[int, int]:
         ceiling = int(ram * 0.75)
         if mem > ceiling:
             mem = ceiling
-        # Swap is capped to half the memory cap, keeping run.sh's 2:1 ratio.
+        # Swap is capped to half the memory cap, a deliberate 2:1 ratio.
         swap = min(swap, max(1, mem // 2))
     return mem, swap
 
@@ -123,7 +123,7 @@ def _mem_caps(n: int) -> tuple[int, int]:
 def caps_for(n_workers: int) -> list[str]:
     """The cap set for a run with ``n_workers``, as systemd-run ``-p`` args.
 
-    At ``n == 1`` this is byte-identical to run.sh:423
+    At ``n == 1`` this is the full single-worker profile
     (``MemoryMax=1024M MemorySwapMax=512M CPUQuota=300% TasksMax=128``) on any
     box with >=1366 MiB of RAM, so a serial pytest run and the shell harness are
     compared on the same budget. Above that, memory is ceilinged at 75 % of
@@ -171,8 +171,8 @@ def is_service_leaf(cg_path: str) -> bool:
     Read the leaf, never the whole path: every user-manager cgroup sits under
     ``user@0.service``, so a substring test on the full path calls ANY user
     cgroup a service — a transient ``.scope`` leaf included. That made the
-    "already isolated" branch unreachable in the shell harness and re-exec'd a
-    scope's own children (run.sh:397-408).
+    "already isolated" branch unreachable and re-exec'd a scope's own
+    children.
     """
     return bool(cg_path) and cg_path.rstrip("/").rsplit("/", 1)[-1].endswith(".service")
 

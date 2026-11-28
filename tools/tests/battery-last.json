@@ -1,6 +1,6 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-28T14:56:30Z",
+  "ts": "2026-11-28T15:06:26Z",
   "pass": 497,
   "fail": 0,
   "verdict": "PASS",
@@ -11,85 +11,85 @@
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r9c28e3f9279945ce93c3899fbaf4580d.scope",
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-r78c94967d79549b2a21345de4819ffe6.scope",
   "cgroup_isolated": false,
   "nice": "19",
   "ioprio": "idle",
-  "wall_ms": 138298,
+  "wall_ms": 128411,
   "timing": {
     "max_concurrency": 2,
     "section_count": 497,
-    "sum_ms": 245412,
+    "sum_ms": 223779,
     "slowest": [
       {
-        "n": 413,
-        "title": "tools/test_post_receipts.py::test_receipt_artifact_dry_run_is_rc0",
-        "ms": 26787,
-        "start_ms": 1795877754044,
-        "end_ms": 1795877780831
-      },
-      {
-        "n": 363,
+        "n": 366,
         "title": "tools/test_health.py::test_selftest_passes",
-        "ms": 19677,
-        "start_ms": 1795877725044,
-        "end_ms": 1795877744721
+        "ms": 20554,
+        "start_ms": 1795878333160,
+        "end_ms": 1795878353714
       },
       {
-        "n": 385,
+        "n": 413,
         "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-smoke]@tool-selftests",
-        "ms": 18040,
-        "start_ms": 1795877757242,
-        "end_ms": 1795877775282
+        "ms": 14739,
+        "start_ms": 1795878357324,
+        "end_ms": 1795878372063
       },
       {
-        "n": 319,
+        "n": 301,
         "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-drift-check]@tool-selftests",
-        "ms": 13956,
-        "start_ms": 1795877697897,
-        "end_ms": 1795877711853
+        "ms": 14361,
+        "start_ms": 1795878299693,
+        "end_ms": 1795878314054
       },
       {
-        "n": 120,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-upstream-delta]@tool-selftests",
-        "ms": 12027,
-        "start_ms": 1795877676473,
-        "end_ms": 1795877688500
+        "n": 384,
+        "title": "tools/test_post_receipts.py::test_receipt_artifact_dry_run_is_rc0",
+        "ms": 10465,
+        "start_ms": 1795878360184,
+        "end_ms": 1795878370649
+      },
+      {
+        "n": 41,
+        "title": "e2e/test_entry_preamble.py::test_the_broken_preamble_never_returns",
+        "ms": 10056,
+        "start_ms": 1795878280300,
+        "end_ms": 1795878290356
+      },
+      {
+        "n": 121,
+        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-wt]@tool-selftests",
+        "ms": 9459,
+        "start_ms": 1795878290219,
+        "end_ms": 1795878299678
       },
       {
         "n": 40,
-        "title": "e2e/test_entry_preamble.py::test_the_broken_preamble_never_returns",
-        "ms": 10055,
-        "start_ms": 1795877673734,
-        "end_ms": 1795877683789
+        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-upstream-delta]@tool-selftests",
+        "ms": 8774,
+        "start_ms": 1795878281440,
+        "end_ms": 1795878290214
       },
       {
-        "n": 269,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-wt]@tool-selftests",
-        "ms": 9379,
-        "start_ms": 1795877688513,
-        "end_ms": 1795877697892
+        "n": 122,
+        "title": "harness/test_gate_defaults.py::test_the_gate_writes_its_receipt_under_xdist",
+        "ms": 8725,
+        "start_ms": 1795878294019,
+        "end_ms": 1795878302744
       },
       {
-        "n": 361,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-roster]@tool-selftests",
-        "ms": 7692,
-        "start_ms": 1795877727213,
-        "end_ms": 1795877734905
-      },
-      {
-        "n": 365,
+        "n": 363,
         "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-lint-laws]@tool-selftests",
-        "ms": 6632,
-        "start_ms": 1795877739130,
-        "end_ms": 1795877745762
+        "ms": 8679,
+        "start_ms": 1795878338583,
+        "end_ms": 1795878347262
       },
       {
-        "n": 11,
+        "n": 12,
         "title": "tools/test_ledger_lock_budget.py::test_a_slow_git_tail_does_not_hold_the_ledger_lock@battery-ledger-lock",
-        "ms": 6516,
-        "start_ms": 1795877661073,
-        "end_ms": 1795877667589
+        "ms": 6560,
+        "start_ms": 1795878266368,
+        "end_ms": 1795878272928
       }
     ]
   }
