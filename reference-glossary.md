@@ -73,7 +73,7 @@
   unofficial variants ("Author lane", "Carrier") seen in lane files are also
   retired — lens A-L3 v0.4.116.
 - **Selftest** — a tool's built-in test mode (`oc-build --selftest` etc.);
-  **battery** — `tools/tests/run.sh` across all tools. Both green before
+  **battery** — `python3 -m pytest` across all tools. Both green before
   ANY version bump.
 - **GREEN / RED** — a GitHub Actions run conclusion read by terminal truth
   (`gh run view --json conclusion`), never exit-code inference.

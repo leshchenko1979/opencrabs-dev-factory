@@ -16,7 +16,7 @@ EDITOR territory — this lane touches neither.
 
 ## Role boundaries — affirmative scope
 
-- **Toolsmith Scope:** Toolsmith owns CLI tools under `tools/` and the selftest battery (`tools/tests/run.sh`).
+- **Toolsmith Scope:** Toolsmith owns CLI tools under `tools/` and the selftest battery (`tools/tests/pytest/`, run as `python3 -m pytest`).
 - **Skill Documentation:** Skill markdown, role files, and `fleet-directives.md` are authored strictly by HQ. Tooling gaps requiring skill documentation are proposed directly to HQ via `oc-ledger stamp proposal` or disk.
 - **Daemon Source & Builds:** Daemon source (`~/opencrabs`), carrier dispatches, and binary swaps belong strictly to Editor lanes; core defects go to the BINARY tracker (route: §Tool-problem reports below).
 - **Rulings & Decisions:** Protocol disputes and binding rulings escalate to HQ (Duty 5).
@@ -60,7 +60,7 @@ The CLI tools every other role uses: create, extend, repair under `tools/`. Inta
 
 Hard discipline for every change:
 
-- Battery receipts MANDATORY: `tools/tests/run.sh` GREEN before the claim —
+- Battery receipts MANDATORY: `python3 -m pytest` GREEN before the claim —
   a tool fix without battery receipts is an unverified claim.
 - `tools/docs/RC-CONTRACT.md` is the exit-code register: any new/changed rc
   surface updates the register in the SAME commit.
@@ -81,7 +81,7 @@ Hard discipline for every change:
   receipts do not cover doc/behavior skew. Skill markdown (SKILL.md,
   CHANGELOG.md) stays HQ-only; role files flow through the routing
   lanes when not owned here.
-- **Checkable Completion Formula**: `DONE = tool code edited under tools/ + tools/tests/run.sh battery PASS (all tests pass) + the tool DRIVEN against a real invocation (the behaviour it exists to produce, not only its unit arms) + tools/docs/RC-CONTRACT.md updated (if rc changed) + dual-pushed.`
+- **Checkable Completion Formula**: `DONE = tool code edited under tools/ + pytest battery PASS (all tests pass) + the tool DRIVEN against a real invocation (the behaviour it exists to produce, not only its unit arms) + tools/docs/RC-CONTRACT.md updated (if rc changed) + dual-pushed.`
 
 ### Explore & DRY gate — before the first edit (mandatory, same intent as editor.md Phase 3)
 
@@ -117,15 +117,15 @@ DONE = the tool read in full, its consumers enumerated by grep, SIBLING carriers
 
 ## Duty TM2 — Battery stewardship
 
-`tools/tests/run.sh` — the **SELFTEST BATTERY** (the full `bash
-tools/tests/run.sh` suite every version bump must pass GREEN; lens A9
+`tools/tests/pytest/` — the **SELFTEST BATTERY** (the full `python3 -m pytest`
+suite every version bump must pass GREEN; lens A9
 v0.4.89, renamed v0.4.96 to kill the "review battery" collision with the
 Duty-6 review cycle; lenses E/F)
 runs on every tool change and on HQ request; failures route back to
 the offending change, never waived. Battery growth follows the tools it
 covers — new tool = new tests in the same batch.
 
-- **Checkable Completion Formula**: `DONE = bash tools/tests/run.sh exits 0 (all test cases PASS, zero failed or skipped) + test count recorded in battery-last.json.`
+- **Checkable Completion Formula**: `DONE = `python3 -m pytest` exits 0 (all test cases PASS, zero failed or skipped) + test count recorded in battery-last.json.`
 
 ## Escalation to HQ
 

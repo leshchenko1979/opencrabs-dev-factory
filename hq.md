@@ -26,7 +26,7 @@ YAGNI applies — never automate a one-off or a human-judgment call. **Guard
 `oc-status` poll, `oc-swap` swap-execute) RUN the cycle themselves — the old guard
 ("HQ never runs tools inside a build cycle; the Compiler validates
 before adoption") retired WITH the Compiler role. Current invariants: `oc-build --selftest`
-green + battery `tools/tests/run.sh` green (both before any version bump), the
+green + battery `python3 -m pytest` green (both before any version bump), the
 append-only journal, and ledger receipts.
 
 **STRICT ROUTING:** owner orders arriving HERE for code fixes, CI dispatches,
@@ -52,7 +52,7 @@ stay here. Expected reply shape: "routed to <worker>", not done-work.
 - Provenance = the `## v<v>` CHANGELOG entry, written at ship time in the bump
   commit (this file, §Rule-text provenance — CHANGELOG at ship time, F13 — rule
   text carries NO biography).
-- **Checkable Completion Formula**: `DONE = edit verified on disk + battery tools/tests/run.sh PASS + CHANGELOG.md entry present + git commit in skill repo + oc-ledger sync --version <v> returns rc=0` — and **"entry present" means the entry NAMES every non-sync commit the sync bundles** (v0.4.239), checked against `git log --oneline <prev-sync>..<this-sync>`: a fix that rides a sync unmentioned is unrecoverable from the version record, which is the only place its ship date exists.
+- **Checkable Completion Formula**: `DONE = edit verified on disk + battery `python3 -m pytest` PASS + CHANGELOG.md entry present + git commit in skill repo + oc-ledger sync --version <v> returns rc=0` — and **"entry present" means the entry NAMES every non-sync commit the sync bundles** (v0.4.239), checked against `git log --oneline <prev-sync>..<this-sync>`: a fix that rides a sync unmentioned is unrecoverable from the version record, which is the only place its ship date exists.
 - **The version bump is the LAST edit and sync runs in the SAME turn (v0.4.217).**
   `oc-drift-check` resolves the live version from the **on-disk** canonical
   `SKILL.md`, never the ledger — so a bumped-but-unsynced frontmatter is already

@@ -93,7 +93,7 @@ anchors: `tools/archive/compiler.md`.
 fills. Load it when you need a tool's exact form, or when adding one. rc semantics are never here — the
 sole register is `tools/docs/RC-CONTRACT.md`.
 
-Tests: `tools/tests/run.sh` — one command, exit 0 only if all pass (the SELFTEST BATTERY — tool
+Tests: `python3 -m pytest` from `tools/tests/pytest/` — one command, exit 0 only if all pass (the SELFTEST BATTERY — tool
 selftests, distinct from the CI-gate CODE TESTS cargo triad). Must stay green before any version
 bump; tools are never edited without re-running it.
 

@@ -31,7 +31,7 @@ This README is the repo map; **SKILL.md is the law.** Where they disagree, SKILL
 | `tools/docs/RC-CONTRACT.md` | SOLE per-tool rc register: fleet conventions + verdict codes (v0.4.78) |
 | `tools/docs/HEALTH-CHECKS.md` | Systematic health checks registry for the tool fleet |
 | `tools/docs/HEALTH-CLASSES.md` | Health classification taxonomy and remediations |
-| `tools/tests/run.sh` | Battery: full selftest suite + coverage sections. Receipt → `tools/tests/battery-last.json` |
+| `tools/tests/pytest/` | Battery: full selftest suite. Receipt → `tools/tests/battery-last.json` |
 | `tools/archive/compiler.md` | ARCHIVED runbook for the retired COMPILER role (re-enable = load this file) |
 
 ## Roles
@@ -56,12 +56,12 @@ Highlights:
 - `oc-attrib` — Session-Id attribution; `--contributors` is the single contributors shape (the old `oc-deploy contributors` verb was retired v0.4.90 and deleted #168 cut 5)
 - `oc-commit` / `oc-issue-log` — signed commits + tracked-issue receipts
 - `oc-seal` — order rows (QUEUED…VOID lifecycle)
-- `tests/run.sh` — run everything: `bash tools/tests/run.sh`
+- `tests/pytest/` — run everything: `cd tools/tests/pytest && python3 -m pytest`
 
 ## Ship discipline (per version bump)
 
 1. Edit → verify → commit (one logical change per commit, `Issue-Ref:` trailer).
-2. Battery GREEN: `bash tools/tests/run.sh` → receipt reads `PASS`.
+2. Battery GREEN: `cd tools/tests/pytest && python3 -m pytest` → receipt reads `PASS`.
 3. Bump `version:` in `SKILL.md` and write the `## vX.Y.Z` entry in `CHANGELOG.md`
    (prepended, newest-first) in the **SAME commit** — the release note rides the bump
    it documents, never a second commit of its own. Then tag `vX.Y.Z`.

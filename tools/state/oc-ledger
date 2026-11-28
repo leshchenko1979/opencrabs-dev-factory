@@ -1911,7 +1911,7 @@ cmd_sync() {
   ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
   # battery gate: receipt must exist, be PASS, fail==0, fresh (<6h)
   local rcpt; rcpt="$(battery_receipt)"
-  [ -f "$rcpt" ] || die 5 "sync: battery gate — no receipt at $rcpt (run tools/tests/run.sh first)"
+  [ -f "$rcpt" ] || die 5 "sync: battery gate — no receipt at $rcpt (run the pytest battery first: cd tools/tests/pytest && python3 -m pytest)"
   jq -e '.verdict == "PASS" and (.fail == 0)' "$rcpt" >/dev/null 2>&1 \
     || die 5 "sync: battery gate — receipt is RED ($(cat "$rcpt" 2>/dev/null | head -1))"
   local rts rs now
