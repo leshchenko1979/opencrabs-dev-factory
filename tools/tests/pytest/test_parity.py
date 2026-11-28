@@ -2,7 +2,7 @@
 
 Two questions, both answered with evidence rather than assertion:
 
-1. **Coverage parity.** For every one of the 69 ``section "..."`` calls in
+1. **Coverage parity.** For every one of the 65 ``section "..."`` calls in
    ``tools/tests/run.sh``, does the pytest suite contain tests that assert
    something? A section with ZERO pytest assertions is the #120 defect wearing a
    new hat: ``chk()`` was called at ``run.sh:2105-2106`` and defined nowhere, so
@@ -89,13 +89,13 @@ def module_path(name: str) -> Path:
 # 18 is 0 because it is a header with no body (RETIRED); section 32's legs are
 # all inside a heredoc-fed stub, so it contributes no shell ``ok``.
 SHELL_SITES: dict[int, int] = {
-    1: 24, 2: 6, 3: 4, 4: 4, 5: 3, 6: 8, 7: 8, 8: 2, 9: 1, 10: 1, 11: 3, 12: 15,
-    13: 4, 14: 7, 15: 2, 16: 7, 17: 15, 18: 0, 19: 9, 20: 2, 21: 2, 22: 19,
-    23: 12, 24: 3, 25: 3, 26: 3, 27: 2, 28: 2, 29: 2, 30: 7, 31: 2, 32: 0,
-    33: 11, 34: 4, 35: 6, 36: 3, 37: 2, 38: 2, 39: 2, 40: 4, 41: 3, 42: 3,
-    43: 10, 44: 8, 45: 8, 46: 5, 47: 9, 48: 3, 49: 3, 50: 3, 51: 5, 52: 6,
-    53: 7, 54: 3, 55: 1, 56: 1, 57: 4, 58: 4, 59: 5, 60: 9, 61: 5, 62: 11,
-    63: 27, 64: 28, 65: 17, 66: 65, 67: 26, 68: 16, 69: 3,
+    1: 24, 2: 6, 3: 4, 4: 4, 5: 3, 6: 8, 7: 8, 8: 1, 9: 2, 10: 15, 11: 4,
+    12: 7, 13: 1, 14: 6, 15: 14, 16: 0, 17: 8, 18: 1, 19: 1, 20: 19, 21: 12,
+    22: 3, 23: 2, 24: 3, 25: 1, 26: 1, 27: 1, 28: 6, 29: 1, 30: 0, 31: 11,
+    32: 4, 33: 5, 34: 2, 35: 2, 36: 1, 37: 1, 38: 3, 39: 2, 40: 3, 41: 10,
+    42: 8, 43: 8, 44: 5, 45: 9, 46: 2, 47: 2, 48: 2, 49: 5, 50: 5, 51: 7,
+    52: 2, 53: 4, 54: 4, 55: 5, 56: 9, 57: 5, 58: 11, 59: 27, 60: 28, 61: 17,
+    62: 65, 63: 26, 64: 16, 65: 3,
 }
 
 # §64 maps to TWO modules for a reason worth stating, because the number it
@@ -111,48 +111,77 @@ SHELL_SITES: dict[int, int] = {
 # ("Ported: ... run.sh §N"), never from a second hand-written list. A module that
 # renumbers without updating its docstring fails ``test_mapping_agrees_with_module_docstrings``.
 SECTION_MODULES: dict[int, tuple[str, ...]] = {
-    1: ("test_log_lib.py",), 2: ("test_log_lib.py",), 3: ("test_log_lib.py",),
-    4: ("test_flood_guard.py",), 5: ("test_flood_guard.py",), 6: ("test_flood_guard.py",),
+    1: ("test_log_lib.py",),
+    2: ("test_log_lib.py",),
+    3: ("test_log_lib.py",),
+    4: ("test_flood_guard.py",),
+    5: ("test_flood_guard.py",),
+    6: ("test_flood_guard.py",),
     7: ("test_wire.py",),
-    8: ("test_verify_trio.py",), 9: ("test_verify_trio.py",), 10: ("test_verify_trio.py",),
-    11: ("test_seal.py",), 12: ("test_embed.py",), 13: ("test_claims_predicate.py",),
-    14: ("test_post_receipts.py",),
-    15: ("test_usage_rc.py",), 16: ("test_attrib.py",), 17: ("test_attrib.py",),
-    19: ("test_seal.py",), 20: ("test_usage_rc.py",), 21: ("test_usage_rc.py",),
-    22: ("test_fanout.py",),
-    23: ("test_deploy_stage.py", "test_e2e_deploy_stage.py"),
-    24: ("test_ledger_edge.py",), 25: ("test_review_persist.py",), 26: ("test_gate.py",),
-    27: ("test_post_receipts.py",), 28: ("test_usage_rc.py",), 29: ("test_usage_rc.py",),
-    30: ("test_branch_sweep.py",), 31: ("test_usage_rc.py",), 32: ("test_ledger_edge.py",),
-    33: ("test_ledger_lock_budget.py",),
-    34: ("test_shadow_rotate.py",), 35: ("test_smoke_evidence.py",),
-    36: ("test_usage_rc.py",), 37: ("test_usage_rc.py",), 38: ("test_usage_rc.py",),
-    39: ("test_usage_rc.py",), 40: ("test_usage_rc.py",), 41: ("test_usage_rc.py",),
-    42: ("test_usage_rc.py",), 43: ("test_rc_help.py",),
-    44: ("test_rc_contract.py",), 45: ("test_rc_contract.py",),
-    46: ("test_notify_fanout.py",), 47: ("test_health.py",),
-    48: ("test_tool_contracts.py",), 49: ("test_tool_contracts.py",),
-    50: ("test_tool_contracts.py",), 51: ("test_issue_dispatch.py",),
-    52: ("test_tool_contracts.py",), 53: ("test_fmt.py",), 54: ("test_usage_rc.py",),
-    55: ("test_tool_contracts.py",), 56: ("test_tool_contracts.py",),
-    57: ("test_notify_lib.py",), 58: ("test_notify_lib.py",),
-    59: ("test_snap.py",), 60: ("test_snap.py",),
-    61: ("test_harness_sigkill.py",),
-    62: ("test_receipt_transcript.py",),
-    63: ("test_oc_root_resolver.py",),
-    64: ("test_quoting_guard.py", "test_vendor_drift.py"),
-    65: ("test_entry_preamble.py", "test_harness_pool_mech.py"),
-    66: ("test_cgroup.py", "test_harness_cgroup.py", "test_harness_pool.py",
-         "test_harness_serialisation.py"),
-    67: ("test_harness_lock.py",), 68: ("test_harness_scratch.py",),
-    69: ("test_harness_pytest_section.py",),
+    8: ("test_verify_trio.py",),
+    9: ("test_seal.py",),
+    10: ("test_embed.py",),
+    11: ("test_claims_predicate.py",),
+    12: ("test_post_receipts.py",),
+    13: ("test_usage_rc.py",),
+    14: ("test_attrib.py",),
+    15: ("test_attrib.py",),
+    17: ("test_seal.py",),
+    18: ("test_usage_rc.py",),
+    19: ("test_usage_rc.py",),
+    20: ("test_fanout.py",),
+    21: ("test_deploy_stage.py", "test_e2e_deploy_stage.py"),
+    22: ("test_ledger_edge.py",),
+    23: ("test_review_persist.py",),
+    24: ("test_gate.py",),
+    25: ("test_post_receipts.py",),
+    26: ("test_usage_rc.py",),
+    27: ("test_usage_rc.py",),
+    28: ("test_branch_sweep.py",),
+    29: ("test_usage_rc.py",),
+    30: ("test_ledger_edge.py",),
+    31: ("test_ledger_lock_budget.py",),
+    32: ("test_shadow_rotate.py",),
+    33: ("test_smoke_evidence.py",),
+    34: ("test_usage_rc.py",),
+    35: ("test_usage_rc.py",),
+    36: ("test_usage_rc.py",),
+    37: ("test_usage_rc.py",),
+    38: ("test_usage_rc.py",),
+    39: ("test_usage_rc.py",),
+    40: ("test_usage_rc.py",),
+    41: ("test_rc_help.py",),
+    42: ("test_rc_contract.py",),
+    43: ("test_rc_contract.py",),
+    44: ("test_notify_fanout.py",),
+    45: ("test_health.py",),
+    46: ("test_tool_contracts.py",),
+    47: ("test_tool_contracts.py",),
+    48: ("test_tool_contracts.py",),
+    49: ("test_issue_dispatch.py",),
+    50: ("test_tool_contracts.py",),
+    51: ("test_fmt.py",),
+    52: ("test_usage_rc.py",),
+    53: ("test_notify_lib.py",),
+    54: ("test_notify_lib.py",),
+    55: ("test_snap.py",),
+    56: ("test_snap.py",),
+    57: ("test_harness_sigkill.py",),
+    58: ("test_receipt_transcript.py",),
+    59: ("test_oc_root_resolver.py",),
+    60: ("test_quoting_guard.py", "test_vendor_drift.py"),
+    61: ("test_entry_preamble.py", "test_harness_pool_mech.py"),
+    62: ("test_cgroup.py", "test_harness_cgroup.py", "test_harness_pool.py", "test_harness_serialisation.py"),
+    63: ("test_harness_lock.py",),
+    64: ("test_harness_scratch.py",),
+    65: ("test_harness_pytest_section.py",),
 }
 
 # Sections with NO pytest module, each with the reason it has none. A deferred
 # section is NAMED, never silently absent — an omission a reader cannot see is
 # indistinguishable from an oversight.
 DEFERRED: dict[int, str] = {
-    18: "RETIRED 2026-08-28 (owner order 18:50Z) — the consent process was "
+    16: "RETIRED 2026-08-28 (owner order 18:50Z) — the consent process was "
         "eliminated and the tool archived. The shell section is a header with no "
         "body: it asserts nothing, so a port would be an empty test inflating the "
         "pass count.",
@@ -162,14 +191,11 @@ DEFERRED: dict[int, str] = {
 # not ignored: the ratchet test below fails if this set changes in either
 # direction, so a regression cannot hide and a fix cannot pass unnoticed.
 KNOWN_THIN: dict[int, tuple[int, int]] = {
-    # section: (shell_sites, pytest_assertions)
-    12: (15, 4),    # embed decoder — table-driven; AST mass undercounts params
-    22: (19, 18),   # fanout — one leg short
-    40: (4, 3),     # oc-rebase-safety — selftest-only in pytest
-    43: (10, 5),    # rc --help fleet sweep — parametrized, mass undercounts
-    52: (6, 5),     # oc-lint-laws — one law-shape leg short
-    53: (7, 5),     # oc-fmt — one identity leg short
-    68: (16, 14),   # scratch root — two legs short
+    10: (15, 4),
+    20: (19, 18),
+    41: (10, 5),
+    51: (7, 5),
+    64: (16, 14),
 }
 
 # =============================================================================
@@ -275,8 +301,8 @@ def section_mass(sec: int) -> int:
 def test_run_sh_still_has_sixty_eight_sections():
     """The census is keyed by ordinal, so a renumber invalidates every row."""
     titles, counts = shell_census()
-    assert len(titles) == 69, (
-        "run.sh has %d ``section`` calls, the census pins 69 — a section was "
+    assert len(titles) == 65, (
+        "run.sh has %d ``section`` calls, the census pins 65 — a section was "
         "added or removed; re-derive SHELL_SITES rather than widening this bound"
         % len(titles))
 
@@ -312,13 +338,13 @@ def test_deferred_sections_are_named_with_a_reason():
         assert reason and len(reason) > 40, (
             "§%d is deferred with %r — every deferral needs the reason a reader "
             "would otherwise have to guess" % (sec, reason))
-    # §18 asserts nothing at all (a retired header with no body). §62 was the
+    # §16 asserts nothing at all (a retired header with no body). §62 was the
     # last other entry: its deferral claimed run.sh's own bad() accumulator had no
     # pytest-side equivalent, but that was a claim about WHERE THE FUNCTIONS LIVE.
     # They are text in run.sh, so lib/harness extracts them verbatim and
     # test_receipt_transcript.py drives the real ones (§33's deferral was
     # withdrawn for the same reason).
-    assert set(DEFERRED) == {18}, (
+    assert set(DEFERRED) == {16}, (
         "the deferred set changed to %r — update the README's 'Not ported' table "
         "in the same commit" % (sorted(DEFERRED),))
 
@@ -377,16 +403,16 @@ def test_no_deferred_section_has_a_pytest_module_that_ports_it():
         "KNOWN_THIN in the same commit." % "\n  ".join(ported))
 
 def test_zero_assertion_sections_are_the_declared_ones():
-    """Exactly §18 and §32 assert nothing in shell — and both are deliberate.
+    """Exactly §16 and §30 assert nothing in shell — and both are deliberate.
 
-    §18 is a retired header with no body. §32's legs live inside a heredoc-fed
+    §16 is a retired header with no body. §30's legs live inside a heredoc-fed
     stub, so they carry no shell ``ok``. Any OTHER zero is a section that
     reported green while asserting nothing — the #120 shape.
     """
     _titles, counts = shell_census()
     zero = sorted(s for s, n in counts.items() if n == 0)
-    assert zero == [18, 32], (
-        "sections %r assert nothing in shell; only [18, 32] are declared — a new "
+    assert zero == [16, 30], (
+        "sections %r assert nothing in shell; only [16, 30] are declared — a new "
         "one is a section whose green verdict rests on no assertion at all" % (zero,))
 
 @pytest.mark.parametrize("sec", sorted(SECTION_MODULES))
@@ -409,7 +435,7 @@ def test_every_mapped_module_exists_and_declares_its_scope():
     schemes coexist in this repo and they do NOT agree:
 
     * this census keys sections by the **positional ordinal** of the ``section``
-      call (1..69), because that is what ``--chunk N`` selects;
+      call (1..65), because that is what ``--chunk N`` selects;
     * ``run.sh``'s own ``# ---- `` headers carry **labels** (``00b``, ``00b2``,
       ``00d``, ``66b``) which are not a 1..N sequence;
     * ported module docstrings cite the explorer report's numbers (``§01/§02/§03``

@@ -1,7 +1,7 @@
-"""The pytest suite INSIDE the shell gate — run.sh §69.
+"""The pytest suite INSIDE the shell gate — run.sh §63.
 
 WHAT THIS PORTS
-    ``run.sh`` section 69 (``section "pytest suite"``). The section itself is
+    ``run.sh`` section 63 (``section "pytest suite"``). The section itself is
     three shell sites; what actually needs guarding is the INVOCATION, because
     each of its four terms was chosen against a measured failure and every one
     of them can be "simplified" back into that failure by a later editor.
@@ -51,7 +51,7 @@ def _strip_comments(block: str) -> str:
 
 
 def _section_block() -> str:
-    """The §69 body, bounded exactly as the shell census bounds it.
+    """The §63 body, bounded exactly as the shell census bounds it.
 
     From its ``section "..."`` call to the NEXT ``section "..."`` call (or EOF).
     Bounded by the call, never by a ``# ---- `` header: the header-then-call

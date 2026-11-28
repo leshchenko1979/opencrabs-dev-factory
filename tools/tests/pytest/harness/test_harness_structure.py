@@ -55,8 +55,8 @@ def test_section_markers_outnumber_section_calls():
     # Every entry is a section call whose body is DELIBERATELY one block.
     # The bound is the block's own measured size plus slack; a leg that grows
     # past it is a sign another block was pasted in under the same call.
-    (67, "battery lock: no child inherits the lock fd", 260),
-    (68, "battery scratch root: one per-run TEST_TMPDIR", 200),
+    (63, "battery lock: no child inherits the lock fd", 260),
+    (64, "battery scratch root: one per-run TEST_TMPDIR", 200),
 ])
 def test_section_call_does_not_swallow_a_neighbour(ordinal, title, max_span):
     """A ``section`` call's body must stay within its own block's budget.

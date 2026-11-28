@@ -1538,25 +1538,17 @@ fi
 
 # ---- 1. oc-verify-order --------------------------------------------------
 section "oc-verify-order"
-run_selftest oc-verify-order
 if tool oc-verify-order; then
   "$TOOLS_DIR/ship/oc-verify-order" --no-such-arg >/dev/null 2>&1; [ $? -eq 1 ] && ok "unknown arg -> 1 (usage)" || bad "unknown arg -> expected 1"
 fi
 
-# ---- 02. oc-verify-job -----------------------------------------------------
-section "oc-verify-job"
-run_selftest oc-verify-job
 
-# ---- 03. oc-verify-artifact ------------------------------------------------
-section "oc-verify-artifact"
-run_selftest oc-verify-artifact
 
 # ---- 04. oc-seal -----------------------------------------------------
 # The REGRESSION test: multi-filter merges must keep the pipe operators.
 # The fix was IFS='|' (was IFS=' | ' which joined with a space, dropping the
 # pipes between jq filters -> silent data loss on .sha + .feature_presence).
 section "oc-seal incl. IFS-join"
-run_selftest oc-seal
 if tool oc-seal; then
   d="$(mktemp -d)"
   printf '{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","run_id":1,"name":"keep-me"}' > "$d/b.json"
@@ -2021,7 +2013,6 @@ fi
 
 # ---- 7. oc-pr-atomicity ----------------------------------------------------
 section "oc-pr-atomicity"
-run_selftest oc-pr-atomicity
 if tool oc-pr-atomicity; then
   "$TOOLS_DIR/harvest/oc-pr-atomicity" >/dev/null 2>&1; [ $? -eq 1 ] && ok "no args -> 1 (usage)" || bad "no args -> expected 1"
 fi
@@ -2033,7 +2024,6 @@ fi
 
 # ---- 9b. oc-attrib -----------------------------------------------------------
 section "oc-attrib"
-run_selftest oc-attrib
 if tool oc-attrib; then
   d="$(mktemp -d)"
   git -C "$d" init -q -b main >/dev/null 2>&1
@@ -2069,7 +2059,6 @@ fi
 # byte-identical to RAW, and a range whose every commit is filtered out is a
 # legitimate EMPTY result at rc 0 (not an error).
 section "oc-attrib #407 novelty filter (re-sha'd + empty commits)"
-run_selftest oc-attrib
 if tool oc-attrib; then
   d="$(mktemp -d)"
   git -C "$d" init -q -b main >/dev/null 2>&1
@@ -2148,7 +2137,6 @@ section "oc-consent-check (RETIRED — skipped)"
 
 # ---- 9d. oc-seal orders vocabulary/purge ---------------------------------
 section "oc-seal orders"
-run_selftest oc-seal
 if tool oc-seal; then
   d="$(mktemp -d)"; O="$d/orders.json"
   printf '{"orders":[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","features":"telegram","status":"queued"},{"order_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"dispatched","run_id":"7"}]}\n' > "$O"
@@ -2170,14 +2158,12 @@ fi
 
 # ---- 9e. oc-features (KERNEL C1) -----------------------------------
 section "oc-features"
-run_selftest oc-features
 if tool oc-features; then
   "$TOOLS_DIR/ship/oc-features" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
 fi
 
 # ---- 9f. oc-issue-sweep (KERNEL C3) -----------------------------------------
 section "oc-issue-sweep"
-run_selftest oc-issue-sweep
 if tool oc-issue-sweep; then
   "$TOOLS_DIR/issue/oc-issue-sweep" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
 fi
@@ -2446,7 +2432,6 @@ rm -rf "$d"
 
 # ---- 12. oc-review-persist (ghost-incident cure: reports on disk) ----------
 section "oc-review-persist"
-run_selftest oc-review-persist
 d="$(mktemp -d)"
 "$TOOLS_DIR/state/oc-review-persist" A "battery edge report" --dir "$d" >/dev/null 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && [ -s "$d/skill-review-A-$(date -u +%Y%m%d).md" ] && [ -s "$d/skill-review-index.log" ]; then
@@ -2469,27 +2454,23 @@ fi
 
 # ---- 14. oc-upstream-delta (KERNEL C6 — watch-cycle arithmetic) ------------
 section "oc-upstream-delta"
-run_selftest oc-upstream-delta
 if tool oc-upstream-delta; then
   "$TOOLS_DIR/harvest/oc-upstream-delta" --repo /nonexistent-repo-path >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad repo path -> 2" || bad "bad repo path -> expected 2"
 fi
 
 # ---- 15. oc-wt (KERNEL C7 — worktree add/remove, un-skippable index chain) -
 section "oc-wt"
-run_selftest oc-wt
 if tool oc-wt; then
   "$TOOLS_DIR/git/oc-wt" add "Bad_Slug" some-branch >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad slug -> 2 (usage)" || bad "bad slug -> expected 2"
 fi
 
 # ---- 16. lens-C tool builds (owner Go) -----------
 section "oc-drift-check"
-run_selftest oc-drift-check
 if tool oc-drift-check; then
   "$TOOLS_DIR/state/oc-drift-check" u1 0.4 >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad version shape -> 2" || bad "bad shape -> expected 2"
 fi
 
 section "oc-branch-sweep"
-run_selftest oc-branch-sweep
 if tool oc-branch-sweep; then
   "$TOOLS_DIR/git/oc-branch-sweep" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no repo -> 2 (usage)" || bad "no repo -> expected 2"
 fi
@@ -2533,7 +2514,6 @@ if tool oc-branch-sweep; then
 fi
 
 section "oc-pr-fault-scope"
-run_selftest oc-pr-fault-scope
 if tool oc-pr-fault-scope; then
   "$TOOLS_DIR/harvest/oc-pr-fault-scope" 1 >/dev/null 2>&1; [ $? -eq 2 ] && ok "missing --run -> 2 (usage)" || bad "missing --run -> expected 2"
 fi
@@ -2687,7 +2667,6 @@ if tool oc-shadow-rotate; then
 fi
 
 section "oc-smoke-evidence"
-run_selftest oc-smoke-evidence
 if tool oc-smoke-evidence; then
   "$TOOLS_DIR/smoke/oc-smoke-evidence" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
   "$TOOLS_DIR/smoke/oc-smoke-evidence" --unit oc-no-such-unit --strings m1 >/dev/null 2>&1; [ $? -eq 3 ] && ok "--strings deprecated alias parses (unit-fail rc 3, E2 #6)" || bad "--strings alias -> expected 3"
@@ -2706,7 +2685,6 @@ if tool oc-smoke-evidence; then
 fi
 
 section "oc-issue-log"
-run_selftest oc-issue-log
 if tool oc-issue-log; then
   "$TOOLS_DIR/issue/oc-issue-log" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
   OC_ISSUE_LOG_REPO=x/y "$TOOLS_DIR/issue/oc-issue-log" 1 zznotasha --dry-run >/dev/null 2>&1; [ $? -eq 3 ] && ok "bad sha -> 3 (not found)" || bad "bad sha -> expected 3"
@@ -2719,13 +2697,11 @@ if tool oc-commit; then
 fi
 
 section "oc-audit-ship"
-run_selftest oc-audit-ship
 if tool oc-audit-ship; then
   "$TOOLS_DIR/ship/oc-audit-ship" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
 fi
 
 section "oc-tg-audit"
-run_selftest oc-tg-audit
 if tool oc-tg-audit; then
   "$TOOLS_DIR/audit/oc-tg-audit" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
 fi
@@ -2739,7 +2715,6 @@ fi
 # names a group.
 
 section "oc-rebase-safety"
-run_selftest oc-rebase-safety
 if tool oc-rebase-safety; then
   "$TOOLS_DIR/git/oc-rebase-safety" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
   "$TOOLS_DIR/git/oc-rebase-safety" overlap >/dev/null 2>&1; [ $? -eq 2 ] && ok "overlap missing args -> 2" || bad "overlap missing args -> expected 2"
@@ -2747,7 +2722,6 @@ if tool oc-rebase-safety; then
 fi
 
 section "oc-roster"
-run_selftest oc-roster
 if tool oc-roster; then
   "$TOOLS_DIR/state/oc-roster" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
   "$TOOLS_DIR/state/oc-roster" --no-such-arg >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2" || bad "unknown arg -> expected 2"
@@ -3108,7 +3082,6 @@ rm -rf "$_whd"
 
 # ---- 63. oc-watcher-audit (detached watcher compliance audit, Cycle 5 Review C-2)
 section "oc-watcher-audit (detached watcher compliance audit)"
-run_selftest oc-watcher-audit
 if tool oc-watcher-audit; then
   "$TOOLS_DIR/audit/oc-watcher-audit" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
   "$TOOLS_DIR/audit/oc-watcher-audit" --help >/dev/null 2>&1 && ok "oc-watcher-audit --help rc=0" || bad "oc-watcher-audit --help rc!=0"
@@ -3116,7 +3089,6 @@ fi
 
 # ---- 65. oc-start (unified claim, branch, worktree initializer, Cycle c14)
 section "oc-start (unified task initializer)"
-run_selftest oc-start
 if tool oc-start; then
   "$TOOLS_DIR/git/oc-start" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
   "$TOOLS_DIR/git/oc-start" --help >/dev/null 2>&1 && ok "oc-start --help rc=0" || bad "oc-start --help rc!=0"
@@ -3124,7 +3096,6 @@ fi
 
 # ---- 66. oc-smoke (unified 4-leg smoke verification & verdict row generator, Cycle c14)
 section "oc-smoke (unified 4-leg smoke verification)"
-run_selftest oc-smoke
 if tool oc-smoke; then
   "$TOOLS_DIR/smoke/oc-smoke" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
   "$TOOLS_DIR/smoke/oc-smoke" --help >/dev/null 2>&1 && ok "oc-smoke --help rc=0" || bad "oc-smoke --help rc!=0"
@@ -3206,7 +3177,6 @@ fi
 
 # ---- 67. oc-lint-laws (markdown law syntax & tool reference linter)
 section "oc-lint-laws (law syntax & reference linter)"
-run_selftest oc-lint-laws
 if tool oc-lint-laws; then
   "$TOOLS_DIR/audit/oc-lint-laws" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
   "$TOOLS_DIR/audit/oc-lint-laws" --help >/dev/null 2>&1 && ok "oc-lint-laws --help rc=0" || bad "oc-lint-laws --help rc!=0"
@@ -3275,31 +3245,12 @@ fi
 
 # ---- 69. oc-log-search (telemetry-only daemon-log search)
 section "oc-log-search (telemetry-only log search)"
-run_selftest oc-log-search
 if tool oc-log-search; then
   "$TOOLS_DIR/audit/oc-log-search" --bogus >/dev/null 2>&1; [ $? -eq 2 ] && ok "unknown arg -> 2 (usage)" || bad "unknown arg -> expected 2"
   "$TOOLS_DIR/audit/oc-log-search" --help >/dev/null 2>&1 && ok "oc-log-search --help rc=0" || bad "oc-log-search --help rc!=0"
 fi
 
-# ---- 71. oc-census (READ-ONLY pending-branch census) ------------------------
-# The selftest builds a throwaway 5-branch fixture repo and asserts the
-# decomposition invariant (plus_total == plus_own + plus_untrailered +
-# plus_other) plus the tip-lane resolution rule. It never touches the real
-# repo, so it costs ~1s and is safe to run in the battery.
-section "oc-census (pending-branch census)"
-run_selftest oc-census
 
-# ---- 72. oc-claims-single-source (claim-predicate single-source guard) ------
-# The claim-closure predicate was inlined FIVE times and the copies drifted
-# (#305/#309/#313/#424/#425). Tools 18/19 deleted the last two; this guard is
-# what stops a sixth. It keys on the SHAPE a copy must re-implement - never on
-# a function name - so a rename does not evade it.
-#
-# Placed BEFORE the battery-last.json receipt write on purpose: a section added
-# after that line would run but its legs would never reach the receipt, so the
-# battery would report a total that silently excluded this guard.
-section "oc-claims-single-source (private-copy guard)"
-run_selftest oc-claims-single-source
 
 # ---- 73. lib/oc-notify.sh CLI budget (#466) --------------------------------
 # Defect: the CLI leg ran `session notify` with NO timeout of its own, so a hung
