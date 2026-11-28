@@ -29,7 +29,7 @@ oc_decode_job_embed() {
 # NOT a replacement for oc_decode_job_embed: that one stays TWO-FIELD-ONLY and
 # its contract is load-bearing — run_built_sha takes the FIRST job name that
 # decodes, and the battery asserts the bare form is NOT decodable by it
-# (tools/tests/run.sh, section 00b). A caller that needs FEATURES uses
+# (tools/tests/pytest/infra/test_embed.py). A caller that needs FEATURES uses
 # oc_decode_job_embed; a caller that needs only the sha uses this — a gate-mode
 # run has no features in its name at all.
 oc_decode_job_sha_any() {
