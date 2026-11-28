@@ -1,5 +1,70 @@
 # Changelog — opencrabs-dev
 
+## v0.4.337 — the shell battery is retired; pytest is the only gate
+
+**Owner word: "Retire" (2026-11-28), on `tools/tests/run.sh`.** The 5,485-line
+shell battery is deleted. `python3 -m pytest` from `tools/tests/pytest/` is the
+gate, full stop. This is a cutover, not a cleanup: three couplings had to be
+repaired before the file could go.
+
+**1. The bump gate was reading a stale receipt.** `tools/state/oc-ledger:1913-1925`
+makes `sync` die rc 5 unless `tools/tests/battery-last.json` reads PASS / 0 fail
+/ fresh. pytest wrote the same eighteen fields to `pytest-receipt.json`, which is
+gitignored — so the durable receipt the ship gate reads was still the shell's.
+`lib/receipt.py` `DEFAULT_RECEIPT` now names `battery-last.json` and the file is
+tracked (`65398f989`).
+
+**2. The receipt was NEVER written by the real gate.** `pytest_collection_modifyitems`
+runs only in xdist WORKERS, so under the gate's own `-n 2` the controller's
+`_oc_run` stayed `None` and `pytest_sessionfinish` had nothing to write. A full
+gate reported 492 passed while `battery-last.json` still read `pass: 426` from an
+earlier run — the failure mode is a green gate that stamps nothing, which is
+indistinguishable from a gate that did not run. Arming moved to
+`pytest_configure`, with a regression leg that reddens when it moves back
+(`4b54d3c7d`).
+
+**3. The `run.sh`-reading test modules had no subject left.** Ten modules read the
+shell as TEXT — section ordinals, `extract_chunk`, `resolve_jobs` (15 call
+sites), `numbered_sections`. With the file gone these assert nothing; porting
+them to a copy that never runs in production is the green-while-asserting-nothing
+trap. Eight were deleted, `lib/harness.py` stripped to the symbols that were
+never about `run.sh`, and the coverage that was real was RELOCATED, not dropped:
+the cgroup re-exec and fail-open arms became `test_cgroup_reexec.py`, the lock
+legs were rewritten against `conftest.battery_lock`, the EXIT-trap reap leg moved
+to `conftest.scratch._reap_dead_roots` (four legs, neuter-verified), and §78's
+negctl path guard was ported verbatim to `test_negctl_paths.py` (19 legs,
+including the #759 any-leading-segment rule and the `.bak` skip) (`be8462dd1`,
+`b0491dd64`, `b01979f2b`).
+
+**Live pointers off the retired file** (`7f5846d8a`, `e1f238977`, `dc328b390`,
+`4d6eddd19`, `d4556c9cf`, `18d9aa454`, `7c38e9044`, `464197312`, `06900f73e`,
+`f2072c673`, `78287f5d0`, `d91d748a6`, `1bb761bd4`, `060ff47e8`, `eb85597f5`,
+`81c361f06`): `SKILL.md`, `hq.md`, `toolsmith.md`, `triage.md`, `README.md`,
+`reference-glossary.md`, `tools/docs/RC-CONTRACT.md`, `.gitignore`, the pytest
+`README.md` (rewritten off a §-by-§ coverage ledger for a file that no longer
+existed), `conftest.py`, and every `*.py` docstring that cited a `run.sh:NNN`
+line or `§NN` ordinal as its provenance. Four TOOL comments named the shell as
+the authority for a rule that still exists — the `--help` sweep's `*/lib/*`
+exclusion (`test_rc_help.py` SKIP_PARTS), the sidecar exclusion
+(`lib/receipt.py`), and oc-deploy's staging WORKDIR — and each now names its real
+home. `oc-issue-scope` used the deleted path as a FIXTURE STRING in two selftest
+legs; the assertions are about path resolution, so the fixture moved to a tracked
+file that exists (selftest unchanged at 43/43).
+
+**Final gate on the retired tree: 497 passed, 0 failed, rc 0, 177 s** (receipt
+`tools/tests/battery-last.json`, `verdict: PASS`, 18 fields). Baseline before the
+retirement was 614 tests; the 117-test delta is the deleted `run.sh`-subject
+modules, and the relocated coverage above is inside the 497.
+
+**Not part of this bump, still open:** factory
+[#212](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/212)
+(`oc-notify-fanout --selftest` exits rc 3 with no message when
+`OC_FANOUT_LEDGER` names a directory lacking `events.jsonl` — the same class that
+held the parity node red for four sessions) and
+[#214](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/214) (a
+SCOPED pytest run stamps a PASS backed only by the selected tests; always set
+`OC_PYTEST_RECEIPT=/tmp/x.json` for a partial run).
+
 ## v0.4.336 — the retired input stops being forwarded, and the prose stops restating defaults
 
 **What changed (tool).** [PR #186](https://github.com/leshchenko1979/opencrabs-dev-factory/pull/186),
