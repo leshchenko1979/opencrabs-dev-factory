@@ -226,8 +226,8 @@ run_capture() { # $1 = label, $2.. = command
   # #133: publish WHERE this child's output is going. Rewritten in place, never
   # appended, and nothing here reaches stdout or stderr -- the pointer is the
   # whole signal. An operator seeing a long silence tails the file it names and
-  # watches it grow; a wedged child leaves it static. That single distinction is
-  # what the run lacked when a healthy run was killed at ~22 min. The pid
+  # watches it grow; a wedged child leaves it static. Without that distinction a
+  # slow-but-healthy run is indistinguishable from a hang. The pid
   # suffix keeps concurrent chunks from overwriting each other's pointer.
   [ -n "${_CAP_PTR:-}" ] && {
     printf 'label\t%s\nfile\t%s\nstarted\t%s\n' \
@@ -948,14 +948,12 @@ if [ "${BATTERY_IN_CHUNK:-0}" = "0" ] && [ "$JOBS" -gt 1 ]; then
   # THE LOCK COPROC IS A CHILD, AND BOTH `jobs -rp` AND A BARE `wait` SEE IT
   # (factory #129). It holds the single-flight lock and never exits
   # until this shell does, so referencing it at either site is fatal:
-  #   * a BARE `wait` blocked FOREVER once every chunk had finished -- measured
-  #     73/73 chunks complete, driver in do_wait, coproc `cat` in pipe_read,
-  #     zero bytes of output for 27m13s before the run was killed. This is the
-  #     "battery hangs with no output" shape, and it is deterministic, not
-  #     intermittent: the coproc only releases when the shell dies, which is
-  #     exactly what the shell was waiting for;
-  #   * `jobs -rp | wc -l` COUNTED the coproc as a worker, so `--jobs 2` ran ONE
-  #     chunk at a time (measured: 3 running jobs for 2 chunks + the coproc).
+  #   * a BARE `wait` blocks FOREVER once every chunk has finished: the coproc
+  #     only releases when the shell dies, which is exactly what the shell is
+  #     waiting for. This is the "battery hangs with no output" shape, and it is
+  #     deterministic, not intermittent;
+  #   * `jobs -rp | wc -l` COUNTS the coproc as a worker, so `--jobs 2` runs ONE
+  #     chunk at a time.
   # Track the chunk PIDs and reference BOTH sites at that list, never at "all
   # jobs". The coproc is never a member, so it can neither be counted nor
   # waited on.
@@ -2017,9 +2015,9 @@ if tool oc-pr-atomicity; then
   "$TOOLS_DIR/harvest/oc-pr-atomicity" >/dev/null 2>&1; [ $? -eq 1 ] && ok "no args -> 1 (usage)" || bad "no args -> expected 1"
 fi
 
-# ---- 8. oc-ci-parity RETIRED v0.4.117 (owner "3 - ok" 21:44Z: zero live use in 12d, C-H2; three-way-diff check in merge runbook supersedes) ----
+# ---- 8. oc-ci-parity RETIRED — the three-way-diff check in the merge runbook supersedes it. ----
 
-# ---- 9. oc-contributors RETIRED v0.4.72 (E2 #1: subset of oc-attrib, zero live callers) ----
+# ---- 9. oc-contributors RETIRED — a subset of oc-attrib, with no live callers. ----
 # coverage lives in the oc-attrib section; oc-seal derives the same list.
 
 # ---- 9b. oc-attrib -----------------------------------------------------------
@@ -2131,8 +2129,8 @@ Session-Id: 22222222-2222-2222-2222-222222222222"
   rm -rf "$d"
 fi
 
-# ---- 9c. oc-consent-check — RETIRED (owner order: consent
-#         process eliminated; tool archived to tools/archive/). Tests removed.
+# ---- 9c. oc-consent-check — RETIRED: the consent process was eliminated and
+#         the tool archived to tools/archive/. Tests removed.
 section "oc-consent-check (RETIRED — skipped)"
 
 # ---- 9d. oc-seal orders vocabulary/purge ---------------------------------
@@ -2170,7 +2168,7 @@ fi
 
 # ---- 9g/9h retired — removed factory #177 ----
 
-# ---- 9i. oc-watchdog-check — RETIRED v0.4.65 (lens E A1: pure passthrough to oc-deploy watch) ----
+# ---- 9i. oc-watchdog-check — RETIRED: a pure passthrough to oc-deploy watch. ----
 
 # ---- 9k. oc-fanout + attribution (issue #24) --------------------------------
 # Black-box battery checks for the #24 mechanical notify fan-out, invoking the
@@ -2220,11 +2218,10 @@ INSERT INTO sessions VALUES ('99999999-8888-7777-6666-555555555555','lane fixtur
 Session-Id: 99999999-8888-7777-6666-555555555555
 Issue-Ref: #77"
   CTIP="$(git -C "$d/crepo" rev-parse HEAD)"
-  # contributors verb DELETED (#168 cut 5). It had been a loud RETIRED stub since
-  # v0.4.91 and this leg asserted the stub — a test that guards a deprecation
-  # notice for a verb nobody calls keeps the verb alive for free. The working TSV
-  # projection was always oc-attrib --contributors, and THAT is what section 12
-  # covers; there is no second shape to assert.
+  # contributors verb DELETED (#168 cut 5) -- it was a RETIRED stub whose only
+  # test guarded the deprecation notice, which keeps a verb nobody calls alive for
+  # free. The working TSV projection is oc-attrib --contributors, and THAT is what
+  # section 12 covers; there is no second shape to assert.
   # gh stub: run 222 GREEN (built sha cccc...) + run 666 RED (head from red-head)
   cat > "$SD/gh" <<'GHSTUB'
 #!/usr/bin/env bash
@@ -2409,14 +2406,13 @@ GHEOF
 fi
 
 # ---- 11. oc-ledger (KERNEL C1–C5 + item-2(b) commit-pending sweep) ---------
-# RESTORED. The owner order removed
-# "questions and ledger" on the premise that their code belongs to the meta
-# factory and is tested there. Measured: that holds for `questions`
+# RESTORED, deliberately. The ledger and questions code is NOT covered by the
+# meta factory's own tests: that holds for `questions`
 # (TEMPLATE/tools/questions + TEMPLATE/tests/test_questions.py) but NOT for
 # oc-ledger -- the template ships `ledger.py`, a different artifact, and its own
 # addon doc (TEMPLATE/docs/addons/harness/opencrabs.md:243) states the harness
-# supplies `oc-ledger`. Nothing else tests it, so removing this section left it
-# uncovered. Restored; remove again only with a replacement gate.
+# supplies `oc-ledger`. Nothing else tests it, so dropping this section leaves it
+# uncovered. Remove again only with a replacement gate.
 section "oc-ledger"
 run_selftest oc-ledger
 d="$(mktemp -d)"; mkdir -p "$d/state"
@@ -5245,11 +5241,10 @@ fi
 
 # --- (h) the PARALLEL DRIVER must not reference the coproc (#129) -----------
 # The lock coproc is a CHILD of the battery, so both `jobs -rp` and a bare
-# `wait` saw it: `wait` blocked forever once every chunk had finished (measured
-# 73/73 chunks done, driver in do_wait, zero output, 27m13s), and the throttle
-# counted it as a worker so --jobs 2 ran ONE chunk at a time. The driver now
-# tracks chunk PIDs; both arms below are driven, because a leg that only proves
-# "terminates" cannot tell the fix from a driver that never waited at all.
+# `wait` see it: `wait` blocks forever once every chunk has finished, and the
+# throttle counts it as a worker so --jobs 2 runs ONE chunk at a time. The driver
+# now tracks chunk PIDs; both arms below are driven, because a leg that only
+# proves "terminates" cannot tell the fix from a driver that never waited at all.
 _LK91_DRV="$_LK91/drv"; mkdir -p "$_LK91_DRV"
 cat > "$_LK91_DRV/fixed" <<'DRVFIX'
 #!/usr/bin/env bash
