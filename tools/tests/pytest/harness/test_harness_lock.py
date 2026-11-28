@@ -1,7 +1,8 @@
 """The battery's single-flight lock, tested where it now lives.
 
 WHAT THIS REPLACES
-    ``run.sh`` section 91 held eight legs driving a shell block that acquired the
+    The shell harness's section 91 held eight legs driving a shell block that
+    acquired the
     lock in a coproc holder. That block is retired with the shell, and with it
     the legs' SUBJECT — a test of an extracted text block cannot outlive the file
     it was extracted from, and porting the block into the test tree would assert

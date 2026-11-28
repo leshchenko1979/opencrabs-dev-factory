@@ -1,4 +1,4 @@
-"""Ported: oc-gate — run.sh §26 (the usage / state-dir legs).
+"""oc-gate — the usage / state-dir legs.
 
 ``oc-gate --selftest`` is NOT driven here: ``tools/test_tool_wrappers.py``
 already runs it as one parametrised case, and it is the second-slowest selftest
@@ -9,8 +9,8 @@ assert:
 
 * the two usage legs, which pin the FULL-sha shape gate — the one thing the
   tool refuses before it touches the network;
-* the state-dir containment, which is the leak that forces run.sh to wrap this
-  section in a throwaway dir (goal C).
+* the state-dir containment, which is the leak that forced the shell harness to
+  wrap this section in a throwaway dir (goal C).
 
 The state dir matters more here than usual: ``usage()`` writes a retry-storm
 counter (``.oc-gate-rc2``) into ``$OC_DEPLOY_STATE_DIR``. ``state_dir`` supplies
@@ -42,7 +42,8 @@ def test_short_sha_is_refused_rc2(run_tool, state_dir):
 def test_rc2_counter_stays_inside_the_state_dir(run_tool, state_dir):
     """The retry-storm counter is written to the STATE DIR, not the fleet.
 
-    This is the leak that motivated run.sh's throwaway dir (goal C). Asserting
+    This is the leak that motivated the shell harness's throwaway dir (goal C).
+    Asserting
     the file lands inside ``state_dir`` makes the containment a claim rather
     than a side effect of the wrapper."""
     run_tool([str(TOOL)], timeout=120)

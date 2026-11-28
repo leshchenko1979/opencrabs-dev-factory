@@ -1,4 +1,4 @@
-"""Ported: `oc-review-persist` — run.sh §25.
+"""`oc-review-persist`.
 
 The section exists because of a GHOST INCIDENT: a review was produced, reported
 as done, and left NOTHING on disk — so the next reader could not tell a review

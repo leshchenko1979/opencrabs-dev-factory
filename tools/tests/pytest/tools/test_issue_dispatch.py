@@ -1,4 +1,4 @@
-"""Ported: `oc-issue-dispatch` role-binding edge cases — run.sh §51.
+"""`oc-issue-dispatch` role-binding edge cases.
 
 The section exists because ``run_selftest oc-issue-dispatch`` counts ONE case
 however many asserts the tool makes internally. The crash that actually cost a
@@ -19,8 +19,9 @@ Two defects are frozen:
 
 The module is imported IN PROCESS with ``sys.dont_write_bytecode`` set BEFORE
 the loader runs, so the shared checkout stays byte-identical — the same reason
-run.sh's heredoc does it (a stray ``__pycache__`` in ``tools/issue/`` is an
-untracked path that would set ``tree_changed`` on every receipt).
+the shell harness's heredoc did it (a stray ``__pycache__`` in
+``tools/issue/`` is an untracked path that would set ``tree_changed`` on every
+receipt).
 """
 
 from __future__ import annotations

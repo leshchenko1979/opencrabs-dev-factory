@@ -1,4 +1,4 @@
-"""Ported: the deploy stage tools — run.sh §23 (oc-build / oc-status), FAST legs.
+"""The deploy stage tools — oc-build / oc-status, FAST legs.
 
 Each leg here is a REAL process that dies on its own argument validation in a
 couple of seconds — no carrier read, no fanout sweep, no network:

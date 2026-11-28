@@ -1,7 +1,8 @@
-"""Ported: entry-preamble fixpoint + relative invocation (#708) — run.sh §84.
+"""Entry-preamble fixpoint + relative invocation (#708).
 
     (README coverage row 65. The brief's "§63/§64/§65" are README rows; the
-    shell's own section numbers are §77/§82/§84 — this module is run.sh §84.)
+    shell's own section numbers were §77/§82/§84 — this module is the §84
+    behaviour.)
 
 THE DEFECT
     Every fleet tool carried the same copy-pasted entry preamble, which walks UP
@@ -112,7 +113,7 @@ WALL_BOUND_S = 20
 # headroom; the broken half never returns, so any bound catches it.
 CONTROL_BOUND_S = 10
 
-# 124 is `timeout(1)`'s "the bound fired" code, which run.sh reads as
+# 124 is `timeout(1)`'s "the bound fired" code, which the shell harness read as
 # "HUNG -- killed at the Ns bound", not as a tool verdict.
 WALL_KILL_RC = 124
 
@@ -121,8 +122,8 @@ def _tool_env():
     """The one env adjustment the relative invocation needs.
 
     BATTERY_IN_CHUNK is inherited when pytest is launched from inside a chunk;
-    run.sh's own --chunk branch is guarded on it being empty, so a set value
-    would make the run.sh sample fall through and execute the whole battery.
+    the shell harness's own --chunk branch was guarded on it being empty, so a
+    set value would make the sample fall through and execute the whole battery.
     """
     return {"BATTERY_IN_CHUNK": ""}
 

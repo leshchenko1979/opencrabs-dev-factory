@@ -1,4 +1,4 @@
-"""Ported: `oc-attrib` and `oc-attrib #407 novelty filter` — run.sh §16, §17.
+"""`oc-attrib` and `oc-attrib #407 novelty filter`.
 
 Both sections build a real git fixture and drive the SHIPPED tool. The #407
 fixture is the discriminating one: a twin commit absorbed into the baseline, a

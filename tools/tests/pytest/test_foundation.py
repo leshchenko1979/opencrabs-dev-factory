@@ -52,10 +52,10 @@ def test_scratch_isolates_tmpdir_and_snap_root(scratch):
 def test_scratch_lock_path_is_not_derived_from_tmpdir(scratch):
     """The lock stays on ONE shared path while TMPDIR is per-run.
 
-    Trap documented at run.sh:545-549: a TMPDIR-derived lock gives every lane
-    its OWN lock file while the lanes still share one canonical receipt, so two
-    runs both "acquire" and both write. The assertion is the relationship, not
-    the literal: the lock must not be inside the scratch root.
+    The trap: a TMPDIR-derived lock gives every lane its OWN lock file while
+    the lanes still share one canonical receipt, so two runs both "acquire"
+    and both write. The assertion is the relationship, not the literal: the
+    lock must not be inside the scratch root.
     """
     lock = os.environ["OC_BATTERY_LOCK"]
     assert lock == cf.BATTERY_LOCK_PATH
@@ -97,7 +97,7 @@ def test_scratch_reaper_removes_dead_roots_and_keeps_live_ones(tmp_path):
 # 2. env_guard
 # =============================================================================
 def test_env_guard_blocks_the_live_fanout_ledger():
-    """OC_FANOUT_LEDGER must never be the live fleet ledger (run.sh:3095).
+    """OC_FANOUT_LEDGER must never be the live fleet ledger.
 
     The leak is that the tool DEFAULTS to ``$HOME/.opencrabs/profiles/ops/
     opencrabs-dev/events.jsonl``, so a leg that simply does not export the var
@@ -112,10 +112,10 @@ def test_env_guard_blocks_the_live_fanout_ledger():
 
 
 # The PATH leak, proven as a PAIR rather than as one self-satisfying assertion:
-# run.sh prepends to PATH four times and never restores it (run.sh:3412, 3483,
-# 4136, 4787), so a later section inherits an earlier one's stub dirs and can
-# pass against a binary it did not install. The proof needs two tests that must
-# see each other's environment, so both are pinned to ONE xdist worker with
+# the shell harness prepended to PATH four times and never restored it, so a
+# later section inherited an earlier one's stub dirs and could pass against a
+# binary it did not install. The proof needs two tests that must see each
+# other's environment, so both are pinned to ONE xdist worker with
 # xdist_group — which is also the documented usage in pytest.ini.
 STUB_DIR = "/nonexistent/oc-env-guard-stub"
 
@@ -126,7 +126,8 @@ def test_env_guard_blocks_state_dir_and_lets_a_test_pollute_path():
     """Test 1 of the pair: assert the pin, then deliberately leak PATH."""
     assert not os.environ["OC_DEPLOY_STATE_DIR"].startswith(str(cf.LIVE_PROFILE))
     assert not os.environ["OC_DEPLOY_STATE_DIR"].startswith(str(cf.PROD_REPO))
-    # Deliberate pollution, of exactly the shape run.sh's four prepends make.
+    # Deliberate pollution, of exactly the shape the shell harness's four
+    # prepends made.
     os.environ["PATH"] = STUB_DIR + os.pathsep + os.environ["PATH"]
     assert STUB_DIR in os.environ["PATH"]
 
@@ -147,8 +148,8 @@ def test_env_guard_restored_path_for_the_next_test():
 def test_run_tool_refuses_the_production_checkout():
     """``--repo /root/opencrabs`` is the leak an env var cannot block.
 
-    run.sh:1536 and :1974 read the PRODUCTION checkout, so a ported leg that
-    copies them verbatim would assert against a tree this lane does not own.
+    The shell harness read the PRODUCTION checkout, so a leg that copied it
+    verbatim would assert against a tree this lane does not own.
     """
     with pytest.raises(cf.LiveStateLeak) as exc:
         cf._run([sys.executable, "-c", "pass", "--repo", str(cf.PROD_REPO)],
@@ -254,7 +255,7 @@ def test_battery_lock_is_the_one_shared_path(battery_lock, scratch):
     Two properties, and both matter: the file is the module constant (so every
     lane contends on the same inode), and it is not inside this worker's scratch
     root (so a per-run TMPDIR cannot hand each lane its own lock while they share
-    one receipt — the trap at run.sh:545-549).
+    one receipt — the trap of a per-lane lock file).
     """
     import fcntl
 

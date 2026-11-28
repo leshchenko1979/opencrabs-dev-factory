@@ -1,7 +1,7 @@
-"""Ported: oc-health — run.sh §47 (hourly health / cleanliness sweep).
+"""oc-health — hourly health / cleanliness sweep.
 
 The section's centre of gravity is the WATCHER-WINDOW leg, and it is here
-because the leg it replaced could not go red: run.sh's original ran against the
+because the leg it replaced could not go red: the shell leg ran against the
 LIVE detached corpus (~19,651 files, 76 s wall, growing ~2,800 files/day with
 nothing reaping it) and asserted only ``rc in (0,1)`` plus "the JSON parses" —
 both of which pass whether or not the override does anything at all.

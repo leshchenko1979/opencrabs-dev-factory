@@ -1,8 +1,8 @@
-"""Pure ``run_selftest <tool>`` wrapper sections, ported from run.sh.
+"""Pure ``run_selftest <tool>`` wrapper sections.
 
 SCOPE (factory #197, worker A). These are the battery sections whose ENTIRE
-body is "run this tool's ``--selftest``, assert rc 0". Everything else stays in
-run.sh until its owning worker ports it:
+body is "run this tool's ``--selftest``, assert rc 0". Everything else lives in
+its own module:
 
   * bespoke shell sections with real logic ................... worker B
   * harness self-tests (lock/chunk/cgroup/scratch/receipt) ... worker D
@@ -16,7 +16,7 @@ tools::
 
 THE CONTRACT: RC, NOT STDERR
 ----------------------------------
-``run.sh:run_selftest`` (run.sh:280) asserts EXACTLY ONE thing: the exit code.
+The shell harness's ``run_selftest`` asserted EXACTLY ONE thing: the exit code.
 
     run_capture "$t --selftest" timeout --kill-after=30 "$_st" env \\
         OC_DEPLOY_STATE_DIR="$sd" "$_tp" --selftest
@@ -40,19 +40,19 @@ faithful port, not a vacuous one. Non-vacuity lives in three other places:
      PRINTS a verdict. A stub that silently exits 0 cannot satisfy it, so the
      rc-only assertion above cannot be satisfied by a no-op.
   3. Timeouts are per-tool, so a slow-but-legitimate selftest
-     cannot red spuriously -- the defect run.sh:294-300 documents.
+     cannot red spuriously -- the defect the shell harness documented.
 
 TIMEOUTS ARE PER-TOOL, NOT A BLANKET BOUND
 ------------------------------------------
-A blanket short bound would red a slow-but-legitimate selftest: run.sh's own
-1800 s default exists because the longest section takes 296.5 s.
+A blanket short bound would red a slow-but-legitimate selftest: the shell
+harness's own 1800 s default existed because the longest section takes 296.5 s.
 
 Each bound is sized on the LOADED figure, not the quiet one, with >= 2x headroom
 on it, because the loaded figure is the regime this module actually runs in.
 ``oc-wt`` takes 21 s quiet and 118 s under load; ``oc-upstream-delta`` 12 s
 quiet and 60 s loaded. A bound sized on the quiet number would red `oc-wt` at
-118 s against 180 s -- a spurious failure, which is the exact defect
-run.sh:294-300 documents.
+118 s against 180 s -- a spurious failure, which is the exact defect the shell
+harness documented.
 
 The tools that take minutes carry ``@pytest.mark.slow`` so ``-m "not slow"``
 deselects them rather than stalling a quick gate.
@@ -112,7 +112,7 @@ TOOLS = [
     # oc-notify-fanout belongs HERE, not with the fast tools: 266 s standalone
     # and 223 s under load, i.e. SLOWER than oc-gate. A 300 s bound would be
     # only 1.13x headroom -- one loaded box away from a spurious red, the exact
-    # defect run.sh:294-300 documents. 600 s is 2.3x and the slow marker keeps
+    # defect the shell harness documented. 600 s is 2.3x and the slow marker keeps
     # it out of a quick gate.
     ("oc-notify-fanout",        600),   # 266 s; 103 cases; needs a real ledger file
     ("oc-gate",                 600),   # 118.4 s
@@ -153,7 +153,7 @@ TIMEOUTS = dict(TOOLS)
 # loses 3-4 appends, and no `-n` setting changes that. Retrying once costs a
 # second ~296 s leg ONLY on an already-failed run, and it separates "the tool's
 # race probe got starved by a neighbour" from "the tool is broken" -- which is
-# the same distinction run.sh:294-300 draws for a HUNG leg (rc 124 is not a tool
+# the same distinction the shell harness drew for a HUNG leg (rc 124 is not a tool
 # verdict either).
 #
 # Deliberately NOT a blanket retry: retrying every leg would hide a genuine
@@ -250,10 +250,11 @@ def fanout_ledger(scratch):
     """An EXISTING, empty fanout ledger.
 
     ``oc-notify-fanout`` dies rc 3 ``roster missing: $LEDGER`` unless its
-    ledger is a real FILE (tools/notify/oc-notify-fanout:1151). run.sh passes
-    the LIVE fleet ledger; env_guard redirects ``OC_FANOUT_LEDGER`` into this
-    worker's scratch where nothing has created the file yet. This stand-in is
-    the shell contract, expressed as a fixture instead of a live path.
+    ledger is a real FILE (tools/notify/oc-notify-fanout:1151). The shell
+    harness passed the LIVE fleet ledger; env_guard redirects
+    ``OC_FANOUT_LEDGER`` into this worker's scratch where nothing has created
+    the file yet. This stand-in is the shell contract, expressed as a fixture
+    instead of a live path.
     """
     p = scratch.path / "fanout-ledger" / "events.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -318,11 +319,12 @@ def test_tool_selftest(serial_box, run_selftest, fanout_ledger, tool):
     Three assertions, each earned:
 
     1. ``not result.timed_out`` -- a fired bound is NOT a tool verdict.
-       run.sh:301 says so itself (rc 124 is "HUNG", not a failure of the
-       tool). Keeping them apart stops a loaded box from looking like a
+       The shell harness said so itself (rc 124 is "HUNG", not a failure of
+       the tool). Keeping them apart stops a loaded box from looking like a
        broken tool.
-    2. ``rc == 0`` -- the shell contract, verbatim (run.sh:280 + the
-       ``&& ok || bad`` at every call site). This is what run.sh asserted.
+    2. ``rc == 0`` -- the shell contract, verbatim (``run_selftest`` + the
+       ``&& ok || bad`` at every call site). This is what the shell harness
+       asserted.
     3. ``combined`` is non-empty -- the ANTI-STUB guard. rc alone cannot tell
        a real selftest from a no-op that returns 0, so a tool whose
        ``--selftest`` were a stub would be a false green here. Every tool in
@@ -332,7 +334,7 @@ def test_tool_selftest(serial_box, run_selftest, fanout_ledger, tool):
     Deliberately NOT asserted: an EMPTY STDERR. Several healthy selftests
     report on stderr -- ``oc-rebase-safety`` prints its SUCCESS line
     ("selftest: 23/23 OK") there -- so requiring empty stderr would invent a
-    contract run.sh never had and red four healthy tools.
+    contract the shell harness never had and red four healthy tools.
     """
     bound = TIMEOUTS[tool]
     result = run_selftest(tool, timeout=bound, env=_env_for(tool, fanout_ledger))

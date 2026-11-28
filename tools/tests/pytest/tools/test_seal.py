@@ -1,4 +1,4 @@
-"""Ported: `oc-seal` — run.sh §11 (IFS multi-filter merge) and §19 (orders).
+"""`oc-seal` — IFS multi-filter merge and orders.
 
 §11 is the regression for a real silent-data-loss bug: the multi-filter merge
 joined filters with a SPACE instead of a PIPE, so `.sha` and

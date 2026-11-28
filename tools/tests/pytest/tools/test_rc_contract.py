@@ -1,4 +1,4 @@
-"""Ported: RC-contract table integrity (§44) + coverage (§45).
+"""RC-contract table integrity (§44) + coverage (§45).
 
 Both sections are scanners over ``tools/docs/RC-CONTRACT.md``, and both carry
 their own positive AND negative controls, because a scanner that cannot fire
@@ -8,7 +8,7 @@ and §45's dropped-row / invented-row fixtures must be seen.
 
 The canary rows are built by INTERPOLATION, never written literally — a
 literal well-formed ``| oc-…`` row in this file would be found by the live scan
-as a real site (the same move run.sh's shell-quoting canary makes).
+as a real site (the same move the shell harness's shell-quoting canary made).
 """
 
 from __future__ import annotations

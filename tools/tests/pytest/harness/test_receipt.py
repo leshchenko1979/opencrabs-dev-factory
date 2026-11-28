@@ -43,10 +43,10 @@ def test_canonical_path_is_the_version_bump_gate():
 def test_receipt_has_the_timing_object_shape(tmp_path):
     """``timing`` = {max_concurrency, section_count, sum_ms, slowest[<=10]}.
 
-    Each slowest entry is ``{n, title, ms, start_ms, end_ms}`` — run.sh's
-    battery_timing_json emits exactly these keys, and the receipt is the only
-    place a reader can learn WHICH section cost the wall (58 of 68 sections have
-    no measured seconds in any other artifact).
+    Each slowest entry is ``{n, title, ms, start_ms, end_ms}`` — the shell
+    harness's battery_timing_json emitted exactly these keys, and the receipt is
+    the only place a reader can learn WHICH section cost the wall (58 of 68
+    sections have no measured seconds in any other artifact).
     """
     class _Cfg:
         class option:
@@ -87,9 +87,9 @@ def test_timing_max_concurrency_measures_overlap(tmp_path):
 def test_fail_rows_come_from_per_worker_files(tmp_path, monkeypatch):
     """A green worker must never erase a sibling's evidence (#517/#614, one out).
 
-    run.sh's single $FAIL_LOG is truncated by whoever starts a run and removed
-    on green; under N workers that would let one green worker destroy another's
-    rows. Here: two per-worker files, concatenated by the controller.
+    The shell harness's single $FAIL_LOG was truncated by whoever started a run
+    and removed on green; under N workers that would let one green worker destroy
+    another's rows. Here: two per-worker files, concatenated by the controller.
     """
     class _Cfg:
         class option:

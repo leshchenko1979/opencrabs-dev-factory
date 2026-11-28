@@ -1,4 +1,4 @@
-"""Ported: `oc-fmt` installed/repo identity — run.sh §53.
+"""`oc-fmt` installed/repo identity.
 
 The fleet carries ``tools/git/oc-fmt`` and also INSTALLS it. Two copies of one
 formatter is a drift generator: the installed one runs, the repo one is what the

@@ -1,4 +1,4 @@
-"""Ported: `lib/oc-notify.sh` — run.sh §57 (CLI budget, #466) and §58 (#472/#18).
+"""`lib/oc-notify.sh` — the CLI budget (#466) and the fallback leg (#472/#18).
 
 Two defects, and both are the same shape: a code path that could not be reached,
 so its absence read as its success.
@@ -117,9 +117,9 @@ def hang_dir(scratch):
 def test_cli_leg_is_bounded_and_the_fallback_is_reachable(hang_dir, run_tool):
     """#466: a 30 s hang under a 2 s budget must cost ~2 s, not 30.
 
-    Pre-fix this leg had no bound at all, so the outer ``timeout 20`` in run.sh
-    was the only ceiling — and it fired *before* the A2A fallback could run,
-    which is precisely the state the fallback existed to cover.
+    Pre-fix this leg had no bound at all, so the outer ``timeout 20`` in the
+    shell harness was the only ceiling — and it fired *before* the A2A fallback
+    could run, which is precisely the state the fallback existed to cover.
     """
     res = _call(run_tool, stub_dir=hang_dir, mark=hang_dir.mark,
                 extra_env={"MARK": str(hang_dir.mark),

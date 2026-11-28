@@ -1,5 +1,5 @@
-"""Ported: run.sh §33 — ``oc-ledger`` lock budget (#619), plus the two #95 and
-#171 hazards that share its fixture.
+"""``oc-ledger`` lock budget (#619), plus the two #95 and #171 hazards that
+share its fixture.
 
 WHAT §33 IS FOR
     Three defects, all inside the same 131 shell lines:
@@ -55,7 +55,7 @@ EVERY SHELL ASSERTION, AND WHERE IT WENT
     §33 carries 12 ``ok``/``bad`` legs plus one tool-presence guard. The mapping
     is exhaustive, including the two that are deliberately NOT ported:
 
-    | run.sh §33 leg                                        | here |
+    | shell leg                                             | here |
     |-------------------------------------------------------|------|
     | ``if tool oc-ledger`` guard                           | ``TOOL = cf.tool_path("oc-ledger")`` at import — an absent tool fails COLLECTION, which is louder than a silent skip |
     | (c) control: lock free -> stamp succeeds              | ``test_control_a_free_lock_lets_the_stamp_through`` (+ a row-written assertion the shell does not make) |

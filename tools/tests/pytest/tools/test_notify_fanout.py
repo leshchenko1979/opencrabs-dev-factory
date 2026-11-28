@@ -1,4 +1,4 @@
-"""Ported: `oc-notify-fanout` guards — run.sh §46 (law 1, dead targets, --roles).
+"""`oc-notify-fanout` guards: law 1, dead targets, --roles.
 
 The section exists because the tool's own ``--selftest`` counts ONE case however
 many assertions it makes internally: a wave that reaches nobody while reporting
@@ -24,10 +24,11 @@ merely disclosed an absence — it can never go red in exactly the case it was
 written for (a mutation that drives ``sent`` to 2 still satisfies the substring
 arm). ``_field`` anchors on a key boundary.
 
-**DEVIATION from run.sh, deliberate: this port touches NO live state.** The shell
-section resolves the invoker with ``oc-ledger roster --live`` and points
-``OC_FANOUT_LEDGER`` at the LIVE fleet ledger, so each of its four legs writes
-real fleet state and its verdict depends on which lanes exist on the box today.
+**DEVIATION from the shell harness, deliberate: this module touches NO live
+state.** The shell section resolved the invoker with ``oc-ledger roster
+--live`` and pointed ``OC_FANOUT_LEDGER`` at the LIVE fleet ledger, so each of
+its four legs wrote real fleet state and its verdict depended on which lanes
+exist on the box today.
 Here the invoker is a fixture uuid, the roster is a fixture JSON and the session
 DB is a throwaway, so the same four claims hold on any box and no leg can flip
 because a lane was retired. ``OC_FANOUT_RUN_DIR`` is redirected as well: the

@@ -1,9 +1,8 @@
-"""Ported: `lib/oc-log.sh (unified tools log)`, `oc_log.py consumers stay
+"""`lib/oc-log.sh (unified tools log)`, `oc_log.py consumers stay
 retired (#760)`, `one availability definition in oc-issue-dispatch (#310)`.
 
-These are run.sh sections 1-3. Every leg is a direct port of an `ok`/`bad`
-assertion; the comment above each test names the original claim so a reader can
-diff it against run.sh without guessing.
+These cover battery sections 1-3. Every leg is a direct port of an `ok`/`bad`
+assertion; the comment above each test names the original claim it pins.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ exit "$rc"
 
 @pytest.fixture
 def demo(scratch):
-    """The oc-demo fixture from run.sh:1112-1122 — a tool that only logs."""
+    """The oc-demo fixture — a tool that only logs."""
     d = scratch.path / "loglib"
     (d / "lib").mkdir(parents=True, exist_ok=True)
     (d / "lib" / "oc-log.sh").write_text(

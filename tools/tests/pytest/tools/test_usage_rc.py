@@ -1,11 +1,12 @@
-"""Ported: the per-tool usage/rc legs of run.sh.
+"""The per-tool usage/rc legs.
 
 These are the bespoke `ok`/`bad` legs that sit beside a `run_selftest <tool>`
-line. The `run_selftest` wrapper itself belongs to the selftest module; what is
-ported here is only the argv/rc contract each tool declares in
-`tools/docs/RC-CONTRACT.md`.
+line. The `run_selftest` wrapper itself belongs to the selftest module; what
+lives here is only the argv/rc contract each tool declares in
+`tools/docs/RC-CONTRACT.md`. The §NN label on each case is the battery's
+legacy case id, kept so an old failure report still maps to a test.
 
-Section -> test mapping is in the docstring of each test.
+Case -> test mapping is in the docstring of each test.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ RC_CASES = [
                          ids=["s%s-%s-%s" % (c[0], c[1], c[4][:24].replace(" ", "_"))
                               for c in RC_CASES])
 def test_usage_rc(section, tool, argv, want, claim, run_tool):
-    """run.sh §<section>: `<tool> <argv>` -> rc <want> (usage contract)."""
+    """§<section>: `<tool> <argv>` -> rc <want> (usage contract)."""
     res = run_tool([_tool(tool), *argv], timeout=120)
     assert res.rc == want, "§%s %s: want rc %s, got %s\n%s" % (
         section, claim, want, res.rc, res.combined[-800:])
@@ -60,13 +61,13 @@ def test_usage_rc(section, tool, argv, want, claim, run_tool):
     ("54", "oc-log-search"),
 ])
 def test_help_exits_zero(section, tool, run_tool):
-    """run.sh §<section>: `<tool> --help` -> rc 0."""
+    """§<section>: `<tool> --help` -> rc 0."""
     res = run_tool([_tool(tool), "--help"], timeout=120)
     assert res.rc == 0, "§%s %s --help rc=%s" % (section, tool, res.rc)
 
 
 def test_issue_log_bad_sha_is_rc3(run_tool):
-    """run.sh §36: a non-existent sha is rc 3 (not found), with a stubbed repo."""
+    """§36: a non-existent sha is rc 3 (not found), with a stubbed repo."""
     res = run_tool([_tool("oc-issue-log"), "1", "zznotasha", "--dry-run"],
                    timeout=120, env={"OC_ISSUE_LOG_REPO": "x/y"})
     assert res.rc == 3, "bad sha -> %s (want 3)\n%s" % (res.rc, res.combined[-500:])

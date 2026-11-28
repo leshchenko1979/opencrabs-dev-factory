@@ -6,7 +6,7 @@ claims, so a fixture that silently stopped working reddens here instead of in a
 ported section six files away.
 
 Cheap on purpose: one stamp, one git commit, one stubbed ``gh`` call, one tiny
-selftest. No section of ``run.sh`` is reproduced.
+selftest. No shell section is reproduced.
 """
 
 from __future__ import annotations
@@ -209,9 +209,10 @@ def test_run_selftest_runs_a_real_tool(ledger_sandbox, run_selftest):
 def test_run_selftest_gives_each_call_its_own_state_dir(state_dir, run_selftest):
     """M2-22: a per-call throwaway state dir, or the /tmp leak returns.
 
-    run.sh makes one ``mktemp -d`` per selftest and removes it after (the volume
-    driver of the /tmp leak, one dir per tool per run). Here the dir is inside
-    the worker's scratch, so the controller's reaper owns it either way.
+    The shell harness made one ``mktemp -d`` per selftest and removed it after
+    (the volume driver of the /tmp leak, one dir per tool per run). Here the dir
+    is inside the worker's scratch, so the controller's reaper owns it either
+    way.
     """
     res = run_selftest(CHEAP_SELFTEST, timeout=120)
     made = state_dir / ("st-" + CHEAP_SELFTEST)
@@ -318,8 +319,8 @@ def test_fanout_tool_resolves_the_scratch_ledger_not_the_live_one(
 
     ``oc-notify-fanout`` defaults its ledger to ``$HOME/.opencrabs/profiles/ops/
     opencrabns-dev/events.jsonl`` via ``oc_ledger_path`` (tools/lib/oc-log.sh),
-    which is why run.sh:3095 has to pass the live path explicitly and every
-    fanout leg in the battery writes real fleet state. Here the fixture ledger
+    which is why the shell harness had to pass the live path explicitly and
+    every fanout leg in the battery wrote real fleet state. Here the fixture ledger
     is EMPTY, so the tool fails — and its error names the path it tried. That
     path must be the scratch one. A substring assertion on output is the honest
     check: it cannot be satisfied by the fixture "looking right".

@@ -1,5 +1,5 @@
-"""Ported: `oc-ledger` edge legs — run.sh §24 (empty-events fixture, usage) and
-§32 (the confirm/derive-by stub).
+"""`oc-ledger` edge legs — the empty-events fixture, usage, and the
+confirm/derive-by stub.
 
 ``run_selftest oc-ledger`` already proves the tool's own 418 cases, and it costs
 296 s — the single most expensive section in the battery. These legs are the

@@ -1,4 +1,4 @@
-"""Ported: `unified-log wire (real tool -> tmp log)` — run.sh §7.
+"""`unified-log wire (real tool -> tmp log)`.
 
 Three claims, each with a control:
 

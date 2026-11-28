@@ -1,7 +1,7 @@
 """The cgroup re-exec, tested where it now lives: ``lib/cgroup.py``.
 
-These legs used to drive the shell block extracted out of ``run.sh`` by
-``test_harness_cgroup.py``. The block is gone; ``pytest_cmdline_main`` is the
+These legs used to drive a shell block extracted out of the old shell harness
+by ``test_harness_cgroup.py``. The block is gone; ``pytest_cmdline_main`` is the
 implementation, and it is testable directly because every external fact it reads
 goes through one of four seams: ``shutil.which``, ``subprocess.run``,
 ``read_cgroup_path`` and ``os.execv``. Stub those and the whole branch tree is

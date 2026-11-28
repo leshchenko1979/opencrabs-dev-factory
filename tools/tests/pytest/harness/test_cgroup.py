@@ -18,8 +18,8 @@ What CAN be asserted from inside a running session:
 The branch LOGIC (service vs scope vs opt-out vs refusal) is driven with
 synthetic paths through ``is_service_leaf``/``caps_for``, because a test that
 can only exercise the branch its own environment happens to take asserts
-nothing — the reason run.sh's section 85 stubs ``systemd-run`` in the first
-place.
+nothing — the reason the shell harness's section 85 stubbed ``systemd-run`` in
+the first place.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def test_isolation_state_is_recorded():
     # THE trap: every user-manager cgroup sits under user@0.service, so a
     # substring test on the FULL path calls any user cgroup a service — a
     # transient .scope leaf included, which made the "already isolated" branch
-    # unreachable in the shell harness (run.sh:397-408).
+    # unreachable in the shell harness.
     ("/user.slice/user-0.slice/user@0.service/app.slice/x.scope", False),
     ("", False),
 ])
@@ -90,10 +90,11 @@ def test_is_service_leaf_reads_the_leaf_only(path, expected):
 def test_the_one_worker_cap_set_is_the_measured_baseline():
     """``-n 1`` caps are the numbers the box was profiled at.
 
-    These were pinned against ``run.sh:423`` while the shell existed. The shell
-    is retired, so they are pinned HERE — as absolute values, because they are
-    the budget every past measurement was taken in. Changing one silently
-    invalidates the comparison between an old receipt and a new run.
+    These were pinned against the shell harness's single cap array while the
+    shell existed. The shell is retired, so they are pinned HERE — as absolute
+    values, because they are the budget every past measurement was taken in.
+    Changing one silently invalidates the comparison between an old receipt and
+    a new run.
     """
     caps = cgroup.caps_for(1)
     joined = " ".join(caps)
@@ -154,7 +155,7 @@ def test_worker_count_resolution():
 
 
 def test_probe_and_exec_share_one_cap_array():
-    """The probe and the real exec must never diverge (run.sh:423's one array).
+    """The probe and the real exec must never diverge (the shell's one array).
 
     A divergence means the probe validates a DIFFERENT cap set than the one the
     run gets — the failure mode the shell harness avoided by building the array

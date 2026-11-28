@@ -1,4 +1,4 @@
-"""Ported: `oc-fanout` + attribution — run.sh §22 (issue #24).
+"""`oc-fanout` + attribution (issue #24).
 
 Two legs, and they answer different questions. GREEN asks *who contributed to
 this build*, RED asks *who broke it* — and the failure that makes the pair worth
@@ -53,7 +53,7 @@ def fanout(scratch, state_dir):
 
     Returns a Node carrying every path a leg needs. Nothing here is exported —
     the legs pass each path inline, so the sandbox's lifetime is exactly the
-    legs that use it (run.sh:§22 makes the same point about its own store).
+    legs that use it (the shell leg made the same point about its own store).
     """
     sd = state_dir
     (sd / "tools").mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,4 @@
-"""Ported: `oc-smoke-evidence` decoy-path guard — run.sh §35 (M2-2).
+"""`oc-smoke-evidence` decoy-path guard (M2-2).
 
 The section pins one property and it is the only one worth pinning: **a log
 target that is not the canonical one must ANNOUNCE itself.** ``--append-log``
@@ -63,8 +63,8 @@ def test_bare_append_log_is_the_canonical_log(run_tool, state_dir):
 def test_relative_append_log_resolves_to_the_state_dir(run_tool, state_dir):
     """A RELATIVE target is the state dir's, never the caller's CWD.
 
-    run.sh makes the same point: a battery invoked from any directory must still
-    write one place, so a relative path is resolved against STATE_DIR rather
+    The shell harness made the same point: a battery invoked from any directory
+    must still write one place, so a relative path is resolved against STATE_DIR rather
     than ``$PWD``.
     """
     res = _run(run_tool, "--append-log", "smoke-verdicts.log",

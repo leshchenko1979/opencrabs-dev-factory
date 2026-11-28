@@ -1,4 +1,4 @@
-"""Ported: `oc-post-receipts` (§14) and `oc-upstream-delta` (§27).
+"""`oc-post-receipts` (§14) and `oc-upstream-delta` (§27).
 
 Two small sections that the RC table does NOT cover, folded here so the README's
 "Not ported" row is not a false inventory.

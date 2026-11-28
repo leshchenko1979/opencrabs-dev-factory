@@ -1,8 +1,8 @@
-"""Ported: the three flood-guard sections — `flood guard reads both ts forms
-(#738)`, `flood guard counts matches, not jq lines (#770)`, `flood guard
-ignores verdict rcs (#68-follow-up)`.
+"""The three flood-guard sections — `flood guard reads both ts forms (#738)`,
+`flood guard counts matches, not jq lines (#770)`, `flood guard ignores verdict
+rcs (#68-follow-up)`.
 
-run.sh sections 4-6. Each leg drives the REAL guard out of lib/oc-log.sh against
+Battery sections 4-6. Each leg drives the REAL guard out of lib/oc-log.sh against
 a seeded tools log, because the defect in each case was that the guard's own
 instrument was wrong — a re-derived count would reproduce the bug instead of
 catching it.

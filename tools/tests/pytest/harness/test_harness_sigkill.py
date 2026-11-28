@@ -1,8 +1,8 @@
 """SIGKILL evidence: the dispatch narrative must SURVIVE a kill mid-send (#451).
 
-WHAT THIS PORTS
-    ``run.sh`` section 61 (``section "oc-issue-dispatch SIGKILL evidence
-    (#451)"``) — the post-fix cell and its DERIVED control.
+WHAT THIS COVERS
+    The shell harness's section 61 (``section "oc-issue-dispatch SIGKILL
+    evidence (#451)"``) — the post-fix cell and its DERIVED control.
 
 THE DEFECT
     ``oc-issue-dispatch`` builds its narrative on stdout, then sends. Killed
@@ -19,13 +19,13 @@ WHY THE CONTROL IS DERIVED, NOT WRITTEN
     check cannot tell "durable" from "verbose".
 
 WHY THE KILL IS TRIGGERED BY A SENTINEL, NOT BY A WALL CLOCK
-    ``run.sh`` bounds the cell with ``timeout -s KILL 10``. A wall bound does not
-    say WHERE the kill lands: it reproduces #451 only when the process reaches the
-    send inside 10 s. Under ``-n 2`` the machine is busier, the tool reaches the
-    send later, and the kill lands BEFORE the narrative is printed — the post-fix
-    cell then reads 0 B and the pair stops discriminating: the leg fails at
-    ``-n 2`` while passing serially, with both cells at 0 B. The bound is then
-    measuring the box's load, not the tool's behaviour.
+    The shell harness bounded the cell with ``timeout -s KILL 10``. A wall bound
+    does not say WHERE the kill lands: it reproduces #451 only when the process
+    reaches the send inside 10 s. Under ``-n 2`` the machine is busier, the tool
+    reaches the send later, and the kill lands BEFORE the narrative is printed —
+    the post-fix cell then reads 0 B and the pair stops discriminating: the leg
+    fails at ``-n 2`` while passing serially, with both cells at 0 B. The bound
+    is then measuring the box's load, not the tool's behaviour.
 
     So the notify stub drops a sentinel and the harness kills the process group
     the moment it appears. The kill is now INSIDE the send by construction, and
@@ -226,9 +226,8 @@ class DispatchStub:
 
         data = out.read_bytes()
         # A SIGKILLed child reports the raw wait status (-9). Normalise to the
-        # shell convention 128+9=137: that is what run.sh asserts and what the
-        # #451 evidence is documented as, so the leg speaks the same language as
-        # the thing it ports.
+        # shell convention 128+9=137: that is what the shell harness asserted
+        # and what the #451 evidence is documented as.
         rc = p.returncode
         if rc < 0:
             rc = 128 - rc
@@ -312,13 +311,13 @@ def test_the_two_cells_are_actually_different_runs(dispatch):
 # the derivation invariant, BY NAME
 # =============================================================================
 def test_the_control_derivation_inverts_exactly_one_site():
-    """run.sh §61's FIRST assertion: the control is derivable, and sound.
+    """The control is derivable, and sound.
 
-    ``run.sh`` asserts ``grep -c 'line_buffering=False' == 1`` on the derived
-    file and calls a miss "the discriminator is unsound". That assertion used to
-    live only inside ``DispatchStub.__init__``, where a tool edit that moved or
-    removed the site surfaced as three setup ERRORs and the reason had to be dug
-    out of a traceback.
+    The shell harness asserted ``grep -c 'line_buffering=False' == 1`` on the
+    derived file and called a miss "the discriminator is unsound". That
+    assertion used to live only inside ``DispatchStub.__init__``, where a tool
+    edit that moved or removed the site surfaced as three setup ERRORs and the
+    reason had to be dug out of a traceback.
 
     Named here so the fault reports as itself. ``derive_control`` is the SAME
     function the fixture uses, so this leg cannot drift from the construction it

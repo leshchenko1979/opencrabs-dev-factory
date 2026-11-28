@@ -1,11 +1,11 @@
-"""Ported: `lib/oc_claims.py (canonical claim-closure predicate)` — run.sh §13.
+"""`lib/oc_claims.py (canonical claim-closure predicate)`.
 
 The original is a 347-line heredoc driving the shipped module as a unit: the
 predicate was inlined four times and the copies drifted (#313/#314), so these
-cases pin the exact properties the drift broke. Ported 1:1 — the module is
+cases pin the exact properties the drift broke. Mapped 1:1 — the module is
 imported directly and each `chk(...)` becomes one assert.
 
-The one leg that read live state in run.sh (`order_commits_parents_first` over
+The one leg that read live state (`order_commits_parents_first` over
 `/root/opencrabs` commit shas) is rebuilt on a fixture repo: the property under
 test is "output is parents-first and input-order-independent", which a local
 3-commit chain demonstrates exactly, without a production checkout.
@@ -267,7 +267,7 @@ def test_issue_ref_resolution_is_trailer_anchored(oc, claims_repo):
 
 
 def test_order_commits_parents_first_is_input_independent(oc, git_repo):
-    """run.sh read three shas out of /root/opencrabs; the property is
+    """The shell leg read three shas out of /root/opencrabs; the property is
     parents-first + input-order-independent, which a local chain shows exactly."""
     repo = git_repo("order-chain")
     shas = []

@@ -1,4 +1,4 @@
-"""Ported: `lib/oc-embed.sh (job-name embed decoder)` — run.sh §12.
+"""`lib/oc-embed.sh (job-name embed decoder)` — the two decoders.
 
 Pure unit coverage of the two decoders, sourced straight out of the library.
 The asymmetry they pin is load-bearing: `oc_decode_job_embed` requires the
@@ -63,7 +63,7 @@ def _decode(fn, name, run_tool):
     script = '. "$1"; %s "$2"' % fn
     res = run_tool(["bash", "-c", script, "_", LIB, name], timeout=60)
     assert res.rc == 0, "%s exited %s on %r: %s" % (fn, res.rc, name, res.combined[-300:])
-    # `$(...)` in run.sh strips the trailing newline the sed arm emits.
+    # `$(...)` strips the trailing newline the sed arm emits.
     return res.out.rstrip("\n")
 
 

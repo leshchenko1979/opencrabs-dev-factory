@@ -1,4 +1,4 @@
-"""Ported: oc-branch-sweep — run.sh §30, including the #525 journal leg.
+"""oc-branch-sweep, including the #525 journal leg.
 
 #525 is a SILENT LOSS bug: ``oc_log_extra`` writes a FIXED key, so the
 per-branch call that used to sit inside the delete loop overwrote the previous
@@ -54,14 +54,15 @@ def test_journal_names_every_deleted_tip(run_tool, scratch, merged_repo):
     repo, heads = merged_repo
     log = scratch.path / "bs-tools.log"
 
-    # OC_TOOLS_NOLOG must be UNSET: run.sh exports it as 1 globally, and with it
-    # set the journal is empty and this leg passes vacuously.
+    # OC_TOOLS_NOLOG must be UNSET: the shell harness exported it as 1
+    # globally, and with it set the journal is empty and this leg passes
+    # vacuously.
     res = run_tool([str(TOOL), "--repo", str(repo)], timeout=180,
                    env={"OC_TOOLS_NOLOG": "", "OC_TOOLS_LOG": str(log),
                         "OC_ACTOR": "test-runner"})
     # rc 1 = "deletions happened" (0 nothing-deleted / 1 deletions / 2 usage /
-    # 3 git-fail). run.sh asserted nothing here; pinning 1 also proves the sweep
-    # actually took the delete path.
+    # 3 git-fail). The shell harness asserted nothing here; pinning 1 also
+    # proves the sweep actually took the delete path.
     assert res.rc == 1, "sweep: rc=%s, want 1 (deletions)\n%s" % (
         res.rc, res.combined[-600:])
 

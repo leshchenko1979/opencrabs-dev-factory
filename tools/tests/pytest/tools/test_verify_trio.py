@@ -1,4 +1,4 @@
-"""Ported: the three verify tools — run.sh §01/§02/§03 (oc-verify-order/job/artifact).
+"""The three verify tools — oc-verify-order/job/artifact.
 
 The shell sections are thin: a ``run_selftest`` each, plus one argv leg for
 ``oc-verify-order``. That thinness is the reason this port ADDS a black-box exit

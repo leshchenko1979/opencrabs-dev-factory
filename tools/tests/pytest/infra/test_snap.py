@@ -1,4 +1,4 @@
-"""Ported: `lib/oc-snap.sh` — run.sh §59 (mirror age) and §60 (reap).
+"""`lib/oc-snap.sh` — mirror age and reap.
 
 Both sections exist because an instrument reported a **confident zero** or a
 **confident age** that was a lie, and nothing downstream could tell.
@@ -205,7 +205,7 @@ def test_the_gate_wires_the_reap_onto_its_scratch_fixture():
     A run cannot observe its own cleanup from inside itself — the reap runs
     after the last test — so the WIRING is what is checkable.
 
-    Retargeted from ``run.sh``'s EXIT trap, which died with the shell harness.
+    Retargeted from the shell harness's EXIT trap, which died with it.
     The gate's equivalent is ``conftest.scratch``: the controller sweeps roots
     whose owner pid is dead, then claims a fresh one. Mutant: delete the
     ``_reap_dead_roots`` calls — this reddens while every other #60 leg stays
@@ -260,7 +260,7 @@ def test_stage_dir_arm_fires_and_spares_a_live_pid(reap_lib, run_tool):
 
 
 # ---------------------------------------------------------------------------
-# the gate's own root reaper — the mechanism that replaces run.sh's EXIT trap
+# the gate's own root reaper — the mechanism that replaces the shell EXIT trap
 # ---------------------------------------------------------------------------
 def test_the_reaper_removes_a_dead_owners_root(tmp_path):
     """A kill -9'd run leaves its root behind; the next run must reclaim it.

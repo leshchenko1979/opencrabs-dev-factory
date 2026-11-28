@@ -1,4 +1,4 @@
-"""Ported: the usage/`--help` contract cluster — run.sh §48, §49, §50, §52, §55, §56.
+"""The usage/`--help` contract cluster.
 
 Six sections, one shape: ``run_selftest <tool>`` plus a ``--bogus`` → rc 2 and a
 ``--help`` → rc 0. They are folded into one module because the claim is the same

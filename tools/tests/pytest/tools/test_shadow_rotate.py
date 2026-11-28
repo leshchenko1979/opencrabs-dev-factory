@@ -1,4 +1,4 @@
-"""Ported: oc-shadow-rotate — run.sh §34.
+"""oc-shadow-rotate.
 
 Rotation is APPEND-to-archive then TRUNCATE-live, so the one way it can destroy
 the shadow journal is truncating before the append lands — and that failure

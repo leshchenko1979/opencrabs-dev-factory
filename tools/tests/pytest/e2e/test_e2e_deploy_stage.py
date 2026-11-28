@@ -1,4 +1,4 @@
-"""Ported: the deploy stage tools — run.sh §23 (oc-build / oc-status), E2E legs.
+"""The deploy stage tools — oc-build / oc-status, E2E legs.
 
 These are the legs where a GREEN run is NOT a completed deploy, plus the one
 hermeticity assertion that costs a full selftest. All three drive REAL

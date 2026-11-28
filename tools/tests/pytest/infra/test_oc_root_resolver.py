@@ -1,4 +1,4 @@
-"""Ported: ``lib/oc-root.sh`` resolver coherence — run.sh §77 (F-L1/F-L2).
+"""``lib/oc-root.sh`` resolver coherence (F-L1/F-L2).
 
 THE SUBJECT IS A PROPERTY, NOT A SCRIPT
     The shell section builds one synthetic tree, mutates it three ways and runs
@@ -55,9 +55,9 @@ ROOT_SH = cf.TOOLS_DIR / "lib" / "oc-root.sh"
 LOGIC_RE = re.compile(
     r'^(_oc_r=|if \[ "\$\(basename|if \[ -f "\$_oc_r)')
 
-# The walk-up marker the static fleet arm keys on (run.sh §84 uses the same
-# literal, so the two ports cannot disagree about what "carries the walk-up"
-# means).
+# The walk-up marker the static fleet arm keys on (the entry-preamble module
+# uses the same literal, so the two cannot disagree about what "carries the
+# walk-up" means).
 WALKUP = 'while [ "$_oc_r" != "/" ]'
 FIXPOINT_BREAK = '[ "$_oc_r" != "." ]'
 
@@ -219,7 +219,7 @@ def test_every_bootstrap_carrier_agrees_with_the_documented_form():
 # F-L1 population — no carrier may read bare $TOOLS_DIR before assigning it
 # =============================================================================
 def _population_sweep(root):
-    """The resolver exports OC_TOOLS_DIR, NOT TOOLS_DIR (run.sh §77 verbatim).
+    """The resolver exports OC_TOOLS_DIR, NOT TOOLS_DIR (the shell leg's rule).
 
     A tool that READS the bare name without assigning it dies ``rc 127`` under
     ``set -u`` — silently if the read precedes ``set -u``, fatally after. Order

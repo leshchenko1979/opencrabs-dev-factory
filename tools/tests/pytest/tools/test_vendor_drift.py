@@ -1,16 +1,16 @@
-"""Ported: ``oc-vendor-drift`` — run.sh §83 (census ordinal §64).
+"""``oc-vendor-drift`` — census ordinal §64.
 
 WHY THIS MODULE IS MAPPED TO §64
-    run.sh has no ``section "..."`` call for the vendor-drift block: it opens on
-    a bare ``# ---- 83.`` header, and the census bounds a section's body by the
-    NEXT ``section`` call. So the block's nine ok/bad sites fall inside §64's
-    body and are charged to §64 — which is exactly why §64 read "28 shell sites,
-    19 pytest assertions" and looked like a quoting-guard deficit. Nine of those
-    twenty-eight were never about quoting at all.
+    The shell harness had no ``section "..."`` call for the vendor-drift block:
+    it opened on a bare ``# ---- 83.`` header, and the census bounds a section's
+    body by the NEXT ``section`` call. So the block's nine ok/bad sites fell
+    inside §64's body and were charged to §64 — which is exactly why §64 read
+    "28 shell sites, 19 pytest assertions" and looked like a quoting-guard
+    deficit. Nine of those twenty-eight were never about quoting at all.
 
     Rather than re-define the count (which would have to re-bound every section
     and would re-break §67 — see the census docstring), the sites are paid back
-    with REAL coverage: this module ports them, and the mapping says so.
+    with REAL coverage: this module covers them, and the mapping says so.
 
 THE CONTRACT (issue #700)
     A vendored copy is compared against its recorded upstream revision with a

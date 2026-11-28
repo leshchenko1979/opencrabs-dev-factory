@@ -1,4 +1,4 @@
-"""Ported: the fleet-wide ``--help`` sweep — run.sh §43.
+"""The fleet-wide ``--help`` sweep.
 
 ``tools/`` is grouped by KIND, so the executables live one level down. A flat
 ``tools/oc-*`` glob matches NOTHING under that layout and the section then
@@ -8,7 +8,7 @@ enumeration is recursive and a FLOOR is asserted.
 Three defects this leg exists to catch, each a different way ``rc 0`` lies:
 
 * **rc=124** — a tool killed by the bound. Named as a TIMEOUT, not a contract
-  violation: the two are different defects and run.sh's original could not tell
+  violation: the two are different defects and the shell harness could not tell
   them apart (#115).
 * **empty stdout** — ``--help`` is an explicitly requested READ, so the text
   belongs on STDOUT. Twelve tools printed it to STDERR while rc stayed 0, so
@@ -47,8 +47,9 @@ DIAGNOSTICS = (
 
 
 def _fleet():
-    """Every shipped executable, recursively — the same skip pattern run.sh
-    applies, so generated .bak pre-images are not enumerated as tools (#691)."""
+    """Every shipped executable, recursively — the same skip pattern the shell
+    harness applied, so generated .bak pre-images are not enumerated as tools
+    (#691)."""
     found = []
     for root, dirs, files in os.walk(cf.TOOLS_DIR):
         dirs[:] = [d for d in dirs if d not in
