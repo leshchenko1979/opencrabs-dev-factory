@@ -2,24 +2,15 @@
 # =============================================================================
 # tools/tests/run.sh — repeatable test suite for the oc-* CLI tools.
 #
-# One command to run the whole suite:
 #     bash tools/tests/run.sh
 #
-# Each tool gets its own --selftest AND a dedicated edge-case test that proved
-# fatal during the build. Exit 0 only if EVERY test passes; any failure prints
-# a line and exits nonzero (1 = test failed, 2 = harness error/tool missing).
+# Exit 0 only if every test passes (1 = test failed, 2 = harness error).
 #
-# The oc-seal IFS-join regression here is the one that silently dropped
-# pipe operators between jq filters (fix 2026-08-26) — if it ever comes back,
-# this suite goes red before anyone trusts a seal.
-
-# Parallelism and priority (#76, opencrabs#870 item 5): the battery runs ONE
-# section at a time by default and at nice 19 / I/O class idle, because it is
-# BACKGROUND work and must lose every race against the daemon. Measured
-# 2026-11-17 at the old $(nproc) default: disk 86-95% busy, swap 250 MB -> 1 GB,
-# 16 daemon Tokio threads blocked on page faults for an hour. Override with
-# --jobs N, --jobs=N or OC_BATTERY_JOBS=N; opt out of the priority drop with
-# OC_BATTERY_NO_PRIORITY=1.
+# PRIORITY: one section at a time, at nice 19 / I/O class idle. This is
+# background work and must lose every race against the daemon: at a higher
+# default it drove disk to ~90% and blocked daemon threads on page faults.
+# Override with --jobs N / OC_BATTERY_JOBS=N; OC_BATTERY_NO_PRIORITY=1 opts out
+# of the priority drop.
 # =============================================================================
 set -u
 # --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
@@ -28,15 +19,12 @@ if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
 if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
 TOOLS_DIR="$OC_TOOLS_DIR"
 
-# ---- tree fingerprint: battery integrity (2026-09-27) ------------------------
-# The battery executes tools FROM THE WORKTREE, so a tool rewritten while the
-# run is in progress can be read MID-WRITE -- bash reads scripts incrementally,
-# and a tool with an embedded Python body then yields a MIXED generation whose
-# legs fail with jq type errors and count drifts. That is a red describing the
-# EDIT, not the tool. Measured 2026-09-27: two red receipts (16:22, 17:01) both
-# fell inside one lane's edit window, while two quiet runs read PASS (17:13,
-# 17:17). A concurrent writer cannot be prevented from here, so the receipt
-# STATES whether the tree moved under it instead of implying it did not.
+# ---- tree fingerprint: battery integrity ------------------------------------
+# The battery executes tools FROM THE WORKTREE. A tool rewritten mid-run can be
+# read MID-WRITE (bash reads scripts incrementally), yielding a mixed generation
+# whose legs fail for reasons that describe the EDIT, not the tool. A concurrent
+# writer cannot be prevented from here, so the receipt STATES whether the tree
+# moved under it instead of implying it did not.
 _battery_tree_fp() {
   { find "$TOOLS_DIR" -maxdepth 2 -type f \
       \( -name 'oc-*' -o -name '*.sh' -o -name '*.py' -o -name '*.mjs' \) \
@@ -50,14 +38,11 @@ PASS=0 FAIL=0
 # synthetic run, not fleet activity (KERNEL batch D0, 2026-08-28).
 export OC_TOOLS_NOLOG=1
 export OC_ACTOR="test-runner"
-# ---- battery timing instrumentation (owner order 2026-09-28) ----------------
-# The owner asked whether --jobs actually parallelises; the answer was readable
-# NOWHERE. No per-section timing existed (the only date +%s in this file is a
-# leg, not the driver), and a run's chunk transcripts are removed at the end of
-# that same run -- so a 20-minute wall was unfalsifiable: "one greedy section"
-# and "a throttle that never releases" predict the same wall, and neither had a
-# receipt. These fields report what the driver DID: per-section wall time, its
-# offset within the run (the wave structure), the aggregate wall, and the
+# ---- battery timing instrumentation ----------------------------------------
+# Chunk transcripts are removed at the end of the run, so a long wall would
+# otherwise be unfalsifiable: "one greedy section" and "a throttle that never
+# releases" predict the same total. These fields report what the driver DID:
+# per-section wall time, its offset within the run, the aggregate wall, and the
 # MAXIMUM CONCURRENCY OBSERVED -- the direct test of whether the pool ever held
 # --jobs sections at once.
 BATTERY_T0="$(date +%s%N)"
@@ -65,13 +50,10 @@ BATTERY_WALL_MS=0
 BATTERY_SECTIONS_JSON='[]'
 BATTERY_SECTIONS_TSV=""
 
-# ---- live capture pointer (#133) -------------------------------------------
-# run_capture() sends each section's child output to a mktemp file, so the
-# operator sees the section header and then NOTHING until the child exits: a
-# section running slowly and a section wedged look byte-identical. Measured
-# 2026-11-21: a healthy run was diagnosed as a deadlock and kill -KILL'd at
-# ~22 min because the only visible evidence was silence; the child's capture
-# file had still been growing at the kill instant.
+# ---- live capture pointer ---------------------------------------------------
+# run_capture() sends each section's child output to a mktemp file, so without a
+# pointer the operator sees the section header and then NOTHING until the child
+# exits: a section running slowly and a section wedged look byte-identical.
 #
 # The pointer lives OUTSIDE the tree on purpose. It must not become an
 # untracked path (that would set tree_changed on every receipt) and it must not
@@ -90,17 +72,13 @@ _CAP_PTR="${OC_BATTERY_CAPTURE_POINTER:-/tmp/oc-battery-capture.current}"
 # ---- helpers ---------------------------------------------------------------
 note()  { printf '%s\n' "$*"; }
 
-# ---- oc-snap mirror reap on the EXIT path (factory #53) ----------------------
+# ---- oc-snap mirror reap on the EXIT path -----------------------------------
 # The tools this battery invokes (oc-build, oc-smoke, oc-verify-job, oc-gate)
-# each create a /tmp/oc-snap-* mirror through oc_snap_guard, and NOTHING reaped
-# them when the run ended. Measured 2026-10-20: one 392-leg run left 126 mirrors
-# totalling 2.0 GB with zero live owner pids, on a root filesystem at 84%.
-# CHANGELOG.md:1296 (2026-10-08) records the identical leak -- "nothing calls it
-# on the battery path" -- routed to the Toolsmith and never patched. Reaping on
-# EXIT covers an early exit as well as the normal tail; oc_snap_reap's own
-# predicate (dead name-pid AND no argv reference, age deliberately excluded per
-# fork #167) protects a concurrent lane's live mirror, so this cannot pull a
-# mirror out from under a running tool.
+# each create a /tmp/oc-snap-* mirror through oc_snap_guard, and nothing else
+# reaps them. Reaping on EXIT covers an early exit as well as the normal tail;
+# oc_snap_reap's own predicate (dead name-pid AND no argv reference) protects a
+# concurrent lane's live mirror, so this cannot pull one out from under a
+# running tool.
 _battery_reap_mirrors() {
   _brm_lib="$TOOLS_DIR/lib/oc-snap.sh"
   [ -f "$_brm_lib" ] || return 0
@@ -429,25 +407,15 @@ if [ -z "${BATTERY_IN_CHUNK:-}" ] && [ -z "${BATTERY_CGROUP_ISOLATED:-}" ] && [ 
     note "battery: WARNING: could not create a transient scope -- running in ${_oc_cg} unisolated (#720)"
   fi
 fi
-# ---- ONE per-run TEST_TMPDIR root (factory #171, steps 4+7) ------------------
-# WHY: the battery scattered its scratch across /tmp, which on this box is
-# /dev/sda1 -- a 58G ext4 at 87% full -- while /dev/shm is a 2.0G tmpfs at 1%.
-# Every `mktemp` the battery makes (70 call sites in this file, plus the
-# selftests' own) and every one of the ~33 oc-snap mirrors (4.7 MB each after
-# the excludes, tools/lib/oc-snap.sh) landed there, paying real disk I/O for
-# data whose whole life is one run. ONE root per run -- exported as TMPDIR and
-# OC_SNAP_ROOT -- gives both populations one owner and the EXIT path exactly one
-# thing to delete.
+# ---- ONE per-run TEST_TMPDIR root -------------------------------------------
+# The battery scatters scratch: every `mktemp` it makes, plus one oc-snap mirror
+# per tool invocation. ONE root per run -- exported as TMPDIR and OC_SNAP_ROOT --
+# gives both populations one owner and the EXIT path exactly one thing to delete.
 #
-# WHERE THE ROOT LIVES IS A MEASURED DECISION, NOT A DEFAULT (#171 step 7).
-# A/B on the git-heavy selftests (deploy + ship + issue-dispatch, solo and
-# sequential, 3 samples per arm, 2026-11-24): disk median 350.4 s vs tmpfs
-# median 346.0 s = a 1.26% gain, pass counts equal 16/16 in both arms. The keep
-# bar set before measuring was >=10%, so the tmpfs default was REVERTED: the
-# root defaults to DISK and tmpfs is opt-in via OC_BATTERY_SHM_DIR. The gain is
-# real but inside the noise of this box's variable load (mean load1 1.74 vs
-# 2.15), and /dev/shm is 2 GB shared with everything else -- not worth owning
-# by default for 4 seconds in 350.
+# The root defaults to DISK; tmpfs is opt-in via OC_BATTERY_SHM_DIR. A measured
+# A/B (deploy + ship + issue-dispatch, 3 samples per arm) showed a 1.26% gain,
+# below the 10% bar set before measuring, and /dev/shm is small and shared --
+# not worth owning by default.
 #
 # Placement is load-bearing TWICE:
 #   * AFTER the cgroup block above, because that block `exec`s this script: a
@@ -466,16 +434,10 @@ fi
 #   OC_BATTERY_SHM_DIR      tmpfs candidate. UNSET BY DEFAULT = disk root; set
 #                           it (e.g. /dev/shm) to opt into tmpfs
 #   OC_BATTERY_SHM_MIN_MB   free-space floor before a tmpfs candidate is used.
-#                           Only consulted when OC_BATTERY_SHM_DIR is set. Set
-#                           from the MEASURED peak, not a guess: `du -sm` sampled
-#                           at 5 Hz while the heaviest sections ran solo
-#                           (2026-11-24, #171) read 47 MB for section 10
-#                           (oc-deploy) and 13 MB for section 18 (oc-ship); 50 MB
-#                           is the worst figure seen (two copies of section 10
-#                           sharing one root by accident). 1.5x the worst peak ->
-#                           75 MB. The floor is what protects a lane that runs
-#                           --jobs N, where N sections' fixtures coexist: raise
-#                           it if you raise N.
+#                           Only consulted when OC_BATTERY_SHM_DIR is set. 75 MB
+#                           is 1.5x the worst peak measured on the heaviest
+#                           sections. It protects a lane running --jobs N, where
+#                           N sections' fixtures coexist: raise it if you raise N.
 _oc_bt_shm_dir="${OC_BATTERY_SHM_DIR:-}"
 _oc_bt_shm_min_mb="${OC_BATTERY_SHM_MIN_MB:-75}"
 case "$_oc_bt_shm_min_mb" in ''|*[!0-9]*) _oc_bt_shm_min_mb=75 ;; esac
