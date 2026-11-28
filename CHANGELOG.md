@@ -60,12 +60,87 @@ modules, and the relocated coverage above is inside the 497.
 
 The pytest cutover itself, in the order it landed:
 
-`c5cd91eb7` drop the three duplicate --selftest sites (factory #203) · `48c18b209` delete the two markers that select nothing (network, live_state) · `ad3e0fea1` file the 47 test modules under harness/ tools/ infra/ e2e/ · `f70915c3c` register tool-selftests as a canonical xdist_group · `8895c624f` §62 mapped, §64 covered — KNOWN_THIN now equals live · `38f824b09` port run.sh §62 red-receipt transcript and §83 vendor-drift legs · `27def989b` one bounded retry for oc-ledger's load-sensitive race probe · `a90f52d83` re-derive the census — §33/§63/§64 are ported, and guard the staleness · `68a1e7edf` §63/§64/§65 (entry-preamble, resolver coherence, quoting guard) · `fc5fd18fb` §33 ledger lock budget · `0a67824a4` fix §84/§65 relative-invocation arm — the wrapper absolutized $0 · `16457fb71` §84 names the shell's own section, not the README row · `9e46c89af` §65 drops the duplicated static census, keeps the behavioural arm · `fa5afa082` serialize wrapper legs with an flock, not just xdist_group · `285602596` §65 bound is wall with measured headroom, not RLIMIT_CPU · `2467becfe` coverage census + old-vs-new equivalence harness (#197) · `a330af105` port run.sh §65 — entry-preamble fixpoint + relative invocation (#708) · `14cdedad5` §33 timings show both load regimes, not one number · `06813e8a7` §33 timings replaced with the measured runs and their load regime · `65623a3e6` §33 coverage map, and the deferral verdict it withdraws · `b884e624e` port run.sh §64 — shell-quoting guard scanner arms · `3f0837294` move §61 from "Not ported" to "Ported" — it landed in 81bee99a2 · `dedbd067e` §61 — assert the kill landed INSIDE the send, not on the backstop · `f139cd09d` port run.sh §63 — lib/oc-root.sh resolver coherence as a property test · `fdc2b93ac` port run.sh §33 oc-ledger lock budget (#619) + #95/#171 · `cde788196` pin wrapper legs to one xdist worker — pids cap is 64, not a tool defect · `8ccb22260` register cache as a canonical xdist_group (#197) · `3bfa48c83` §23 docstrings carry the measured selftest figure · `b098fcaac` witness the xdist_group claim, pin --dist loadgroup (#197) · `81fa962d2` make the fixture cache legs hermetic with a stub tool (#197) · `2a49bd58a` coverage table names the §23 e2e split · `2b1d8cd3a` split §23 deploy stage into fast legs + e2e file · `f024d88b1` split §23 deploy stage into fast legs + e2e file · `7eb14182a` port oc-post-receipts (§14) and oc-upstream-delta (§27) · `61e1f332c` coverage table + an honest 'Not ported' section · `85374dfd0` port the usage/--help contract cluster (§29/§48/§49/§50/§52/§55/§56) · `010ec2714` size wrapper bounds against LOADED wall time, not quiet-box · `0d2060ede` port the deploy stage tools (§23) · `cba5f8d46` port the verify trio (§01/§02/§03) + the artifact swap-gate ladder · `da124d248` port oc-notify-fanout guards (§46) · `44919518a` -q sets verbose=-1, so bool() made quiet runs verbose (#197) · `d792fd6fd` port the 33 pure run_selftest wrapper sections (#197) · `843597903` port oc-review-persist (§25) · `b4d2e902e` port the oc-ledger edge legs (§24 + §32) · `ceca667fb` port the oc-fmt installed/repo identity (§53) · `573256cb4` make a fixture cache HIT print its key under -v (#197) · `0768a94bf` port the oc-smoke-evidence decoy guard (§35, M2-2) · `4b7bf339e` port lib/oc-notify.sh CLI budget + sender (§57, §58) · `d10e79b0c` port lib/oc-snap.sh mirror age + reap (§59, §60) · `dc4b2d1dc` port oc-issue-dispatch role-binding edges (§51) · `18d7d8efd` port oc-fanout + attribution (§22) · `81bee99a2` port the harness's own self-tests out of run.sh (#197) · `092bd5214` prove the cache by COUNTING INVOCATIONS, not timing (#197) · `0a734c0cb` wire the cache plugin and a cached_selftest fixture (#197) · `e1af084ca` opt-in content-hash selftest cache (#197) · `93febd970` port the fleet --help sweep (§43) · `a89f9eb72` port the RC-contract table legs (§44 + §45) · `e6226de81` port oc-health (§47) with a watcher-window leg that can go red · `13b1d6efc` port oc-branch-sweep (§30) incl. the #525 journal leg · `0a5f41f59` port oc-gate (§26) · `233879552` port oc-shadow-rotate (§34) · `5a6c97be3` port oc-shadow-rotate (§34) · `0d3b0fd69` port the unified-log wire (§7) with both controls · `bd2637762` port oc-seal (IFS merge, orders) and the embed decoder · `45d0f65db` port the oc-attrib sections and the #407 novelty filter · `a7f548474` port the oc_claims canonical claim-closure predicate section · `b7dd627c1` port the per-tool usage/rc contract legs · `3d069f41e` port the unified-log library and flood-guard sections · `a8db317e0` foundation fixtures, receipt parity, cgroup escape
+- `c5cd91eb7` drop the three duplicate --selftest sites (factory #203)
+- `48c18b209` delete the two markers that select nothing (network, live_state)
+- `ad3e0fea1` file the 47 test modules under harness/ tools/ infra/ e2e/
+- `f70915c3c` register tool-selftests as a canonical xdist_group
+- `8895c624f` §62 mapped, §64 covered — KNOWN_THIN now equals live
+- `38f824b09` port run.sh §62 red-receipt transcript and §83 vendor-drift legs
+- `27def989b` one bounded retry for oc-ledger's load-sensitive race probe
+- `a90f52d83` re-derive the census — §33/§63/§64 are ported, and guard the staleness
+- `68a1e7edf` §63/§64/§65 (entry-preamble, resolver coherence, quoting guard)
+- `fc5fd18fb` §33 ledger lock budget
+- `0a67824a4` fix §84/§65 relative-invocation arm — the wrapper absolutized $0
+- `16457fb71` §84 names the shell's own section, not the README row
+- `9e46c89af` §65 drops the duplicated static census, keeps the behavioural arm
+- `fa5afa082` serialize wrapper legs with an flock, not just xdist_group
+- `285602596` §65 bound is wall with measured headroom, not RLIMIT_CPU
+- `2467becfe` coverage census + old-vs-new equivalence harness (#197)
+- `a330af105` port run.sh §65 — entry-preamble fixpoint + relative invocation (#708)
+- `14cdedad5` §33 timings show both load regimes, not one number
+- `06813e8a7` §33 timings replaced with the measured runs and their load regime
+- `65623a3e6` §33 coverage map, and the deferral verdict it withdraws
+- `b884e624e` port run.sh §64 — shell-quoting guard scanner arms
+- `3f0837294` move §61 from "Not ported" to "Ported" — it landed in 81bee99a2
+- `dedbd067e` §61 — assert the kill landed INSIDE the send, not on the backstop
+- `f139cd09d` port run.sh §63 — lib/oc-root.sh resolver coherence as a property test
+- `fdc2b93ac` port run.sh §33 oc-ledger lock budget (#619) + #95/#171
+- `cde788196` pin wrapper legs to one xdist worker — pids cap is 64, not a tool defect
+- `8ccb22260` register cache as a canonical xdist_group (#197)
+- `3bfa48c83` §23 docstrings carry the measured selftest figure
+- `b098fcaac` witness the xdist_group claim, pin --dist loadgroup (#197)
+- `81fa962d2` make the fixture cache legs hermetic with a stub tool (#197)
+- `2a49bd58a` coverage table names the §23 e2e split
+- `2b1d8cd3a` split §23 deploy stage into fast legs + e2e file
+- `f024d88b1` split §23 deploy stage into fast legs + e2e file
+- `7eb14182a` port oc-post-receipts (§14) and oc-upstream-delta (§27)
+- `61e1f332c` coverage table + an honest 'Not ported' section
+- `85374dfd0` port the usage/--help contract cluster (§29/§48/§49/§50/§52/§55/§56)
+- `010ec2714` size wrapper bounds against LOADED wall time, not quiet-box
+- `0d2060ede` port the deploy stage tools (§23)
+- `cba5f8d46` port the verify trio (§01/§02/§03) + the artifact swap-gate ladder
+- `da124d248` port oc-notify-fanout guards (§46)
+- `44919518a` -q sets verbose=-1, so bool() made quiet runs verbose (#197)
+- `d792fd6fd` port the 33 pure run_selftest wrapper sections (#197)
+- `843597903` port oc-review-persist (§25)
+- `b4d2e902e` port the oc-ledger edge legs (§24 + §32)
+- `ceca667fb` port the oc-fmt installed/repo identity (§53)
+- `573256cb4` make a fixture cache HIT print its key under -v (#197)
+- `0768a94bf` port the oc-smoke-evidence decoy guard (§35, M2-2)
+- `4b7bf339e` port lib/oc-notify.sh CLI budget + sender (§57, §58)
+- `d10e79b0c` port lib/oc-snap.sh mirror age + reap (§59, §60)
+- `dc4b2d1dc` port oc-issue-dispatch role-binding edges (§51)
+- `18d7d8efd` port oc-fanout + attribution (§22)
+- `81bee99a2` port the harness's own self-tests out of run.sh (#197)
+- `092bd5214` prove the cache by COUNTING INVOCATIONS, not timing (#197)
+- `0a734c0cb` wire the cache plugin and a cached_selftest fixture (#197)
+- `e1af084ca` opt-in content-hash selftest cache (#197)
+- `93febd970` port the fleet --help sweep (§43)
+- `a89f9eb72` port the RC-contract table legs (§44 + §45)
+- `e6226de81` port oc-health (§47) with a watcher-window leg that can go red
+- `13b1d6efc` port oc-branch-sweep (§30) incl. the #525 journal leg
+- `0a5f41f59` port oc-gate (§26)
+- `233879552` port oc-shadow-rotate (§34)
+- `5a6c97be3` port oc-shadow-rotate (§34)
+- `0d3b0fd69` port the unified-log wire (§7) with both controls
+- `bd2637762` port oc-seal (IFS merge, orders) and the embed decoder
+- `45d0f65db` port the oc-attrib sections and the #407 novelty filter
+- `a7f548474` port the oc_claims canonical claim-closure predicate section
+- `b7dd627c1` port the per-tool usage/rc contract legs
+- `3d069f41e` port the unified-log library and flood-guard sections
+- `a8db317e0` foundation fixtures, receipt parity, cgroup escape
 
 
 Landed in the same window by other lanes:
 
-`8e67ec8eb` stamp a terminal ledger row so a dead chain stops looking alive (#205 P3b) · `b11c3432e` escape the backticks in both usage heredocs · `62e01edaa` make shipping observable — adoption receipts, find --sha, --in-flight (#205) · `bc4ca2d86` record the witnessed gate run on every rc, not only rc=5 (#210) · `6998b04ac` a damaged session store is a BOX fault, not a missing actor (#192) · `646a92764` make the #192 fan-out legs assert the ADDRESS, not the prose · `e9675ea9e` keep the battery's fan-out legs hermetic after #192 · `c33745d22` attribute a sub-agent commit to its lane, not its child session (#192)
+- `8e67ec8eb` stamp a terminal ledger row so a dead chain stops looking alive (#205 P3b)
+- `b11c3432e` escape the backticks in both usage heredocs
+- `62e01edaa` make shipping observable — adoption receipts, find --sha, --in-flight (#205)
+- `bc4ca2d86` record the witnessed gate run on every rc, not only rc=5 (#210)
+- `6998b04ac` a damaged session store is a BOX fault, not a missing actor (#192)
+- `646a92764` make the #192 fan-out legs assert the ADDRESS, not the prose
+- `e9675ea9e` keep the battery's fan-out legs hermetic after #192
+- `c33745d22` attribute a sub-agent commit to its lane, not its child session (#192)
 
 **Not part of this bump, still open:** factory
 [#212](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/212)
