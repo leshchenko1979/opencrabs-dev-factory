@@ -3893,7 +3893,7 @@ FIXTURE
   # SELF-MATCHES: 'OC_LEDGER_LOCK_WAIT' measured 3 hits (two production lines plus
   # this leg) and 'holder worst case' 2, so the legs reddened on their own source
   # rather than on the tool (measured 2026-09-26). The BEHAVIOURAL coverage lives
-  # in tools/tests/run.sh ("oc-ledger lock budget (#619)"): it holds the lock and
+  # in the pytest battery (test_ledger_lock_budget.py): it holds the lock and
   # varies the push bound, which a grep cannot do.
   _p_derived='_OC_LOCK_WOR''ST=$(( _OC_PUSH_TIMEOUT'
   chk "lock-wait-derived-not-flat" "1" "$(grep -cF "$_p_derived" "$ME")"
