@@ -1009,6 +1009,18 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     if getattr(config.option, "collectonly", False):
         terminalreporter.write_line("pytest-receipt: collect-only run, no receipt written")
         return
+    refused = _receipt.refusal_reason(config)
+    if refused:
+        # #214. Said on its own line, naming the reason and where the receipt
+        # actually went: a scoped run must never look like it refreshed the
+        # version-bump gate, and a reader must be able to tell which verdict
+        # ``oc-ledger sync`` will now see (the last FULL one, untouched).
+        terminalreporter.write_line(
+            "pytest-receipt: REFUSED the canonical gate receipt (%s) — this run's "
+            "selection is scoped: %s. Wrote %s instead; oc-ledger sync keeps "
+            "reading the last FULL verdict."
+            % (_receipt.DEFAULT_RECEIPT, refused, path))
+        return
     terminalreporter.write_line(
         "pytest-receipt: %s (pass=%d fail=%d wall=%dms)"
         % (path, run.n_pass, run.n_fail, run.wall_ms()))
