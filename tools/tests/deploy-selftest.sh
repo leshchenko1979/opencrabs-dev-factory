@@ -572,6 +572,42 @@ CYML
   if [ "$(git -C "$T/remote.git" rev-parse main)" = "$SHA2" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: main not pushed"; fi
   grep -q "workflow run" "$GH_LOG" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: gh dispatch not called"; }
   grep -q "dispatched" "$SD/oc-deploy-shadow.log" && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: no dispatched shadow row"; }
+  # 6j-6l. #219 — a GREEN build is NOT a deployed box, and the gap must be on
+  #     the record. Leg 6 above IS the measured failure shape: an --execute ship
+  #     with --wait 0 dispatched, the box kept its old binary, and the only
+  #     thing any caller saw was exit 0. Before #219 the tool said "swap chain
+  #     ready"; it now writes $STATE_DIR/swap-pending.json and says NOT
+  #     DEPLOYED on stderr.
+  #
+  #     The assertions read the FILE, not the wording: a receipt nobody can
+  #     parse is not a receipt, and the reason token is what tells the next ship
+  #     WHY the box is behind.
+  check_has "ship-ff-not-deployed-on-stderr" "$out" "NOT DEPLOYED"
+  if [ -f "$SD/swap-pending.json" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "SELFTEST FAIL: #219 fire-and-forget ship wrote no swap-pending.json"; fi
+  _sp_why="$(jq -r '.reason // ""' "$SD/swap-pending.json" 2>/dev/null || true)"
+  [ "$_sp_why" = "fire-and-forget" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #219 swap-pending reason='$_sp_why' want 'fire-and-forget'"; }
+  _sp_sha="$(jq -r '.sha // ""' "$SD/swap-pending.json" 2>/dev/null || true)"
+  [ "$_sp_sha" = "$SHA2" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #219 swap-pending names '$_sp_sha' not the shipped $SHA2"; }
+  # 6k. the NEXT ship REPORTS it. A receipt nobody reads is the same silent gap
+  #     it was written to end, so this leg re-runs a PLAN ship (cheap, no
+  #     dispatch) and asserts the pending sha is named on stderr.
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+  check_rc "ship-pending-report-plan-rc" $rc 0
+  check_has "ship-pending-report-names-sha" "$out" "swap-pending: sha=$SHA2"
+  check_has "ship-pending-report-names-reason" "$out" "reason=fire-and-forget"
+  [ -f "$SD/swap-pending.json" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "SELFTEST FAIL: #219 the report DELETED the receipt it reported"; }
+  # 6l. the ONLY thing that clears it silently is the box actually running that
+  #     sha — i.e. deployed.sha naming it. Then the receipt is stale bookkeeping
+  #     and must be dropped, with the resolution stated rather than assumed.
+  printf '%s\n' "$SHA2" > "$SD/deployed.sha"
+  out="$(cd "$T/repo" && OC_DEPLOY_STATE_DIR="$SD" OC_DEPLOY_REMOTE="$T/remote.git" \
+    OC_DEPLOY_VALIDATE="$SD/tools/val-ok" OC_DEPLOY_GH="$SD/gh" OC_DEPLOY_CARRIER="$SD/tools/carrier" \
+    "$BUILD_BIN" ship --sha "$SHA2" 2>&1)"; rc=$?
+  check_has "ship-pending-resolved-stated" "$out" "swap-pending RESOLVED"
+  [ -f "$SD/swap-pending.json" ] && { fail=$((fail+1)); echo "SELFTEST FAIL: #219 receipt survived a resolved swap"; } || pass=$((pass+1))
+  rm -f "$SD/deployed.sha"
   # 6b. F-1 fusion (v0.4.97): ship --execute --wait N bounded-polls the run we
   #     just dispatched. Stub env: OC_TEST_SHIPWAIT_HEAD=the shipped sha (run
   #     555 head matches), OC_TEST_SHIPWAIT_CONCL=completed/success -> GREEN

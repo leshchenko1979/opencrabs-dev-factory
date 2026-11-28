@@ -453,6 +453,11 @@ swap_execute() {
     fi
     ledger_stamp "$BY_LBL" "swap-result DEPLOYED sha=$SHA run=$RUN_ID features=$FEATURES: install(seq5)+post-verify(seq$SEQ match=true)+marker-write+receipt; priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?}; journal=$JF backup=$BAK auth=auto-swap fanout=$FO_NOTE publish=$PUB_NOTE" "swap-result"
     shadow_log swap "$SHA" "$FEATURES" "deployed"
+    # #219: close the SWAP-PENDING receipt oc-build leaves when a ship ends
+    # BUILT-but-not-deployed. Only this verified-GREEN path clears it — the
+    # rollback arm below deliberately leaves it in place, because a failed swap
+    # must stay on the record for the next ship to report.
+    rm -f "$STATE_DIR/swap-pending.json" 2>/dev/null || true
     echo "SWAP COMPLETE: sha=$SHA run=$RUN_ID verified disk==proc, markers written, fanout=$FO_NOTE, ledger stamped"
     exit 0
   fi

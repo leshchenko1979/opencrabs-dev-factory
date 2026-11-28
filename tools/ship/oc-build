@@ -156,10 +156,77 @@ oc_priority_report
 case "$MODE" in ship) kill_brake ;; esac
 oc_features_resolve
 
+# ---- #219: the SWAP-PENDING receipt (a GREEN build is NOT a deployed box) --
+# `ship` has TWO exits that legitimately leave the box on the OLD binary: the
+# fire-and-forget dispatch (--wait 0 / OC_BUILD_WAIT=0) and the SHIP-WAIT GREEN
+# (the carrier BUILT the sha; the swap is a SEPARATE leg, driven by
+# `oc-status poll --execute`). Both are supported modes — the defect was not the
+# skip, it was the SILENCE. Measured 2026-11-28: an --execute ship with no
+# --wait dispatched at 16:31:34Z, its carrier run went GREEN at 16:41:25Z, and
+# deployed.sha still named the previous sha hours later, with zero rows in any
+# log saying so. Every reader downstream (the lane, the next ship, an operator)
+# saw only `exit 0`.
+#
+# So each of those two exits writes $STATE_DIR/swap-pending.json naming the sha
+# the carrier built, the run that built it and WHY the swap did not follow, and
+# says it out loud on stderr. oc-swap deletes it on a successful deploy, and the
+# next `ship` reports it at the top (swap_pending_report) instead of inheriting
+# the gap silently. No new mechanism is added to the swap chain: this only makes
+# the existing skip legible.
+SWAP_PENDING="$STATE_DIR/swap-pending.json"
+
+swap_pending_write() { # $1=built sha (empty = not resolved yet) $2=run id $3=reason
+  local _b="${1:-}" _r="${2:-}" _why="${3:-unknown}"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  # `built_sha` is OMITTED, not written as "", when the carrier has not reported
+  # a built sha yet (the fire-and-forget arm exits before the run exists). An
+  # empty string is not null, so jq's `//` in swap_pending_report would keep it
+  # and the next ship would name `sha=unknown` instead of the sha it actually
+  # queued — the receipt would then be unreadable exactly when it matters.
+  # Measured 2026-11-28 on deploy-selftest legs 6j-6l.
+  jq -cn --arg sha "$SHA" --arg b "$_b" --arg run "$_r" --arg f "$FEATURES" \
+         --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg why "$_why" \
+         '{sha:$sha} + (if $b == "" then {} else {built_sha:$b} end)
+          + {run:$run, features:$f, ts:$ts, reason:$why}' \
+    > "$SWAP_PENDING.tmp" 2>/dev/null \
+    && mv -f "$SWAP_PENDING.tmp" "$SWAP_PENDING" 2>/dev/null || true
+  shadow_log ship "$SHA" "$FEATURES" "swap-pending:${_why}:${_r:-no-run}"
+  return 0
+}
+
+swap_pending_report() { # #219: name an unswapped last ship on the NEXT run
+  [ -f "$SWAP_PENDING" ] || return 0
+  local _b _r _t _w _d
+  _b="$(jq -r '.built_sha // .sha // empty' "$SWAP_PENDING" 2>/dev/null || true)"
+  _r="$(jq -r '.run // empty' "$SWAP_PENDING" 2>/dev/null || true)"
+  _t="$(jq -r '.ts // empty' "$SWAP_PENDING" 2>/dev/null || true)"
+  _w="$(jq -r '.reason // empty' "$SWAP_PENDING" 2>/dev/null || true)"
+  _d="$(cat "$DEPLOYED" 2>/dev/null || true)"
+  [ -n "$_b" ] || _b="unknown"
+  if [ "$_b" != "unknown" ] && [ -n "$_d" ] && [ "$_b" = "$_d" ]; then
+    printf '%s: swap-pending RESOLVED — %s is the deployed sha now (pending since %s, run %s); clearing the receipt\n' \
+      "$OC_DEPLOY_PROG" "$_b" "${_t:-unknown}" "${_r:-?}" >&2
+    rm -f "$SWAP_PENDING" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s: swap-pending: sha=%s since=%s run=%s reason=%s — LAST SHIP DID NOT SWAP: the carrier built %s but this box still runs %s. Drive the chain: oc-status poll --sha %s --execute --wait 2700\n' \
+    "$OC_DEPLOY_PROG" "$_b" "${_t:-unknown}" "${_r:-?}" "${_w:-unknown}" "$_b" "${_d:-none}" "$_b" >&2
+  shadow_log ship "$_b" "" "swap-pending-reported:${_w:-unknown}"
+  # The receipt is NOT deleted here. It is cleared by exactly two events: a
+  # successful swap (oc-swap's verified-GREEN path) and the resolution branch
+  # above (deployed.sha now names the pending sha). A ship that skips again
+  # OVERWRITES it with its own sha, so it cannot accrete — and until one of
+  # those three happens, every ship keeps saying the box is behind.
+  return 0
+}
+
 case "$MODE" in
   # ------------------------------------------------------------------ ship --
   ship)
     kill_brake
+    # #219: report an unswapped PREVIOUS ship before this one does anything —
+    # a receipt nobody reads is the same silent gap it was written to end.
+    swap_pending_report
     # F-1 fusion (v0.4.97, editor.md Phase 6a lens E promise): --wait N on an
     # EXECUTE ship is now honoured — after a successful dispatch the SAME
     # process bounded-polls the carrier run (N seconds) and exits on GREEN /
@@ -456,7 +523,17 @@ case "$MODE" in
                 if [ "$CONCL" = success ]; then
                   B_SHA="$(run_built_sha "$RID" || true)"
                   shadow_log ship "$SHA" "$FEATURES" "ship-wait-green:$RID"
-                  echo "SHIP-WAIT: run $RID GREEN (sha=${B_SHA:-unknown}) within --wait ${WAIT_SECS}s — swap chain ready: poll --execute"
+                  # #219: GREEN is the CARRIER's verdict — it means the sha was
+                  # BUILT, not that this box runs it. The swap is a separate leg
+                  # and this exit does NOT fire it, so leave the receipt and say
+                  # so. The old wording ("swap chain ready") read as a completed
+                  # deploy to every caller that only checked the exit code.
+                  swap_pending_write "${B_SHA:-}" "$RID" "ship-wait-green"
+                  echo "SHIP-WAIT: run $RID GREEN (sha=${B_SHA:-unknown}) within --wait ${WAIT_SECS}s — BUILT, NOT DEPLOYED: this box still runs $(cat "$DEPLOYED" 2>/dev/null || echo unknown)"
+                  printf '%s: NOT DEPLOYED — the carrier BUILT %s (run %s) but the swap leg has NOT fired, so this box still runs %s.\n' \
+                    "$OC_DEPLOY_PROG" "${B_SHA:-$SHA}" "$RID" "$(cat "$DEPLOYED" 2>/dev/null || echo unknown)" >&2
+                  printf '%s:   finish the deploy: oc-status poll --sha %s --execute --wait 2700   (receipt: %s)\n' \
+                    "$OC_DEPLOY_PROG" "${B_SHA:-$SHA}" "$SWAP_PENDING" >&2
                   exit 0
                 fi
                 shadow_log ship "$SHA" "$FEATURES" "ship-wait-red:$RID:$CONCL"
@@ -472,6 +549,22 @@ case "$MODE" in
           }
           sleep "$POLL_INTERVAL"
         done
+      else
+        # #219: --wait 0 / OC_BUILD_WAIT=0 is a SUPPORTED mode (dispatch and
+        # return), so this arm does not refuse — it REFUSES TO BE SILENT. The
+        # measured failure (2026-11-28 16:31:34Z) was exactly this exit: the
+        # run went GREEN ten minutes later, the box stayed on the old binary,
+        # and nothing in any log said the swap had not fired.
+        swap_pending_write "" "" "fire-and-forget"
+        _D_NOW="$(cat "$DEPLOYED" 2>/dev/null || echo unknown)"
+        printf '%s: %s\n' "$OC_DEPLOY_PROG" "==============================================================" >&2
+        printf '%s: NOT DEPLOYED — fire-and-forget ship (--wait 0 / OC_BUILD_WAIT=0).\n' "$OC_DEPLOY_PROG" >&2
+        printf '%s:   dispatched: %s (features=%s)\n' "$OC_DEPLOY_PROG" "$SHA" "$FEATURES" >&2
+        printf '%s:   NOTHING on this box is watching that run, so the SWAP LEG HAS\n' "$OC_DEPLOY_PROG" >&2
+        printf '%s:   NOT FIRED and the host still runs %s.\n' "$OC_DEPLOY_PROG" "$_D_NOW" >&2
+        printf '%s:   Drive the chain yourself: oc-status poll --sha %s --execute --wait 2700\n' "$OC_DEPLOY_PROG" "$SHA" >&2
+        printf '%s:   Receipt: %s (cleared by a successful swap; re-reported by the next ship)\n' "$OC_DEPLOY_PROG" "$SWAP_PENDING" >&2
+        printf '%s: %s\n' "$OC_DEPLOY_PROG" "==============================================================" >&2
       fi
       echo "NEXT: fanout auto-notifies contributors on swap; poll --execute drives the swap chain"
     else
