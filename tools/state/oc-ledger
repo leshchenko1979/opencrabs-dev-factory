@@ -55,8 +55,10 @@ bash_tool="$here/oc-ledger.bash"
 # The walk stops at the first token that is not a global flag — exactly where
 # parse_global stops.
 selftest=0
-i=0
-while [ "$i" -lt "$#" ]; do
+# Positional parameters start at 1: an index starting at 0 would read $0 (the
+# script path) and the walk would never see the flag at all.
+i=1
+while [ "$i" -le "$#" ]; do
   _arg="${!i}"
   i=$((i + 1))
   case "$_arg" in
