@@ -130,7 +130,7 @@ break the tool. It is untouched.
 
 - per-tool `--selftest` for every edited tool, and the #379 refusal leg's
   control re-armed with a discriminating non-tracker slug;
-- `bash tools/tests/run.sh` (battery) — must exit 0 with FAIL 0;
+- `cd tools/tests/pytest && python3 -m pytest` (the battery) — must exit 0;
 - `tools/docs/RC-CONTRACT.md` gains a routing stanza on each edited row;
 - `oc-vendor-drift` reads `IN_SYNC` — a reworded routing comment inside a vendored tool
   must move `vendor-manifest.json`'s `match`/`match_upstream` pair with it, or the drift
