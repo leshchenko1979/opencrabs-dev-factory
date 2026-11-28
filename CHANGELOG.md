@@ -60,6 +60,25 @@ CONTROL on a fresh enrolled tip + fail-open on an unparseable ledger),
 `deploy-selftest.sh` 6j–6l (receipt written, reported, resolved),
 `test_verify_trio.py` (stale resolver refused, current resolver silent).
 
+**Bundled (other lanes, landed between v0.4.338 and this sync).** Named here
+because the version record is the only place a bundled fix's ship date exists:
+
+- `08b9c90ea` — `oc-ledger`'s append fast path now PROVES non-event state is
+  unchanged (#193). `enroll` appends one event *and* one `.workers[]` row,
+  which matched the true-append predicate, so the fast path appended the line
+  and skipped the `workers.json` rewrite: the roster row was dropped with rc 0
+  and no diagnostic. `promote` emits two events, misses the length test, and
+  wrote correctly — that asymmetry is why it went unnoticed.
+- `3ce390cab` — a SCOPED pytest run refuses the canonical gate receipt (#214).
+  `battery-last.json` became a tracked file in v0.4.337, so every invocation
+  was the gate's writer: a one-file run stamped `{"pass": 9, "verdict":
+  "PASS"}` over the ship gate. Hit twice on 2026-11-28.
+- `de7592fd9` — the `negctl-307` mutation guard carries its own wall bound and
+  reaches its aimed leg (#215, #216). The dispatch selftest makes ~90 live `gh`
+  calls and the guard re-runs whole sections per mutant, so a full pass measures
+  ~1338 s — well past the 900 s it was wrapped in, and nothing about that was a
+  stall.
+
 
 ## v0.4.338 — `oc-notify-fanout --selftest` names its abort instead of dying silent
 
