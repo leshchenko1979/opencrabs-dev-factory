@@ -1830,6 +1830,23 @@ else
   # chains, three identical deaths, ZERO SWAPPED rows ever. rc 5 now
   # RESUME-POLLS the witnessed run instead of dying. Genuine infra codes stay
   # fatal below (4 unknown run / 7 red-fault-scope / 8 ambiguous).
+  # #210: RECORD THE WITNESSED RUN ON EVERY RC, not only inside the rc=5 loop.
+  # oc-gate names the run it ADOPTED before a later leg can die, so a fresh
+  # dispatch that then hits a transport error exits 4 with the run id sitting in
+  # GATE_OUT. Measured 2026-11-28: `adopted run=46081853162 ... pin ok`, then
+  # `run view ... failed: TLS handshake timeout`, then rc=4 -- and because the
+  # parse lived only in the rc=5 loop, GATE_RUN_ID stayed EMPTY.
+  # chain_rearm_action's guard reads an empty GATE_RUN_ID as "nothing was
+  # dispatched", so it re-armed a fresh gate onto a sha whose verdict already
+  # existed: four gate runs for two shas in 40 minutes, all green or in flight.
+  # The guard's premise is right and its input was wrong. An empty value HERE
+  # still means nothing was dispatched (a pre-dispatch usage refusal names no
+  # run), which is exactly the state that guard exists to detect.
+  _DISPATCH_RUN="$(printf '%s' "$GATE_OUT" | grep -oE 'run=[0-9]+' | head -1 | cut -d= -f2 || true)"
+  if [ -n "$_DISPATCH_RUN" ]; then
+    GATE_RUN_ID="$_DISPATCH_RUN"
+    journal "LEG1 gate witnessed run=$GATE_RUN_ID (rc=$GATE_RC) — a re-dispatch is disqualified"
+  fi
   GATE_ATTEMPTS=0
   while [ "$GATE_RC" = "5" ]; do
     GATE_RUN_ID="$(printf '%s' "$GATE_OUT" | grep -oE 'run=[0-9]+' | head -1 | cut -d= -f2 || true)"

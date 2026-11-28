@@ -1403,6 +1403,31 @@ EOF
     bad "rearm-rc6-argv-extract: _chain_rearm_argv not found in \$SELF"
   fi
 
+  # 1j. #210 -- THE RE-ARM GUARD MUST SEE THE RUN IT WITNESSED. oc-gate names
+  # the run it ADOPTED on stderr, which 2>&1 folds into GATE_OUT, so an rc=4
+  # death AFTER adoption still carries a run id. Before this fix GATE_RUN_ID was
+  # populated only inside the rc=5 loop, so the guard read "nothing dispatched"
+  # and re-armed a fresh gate onto a sha whose verdict already existed (measured
+  # 2026-11-28: `adopted run=46081853162 ... pin ok` then TLS timeout then rc=4,
+  # which bought four gate runs for two shas in 40 minutes).
+  #
+  # BOTH DIRECTIONS are asserted against the REAL function text. A guard that
+  # never fires lets the storm through; a guard that always fires strands every
+  # genuine pre-dispatch infra failure, which is the class it exists for.
+  sed -n '/^chain_rearm_action()/,/^}/p' "$SELF" > "$T/rearm-action.sh"
+  if [ -s "$T/rearm-action.sh" ]; then
+    _unwitnessed="$(bash -c 'source "$1"; GATE_RUN_ID=""; CHAIN_DIE_MSG="gate infra rc=4"; chain_rearm_action 6 || true' _ "$T/rearm-action.sh" 2>/dev/null)"
+    [ "$_unwitnessed" = "gate-redispatch" ] \
+      && ok "rearm-210-unwitnessed-rc4-redispatches" \
+      || bad "rearm-210-unwitnessed-rc4-redispatches (got '$_unwitnessed'): an rc=4 naming NO run is exactly the class this guard exists for"
+    _witnessed="$(bash -c 'source "$1"; GATE_RUN_ID="46081853162"; CHAIN_DIE_MSG="gate infra rc=4"; chain_rearm_action 6 || true' _ "$T/rearm-action.sh" 2>/dev/null)"
+    [ -z "$_witnessed" ] \
+      && ok "rearm-210-witnessed-rc4-refuses-redispatch" \
+      || bad "rearm-210-witnessed-rc4-refuses-redispatch (got '$_witnessed'): a WITNESSED run must never be re-dispatched"
+  else
+    bad "rearm-210-extract: chain_rearm_action not found in \$SELF"
+  fi
+
   rm -f "$T/journal.log"
   git -C "$T/clone" checkout -q main
   git -C "$T/clone" reset -q --hard origin/main
