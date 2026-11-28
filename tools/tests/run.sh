@@ -1264,7 +1264,7 @@ fi
 # own claim to be a consumer (a consumer that also shadows the module would read
 # clean under a presence-only check). The detector is mutation-checked against a
 # synthetic copy, so an always-green grep cannot pass it.
-section "oc_log.py consumers stay retired (#760)"
+section "oc_log.py consumers stay retired"
 _760_private_re='^def (oc_log_init|_oc_log_flood_guard|_is_selftest)\('
 _760_consumes_re='(^|[[:space:]])(from oc_log import|import oc_log)'
 for _t760 in issue/oc-census issue/oc-issue-dispatch; do
@@ -1301,7 +1301,7 @@ rm -f "$_760c"
 # line now names the one definition. The guard keys on the SHAPE (a class
 # membership test conjoined with is_busy on an availability path), never on a
 # comment, and is mutation-checked against a synthetic copy.
-section "one availability definition in oc-issue-dispatch (#310)"
+section "one availability definition in oc-issue-dispatch"
 _310_tool="$TOOLS_DIR/issue/oc-issue-dispatch"
 _310_fallback_re='class"\] in \("ACTIVE",[[:space:]]*"IDLE"\).*is_busy'
 if [ ! -f "$_310_tool" ]; then
@@ -1330,7 +1330,7 @@ rm -f "$_310c"
 # forms to the same epoch; the REAL guard trips on +00:00 rows (behavioural, not
 # string presence); and no consumer keeps the naive read (shape-keyed,
 # mutation-checked). Pre-fix the behavioural leg reads rc 0 on +00:00 (blind).
-section "flood guard reads both ts forms (#738)"
+section "flood guard reads both timestamp forms"
 _738_def="$(bash -c '. "$1/lib/oc-log.sh"; printf "%s" "$OC_LOG_JQ_TS"' _ "$TOOLS_DIR" 2>/dev/null)"
 _738_z="$(jq -n --arg t '2026-10-01T12:00:00Z'      "${_738_def}"'{ts:$t} | ts_epoch' 2>/dev/null)"
 _738_o="$(jq -n --arg t '2026-10-01T12:00:00+00:00' "${_738_def}"'{ts:$t} | ts_epoch' 2>/dev/null)"
@@ -1372,7 +1372,7 @@ rm -rf "$_fgd"
 # arithmetic, so the count is asserted through the guard's output rather than
 # re-derived from the expression under test. Pre-fix: 3 rows -> rc 8 (fails) and
 # the banner reads 36x.
-section "flood guard counts matches, not jq lines (#770)"
+section "flood guard counts matches, not jq lines"
 _fgd2="$(mktemp -d)"; _fgl2="$_fgd2/tools.log"
 _fg_seed() { # $1 = prior identical failing rows ; writes the fixture
   local i ts; ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
@@ -1415,7 +1415,7 @@ rm -rf "$_fgd2"
 #       what does the work, not a blanket "rc 1 is never a failure" rule — a
 #       blanket rule would hide a genuine usage error, since several legacy
 #       tools answer rc 1 to a bad argument)
-section "flood guard ignores verdict rcs (#68-follow-up)"
+section "flood guard ignores verdict rcs"
 _vfd="$(mktemp -d)"; _vfl="$_vfd/tools.log"
 _vf_seed() { # $1 = tool ; $2 = exit code ; $3 = prior row count
   local i ts; ts="$(date -u +%Y-%m-%dT%H:%M:%S)"
@@ -1630,7 +1630,7 @@ run_selftest oc-verify-artifact
 # The REGRESSION test: multi-filter merges must keep the pipe operators.
 # The fix was IFS='|' (was IFS=' | ' which joined with a space, dropping the
 # pipes between jq filters -> silent data loss on .sha + .feature_presence).
-section "oc-seal (incl. IFS-join regression)"
+section "oc-seal incl. IFS-join"
 run_selftest oc-seal
 if tool oc-seal; then
   d="$(mktemp -d)"
@@ -2272,7 +2272,7 @@ fi
 # suppression are covered by the full deploy selftest in section 10.
 # #168 cut 5: this section named `oc-deploy fanout` through the dispatcher; the
 # fan-out verb is owned by `oc-fanout`, so the legs name that file directly.
-section "oc-fanout + attribution (#24)"
+section "oc-fanout + attribution"
 if tool oc-fanout; then
   d="$(mktemp -d)"; SD="$d/state"; mkdir -p "$SD/tools"
   # (#192) HERMETIC session store for the fan-out's child->lane resolution. The
@@ -2616,7 +2616,7 @@ fi
 section "oc-ledger confirm + derive_by"
 # (oc-ledger selftest executed in section 11)
 
-section "oc-ledger lock budget (#619)"
+section "oc-ledger lock budget"
 if tool oc-ledger; then
   # ---- (#171) THE BATTERY'S PUSH PATH MUST NEVER REACH THE REAL REMOTE -----
   # _git_state_commit_now's #524 tail calls push_backlog_if_due "$SKILL_DIR"
@@ -2829,7 +2829,7 @@ if tool oc-roster; then
 fi
 
 # ---- 18. oc-ship (5→swapped orchestrator, owner GO 16:16Z) -----------
-section "oc-ship (5→swapped orchestrator, owner GO 16:16Z)"
+section "oc-ship orchestrator"
 run_selftest oc-ship
 if tool oc-ship; then
   "$TOOLS_DIR/ship/oc-ship" >/dev/null 2>&1; [ $? -eq 2 ] && ok "no args -> 2 (usage)" || bad "no args -> expected 2"
@@ -2840,7 +2840,7 @@ fi
 # ---- battery receipt (oc-ledger sync gate reads this; the file itself rides --
 # ---- the skill repo via commit-pending --bundle) ------------------------------
 # ---- 60. rc contract: --help exits 0 fleet-wide (C-#3, tools/docs/RC-CONTRACT.md)
-section "rc contract --help=0 fleet-wide (C-#3)"
+section "rc contract --help=0 fleet-wide"
 # tools/ is grouped by KIND (owner order 2026-09-25), so the fleet executables
 # live one level down. A flat "$TOOLS_DIR"/oc-* glob matches NOTHING after the
 # regroup and this section then passes by counting zero legs -- a fleet-wide
@@ -3010,7 +3010,7 @@ $(printf '%s\n' "$RC_LIVE" | grep '^BAD ' | head -5)"
 rm -rf "$RCG"
 
 # ---- 60c. RC-CONTRACT coverage: an unregistered tool must RED, not pass silent (#139)
-section "rc contract coverage: unregistered executables + phantom rows (#139)"
+section "rc contract coverage"
 # The verdict-rc leg above iterates only the tools LISTED in
 # OC_LOG_VERDICT_RCS_DEFAULT, so a tool with no register row is invisible to it
 # and to every other contract leg -- a new executable ships with no documented
@@ -3315,7 +3315,7 @@ fi
 # the repo DELETES a fix. Measured 2026-11-19 -- a 53-second window in which the
 # installed copy grew its false-clean edition warning and the repo copy did not;
 # restoring would have silently re-armed the false clean. Hence byte-identity.
-section "oc-fmt repo/installed identity (#88)"
+section "oc-fmt repo/installed identity"
 _OCF="$TOOLS_DIR/git/oc-fmt"
 if [ -f "$_OCF" ]; then
   if command -v oc-fmt >/dev/null 2>&1; then
@@ -3389,7 +3389,7 @@ run_selftest oc-claims-single-source
 # A2A leg entered. `timeout` exits 124, which is not 0/2/3, so the kill
 # deliberately falls through to the fallback; that passthrough is the contract
 # the rc assertion pins.
-section "lib/oc-notify.sh CLI budget (#466)"
+section "lib/oc-notify.sh CLI budget"
 NFSTUB="$(mktemp -d)"; NFMARK="$NFSTUB/mark"
 cat > "$NFSTUB/bin" <<'NFSTUBEOF'
 #!/bin/sh
@@ -3452,7 +3452,7 @@ rm -rf "$NFSTUB"
 # returns, the rc flips to 0 AND the journal marker appears. The python3 stub
 # records WHICH python leg ran, so "the lib inspected the journal" stays
 # observable even though the code path is gone.
-section "lib/oc-notify.sh per-send sender, no journal leg (#472/#18)"
+section "lib/oc-notify.sh per-send sender"
 S472="$(mktemp -d)"; M472="$S472/mark"
 cat > "$S472/bin" <<'S472BINEOF'
 #!/bin/sh
@@ -3526,7 +3526,7 @@ rm -rf "$S472"
 # go stale the moment the repo is rebased or that object is gc'd, and would then
 # report a FALSE failure against a healthy tool. Inverting the one mechanism
 # keeps this cell a true single-variable discriminator indefinitely.
-section "lib/oc-snap.sh mirror age is its OWN birth, not the source tree's (#51)"
+section "lib/oc-snap.sh mirror age is its own birth"
 # The defect: `cp -a "$src/." "$mir/"` applies the SOURCE DIRECTORY's own
 # attributes to the destination root, so every mirror was born carrying
 # tools/'s mtime. Measured 2026-10-20: 42 mirrors sharing ONE mtime to the
@@ -3616,7 +3616,7 @@ MUTM="$(stat -c %Y "$MIRMUT" 2>/dev/null || echo 0)"
   || bad "mutant control did not reproduce the defect (mutation_applied=$_s51_mut_ok mirror mtime $MUTM, source $(stat -c %Y "$S51M/tools")) -- the #51 leg proves nothing"
 rm -rf "$S51" "$S51M"
 
-section "oc-snap reap: a false zero is not a verdict, and the battery must call it (#53)"
+section "oc-snap reap"
 # (a) An unrecognised flag must not BECOME the root. Mutant: delete the -* guard
 # in oc_snap_reap -- the call then scans a directory named "-v", finds nothing
 # and prints 0 with rc 0, which is the false "nothing to reap" this leg catches.
@@ -3680,7 +3680,7 @@ STG_LIVE="$(bash -c '. "$1/lib/oc-snap.sh"; oc_snap_reap "$2"' _ "$S53" "$S53S" 
   || bad "oc-snap reap reported [$STG_LIVE] on a LIVE stage dir and/or removed it -- the arm reaps what it must protect (#131)"
 rm -rf "$S53"
 
-section "oc-issue-dispatch SIGKILL evidence (#451)"
+section "oc-issue-dispatch SIGKILL evidence"
 D451STUB="$(mktemp -d)"
 mkdir -p "$D451STUB/tools/lib" "$D451STUB/tools/issue" "$D451STUB/bin" "$D451STUB/home"
 cp "$TOOLS_DIR/issue/oc-issue-dispatch" "$D451STUB/tools/issue/oc-issue-dispatch"
@@ -4517,7 +4517,7 @@ else
 fi
 
 # ---- 84. entry-preamble fixpoint: a relative invocation must not hang (#708) --
-section "entry-preamble fixpoint + relative invocation (#708)"
+section "entry-preamble fixpoint + relative invocation"
 # A lane that cds into a tool's directory and runs ./name used to SPIN FOREVER.
 # The entry preamble walked up with `dirname "$0"`; with $0='./tool' that yields
 # '.', and `dirname "."` is '.' -- a FIXPOINT, so the walk never advanced, all
@@ -4679,7 +4679,7 @@ fi
 rm -rf "$EP_FX"
 
 # ---- 85. cgroup isolation (#720): the battery must not run in the daemon unit -
-section "cgroup isolation (#720)"
+section "cgroup isolation"
 # Every command a lane runs inherits the daemon's cgroup
 # (`.../app.slice/opencrabs-ops.service`), whose wall is MemoryHigh == MemoryMax
 # == 1536 MiB with swap exhausted and whose OOMPolicy=kill tears the WHOLE unit
@@ -5248,7 +5248,7 @@ if oc_same_patch "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef "$(git -C "$2" re
 #     launch, and the BLOCK-ARMED marker: a skipped block is a FAIL, not a green.
 # (2) `disown` after each launch, or bash prints a "Killed" job notice into the
 #     battery log when the SIGKILL leg reaps its probe.
-section "battery lock: no child inherits the lock fd (#107)"
+section "battery lock: no child inherits the lock fd"
 
 _LK91="${TMPDIR:-/tmp}/lk91-$$"; rm -rf "$_LK91"; mkdir -p "$_LK91"
 _LK91_LOCK="$_LK91/oc-battery.lock"
@@ -5439,7 +5439,7 @@ rm -rf "$_LK91"
 # per-run, a TMPDIR-derived default hands every lane its OWN lock while the
 # lanes still share tools/tests/battery-last.json -- mutual exclusion would end
 # silently, with a green transcript. Leg (a) is that trap made checkable.
-section "battery scratch root: one per-run TEST_TMPDIR, lock stays shared (#171)"
+section "battery scratch root: one per-run TEST_TMPDIR"
 _s92_self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 _s92_d="$(mktemp -d)"
 # (a) SOURCE: the lock default must be a FIXED path. Mutant: put ${TMPDIR:-/tmp}

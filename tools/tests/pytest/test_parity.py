@@ -476,10 +476,10 @@ def test_pytest_total_does_not_regress():
 # are marked ``slow``. The env below is REQUIRED: without it the chunk inherits
 # the live battery's lock and TMPDIR and two concurrent runs corrupt each other.
 EQUIVALENCE_SAMPLE = [
-    (4, "test_flood_guard.py", "flood guard reads both ts forms (#738)"),
+    (4, "test_flood_guard.py", "flood guard reads both timestamp forms"),
     (12, "test_embed.py", "lib/oc-embed.sh (job-name embed decoder)"),
     (40, "test_usage_rc.py", "oc-rebase-safety"),
-    (53, "test_fmt.py", "oc-fmt repo/installed identity (#88)"),
+    (53, "test_fmt.py", "oc-fmt repo/installed identity"),
 ]
 
 
