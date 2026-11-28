@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -4494,6 +4495,215 @@ def cmd_commit_pending(ledger, args):
     return L.RC_OK
 
 
+MIG_HELP = """usage: oc-ledger migrate --to jsonl [--source <workers-ledger.json>] [--ledger <path>] [--force] [--live]
+  Convert a legacy single-file ledger into events.jsonl + workers.json.
+  The compact view is no longer written. Refuses to clobber an existing
+  events.jsonl unless --force, and refuses the LIVE state dir unless --live
+  (flipping the live write path is a declared window, not a side effect).
+  --ledger <path> points the STATE dir at a copy (the destination), so
+  'migrate --to jsonl --ledger /tmp/x/workers-ledger.json' migrates a scratch
+  copy; OC_LEDGER=<path> with OC_DEV_STATE unset is the same seam. #149: this
+  flag is named by the refusal below, so it must exist in THIS verb's arg loop
+  (a global --ledger only parses BEFORE the subcommand).
+  Prints the frozen source path, its sha256 and the row count so a parity gate
+  has something to check against."""
+
+
+def cmd_migrate(ledger, args):
+    """legacy single-file -> events.jsonl + workers.json.
+
+    ``ledger`` is the destination seam: the bash's ``--ledger`` inside this verb
+    reassigns the same global the dispatcher read, so a local rebind here is the
+    faithful equivalent.
+    """
+    to = ""
+    src_override = ""
+    force = 0
+    live_ok = 0
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            outln(MIG_HELP)
+            return L.RC_OK
+        if arg == "--to":
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "migrate: --to needs a value (jsonl)")
+            to = args[i + 1]
+            i += 2
+            continue
+        if arg == "--source":
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "migrate: --source needs a path")
+            src_override = args[i + 1]
+            i += 2
+            continue
+        if arg == "--ledger":
+            value = args[i + 1] if i + 1 < len(args) else ""
+            if not value:
+                die(L.RC_USAGE, "migrate: --ledger needs a path")
+            ledger = value
+            i += 2
+            continue
+        if arg == "--force":
+            force = 1
+            i += 1
+            continue
+        if arg == "--live":
+            live_ok = 1
+            i += 1
+            continue
+        die(L.RC_USAGE, "migrate: unknown argument '%s' (see --help)" % arg)
+
+    if to != "jsonl":
+        die(L.RC_USAGE, "migrate: --to jsonl is the only supported target "
+            "(got '%s')" % (to or "<empty>"))
+
+    sd = L.state_dir(ledger)
+    # THE LIVE STATE DIR IS NOT A TEST TARGET. Measured 2026-11-22: a scratch run
+    # that set $LEDGER in the environment silently migrated the LIVE state dir,
+    # because parse_global resets LEDGER="" before reading it — so the
+    # "isolated" copy was never isolated and the write path flipped without a
+    # declared window. A guard on the DESTINATION catches that class regardless
+    # of how the path got there: flipping the live record is an explicit act.
+    # The identity comes from is_live_state_dir() — NOT from a $OC_DEV_STATE
+    # derived constant, which made this comparison compare a value with itself
+    # (#149, measured: a /tmp scratch dir was refused as "the LIVE state dir").
+    if live_ok == 0 and L.is_live_state_dir(sd):
+        die(L.RC_USAGE, "migrate: refusing to migrate the LIVE state dir (%s) "
+            "— that flips the live write path (P3, a declared window). Migrate "
+            "a COPY instead: 'migrate --to jsonl --ledger "
+            "<scratch>/workers-ledger.json' (or OC_LEDGER="
+            "<scratch>/workers-ledger.json with OC_DEV_STATE unset), or pass "
+            "--live to acknowledge the cutover on the real one." % sd)
+
+    src = src_override or ledger
+    if not os.path.isfile(src):
+        die(L.RC_USAGE, "migrate: source ledger not found: %s" % src)
+    ev = L.events_path(ledger)
+    if os.path.isfile(ev) and force == 0:
+        die(L.RC_USAGE, "migrate: %s already exists — refusing to clobber a "
+            "live record (freeze a copy and pass --force only if that is what "
+            "you mean)" % ev)
+    try:
+        with open(src, "r", encoding="utf-8", errors="surrogateescape") as fh:
+            source_doc = json.loads(fh.read())
+    except OSError as exc:
+        die(L.RC_REFUSED, "migrate: cannot read the source: %s" % exc)
+    except ValueError:
+        die(L.RC_REFUSED, "migrate: source is not valid JSON: %s" % src)
+
+    # FREEZE FIRST (spec trap 11): the ledger grows while you work — the plan's
+    # 6,043 baseline was already 6,044 when it was verified, because a stamp
+    # landed. A migration that reads the live file twice can convert a
+    # different population than the one it reports. Copy once, hash the copy,
+    # convert ONLY the copy.
+    ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    frozen = os.path.join(sd, "migrate-source-%s.json" % ts)
+    try:
+        shutil.copyfile(src, frozen)
+    except OSError:
+        die(4, "migrate: cannot freeze the source at %s" % frozen)
+    digest = hashlib.sha256()
+    try:
+        with open(frozen, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        die(4, "migrate: cannot hash the frozen source at %s" % frozen)
+    fsha = digest.hexdigest()
+
+    # ``jq '.events[]?'`` iterates a LIST by element and an OBJECT by VALUE
+    # (insertion order), and yields nothing for anything else — a scalar or a
+    # string is not iterable and the ``?`` swallows the error. The bash counts
+    # with the same expression, so the port must agree on all four shapes or
+    # the row-count parity gate compares two different populations.
+    raw_events = source_doc.get("events") if isinstance(source_doc, dict) else None
+    if isinstance(raw_events, list):
+        events = list(raw_events)
+    elif isinstance(raw_events, dict):
+        events = list(raw_events.values())
+    else:
+        events = []
+    n_src = len(events)
+
+    evtmp = os.path.join(sd, ".mig.ev.%d" % os.getpid())
+    wftmp = os.path.join(sd, ".mig.workers.%d" % os.getpid())
+
+    def _mig_clean():
+        for path in (evtmp, wftmp):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    try:
+        # one object per line, in the source's own order
+        try:
+            with open(evtmp, "w", encoding="utf-8") as fh:
+                for row in events:
+                    fh.write(L.dumps_compact(row))
+                    fh.write("\n")
+        except (OSError, L.LedgerError):
+            die(4, "migrate: could not serialise .events to JSONL")
+        # A row spanning a newline would break the one-object-per-line contract
+        # and turn the next reader's "malformed line" die into a permanent
+        # refusal. Re-parse what was emitted before installing it.
+        try:
+            with open(evtmp, "r", encoding="utf-8") as fh:
+                n_out = 0
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    json.loads(line)
+                    n_out += 1
+        except (OSError, ValueError):
+            die(4, "migrate: emitted JSONL does not re-parse — refusing to "
+                "install it")
+        if n_out != n_src:
+            die(4, "migrate: row count changed in flight (source %d, emitted "
+                "%d) — refusing" % (n_src, n_out))
+        # ``jq -e -c .`` exits 4 when the stream produced NO output at all, so
+        # the bash refuses an EMPTY migration even though source and emitted
+        # counts agree at zero. Reproduced deliberately: an empty events.jsonl
+        # installed as a live record is indistinguishable from a lost ledger.
+        if n_out == 0:
+            die(4, "migrate: emitted JSONL does not re-parse — refusing to "
+                "install it")
+
+        workers_doc = {k: v for k, v in source_doc.items() if k != "events"}
+        try:
+            with open(wftmp, "w", encoding="utf-8") as fh:
+                fh.write(L.dumps_compact(workers_doc))
+                fh.write("\n")
+        except (OSError, L.LedgerError):
+            die(4, "migrate: could not build workers.json")
+
+        # #177: install the record only. The materialized view is no longer
+        # written.
+        workers_out = L.workers_path(ledger)
+        try:
+            os.replace(wftmp, workers_out)
+        except OSError:
+            die(4, "migrate: could not install workers.json")
+        try:
+            os.replace(evtmp, ev)
+        except OSError:
+            die(4, "migrate: could not install events.jsonl")
+    finally:
+        _mig_clean()
+
+    outln("migrate: ok")
+    outln("  frozen source: %s" % frozen)
+    outln("  source sha256: %s" % fsha)
+    outln("  rows:          %d (source %d)" % (n_out, n_src))
+    outln("  record:        %s" % ev)
+    outln("  workers:       %s" % L.workers_path(ledger))
+    outln("  NOTE: this state dir is now in JSONL mode — the live write path "
+          "changed with it.")
+    return L.RC_OK
+
+
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
@@ -4535,6 +4745,7 @@ _HANDLERS = {
     "sweep-closed-claims": cmd_sweep_closed_claims,
     "sync": cmd_sync,
     "commit-pending": cmd_commit_pending,
+    "migrate": cmd_migrate,
 }
 
 # The verbs this file does NOT implement yet plus the one verb the bash keeps
