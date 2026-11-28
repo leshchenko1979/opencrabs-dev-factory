@@ -81,9 +81,8 @@ SAMPLES = (
 # The sample size the shell asserts (EP_DYN -ne 8 -> bad). Pinned so a sample
 # removed from the tuple is a visible decision, not a quiet shrink.
 #
-# It was 9 while ``tests/run.sh --chunk 999`` was the ninth sample — the shell
-# harness needed a cheap flag that ran its preamble and exited. The shell is
-# retired; the preamble it exercised no longer exists.
+# It was 9 until the retired shell harness's own entry point was the ninth
+# sample — it needed a cheap flag that ran its preamble and exited.
 SAMPLE_COUNT = 8
 
 # THE BOUND IS A WALL CLOCK, AND RLIMIT_CPU WAS TRIED FIRST AND REJECTED

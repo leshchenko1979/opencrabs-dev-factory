@@ -257,3 +257,85 @@ def test_stage_dir_arm_fires_and_spares_a_live_pid(reap_lib, run_tool):
     assert spared.out.strip() == "0" and live.exists(), \
         ("reap reported %r on a LIVE stage dir and/or removed it — the arm reaps "
          "what it must protect (#131)" % spared.out.strip())
+
+
+# ---------------------------------------------------------------------------
+# the gate's own root reaper — the mechanism that replaces run.sh's EXIT trap
+# ---------------------------------------------------------------------------
+def test_the_reaper_removes_a_dead_owners_root(tmp_path):
+    """A kill -9'd run leaves its root behind; the next run must reclaim it.
+
+    ``_reap_dead_roots`` is the gate's replacement for the shell's EXIT trap,
+    and the trap's own failure mode is what it inherits: a SIGKILLed run cannot
+    run a trap, so the roots accumulate under /tmp until something sweeps them.
+    """
+    base = tmp_path
+    dead = base / "oc-battery-dead"
+    dead.mkdir()
+    (dead / cf.OWNER_MARKER).write_text("999999999\n")     # a pid no process holds
+
+    removed = cf._reap_dead_roots(base)
+    assert dead in removed, "a dead owner's root was left behind"
+    assert not dead.exists()
+
+
+def test_the_reaper_spares_a_live_owners_root(tmp_path):
+    """The other direction, and the one that matters for a CONCURRENT lane.
+
+    Two lanes run the gate at once; reaping the other's live root would delete
+    its scratch tree mid-test. A reaper that only ever deletes scores green on
+    the leg above, which is why this half is not optional.
+    """
+    base = tmp_path
+    live = base / "oc-battery-live"
+    live.mkdir()
+    # PID 1, deliberately: a pid that is ALWAYS alive and is NOT this process.
+    # Using os.getpid() would let a reaper that only skips itself score green.
+    (live / cf.OWNER_MARKER).write_text("1\n")
+
+    removed = cf._reap_dead_roots(base)
+    assert removed == [], "the reaper deleted a root owned by a LIVE process"
+    assert live.exists(), "a live root was removed — a concurrent lane lost its scratch"
+
+
+def test_the_reaper_ignores_a_root_with_no_marker(tmp_path):
+    """No marker means no claim about ownership, so it is not ours to judge.
+
+    Deleting it would be acting on an absence: the marker is the ONLY evidence
+    of who owns the tree, and a tree without one could be anything.
+    """
+    base = tmp_path
+    orphan = base / "oc-battery-unmarked"
+    orphan.mkdir()
+    (orphan / "work").write_text("x")
+
+    removed = cf._reap_dead_roots(base)
+    assert removed == [], "the reaper deleted a root it had no ownership claim on"
+    assert orphan.exists()
+
+
+def test_the_reaper_never_uses_a_name_wide_pattern(tmp_path, monkeypatch):
+    """It matches the pid IN THE MARKER, never ``pgrep -f oc-battery``.
+
+    A name-wide pattern matches unrelated command lines — including the calling
+    shell's own, and a peer lane's run in a different worktree. The reaper must
+    ask the kernel about ONE pid, so ``os.kill`` is the instrument and a
+    process-name lookup would be a different (unsound) one.
+    """
+    calls = []
+    real_kill = os.kill
+
+    def spy(pid, sig):
+        calls.append((pid, sig))
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(cf.os, "kill", spy)
+    base = tmp_path
+    dead = base / "oc-battery-dead2"
+    dead.mkdir()
+    (dead / cf.OWNER_MARKER).write_text("999999998\n")
+    cf._reap_dead_roots(base)
+
+    assert (999999998, 0) in calls, (
+        "the reaper did not probe the marker's pid with kill(pid, 0) — it is "
+        "identifying owners by some other means")
