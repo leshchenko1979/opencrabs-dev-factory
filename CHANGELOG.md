@@ -1,5 +1,97 @@
 # Changelog — opencrabs-dev
 
+## v0.4.340 — three fixes that landed on main were in no version; this is their record
+
+**What changed.** Three fix commits reached `main` after the `v0.4.339` bump
+(`424b9224d`), so the 0.4.339 tag does not carry them and the 0.4.339 sync entry
+(`e27fe7e38`) names them only as bundled-but-unversioned. This bump is their
+version record. No code changed here — `SKILL.md` and this file only.
+
+**#193 — the append fast path now proves non-event state is unchanged
+(`tools/state/oc-ledger`, `08b9c90ea`).** The true-append predicate tested only
+event-count-and-prefix, and `enroll` — one event *and* one `.workers[]` row —
+matched it. So the fast path appended the event line and SKIPPED the
+`del(.events) > workers.json` rewrite: the roster row was dropped with rc 0 and
+no diagnostic. `promote` emits two events, misses the length test, and wrote
+correctly; that asymmetry is why the defect went unnoticed. The predicate now
+also compares `del(.events)` of both documents, with `.updated_at` normalised
+out on both sides deliberately — every append-shaped program bumps it, so
+comparing it would send every pure stamp down the slow path and re-introduce the
+#149 whole-record rewrite (2.8 MB per stamp instead of a 200-byte line). The
+slow arm is hardened in the same pass: both temps are built before either
+installs, and a failed install returns 4, not 0. Measured: five `enroll` events
+carry no `.workers[]` row — `776a1fe5`, `53322531`, `e14ea3a3`, `359fe71b`,
+`f82b4383`, the last on 2026-11-28. The tool's own 741-case selftest passes on
+the BROKEN tool as well, because it seeds `workers-ledger.json` and never creates
+an `events.jsonl`, so every case runs the legacy path; that is why the pytest
+module exists.
+
+**#214 — a scoped pytest run refuses the canonical gate receipt
+(`tools/tests/pytest/lib/receipt.py`, `conftest.py`, `3ce390cab`).** The
+canonical receipt became a TRACKED file in v0.4.337, so ANY pytest invocation
+was the gate's writer: a one-file run stamped `{"pass": 9, "verdict": "PASS"}`
+over the ship gate, and every predicate `oc-ledger sync` checks passed on nine
+tests. Hit twice on 2026-11-28. A selection that is not the full gate now
+REFUSES the canonical path, writes to a scratch path, and says where and why;
+`sync` keeps reading the last full verdict, so no consumer changes. The boundary
+is `selection_problem()`: a file, a nodeid, `-k`, `--deselect`, `--ignore`,
+`--lf`, or a `-m` expression other than the gate's own are all SCOPED. The
+gate's `-m` expression is read from `pytest.ini`'s `addopts` rather than
+duplicated here, so deselecting the slow legs stays FULL — it is what the gate
+does — and an ini edit cannot silently narrow the gate. `OC_PYTEST_RECEIPT`
+aimed AT the canonical path is refused too, else the variable is a one-word
+bypass of the whole check; aimed elsewhere it is honoured, which keeps a suite's
+own scoped legs working.
+
+**#215/#216 — the negctl-307 guard carries its own wall bound and reaches its
+aimed leg (`tools/tests/negctl-307-mutation-guard.sh`, `de7592fd9`).** The guard
+measured ~1338 s against the 900 s it was wrapped in, and nothing about that was
+a stall: the dispatch selftest makes ~90 LIVE `gh` calls (24 × `gh pr list
+--limit 1000` at ~11 s each, plus 65 × `gh issue view`) and the guard re-runs
+whole sections per mutant. The bound now lives in the guard, armed by a
+single-shot re-exec so no caller has to carry the number: a 2700 s floor, raised
+by `OC_NEGCTL_BUDGET`. The selftests also take the EMPTY fixtures both tools
+already support (`OC_HARVEST_MOCK_PRS`, `OC_HARVEST_MOCK_HIERARCHY`) — 89 → 29
+`gh` calls, green both ways; EMPTY rather than absent, because an empty window
+cannot read a PR as harvested, so no leg passes merely because a mock carried a
+match. #216 is a second defect in the same file: `symbol_always_fire` reddened
+the WRONG leg, because its damage names `src/flow.rs :: StreamingState`, which
+the container-hunk fixture leg (2026-10-04) forbids by negative assertion — that
+leg aborts the suite before the mutant's aimed leg (the same-signature control)
+is ever reached, so "first bad leg == aimed leg" was unsatisfiable. The mutant
+now runs with its two colliding clauses removed from its OWN copy, making the
+control the first bad leg: the same assertion, made reachable. The pristine
+baseline run still covers the collision.
+
+**Evidence.**
+
+| probe | result |
+| --- | --- |
+| `python3 -m pytest -n 2` (full gate) | 529 passed, 0 failed, rc 0, 200 s |
+| `tools/tests/battery-last.json` | `verdict: PASS`, `pass: 529`, `fail: 0` |
+| receipt stamp | `2026-11-28T20:04:47Z`, `wall_ms` 199954 |
+| `oc-ledger --selftest` on the pre-fix tool | 741 cases green — it never creates `events.jsonl` |
+| `oc-ledger check-version` before this bump | all fields agree at 0.4.339 |
+
+New legs: `test_ledger_jsonl_append.py` 9 (predicate compares `del(.events)`,
+`.updated_at` normalised on both sides, slow arm builds both temps and returns
+4), `test_receipt_selection.py` 10 (every scoped shape refused, the gate
+invocation still canonical, `-m` read from the ini not duplicated,
+`OC_PYTEST_RECEIPT` aimed at the gate refused), `negctl-307-mutation-guard.sh`
++92 lines (guard-owned budget, single-shot re-exec, EMPTY fixtures, the
+mutant's own copy).
+
+**Commits this entry versions — the version record is the only place their
+ship dates exist.**
+
+- `08b9c90ea` fix(tools): oc-ledger's append fast path proves non-event state is unchanged (#193)
+- `3ce390cab` fix(tests): a scoped pytest run refuses the canonical gate receipt (#214)
+- `de7592fd9` fix(tests): the negctl-307 guard carries its own wall bound and reaches its aimed leg (#215, #216)
+- `886046687` docs(changelog): v0.4.339 names the three fixes its sync bundled —
+  another lane's doc commit, landed between the 0.4.339 bump and this one. It
+  repeats the same three shas inside the v0.4.339 entry, so those ship dates now
+  exist in two adjacent records; named here because this sync bundles it too.
+
 ## v0.4.339 — gate 4 moves in front of the merge, and a GREEN build stops claiming a deploy
 
 **What changed (tools).** Three factory issues, one shape: a check that ran too
