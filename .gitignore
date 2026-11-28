@@ -22,12 +22,8 @@ __pycache__/
 # sync stray-guard (die 7) while a red was under investigation.
 tools/tests/battery-last-fail.log
 
-# The retired shell battery's reap-probe sidecar (`tools/tests/.reap.<pid>`).
-# Nothing writes it now that the shell harness is gone, but a peer lane's
-# worktree can still carry residue from a run made before the retirement, and
-# untracked paths are exactly what the sync stray-guard (die 7) refuses.
-# Ignoring the class is non-destructive -- the residue stays on disk, it just
-# stops reading as another actor's dirty work.
+# Nothing writes this now; kept because a peer worktree can still carry the
+# residue, and an untracked path is what the sync stray-guard (die 7) refuses.
 tools/tests/.reap.*
 
 # Runtime review artefacts (Duty-4 proposals, Duty-6 reports, evidence).
