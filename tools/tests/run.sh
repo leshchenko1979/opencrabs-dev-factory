@@ -5460,6 +5460,58 @@ env -u BATTERY_IN_CHUNK -u TMPDIR OC_BATTERY_TEST_TMPDIR="$_s92_inh" \
   || ok "a root left by a kill -9'd owner is adopted and removed (#171)"
 rm -rf "$_s92_d"
 
+# ---- 93. pytest suite: the migration target inside the gate ----------------
+section "pytest suite"
+# tools/tests/pytest is the migration target for this harness. Until this leg
+# existed it was decorative: ~14k lines no gate ever ran, free to drift from the
+# shell verdict unnoticed. Its rc folds into $FAIL like any other leg, so a
+# pytest regression reddens the battery instead of waiting to be discovered.
+#
+# FOUR TERMS OF THE INVOCATION, each measured rather than chosen:
+#  * -n 2, never -n 4. Each worker forks overlapping --selftest process trees;
+#    on this 3.9 GB box the scope's TasksMax=128 and jemalloc's thread creation
+#    (EAGAIN, errno 11) exhaust under load, and 17 unrelated tests redden with
+#    identical allocator noise. The failures were resource, never logic.
+#  * -m "not slow": `slow` means on request (README). Those legs drive
+#    `run.sh --chunk N`, a nested battery this gate must not pay for.
+#  * OC_BATTERY_LOCK is redirected. THIS process holds the canonical flock and
+#    conftest.py resolves the path from that variable at import, so without the
+#    redirect every `serial` leg blocks its full 900 s wait and then SKIPS -- a
+#    hole wearing a green transcript. This run's own flock already serialises
+#    the battery; the nested suite needs a lock only for its own serial legs.
+#    The path is explicit /tmp, never mktemp -d: TMPDIR is the per-run scratch
+#    root, and a lock inside it fails the "lock is not derived from TMPDIR" leg.
+#  * no cgroup re-exec: BATTERY_CGROUP_ISOLATED=1 is already exported above, and
+#    lib/cgroup.py reads it to take its already-isolated branch.
+if [ ! -d "$TOOLS_DIR/tests/pytest" ]; then
+  bad "tools/tests/pytest is missing -- the migration target vanished"
+else
+  _py_lk="/tmp/oc-pytest-in-battery.$$"
+  _py_out="$(mktemp)"
+  ( cd "$TOOLS_DIR/tests/pytest" && \
+    OC_BATTERY_LOCK="$_py_lk" \
+    timeout --kill-after=60 "${OC_PYTEST_TIMEOUT:-3600}" \
+      python3 -m pytest -q --no-header -p no:cacheprovider -n 2 -m "not slow" ) \
+    > "$_py_out" 2>&1
+  _py_rc=$?
+  if [ "$_py_rc" -eq 0 ]; then
+    ok "pytest suite (tools/tests/pytest, -n 2, not slow)"
+  else
+    bad "pytest suite rc=$_py_rc -- the migration target disagrees with the gate"
+    _py_n="$(wc -l < "$_py_out")"
+    if [ "$_py_n" -le 40 ]; then
+      sed 's/^/       | /' "$_py_out" | record
+    else
+      note "       | ... $((_py_n - 40)) line(s) omitted from the middle"
+      head -n 20 "$_py_out" | sed 's/^/       | /' | record
+      note "       | ..."
+      tail -n 20 "$_py_out" | sed 's/^/       | /' | record
+    fi
+    grep -E '^(FAILED|ERROR)' "$_py_out" | head -n 25 | sed 's/^/       | /' | record
+  fi
+  rm -f "$_py_out" "$_py_lk"
+fi
+
 # #111: ONE receipt writer. Everything below used to be a hand-copied duplicate of
 # emit_summary() -- the same 17-field printf, already divergent in two ways: this
 # copy disclosed the pids cap on its summary line and the function did not, and

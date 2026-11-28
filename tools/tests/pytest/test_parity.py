@@ -2,7 +2,7 @@
 
 Two questions, both answered with evidence rather than assertion:
 
-1. **Coverage parity.** For every one of the 68 ``section "..."`` calls in
+1. **Coverage parity.** For every one of the 69 ``section "..."`` calls in
    ``tools/tests/run.sh``, does the pytest suite contain tests that assert
    something? A section with ZERO pytest assertions is the #120 defect wearing a
    new hat: ``chk()`` was called at ``run.sh:2105-2106`` and defined nowhere, so
@@ -95,7 +95,7 @@ SHELL_SITES: dict[int, int] = {
     33: 11, 34: 4, 35: 6, 36: 3, 37: 2, 38: 2, 39: 2, 40: 4, 41: 3, 42: 3,
     43: 10, 44: 8, 45: 8, 46: 5, 47: 9, 48: 3, 49: 3, 50: 3, 51: 5, 52: 6,
     53: 7, 54: 3, 55: 1, 56: 1, 57: 4, 58: 4, 59: 5, 60: 9, 61: 5, 62: 11,
-    63: 27, 64: 28, 65: 17, 66: 65, 67: 26, 68: 16,
+    63: 27, 64: 28, 65: 17, 66: 65, 67: 26, 68: 16, 69: 3,
 }
 
 # §64 maps to TWO modules for a reason worth stating, because the number it
@@ -145,6 +145,7 @@ SECTION_MODULES: dict[int, tuple[str, ...]] = {
     66: ("test_cgroup.py", "test_harness_cgroup.py", "test_harness_pool.py",
          "test_harness_serialisation.py"),
     67: ("test_harness_lock.py",), 68: ("test_harness_scratch.py",),
+    69: ("test_harness_pytest_section.py",),
 }
 
 # Sections with NO pytest module, each with the reason it has none. A deferred
@@ -274,8 +275,8 @@ def section_mass(sec: int) -> int:
 def test_run_sh_still_has_sixty_eight_sections():
     """The census is keyed by ordinal, so a renumber invalidates every row."""
     titles, counts = shell_census()
-    assert len(titles) == 68, (
-        "run.sh has %d ``section`` calls, the census pins 68 — a section was "
+    assert len(titles) == 69, (
+        "run.sh has %d ``section`` calls, the census pins 69 — a section was "
         "added or removed; re-derive SHELL_SITES rather than widening this bound"
         % len(titles))
 
@@ -408,7 +409,7 @@ def test_every_mapped_module_exists_and_declares_its_scope():
     schemes coexist in this repo and they do NOT agree:
 
     * this census keys sections by the **positional ordinal** of the ``section``
-      call (1..68), because that is what ``--chunk N`` selects;
+      call (1..69), because that is what ``--chunk N`` selects;
     * ``run.sh``'s own ``# ---- `` headers carry **labels** (``00b``, ``00b2``,
       ``00d``, ``66b``) which are not a 1..N sequence;
     * ported module docstrings cite the explorer report's numbers (``§01/§02/§03``
