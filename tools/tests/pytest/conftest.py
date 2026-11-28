@@ -1,21 +1,16 @@
 """pytest foundation for the oc-* tool battery.
 
-This is the DRY half of the battery -> pytest migration (see
-``~/.opencrabs/profiles/ops/research/pytest-migration-plan.md`` §4/§5). It is
-ADDITIVE: ``tools/tests/run.sh`` is untouched until parity is proven, and every
-fixture here mirrors a block of that harness rather than re-inventing it.
+Every fixture here exists because a battery once got it wrong. The defect is
+named, not the harness that committed it:
 
-WHY EACH FIXTURE EXISTS — every one of these replaces a defect that already
-happened in ``run.sh``:
-
-  1. ``scratch``      one root per worker (59 ``mktemp -d`` sites). The root
-                      carries a ``.oc-battery-owner`` pid marker because a
-                      child's EXIT trap once deleted its caller's tree mid-run
-                      (run.sh:487-509, #171).
-  2. ``state_dir``    ``OC_DEPLOY_STATE_DIR`` (21 hand-set sites; the default at
-                      run.sh:2542 is the REAL profile).
-  3. ``env_guard``    autouse; blocks the four live-state leaks that exist today
-                      (see ``LIVE_ENV_VARS`` below) and restores PATH/HOME.
+  1. ``scratch``      one root per worker, instead of 59 hand-rolled ``mktemp -d``
+                      sites. The root carries a ``.oc-battery-owner`` pid marker
+                      because a child's EXIT trap once deleted its caller's tree
+                      mid-run (#171).
+  2. ``state_dir``    ``OC_DEPLOY_STATE_DIR``, pinned per test instead of set by
+                      hand at 21 sites — the tool default is the REAL profile.
+  3. ``env_guard``    autouse; blocks the four live-state leaks (see
+                      ``LIVE_ENV_VARS`` below) and restores PATH/HOME.
   4. ``ledger_sandbox`` copies the recipe at ``tools/state/oc-ledger:2771-2800``
                       verbatim — it is already correct and the tool's own
                       selftest proves it.
@@ -78,7 +73,7 @@ REPO_ROOT = PYTEST_DIR.parents[2]          # <repo>/tools/tests/pytest -> <repo>
 TOOLS_DIR = REPO_ROOT / "tools"
 
 # THE LOCK PATH IS NOT DERIVED FROM TMPDIR (#171, trap documented at
-# run.sh:545-549). ``scratch`` exports a per-run TMPDIR; a lock path derived
+# ``scratch`` exports a per-run TMPDIR; a lock path derived
 # from it would give every lane its OWN lock file while the lanes still share
 # one canonical receipt — both would "acquire" and both would write, silently.
 # Read ONCE at import time, i.e. before any fixture touches the environment.
@@ -87,9 +82,9 @@ BATTERY_LOCK_PATH = os.environ.get("OC_BATTERY_LOCK") or "/tmp/oc-battery.lock"
 HOME = Path(os.environ.get("HOME") or "/root")
 # The four live-state leaks env_guard exists to block.
 LIVE_PROFILE = HOME / ".opencrabs" / "profiles" / "ops" / "opencrabs-dev"
-LIVE_FANOUT_LEDGER = LIVE_PROFILE / "events.jsonl"      # run.sh:3095,3102,3111
-LIVE_STATE_DIR = LIVE_PROFILE                           # run.sh:2542
-PROD_REPO = Path("/root/opencrabs")                     # run.sh:1536, :1974
+LIVE_FANOUT_LEDGER = LIVE_PROFILE / "events.jsonl"
+LIVE_STATE_DIR = LIVE_PROFILE
+PROD_REPO = Path("/root/opencrabs")
 
 # Env vars whose value must never resolve inside live state.
 LIVE_ENV_VARS = (
@@ -183,7 +178,7 @@ def _pid_alive(pid: int) -> bool:
 def _reap_dead_roots(base: Path) -> list[Path]:
     """Remove roots whose ``.oc-battery-owner`` pid is dead.
 
-    Same shape as run.sh's ``_battery_reap_test_tmpdirs``: match the pid
+    Match the pid in the marker, never a name-wide pattern:
     ENCODED IN THE MARKER, never ``pgrep -f oc-battery`` (a name-wide pattern
     matches unrelated command lines and this run's own children). A live owner
     pid means the root is in use and is left alone.
@@ -337,20 +332,18 @@ def state_dir(scratch, monkeypatch):
 # =============================================================================
 @pytest.fixture(autouse=True)
 def env_guard(scratch, state_dir, monkeypatch):
-    """Block the four live-state leaks that exist in run.sh TODAY.
+    """Block the four ways a leg could reach live state.
 
     * ``OC_FANOUT_LEDGER`` defaults to the LIVE fleet ledger
-      (``$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl``,
-      run.sh:3095,3102,3111) — every fanout leg in the battery today writes the
-      real ledger.
-    * ``--repo /root/opencrabs`` reads the production checkout
-      (run.sh:1536, :1974). An argument cannot be blocked by an env var, so
-      ``run_tool`` refuses it (see ``_assert_no_live_state``).
-    * ``OC_DEPLOY_STATE_DIR`` defaults to the real profile (run.sh:2542) — pinned
-      by ``state_dir``.
-    * ``PATH`` is prepended 4x and never restored (run.sh:3412, 3483, 4136,
-      4787), so a later test inherits an earlier test's stub dirs. PATH and HOME
-      are snapshotted here and restored after every test.
+      (``$HOME/.opencrabs/profiles/ops/opencrabs-dev/events.jsonl``) — a fanout
+      leg that inherited it would write the real ledger.
+    * ``--repo /root/opencrabs`` reads the production checkout. An argument
+      cannot be blocked by an env var, so ``run_tool`` refuses it (see
+      ``_assert_no_live_state``).
+    * ``OC_DEPLOY_STATE_DIR`` defaults to the real profile — pinned by
+      ``state_dir``.
+    * ``PATH`` accumulation, where a later test inherits an earlier test's stub
+      dirs. PATH and HOME are snapshotted here and restored after every test.
     """
     base_path = os.environ.get("PATH", "")
     base_home = os.environ.get("HOME", "")
@@ -371,14 +364,14 @@ def env_guard(scratch, state_dir, monkeypatch):
     (dev_state / "events.jsonl").touch()
     monkeypatch.setenv("OC_DEV_STATE", str(dev_state))
     monkeypatch.setenv("OC_BATTERY_LOCK", BATTERY_LOCK_PATH)
-    # The battery stays silent in the unified tools log (run.sh:48).
+    # The battery stays silent in the unified tools log.
     monkeypatch.setenv("OC_TOOLS_NOLOG", "1")
     # OPENCRABS_SESSION_ID is inherited from the lane that launched pytest and
     # oc-ledger's derive_by reads it when OC_ACTOR is empty (oc-ledger:1060), so
     # leaving it would attribute fixture rows to the REAL lane. Pin both.
     monkeypatch.setenv("OC_ACTOR", LEDGER_ACTOR)
     monkeypatch.setenv("OPENCRABS_SESSION_ID", LEDGER_ACTOR)
-    # #753: every selftest is BOUNDED. 1800 s is run.sh's default and cannot red
+    # #753: every selftest is BOUNDED. 1800 s is the battery default and cannot red
     # a slow-but-legitimate selftest (longest measured section: 296.5 s).
     monkeypatch.setenv("OC_SELFTEST_TIMEOUT",
                        os.environ.get("OC_SELFTEST_TIMEOUT", "1800"))
@@ -390,7 +383,7 @@ def env_guard(scratch, state_dir, monkeypatch):
     yield
 
     # Restore PATH/HOME even when a test mutated os.environ directly (monkeypatch
-    # only undoes ITS OWN writes). This is the fix for run.sh's 4x-prepend leak.
+    # only undoes ITS OWN writes). This is the fix for the 4x-prepend leak.
     #
     # OC_PYTEST_NO_ENV_RESTORE=1 disables it, and exists ONLY so the restore can
     # be proven to be doing something: a leg that cannot fail is decoration
@@ -539,7 +532,7 @@ class Result:
 def _assert_no_live_state(cmd: list[str], env: dict, allow_live_state: bool):
     """Refuse a launch that would reach real fleet state.
 
-    ``--repo /root/opencrabs`` is the leak an env var cannot block (run.sh:1536,
+    ``--repo /root/opencrabs`` is the leak an env var cannot block (
     :1974): the argument is spelled at the call site, so the check has to sit on
     the launch path. Everything else is caught by value, because the live
     profile path is what the tools fall back to when nothing is exported.
@@ -601,7 +594,7 @@ def _run(cmd, *, timeout, cwd=None, env=None, allow_live_state=False,
     except subprocess.TimeoutExpired:
         timed_out = True
         # SIGKILL the GROUP. SIGTERM alone is not enough: the #753 class is a
-        # selftest that ignores TERM, which is exactly why run.sh used
+        # selftest that ignores TERM, which is exactly why the battery uses
         # --kill-after.
         try:
             os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -629,7 +622,7 @@ def _run(cmd, *, timeout, cwd=None, env=None, allow_live_state=False,
             except subprocess.TimeoutExpired:
                 out, err = b"", b"[oc-pytest] output pipe never closed after the kill"
     duration_ms = (time.monotonic() - t0) * 1000.0
-    # 124 is `timeout(1)`'s "the bound fired" code; run.sh reads it as
+    # 124 is `timeout(1)`'s "the bound fired" code; the battery reads it as
     # "HUNG -- killed at the Ns bound", not as a tool verdict.
     rc = 124 if timed_out else p.returncode
     return Result(
@@ -649,7 +642,7 @@ def tools_dir():
 
 
 def tool_path(name: str) -> Path:
-    """Resolve an ``oc-*`` tool by NAME, mirroring run.sh:tool_path.
+    """Resolve an ``oc-*`` tool by NAME.
 
     tools/ is grouped by KIND, so a tool can be moved without touching every
     leg; the same exclusion list (lib/tests/archive/docs/instruments) applies.
@@ -686,7 +679,7 @@ def run_tool(env_guard):
 def run_selftest(run_tool, state_dir):
     """Callable: ``run_selftest("oc-ledger", timeout=900)`` -> ``Result``.
 
-    Mirrors run.sh:run_selftest: a per-call throwaway ``OC_DEPLOY_STATE_DIR``
+    A per-call throwaway ``OC_DEPLOY_STATE_DIR``
     (the /tmp-leak fix, M2-22), the ``OC_SELFTEST_TIMEOUT`` default, and the
     group kill on expiry.
     """
@@ -714,8 +707,8 @@ def run_selftest(run_tool, state_dir):
 def gh_stub(scratch, env_guard, monkeypatch):
     """Factory: ``gh_stub()`` -> stub wired into all three seams at once.
 
-    The battery builds a bespoke stub dir per section (run.sh:4099-4110 for
-    oc-issue-create, run.sh:2347-2491 for the deploy/ship legs). The three seams
+    The battery builds a bespoke stub dir per test (separately for
+    oc-issue-create and for the deploy/ship legs). The three seams
     are ``OC_DEPLOY_GH`` (tools/lib/oc-deploy-lib.sh:91), ``OC_ISSUE_CREATE_GH``
     (tools/issue/oc-issue-create:73) and ``PATH`` (for tools that call a bare
     ``gh``).
@@ -784,7 +777,7 @@ def battery_lock(request):
 
     The lock path is the module constant, NOT anything derived from ``scratch``:
     a per-run TMPDIR that moved the lock would give every lane its own lock
-    while they share one receipt (the trap at run.sh:545-549). Sections that
+    while they share one receipt. Tests that
     write the canonical receipt must be ``@pytest.mark.serial`` and take this.
     """
     import fcntl
@@ -832,7 +825,7 @@ def serial_witness_dir(tmp_path_factory):
     Deliberately NOT ``scratch`` (per-worker) and not ``tmp_path`` (per-test):
     an overlap between two workers is only observable if both open the same
     inode, which is the same reason the battery lock is TMPDIR-independent
-    (run.sh:545-549, and the trap at run.sh:674-677).
+    (the lock path is never derived from TMPDIR).
 
     Anchored on the RUN root, never on ``basetemp``'s parent — those are two
     different directories and only one of them is unique to this run:

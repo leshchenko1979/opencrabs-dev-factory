@@ -334,8 +334,8 @@ def test_command_substitution_in_a_double_quoted_body_is_a_known_gap(tmp_path):
                _c_body("print(" + DOL + "(" + "date" + "))") + "\n")
     msgs = [m for _, m in scan_text(f, f.read_text())]
     assert not msgs, (
-        "the $( ) blind spot CLOSED — good news, but update the module docstring "
-        "and the run.sh comment that states the gap: %r" % msgs)
+        "the $( ) blind spot CLOSED — good news, but update this module's "
+        "docstring, which states the gap: %r" % msgs)
 
 
 # =============================================================================
