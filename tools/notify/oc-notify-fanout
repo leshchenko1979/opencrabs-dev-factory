@@ -431,7 +431,11 @@ JSON
   "$_lg" --ledger "$LEDG" events --jsonl > "$_hd/events.jsonl"
   "$_lg" --ledger "$LEDG" workers --json | jq '{workers: .}' > "$_hd/workers.json"
   : > "$T/fake-notify-log-1a2"
-  out="$(env -u OC_FANOUT_LEDGER OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
+  # OC_DEV_STATE OUTRANKS HOME in oc_ledger_path (tools/lib/oc-log.sh:280), so a
+  # lane that exports it would make this child read the LANE's ledger and never
+  # the fixture's. The isolation below is `HOME="$H"` alone, so the variable must
+  # be cleared for the child or the fixture is silently defeated.
+  out="$(env -u OC_FANOUT_LEDGER -u OC_DEV_STATE OC_NOTIFY_DB="$T/db.sqlite" OC_NOTIFY_BIN="$T/fake-notify" \
     OC_FANOUT_SELF="00000000-0000-4000-8000-00000000dead" \
     OC_FANOUT_FORUM_CHAT="$FORUM" OC_FANOUT_SEND_TIMEOUT=5 OC_FANOUT_RUN_DIR="$T/run-home" \
     HOME="$H" FAKE_NOTIFY_LOG="$T/fake-notify-log-1a2" \
