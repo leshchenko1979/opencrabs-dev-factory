@@ -355,11 +355,21 @@ def env_guard(scratch, state_dir, monkeypatch):
     base_path = os.environ.get("PATH", "")
     base_home = os.environ.get("HOME", "")
 
-    # Live-state sinks, redirected into this worker's scratch.
-    monkeypatch.setenv("OC_FANOUT_LEDGER", str(scratch.path / "fanout" / "events.jsonl"))
+    # Live-state sinks, redirected into this worker's scratch. Both paths must
+    # be MATERIALISED, not merely named: a tool that resolves its ledger to
+    # ``$OC_DEV_STATE/events.jsonl`` dies rc 3 on a directory with no such file,
+    # and a redirect to a path nobody created turns a green leg red for a
+    # reason unrelated to the code under test.
+    fanout_ledger = scratch.path / "fanout" / "events.jsonl"
+    fanout_ledger.parent.mkdir(parents=True, exist_ok=True)
+    fanout_ledger.touch()
+    monkeypatch.setenv("OC_FANOUT_LEDGER", str(fanout_ledger))
     # Defence in depth: OC_DEV_STATE is the directory the profile-derived
     # defaults fall back to (tools/lib/oc-log.sh:oc_ledger_path).
-    monkeypatch.setenv("OC_DEV_STATE", str(scratch.path / "dev-state"))
+    dev_state = scratch.path / "dev-state"
+    dev_state.mkdir(parents=True, exist_ok=True)
+    (dev_state / "events.jsonl").touch()
+    monkeypatch.setenv("OC_DEV_STATE", str(dev_state))
     monkeypatch.setenv("OC_BATTERY_LOCK", BATTERY_LOCK_PATH)
     # The battery stays silent in the unified tools log (run.sh:48).
     monkeypatch.setenv("OC_TOOLS_NOLOG", "1")

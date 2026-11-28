@@ -511,6 +511,12 @@ def _chunk_env(tmp: Path) -> dict[str, str]:
     import os
     env = dict(os.environ)
     env.pop("BATTERY_IN_CHUNK", None)          # a chunk must not think it is nested
+    # env_guard redirects these two into pytest's scratch, and run.sh's tools
+    # isolate themselves with a fake HOME instead. Letting the redirect through
+    # defeats that isolation: a tool whose selftest seeds its own ledger then
+    # reads pytest's instead and reports a failure unrelated to the code.
+    env.pop("OC_DEV_STATE", None)
+    env.pop("OC_FANOUT_LEDGER", None)
     env["OC_BATTERY_NO_CGROUP"] = "1"          # no re-exec mid-test
     env["OC_BATTERY_NO_PRIORITY"] = "1"        # no nice/ionice games
     env["OC_BATTERY_LOCK"] = str(tmp / "lk")   # our own lock, not the live one
