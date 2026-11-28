@@ -1,5 +1,66 @@
 # Changelog — opencrabs-dev
 
+## v0.4.339 — gate 4 moves in front of the merge, and a GREEN build stops claiming a deploy
+
+**What changed (tools).** Three factory issues, one shape: a check that ran too
+late to be actionable, and an exit that said nothing about what it had not done.
+
+**#218 — ROSTER MEMBERSHIP pre-check (`tools/ship/oc-ship`).** Gate 4 has two
+halves: the `Session-Id` trailer must be SHAPE-valid, and its uuid must be
+PRESENT in the workers ledger. The shape half already ran before the ff-merge;
+the roster half ran only inside `oc-build` at LEG4 — after the sha was on fork
+main. Measured 2026-11-28: two lanes died `ORDER rc 3 UNSIGNED: Session-Id … is
+not in the workers ledger` with their commit already merged, and a third needed
+an empty commit to re-attribute three commits. The chain now asks the same
+question gate 4 asks, of the same file gate 4 reads, **before** the merge:
+`oc-ledger worker --uuid <sid> --json`. rc 1 (NO-MATCH) and rc 0 with an empty
+`.role` are refusals — exactly what `oc-verify-order` fails 3 on — and the
+message prescribes `oc-ledger enroll`, not "re-sign", which is the SHAPE arm's
+remedy and wrong here. Everything else (rc 2/3/127, a missing ledger tool, an
+unresolvable path, or a zero-byte success that answered nothing) WARNS and
+carries on: #218 asks for a refusal before the push, explicitly not a new way
+for the chain to die, and LEG4 keeps the final call.
+
+**#217 — STALE-TOOLS pre-flight (`tools/ship/oc-ship`) and provenance in the
+failure it prevents (`tools/ship/oc-verify-order`).** A tree branched before
+daf36dcb3 (#177) still resolves the workers ledger to the RETIRED compact view,
+so the chain spends a ~25-minute gate and a push to end at `ledger not found:
+…/workers-ledger.json` with the sha already on main. `oc-ship` now names that
+state before any dispatch, with `OC_SHIP_ALLOW_STALE_TOOLS=1` as the deliberate
+override. `oc-verify-order` keeps its message-only duty — it is not a second
+gate — and now says which variable resolved the path and which tree supplied the
+tool, because the filename was the one fact the operator already had.
+
+**#219 — a GREEN build is not a deployed box (`tools/ship/oc-build`,
+`tools/ship/oc-swap`).** Measured 2026-11-28 16:31:34Z: `ship --execute` with no
+`--wait` (a tree predating #176's execute-only default) dispatched carrier run
+46165616951, exited 0 in 12.0 s, and the run went GREEN at 16:41:25Z while
+`deployed.sha` still named `d4c922d2` and the binary's mtime stayed 15:42. Zero
+`oc-status` and zero `oc-swap` rows existed for that day; every reader
+downstream saw only `exit 0`. The skip was CODE, not environmental: with no
+`WAIT_EXPLICIT` the only wait source is the `OC_BUILD_WAIT` escape, which
+nothing had set, so `WAIT_SECS=0` bypassed the whole poll block. The fix adds no
+mechanism to the swap chain — it makes the existing skip legible: both
+non-swapping exits write `$STATE_DIR/swap-pending.json` (sha, run, reason) and
+say `NOT DEPLOYED` on stderr with the command that finishes the deploy; the NEXT
+`ship` reports an outstanding receipt before it does anything; and `oc-swap`
+clears it on its verified-GREEN path only — not on rollback, not on the report.
+
+**Evidence.**
+
+| probe | result |
+| --- | --- |
+| `oc-ship --selftest` | 497 passed, 0 failed |
+| `oc-build --selftest` | 571 pass, 0 fail |
+| `oc-swap --selftest` | 571 pass, 0 fail |
+| `python3 -m pytest -n 2` | 528 passed, `battery-last.json` verdict PASS |
+
+New legs: `ship-selftest.sh` 3f-bis/ter/quater (unenrolled refusal + POSITIVE
+CONTROL on a fresh enrolled tip + fail-open on an unparseable ledger),
+`deploy-selftest.sh` 6j–6l (receipt written, reported, resolved),
+`test_verify_trio.py` (stale resolver refused, current resolver silent).
+
+
 ## v0.4.338 — `oc-notify-fanout --selftest` names its abort instead of dying silent
 
 **What changed (tool).** Factory

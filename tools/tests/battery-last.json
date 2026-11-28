@@ -1,95 +1,95 @@
 {
   "path": "/root/.opencrabs/profiles/ops/skills/opencrabs-dev/tools/tests/battery-last.json",
-  "ts": "2026-11-28T17:53:49Z",
-  "pass": 499,
+  "ts": "2026-11-28T19:50:56Z",
+  "pass": 528,
   "fail": 0,
   "verdict": "PASS",
   "mode": "pytest parallel jobs=2",
-  "pids_max": "256",
+  "pids_max": "64",
   "pids_cap": "",
   "fail_log": "",
   "fail_rows": [],
   "fail_rows_truncated": false,
   "tree_changed": false,
-  "cgroup": "/user.slice/user-0.slice/user@0.service/app.slice/run-rc16cf2f87469472ca7cfda3d18a8597a.scope",
-  "cgroup_isolated": true,
-  "nice": "0",
-  "ioprio": "none: prio 0",
-  "wall_ms": 151438,
+  "cgroup": "/user.slice/user-0.slice/user@0.service/oc.slice/oc-tasks.slice/run-rdf6d5c6913174b6aaea14f82feab91be.scope",
+  "cgroup_isolated": false,
+  "nice": "19",
+  "ioprio": "idle",
+  "wall_ms": 213214,
   "timing": {
     "max_concurrency": 2,
-    "section_count": 499,
-    "sum_ms": 266970,
+    "section_count": 528,
+    "sum_ms": 266158,
     "slowest": [
       {
-        "n": 363,
-        "title": "tools/test_health.py::test_selftest_passes",
-        "ms": 23672,
-        "start_ms": 1795888361498,
-        "end_ms": 1795888385170
-      },
-      {
-        "n": 336,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-drift-check]@tool-selftests",
-        "ms": 19027,
-        "start_ms": 1795888331569,
-        "end_ms": 1795888350596
-      },
-      {
-        "n": 497,
+        "n": 528,
         "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-smoke]@tool-selftests",
-        "ms": 18746,
-        "start_ms": 1795888403925,
-        "end_ms": 1795888422671
+        "ms": 19545,
+        "start_ms": 1795895433325,
+        "end_ms": 1795895452870
       },
       {
-        "n": 269,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-wt]@tool-selftests",
-        "ms": 13197,
-        "start_ms": 1795888318349,
-        "end_ms": 1795888331546
+        "n": 372,
+        "title": "tools/test_health.py::test_selftest_passes",
+        "ms": 19080,
+        "start_ms": 1795895347277,
+        "end_ms": 1795895366357
       },
       {
-        "n": 120,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-upstream-delta]@tool-selftests",
-        "ms": 10335,
-        "start_ms": 1795888307983,
-        "end_ms": 1795888318318
+        "n": 373,
+        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-drift-check]@tool-selftests",
+        "ms": 15588,
+        "start_ms": 1795895350989,
+        "end_ms": 1795895366577
       },
       {
-        "n": 40,
-        "title": "e2e/test_entry_preamble.py::test_the_broken_preamble_never_returns",
-        "ms": 10025,
-        "start_ms": 1795888302158,
-        "end_ms": 1795888312183
-      },
-      {
-        "n": 376,
+        "n": 523,
         "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-lint-laws]@tool-selftests",
-        "ms": 6943,
-        "start_ms": 1795888384538,
-        "end_ms": 1795888391481
+        "ms": 10486,
+        "start_ms": 1795895407883,
+        "end_ms": 1795895418369
       },
       {
-        "n": 11,
+        "n": 371,
+        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-wt]@tool-selftests",
+        "ms": 10075,
+        "start_ms": 1795895338832,
+        "end_ms": 1795895348907
+      },
+      {
+        "n": 35,
+        "title": "e2e/test_entry_preamble.py::test_the_broken_preamble_never_returns",
+        "ms": 10055,
+        "start_ms": 1795895264102,
+        "end_ms": 1795895274157
+      },
+      {
+        "n": 348,
+        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-upstream-delta]@tool-selftests",
+        "ms": 8729,
+        "start_ms": 1795895327636,
+        "end_ms": 1795895336365
+      },
+      {
+        "n": 7,
         "title": "tools/test_ledger_lock_budget.py::test_a_slow_git_tail_does_not_hold_the_ledger_lock@battery-ledger-lock",
-        "ms": 6781,
-        "start_ms": 1795888286527,
-        "end_ms": 1795888293308
+        "ms": 6546,
+        "start_ms": 1795895251153,
+        "end_ms": 1795895257699
       },
       {
-        "n": 14,
-        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-attrib]@tool-selftests",
-        "ms": 6532,
-        "start_ms": 1795888290381,
-        "end_ms": 1795888296913
+        "n": 527,
+        "title": "tools/test_tool_wrappers.py::test_tool_selftest[oc-start]@tool-selftests",
+        "ms": 6225,
+        "start_ms": 1795895427092,
+        "end_ms": 1795895433317
       },
       {
-        "n": 121,
-        "title": "harness/test_gate_defaults.py::test_the_gate_writes_its_receipt_under_xdist",
-        "ms": 6457,
-        "start_ms": 1795888317191,
-        "end_ms": 1795888323648
+        "n": 318,
+        "title": "infra/test_oc_root_resolver.py::test_without_the_progress_break_the_helper_spins",
+        "ms": 6036,
+        "start_ms": 1795895324842,
+        "end_ms": 1795895330878
       }
     ]
   }
