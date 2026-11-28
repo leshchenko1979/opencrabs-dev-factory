@@ -48,7 +48,7 @@
 # freeze override. The selftest's own legs ARE that probe, so this guard drives
 # the tool's selftest rather than re-implementing the harness.
 #
-# Standalone by design — the negctl-* family is not wired into tools/tests/run.sh;
+# Standalone by design — the negctl-* family is not part of the pytest gate;
 # it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion

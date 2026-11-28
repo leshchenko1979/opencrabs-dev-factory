@@ -35,7 +35,7 @@
 # depend on the fallback); it needs bumping only if ANOTHER fallback-dependent
 # leg is added, which is exactly when this guard should be revisited.
 #
-# Standalone by design — the negctl-* family is not wired into tools/tests/run.sh;
+# Standalone by design — the negctl-* family is not part of the pytest gate;
 # it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion

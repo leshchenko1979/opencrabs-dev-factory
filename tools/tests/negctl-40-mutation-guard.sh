@@ -27,7 +27,7 @@
 # pass-count drop: a token test alone cannot distinguish a leg that FAILED from a
 # leg that was DELETED, and deleting a leg produces no FAIL line at all.
 #
-# Standalone by design — the negctl-* family is not wired into tools/tests/run.sh;
+# Standalone by design — the negctl-* family is not part of the pytest gate;
 # it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion

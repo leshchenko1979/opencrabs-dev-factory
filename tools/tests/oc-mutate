@@ -52,8 +52,8 @@
 #   2  usage        bad arguments, missing tool, recursion refused
 #   3  INCONCLUSIVE the PRISTINE tree is already red — nothing can be concluded
 #
-# Standalone by design: `tools/tests/run.sh` sweeps `tools/*/oc-*` for `--help`
-# but excludes `*/tests/*`, so this is run deliberately, like the negctl-*
+# Standalone by design: the pytest gate runs an explicit tool list rather than
+# sweeping `tools/*/oc-*`, so this is run deliberately, like the negctl-*
 # family, whenever the legs it guards change.
 set -u
 

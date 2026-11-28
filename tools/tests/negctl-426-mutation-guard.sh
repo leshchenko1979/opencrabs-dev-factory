@@ -17,8 +17,8 @@
 # runs on, so this guard asserts the strongest available property: the mutant
 # reddens EXACTLY the legs aimed at, and no unrelated leg.
 #
-# Standalone by design — the negctl-* family is not wired into
-# tools/tests/run.sh; it is run deliberately when the legs it guards change.
+# Standalone by design — the negctl-* family is not part of
+# the pytest gate; it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion
 # guard, process budget cap, timeout.

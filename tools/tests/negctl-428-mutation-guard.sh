@@ -25,8 +25,8 @@
 # and it is why `#428-clean-silent` (8b) is deliberately NOT claimed: with 8a
 # ahead of it, no faithful mutation can reach it first.
 #
-# Standalone by design — the negctl-* family is not wired into
-# tools/tests/run.sh; it is run deliberately when the legs it guards change.
+# Standalone by design — the negctl-* family is not part of
+# the pytest gate; it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion
 # guard, process budget cap, timeout.

@@ -43,7 +43,7 @@
 # root resolver was broken. The anchor used here (`_derived="$(printf`) is unique
 # to the derivation.
 #
-# Standalone by design -- the negctl-* family is not wired into tools/tests/run.sh;
+# Standalone by design -- the negctl-* family is not part of the pytest gate;
 # it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion

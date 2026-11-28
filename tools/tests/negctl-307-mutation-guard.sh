@@ -11,7 +11,7 @@
 # unanchored `git log --grep=#N`. Covers all three control sites:
 #   (1) tools/harvest/oc-harvest-census --selftest
 #   (2) tools/harvest/oc-harvest-dispatch --selftest   (legs 11e/11f)
-#   (3) tools/tests/run.sh §00c lib/oc_claims unit cases
+#   (3) the lib/oc_claims unit cases (pytest: infra/test_claims_predicate.py)
 #
 # #365 — the gate-4 SUBJECT predicate (symbol derivation + the declared-subject
 # fallback). §4 reverts that predicate four ways, one per gate-4 shape, and
@@ -99,13 +99,64 @@ else
   bad "mutant does not carry the unanchored grep — guard is inert"
 fi
 
-# --- extract the §00c lib unit cases from run.sh ----------------------------
-sed -n '/cat > "\$OCT\/unit.py" << .PYEOF./,/^PYEOF$/p' "$SRC/tests/run.sh" \
-  | sed '1d;$d' > "$WORK/unit.py"
+# --- the #307 lib unit cases ------------------------------------------------
+# These were a heredoc in the retired shell battery; the pytest port is
+# ``infra/test_claims_predicate.py``. That module cannot be pointed at a MUTANT
+# tools tree (its conftest pins TOOLS_DIR to the repo), so the guard drives the
+# predicate directly, in the same shape the heredoc used: import the module
+# under test from a path and exercise it against a throwaway repo.
+cat > "$WORK/unit.py" <<'UNITEOF'
+import os, subprocess, sys, tempfile
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import oc_claims as oc
+
+fails = []
+
+def chk(desc, got, want):
+    if got != want:
+        fails.append("%s (got %r want %r)" % (desc, got, want))
+
+repo = tempfile.mkdtemp(prefix="claims307-")
+
+def git(*a):
+    subprocess.run(("git",) + a, cwd=repo, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+git("init", "-q")
+git("config", "user.email", "guard@example.invalid")
+git("config", "user.name", "guard")
+
+def commit(fname, *msg):
+    open(os.path.join(repo, fname), "w").write(fname + "\n")
+    git("add", "-A")
+    git("commit", "-q", *msg)
+
+commit("prose.txt", "-m", "fix(x): reword the note (#701)")
+commit("bodyprose.txt", "-m", "fix(w): plain subject",
+       "-m", "mentions #704 in the body prose only")
+commit("anchored.txt", "-m", "fix(y): real work", "--trailer", "Issue-Ref: #702")
+commit("thirdparty.txt", "-m", "fix(z): third-party work",
+       "--trailer", "Issue-Ref: acme/widgets#703")
+commit("binary.txt", "-m", "fix(b): binary-tracker work",
+       "--trailer", "Issue-Ref: opencrabs/opencrabs#705")
+
+# THE CONTROL PAIR: prose must never anchor, a real trailer must.
+chk("#307 subject prose does not anchor", oc.resolve_issue_commits(repo, 701), [])
+chk("#307 body prose does not anchor", oc.resolve_issue_commits(repo, 704), [])
+chk("#307 real trailer anchors", oc.resolve_issue_files(repo, 702), ["anchored.txt"])
+chk("#307 foreign-slug trailer does not anchor", oc.resolve_issue_files(repo, 703), [])
+chk("#307 binary-tracker trailer anchors", oc.resolve_issue_files(repo, 705), ["binary.txt"])
+
+for f in fails:
+    print("FAIL - " + f)
+sys.exit(1 if fails else 0)
+UNITEOF
 if [ -s "$WORK/unit.py" ]; then
-  ok "extracted lib unit cases ($(wc -l < "$WORK/unit.py" | tr -d '[:space:]') lines)"
+  ok "lib unit cases written ($(wc -l < "$WORK/unit.py" | tr -d '[:space:]') lines)"
 else
-  bad "could not extract lib unit cases from run.sh"
+  bad "could not write the lib unit cases"
 fi
 
 # --- run a selftest, report its rc -----------------------------------------
@@ -150,7 +201,7 @@ fi
 
 # --- (3) lib unit cases -----------------------------------------------------
 echo
-echo "[3] lib/oc_claims unit cases (run.sh 00c)"
+echo "[3] lib/oc_claims unit cases (#307 anchored Issue-Ref)"
 if python3 "$WORK/unit.py" "$WORK/baseline/lib" >"$WORK/unit_base.out" 2>&1; then
   ok "baseline lib unit cases GREEN"
 else

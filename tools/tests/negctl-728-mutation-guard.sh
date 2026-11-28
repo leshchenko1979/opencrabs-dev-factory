@@ -32,8 +32,8 @@
 # leg 10a's first assertion also hides its later ones. Every aimed leg below is
 # therefore reachable as a FIRST failure under its own mutant.
 #
-# Standalone by design — the negctl-* family is not wired into
-# tools/tests/run.sh; it is run deliberately when the legs it guards change.
+# Standalone by design — the negctl-* family is not part of
+# the pytest gate; it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion
 # guard, process budget cap, timeout.

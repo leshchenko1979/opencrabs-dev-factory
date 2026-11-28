@@ -39,7 +39,7 @@
 # greps that token on a FAIL line. When adding a leg here, give it a token of the
 # same shape and add it to AIMED. Do NOT key a guard on a t_ok label.
 #
-# Standalone by design — the negctl-* family is not wired into tools/tests/run.sh;
+# Standalone by design — the negctl-* family is not part of the pytest gate;
 # it is run deliberately when the legs it guards change.
 #
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion

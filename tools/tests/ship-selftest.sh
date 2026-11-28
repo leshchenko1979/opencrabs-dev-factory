@@ -35,8 +35,8 @@
   # loop). Test 12 proves oc-ship defaults OC_ACTOR from it.
   FIXTURE_SESSION="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
   # The identity the WAKE fixture lends the chain through the ENVIRONMENT. A
-  # selftest must never read the CALLER's identity: tools/tests/run.sh:44
-  # exports OC_ACTOR="test-runner" (label-shaped by design) and no
+  # selftest must never read the CALLER's identity: the retired shell battery
+  # exported OC_ACTOR="test-runner" (label-shaped by design) and no
   # OPENCRABS_SESSION_ID, so an ambient read made the wake legs assert the
   # LAUNCHER rather than the mechanism -- and a BARE ambient expansion under
   # set -u aborted the whole selftest, dropping 84 of 194 legs behind one
