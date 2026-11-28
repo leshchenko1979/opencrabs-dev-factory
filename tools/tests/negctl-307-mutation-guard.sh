@@ -32,9 +32,35 @@
 # control respectively -- proving the pair is discriminating rather than a
 # signal that fires (or stays silent) for every upstream-present symbol.
 #
+# EXCEPTION to "first bad leg == aimed leg" (#216): `symbol_always_fire` is the
+# one mutant whose output is textually indistinguishable from an EARLIER leg's
+# forbidden string, so the suite aborts before its aimed leg is reached. That
+# mutant therefore runs with its two colliding clauses removed from its OWN
+# copy (see COLLATERAL in the §4 mutation heredoc), which makes the
+# same-signature control the first bad leg -- the same assertion, made
+# reachable. The collision clauses stay covered by the pristine baseline run.
+#
 # Harness guards (AGENTS.md §Repro harnesses): explicit tool path, recursion
 # guard, process budget cap.
 set -u
+
+#: OUTER WALL BOUND (#215). This guard re-runs whole sections per mutant, and the
+#: dispatch selftest alone costs 5-6 min, so a full pass measures ~1338 s — well
+#: past the 900 s it used to be wrapped in. The bound therefore lives HERE, next
+#: to the work it bounds, and is armed by the guard itself (single-shot re-exec,
+#: marked by OC_NEGCTL_BUDGET_ARMED) so no caller has to carry the number:
+#: 2700 s is the floor — 2x the measured pass — and OC_NEGCTL_BUDGET raises it.
+NEGCTL_BUDGET="${OC_NEGCTL_BUDGET:-2700}"
+if [ -z "${OC_NEGCTL_BUDGET_ARMED:-}" ] && command -v timeout >/dev/null 2>&1; then
+  OC_NEGCTL_BUDGET_ARMED=1 OC_NEGCTL_BUDGET="$NEGCTL_BUDGET" \
+    timeout "$NEGCTL_BUDGET" bash "$0" "$@"
+  _budget_rc=$?
+  if [ "$_budget_rc" -eq 124 ]; then
+    echo "MUTATION GUARD FAILED — wall budget ${NEGCTL_BUDGET}s exceeded; raise OC_NEGCTL_BUDGET"
+  fi
+  exit "$_budget_rc"
+fi
+
 [ "${OC_REPRO_DEPTH:-0}" -ge 1 ] && exit 99
 export OC_REPRO_DEPTH=1
 ulimit -u $(( $(ps -e --no-headers | wc -l) + 200 )) 2>/dev/null || true
@@ -50,6 +76,21 @@ export OC_TOOLS_NOLOG=1
 WORK="$(mktemp -d)"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
+
+# --- #215: the hermetic fixtures every selftest below runs against -----------
+# The dispatch selftest makes ~90 LIVE gh calls with no mocks (24 x `gh pr list
+# --repo opencrabs/opencrabs --limit 1000` at ~11 s each + 65 x `gh issue view`),
+# 6m02s per run, and this guard re-runs whole sections per mutant. Both hooks
+# already exist in the tools -- OC_HARVEST_MOCK_PRS (the PR window the vet path
+# reads) and OC_HARVEST_MOCK_HIERARCHY (the fork-issue hierarchy read) -- so the
+# guard supplies EMPTY fixtures for every selftest it runs: measured 89 -> 29 gh
+# calls and 363 s -> 330 s per dispatch selftest, green both ways (71/71 OK).
+# EMPTY, not absent: an empty window cannot read a PR as harvested, so no leg can
+# pass merely because a mock happened to carry a matching row.
+MOCK_PRS_EMPTY="$WORK/mock_prs_empty.json"
+MOCK_HIER_EMPTY="$WORK/mock_hier_empty.json"
+printf '[]\n' > "$MOCK_PRS_EMPTY"
+printf '{}\n' > "$MOCK_HIER_EMPTY"
 
 fails=0
 ok()  { echo "  ok   - $1"; }
@@ -162,7 +203,15 @@ fi
 # --- run a selftest, report its rc -----------------------------------------
 run_st() {  # run_st <label> <tool-path> [outfile] -> echoes rc
   local label="$1" tool="$2" outfile="${3:-}" rc=0 out=""
-  out="$(timeout 600 "$tool" --selftest 2>&1)" || rc=$?
+  # #215: the mocks are supplied PER INVOCATION rather than exported once, so
+  # they cannot leak into any other consumer in this shell; the selftests
+  # themselves export their own values for the legs that need a NON-empty window,
+  # and those win (an inner export shadows the ambient value for that leg).
+  # The per-run bound is 900 s (was 600): the dispatch selftest measured 330 s
+  # here and ~363 s on a cold network, and a bound that fires would read as a
+  # CATCH, since rc=124 is neither 0 nor a resolvable-path fault (126/127).
+  out="$(OC_HARVEST_MOCK_PRS="$MOCK_PRS_EMPTY" OC_HARVEST_MOCK_HIERARCHY="$MOCK_HIER_EMPTY" \
+         timeout 900 "$tool" --selftest 2>&1)" || rc=$?
   printf '%s' "$out" > "$WORK/last.out"
   if [ -n "$outfile" ]; then printf '%s' "$out" > "$outfile"; fi
   echo "$rc"
@@ -368,7 +417,48 @@ if n != 1:
     sys.stderr.write("mutation %s: anchor occurs %d times, need exactly 1\n"
                      % (label, n))
     sys.exit(2)
-open(path, "w").write(src.replace(anchor, repl))
+src = src.replace(anchor, repl)
+
+# #216: COLLATERAL SUPPRESSION, applied to the mutant copy ONLY, for the one
+# mutant whose damage is textually indistinguishable from an EARLIER leg's
+# forbidden string. `symbol_always_fire` makes the divergence check fire for
+# EVERY upstream-present symbol, so the container-hunk leg (census 6349) and
+# then the doc-hunk leg (6374) both redden on it -- the very `:: StreamingState`
+# / `:: base_fn` strings they forbid as evidence that attribution resolved to the
+# RIGHT symbol. The suite aborts at the first failure, so the mutant's AIMED leg
+# (the same-signature control, census 6495) is never reached and the guard's
+# "first bad leg == aimed leg" contract is unsatisfiable for this label.
+#
+# MEASURED 2026-11-28 on a copy: mutant alone -> first bad leg is
+# `container-hunk fixture` (rc=1, 88 ok legs); with these two clauses removed
+# from the SAME copy -> first bad leg is `same-signature fixture` naming
+# `NOTE(HUNK_SYMBOL_DIVERGED): src/base.rs :: base_fn` (rc=1, 94 ok legs).
+# So the negative control IS load-bearing; the collision only hid it.
+#
+# The two clauses live in DIFFERENT legs (census 6349 and 6374) and are NOT
+# adjacent, so each is anchored on its own line and each must be unique.
+#
+# This does NOT weaken the collision clauses: they are asserted in full by the
+# PRISTINE baseline run above (same tree, no mutation, no suppression), and
+# suppression is scoped to this one mutant's private copy under $WORK.
+COLLATERAL = {
+    "symbol_always_fire": [
+        '     && ! oc_has "$out" "src/flow.rs :: StreamingState" \\\n',
+        '     && ! oc_has "$out" "src/flow.rs :: base_fn" \\\n',
+    ],
+}
+for _clause in COLLATERAL.get(label, []):
+    cn = src.count(_clause)
+    if cn != 1:
+        sys.stderr.write("collateral %s: clause %r occurs %d times, need exactly 1\n"
+                         % (label, _clause.strip()[:60], cn))
+        sys.exit(2)
+    src = src.replace(_clause, "")
+if label in COLLATERAL:
+    print("  collateral suppressed: %s (%d forbidden-string clauses removed)"
+          % (label, len(COLLATERAL[label])))
+
+open(path, "w").write(src)
 print("  mutated: %s (anchor occurrences=%d)" % (label, n))
 PYEOF
   then
