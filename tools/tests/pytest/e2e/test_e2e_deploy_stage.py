@@ -5,21 +5,21 @@ hermeticity assertion that costs a full selftest. All three drive REAL
 subprocesses and build real git repos, so they follow the ``test_e2e_cache.py``
 precedent: a ``test_e2e_`` filename AND ``@pytest.mark.slow``, so the fast gate
 can drop them with either ``--ignore=tools/tests/pytest/e2e/test_e2e_deploy_stage.py``
-or ``-m "not slow"``. Measured 2026-11-27: selftest 898 s, dispatched-sha 3.2 s,
-stale-pinned-ref 11.7 s — only the first is slow; the other two are excluded for
-their real-subprocess surface, not their wall time.
+or ``-m "not slow"``. Of the three, only the selftest is slow — 898 s against
+3.2 s and 11.7 s for the other two, which are excluded for their real-subprocess
+surface, not their wall time.
 
 * **log hermeticity (M2-21)**: ``oc-build --selftest`` must write ZERO rows to
-  ``OC_TOOLS_LOG``. The suite is 561 assertions, 0 fail; measured ~7m45s wall on
-  2026-11-27 under load 17 on 4 cores. This is the leg that made the section
-  look hung — it is SLOW, not stuck.
+  ``OC_TOOLS_LOG``. The suite is 561 assertions, 0 fail, and takes ~7m45s wall
+  under load on 4 cores. This is the leg that makes the section look hung — it
+  is SLOW, not stuck.
 * **ship-pending (n=2003 family)**: ``poll --sha S`` with S already dispatched
   must never report "nothing new" — a dispatched-sha GREEN means SWAP PENDING,
   and rc 5 ("already deployed") is the wrong answer that reads as a no-op.
-  Measured 2.3 s.
+  Costs ~2.3 s.
 * **stale pinned ref**: after a diverge/restore round-trip the plan must report
   ``FF ok`` again. The old code resurrected its own stale ref and refused rc 2.
-  Measured 4.9 s.
+  Costs ~4.9 s.
 
 The cheap boundary legs (usage rc 1, unknown arg, the kill-file brake at 9, bad
 ``--wait``) stay in ``test_deploy_stage.py``, where they finish in seconds.

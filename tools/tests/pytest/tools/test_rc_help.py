@@ -1,9 +1,9 @@
 """Ported: the fleet-wide ``--help`` sweep — run.sh §43.
 
-``tools/`` is grouped by KIND (owner order 2026-09-25), so the executables live
-one level down. A flat ``tools/oc-*`` glob matches NOTHING after that regroup and
-the section then passes by counting zero legs — a fleet-wide check that cannot
-fail. So the enumeration is recursive and a FLOOR is asserted.
+``tools/`` is grouped by KIND, so the executables live one level down. A flat
+``tools/oc-*`` glob matches NOTHING under that layout and the section then
+passes by counting zero legs — a fleet-wide check that cannot fail. So the
+enumeration is recursive and a FLOOR is asserted.
 
 Three defects this leg exists to catch, each a different way ``rc 0`` lies:
 

@@ -12,7 +12,7 @@ Four claims the shell section makes and this port keeps:
    never retried, never resurrected (#17 class).
 2. Re-running the same ``--run`` is a NO-OP. ``fanout.state`` is the memory: a
    run that re-notifies on every sweep double-cards every lane, which is the
-   measured 13:21Z TOCTOU the ``.lock`` file exists to prevent.
+   TOCTOU the ``.lock`` file exists to prevent.
 3. A RED run blames the CULPRIT — the session named in the commit that touched
    the annotated path — not every contributor in the range.
 4. ``fanout`` with no ``--run`` is usage rc 2.

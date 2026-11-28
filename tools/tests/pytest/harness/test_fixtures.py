@@ -187,10 +187,10 @@ def test_gh_stub_is_reachable_as_a_bare_gh(gh_stub):
 # =============================================================================
 # run_selftest — driven against a real tool
 # =============================================================================
-# The tool is chosen for COST, not importance: the migration plan measures
-# oc-ledger's kernel at 296.5 s, and a foundation suite that takes 5 minutes is
+# The tool is chosen for COST, not importance: oc-ledger's kernel takes 296.5 s,
+# and a foundation suite that takes 5 minutes is
 # a suite nobody runs while working. oc-issue-scope --selftest is hermetic and
-# measured at 0.5 s, which is enough to prove the WIRING (argv shape, per-call
+# runs in 0.5 s, which is enough to prove the WIRING (argv shape, per-call
 # state dir, the bound). Each tool's own coverage belongs to its own section.
 CHEAP_SELFTEST = "oc-issue-scope"
 

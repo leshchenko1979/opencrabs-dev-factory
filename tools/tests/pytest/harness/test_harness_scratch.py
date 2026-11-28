@@ -166,7 +166,7 @@ def test_the_default_root_is_on_disk_not_tmpfs(tmp_path):
     """The SHIPPED default is disk: tmpfs is opt-in.
 
     This is the A/B verdict — 1.26 % median gain against a 10 % keep bar — so a
-    /dev/shm default here is a regression of the measured decision, not a
+    /dev/shm default here is a regression of that trade, not a
     performance improvement.
     """
     cand = _tmpfs_candidate()
@@ -186,11 +186,11 @@ def test_the_default_root_is_on_disk_not_tmpfs(tmp_path):
 def test_an_inherited_live_root_is_used_but_not_deleted(tmp_path):
     """A nested run must not delete the tree its parent and siblings are filling.
 
-    Measured in the shell harness: ``OC_BATTERY_TEST_TMPDIR=$R run.sh
-    --resolve-jobs`` deleted $R and a canary inside it. Under ``--jobs N`` that
+    In the shell harness, ``OC_BATTERY_TEST_TMPDIR=$R run.sh
+    --resolve-jobs`` deletes $R and a canary inside it. Under ``--jobs N`` that
     is the tree N siblings are still writing, and section 10's own capture file
-    vanished mid-section — turning a real verdict into a red one whose evidence
-    had been unlinked.
+    vanishes mid-section — turning a real verdict into a red one whose evidence
+    was unlinked.
     """
     root = tmp_path / "inherited"
     root.mkdir()

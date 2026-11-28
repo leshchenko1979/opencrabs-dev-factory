@@ -1,6 +1,6 @@
 """Opt-in content-hash memo for expensive ``--selftest`` subprocesses.
 
-THE PROBLEM THIS SOLVES, MEASURED
+THE PROBLEM THIS SOLVES
     The battery's wall time is dominated by a handful of tool ``--selftest``
     subprocesses (``oc-issue-dispatch`` 208 s, ``oc-ledger`` 296 s, ``oc-ship``
     156 s). A lane that changed one unrelated shell file pays all of them again.

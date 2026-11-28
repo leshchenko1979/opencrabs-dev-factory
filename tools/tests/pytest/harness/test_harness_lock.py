@@ -15,7 +15,7 @@ WHY THE BLOCK IS EXTRACTED, NEVER RETYPED
     leg composes a "battery" from ``note()`` + the block sliced verbatim between
     its ``>>>``/``<<<`` fences + a probe body that reports what it observed.
 
-TWO TRAPS, BOTH MEASURED IN THE SHELL HARNESS
+TWO TRAPS, BOTH FOUND IN THE SHELL HARNESS
     (1) Every launch must clear ``BATTERY_IN_CHUNK``: a ``--chunk`` child that
         inherited ``1`` makes the block SKIP, and every "does not hold the lock"
         leg then passes on an empty haystack. The probe prints
@@ -397,7 +397,7 @@ wait
 def test_the_driver_terminates_while_the_old_shape_hangs(probe):
     """A bare ``wait`` saw the lock coproc and blocked forever once chunks ended.
 
-    Measured in the shell harness: 73/73 chunks done, driver in ``do_wait``, zero
+    In the shell harness: 73/73 chunks done, driver in ``do_wait``, zero
     output for 27m13s. The fixed driver tracks chunk PIDs; the OLD shape is kept
     as the negative control because a driver that never waited at all would also
     "terminate" — so the control MUST hang or the fixed arm proves nothing.

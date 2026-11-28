@@ -3,7 +3,7 @@
 WHAT THIS PORTS
     ``run.sh`` section 63 (``section "pytest suite"``). The section itself is
     three shell sites; what actually needs guarding is the INVOCATION, because
-    each of its four terms was chosen against a measured failure and every one
+    each of its four terms was chosen against a real failure and every one
     of them can be "simplified" back into that failure by a later editor.
 
 WHY EACH TERM IS LOAD-BEARING (the receipts)
@@ -94,8 +94,8 @@ def test_parallelism_is_two_workers_never_four():
         "reddened 17 healthy tests with jemalloc EAGAIN")
     for bad in ("-n 4", "-n auto", "--numprocesses=4"):
         assert bad not in block, (
-            "%r is back in the gate — that is the invocation measured to fail "
-            "on this box" % bad)
+            "%r is back in the gate — four workers exhaust the pids cap and red "
+            "healthy tests with jemalloc EAGAIN" % bad)
 
 
 def test_slow_legs_are_deselected():

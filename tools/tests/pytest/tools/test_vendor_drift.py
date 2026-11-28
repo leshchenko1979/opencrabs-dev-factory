@@ -52,10 +52,10 @@ BODY = (
 )
 VENDORED = BODY.replace("upstream-name", "oc-questions")
 
-# The pass count the tool's own selftest reported when this module was written.
+# The pass count the tool's own selftest reports.
 # A FLOOR, never an exact total: an exact number reddens on every legitimate new
 # leg, and the tempting repair is to lower it — which is how a leg gets deleted
-# (measured 2026-10-17: the hardcoded "8 passed" reddened when #44 took it to 13).
+# (a hardcoded "8 passed" reddened the moment #44 took the total to 13).
 SELFTEST_FLOOR = 13
 
 

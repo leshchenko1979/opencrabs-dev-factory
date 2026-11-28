@@ -23,9 +23,9 @@ WHY THE KILL IS TRIGGERED BY A SENTINEL, NOT BY A WALL CLOCK
     say WHERE the kill lands: it reproduces #451 only when the process reaches the
     send inside 10 s. Under ``-n 2`` the machine is busier, the tool reaches the
     send later, and the kill lands BEFORE the narrative is printed — the post-fix
-    cell then reads 0 B and the pair stops discriminating (measured: this leg
-    failed at ``-n 2`` while passing serially, with both cells at 0 B). The bound
-    was measuring the box's load, not the tool's behaviour.
+    cell then reads 0 B and the pair stops discriminating: the leg fails at
+    ``-n 2`` while passing serially, with both cells at 0 B. The bound is then
+    measuring the box's load, not the tool's behaviour.
 
     So the notify stub drops a sentinel and the harness kills the process group
     the moment it appears. The kill is now INSIDE the send by construction, and

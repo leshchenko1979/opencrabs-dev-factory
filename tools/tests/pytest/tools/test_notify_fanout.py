@@ -21,8 +21,8 @@ note at the end of this file for why and where it went.
 **Counters are read as FIELDS, never substrings.** ``absent=1`` CONTAINS
 ``sent=1``, so the shell's ``grep -q 'sent=1'`` arm is satisfied by a wave that
 merely disclosed an absence — it can never go red in exactly the case it was
-written for (measured 2026-11-21: mutation M3 drove ``sent`` to 2 and the
-substring arm still passed). ``_field`` anchors on a key boundary.
+written for (a mutation that drives ``sent`` to 2 still satisfies the substring
+arm). ``_field`` anchors on a key boundary.
 
 **DEVIATION from run.sh, deliberate: this port touches NO live state.** The shell
 section resolves the invoker with ``oc-ledger roster --live`` and points
@@ -32,7 +32,7 @@ Here the invoker is a fixture uuid, the roster is a fixture JSON and the session
 DB is a throwaway, so the same four claims hold on any box and no leg can flip
 because a lane was retired. ``OC_FANOUT_RUN_DIR`` is redirected as well: the
 tool's production default is ``<skill>/run`` and the wave id is DERIVED FROM THE
-BRIEF TEXT, so two concurrent instances collide on one lock there (the 2026-11-21
+BRIEF TEXT, so two concurrent instances collide on one lock there (the
 ``rc 7``/``rc 4`` class the tool's own selftest comment records).
 """
 
@@ -211,7 +211,7 @@ def test_roles_filter_excludes_the_invoking_lane(run_tool, wave):
 # =============================================================================
 # The shell section also carried ``run_selftest oc-notify-fanout``. That leg is
 # deleted here (factory #203): ``tools/test_tool_wrappers.py`` drives the same
-# ``--selftest`` as one parametrised case, slow-marked, at a measured 266 s.
+# ``--selftest`` as one parametrised case, slow-marked, at ~266 s.
 # Driving it twice buys one extra ``rc == 0`` and costs four and a half minutes
 # of every full run. The blanket owns "the selftest exits 0"; this module owns
 # the three claims the selftest cannot make about itself — which is the whole

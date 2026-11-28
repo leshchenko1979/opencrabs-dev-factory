@@ -13,8 +13,8 @@ WHY IT MUST RE-EXEC AT ALL
     (``.../app.slice/opencrabs-ops.service``), whose wall is MemoryHigh ==
     MemoryMax == 1536 MiB with swap exhausted and whose OOMPolicy=kill tears the
     WHOLE unit down on an over-limit allocation — so a test allocation does not
-    merely die, it takes the daemon with it. Measured 2026-09-30: four daemon OOM
-    kills in one day, each during a battery run (run.sh:367-440, #720).
+    merely die, it takes the daemon with it, and an OOM kill there lands during
+    a battery run (run.sh:367-440, #720).
 
 CAPS SCALE WITH ``-n N``
     ``TasksMax``, ``CPUQuota`` and ``MemoryMax`` are TREE-WIDE: they bound the
@@ -105,7 +105,7 @@ def _mem_caps(n: int) -> tuple[int, int]:
     Scaled per worker, but CEILINGED at 75 % of physical RAM: a tree-wide
     ``MemoryMax`` larger than the box is not a cap at all — it stops protecting
     the daemon (which is the entire reason the scope exists) while still
-    claiming to. Measured on this host: 4015132 kB total, so ``-n auto`` (4
+    claiming to. This host has 4015132 kB total, so ``-n auto`` (4
     workers) would otherwise ask for 4096M, more than the box has.
     """
     mem = PER_WORKER["MemoryMax"] * n

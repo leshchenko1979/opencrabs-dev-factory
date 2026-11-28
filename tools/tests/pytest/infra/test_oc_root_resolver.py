@@ -15,13 +15,13 @@ WHAT THE RESOLVER IS FOR (tools/lib/oc-root.sh)
     ``dirname "$0"`` names the group, not the tools root, and every sibling
     reach (``$OC_TOOLS_DIR/lib/oc-log.sh``) breaks. The bootstrap walks UP to
     the first ancestor holding ``lib/oc-root.sh``, with three arms that are each
-    load-bearing and each were a measured defect:
+    load-bearing, each defending a distinct defect:
 
-      F-L1  the marker must be a REAL ``lib/``. ``/tmp/lib`` was found to be a
-            symlink to the real ``tools/lib`` (2026-09-25), so a marker test
-            that followed symlinks stopped the walk at ``/tmp`` for EVERY script
-            under ``/tmp`` and resolved ``OC_TOOLS_DIR=/tmp`` — rc 127 on every
-            sibling reach, which reads as a broken tool.
+      F-L1  the marker must be a REAL ``lib/``. A ``/tmp/lib`` symlink to the
+            real ``tools/lib`` makes a marker test that follows symlinks stop
+            the walk at ``/tmp`` for EVERY script under ``/tmp`` and resolve
+            ``OC_TOOLS_DIR=/tmp`` — rc 127 on every sibling reach, which reads
+            as a broken tool.
       basename arm  a marker-less ``tools/`` must STOP the walk. Without it a
             stale tools/ keeps walking and adopts an ANCESTOR's marker — a root
             above the tree the tool lives in.
@@ -62,8 +62,8 @@ WALKUP = 'while [ "$_oc_r" != "/" ]'
 FIXPOINT_BREAK = '[ "$_oc_r" != "." ]'
 
 # A sweep that matched no files would report zero violations and pass
-# vacuously. 49 tools carried the bootstrap on 2026-11-16; the floor sits below
-# that so ordinary churn does not redden while a broken enumerator does.
+# vacuously. 49 tools carry the bootstrap; the floor sits below that so ordinary
+# churn does not redden while a broken enumerator does.
 CARRIER_FLOOR = 40
 
 
@@ -426,9 +426,8 @@ def test_fallback_is_the_scripts_own_dir_when_no_root_exists(tmp_path, run_tool)
 
     This is load-bearing for the battery itself: many selftests copy a tool into
     a temp dir beside FAKE siblings and assert the tool uses THOSE. A walk that
-    escaped to the real tools/ would silently defeat the test's isolation
-    (measured 2026-09-25: oc-ship's journal legs read rc 127 against the real
-    tree).
+    escaped to the real tools/ would silently defeat the test's isolation —
+    oc-ship's journal legs then read rc 127 against the real tree.
     """
     lone = tmp_path / "lone" / "a" / "b"
     probe = _write_probe(lone / "oc-probe")

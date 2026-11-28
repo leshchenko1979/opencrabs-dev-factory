@@ -4,13 +4,12 @@ Both sections exist because an instrument reported a **confident zero** or a
 **confident age** that was a lie, and nothing downstream could tell.
 
 §59 — THE MIRROR'S AGE IS ITS OWN BIRTH. ``cp -a "$src/." "$mir/"`` applies the
-SOURCE DIRECTORY's attributes to the destination root, so every mirror was born
-carrying ``tools/``'s mtime. Measured 2026-10-20: 42 mirrors sharing ONE mtime
-to the nanosecond, predating their births by 21.9 days. The only reader of that
-mtime is an age instrument, so each mirror was ~525 h stale the instant it
-existed. The discriminating input is a tools tree with a DELIBERATELY OLD mtime:
-a mirror that inherits it reads 22 days old, one that carries its own birth
-reads seconds old.
+SOURCE DIRECTORY's attributes to the destination root, so every mirror is born
+carrying ``tools/``'s mtime — all mirrors share ONE mtime to the nanosecond,
+predating their own births. The only reader of that mtime is an age instrument,
+so each mirror reads stale the instant it exists. The discriminating input is a
+tools tree with a DELIBERATELY OLD mtime: a mirror that inherits it reads 22
+days old, one that carries its own birth reads seconds old.
 
 THE MUTANT IS THE REAL HALF. It re-stamps the mirror root to INHERIT the source
 age — the identical fixture, the identical run, and the only difference is

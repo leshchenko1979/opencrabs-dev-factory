@@ -27,8 +27,8 @@ WHY EACH BLOCK IS DRIVEN, NEVER RETYPED
 
 WHY WALL-CLOCK IS NEVER ASSERTED
     #89's shell legs include a 3-6 s wall window for the driver, and #76's
-    original defect was measured as a wall regression. Under ``-n N`` on this box
-    that window reds for the same reason it reddened under ``--jobs 2``. Where a
+    original defect is a wall regression. Under ``-n N`` on this box
+    that window reds for the same reason it reds under ``--jobs 2``. Where a
     timing property matters the port asserts an OBSERVED concurrency or a
     CPU-time-immune structural fact instead, and says so at the leg.
 
@@ -233,7 +233,7 @@ def test_the_law_scanner_flags_an_undeclared_file(tmp_path):
 @pytest.mark.serial
 @pytest.mark.xdist_group("battery-pool")
 def test_jobs_4_under_pids_max_64_is_capped_to_2(tmp_path):
-    """The MEASURED defect, driven through the real arithmetic.
+    """The defect, driven through the real arithmetic.
 
     One tree, one commit: ``--jobs 4`` -> 390 PASS / 8 FAIL carrying 63
     "Resource temporarily unavailable" rows; ``--jobs 2`` -> 398/0. ``dmesg``
@@ -294,10 +294,10 @@ def test_the_pids_cap_opt_out_is_real(tmp_path):
 def test_the_default_jobs_is_one_never_nproc(tmp_path):
     """The battery is BACKGROUND work: it must lose every race to the daemon.
 
-    Measured 2026-11-17: the default ``$(nproc)=4`` cost an hour of stall — disk
-    86-95 % busy, swap 250 MB -> 1 GB, ~150 major faults/s, 16 daemon threads
-    blocked on page faults. Same tree, same commit: jobs=2 -> 747 s, jobs=1 ->
-    1171 s, both 398/0 — the wall is the intended trade.
+    A default of ``$(nproc)=4`` costs an hour of stall — disk 86-95 % busy, swap
+    250 MB -> 1 GB, ~150 major faults/s, 16 daemon threads blocked on page
+    faults. Same tree, same commit: jobs=2 -> 747 s, jobs=1 -> 1171 s, both
+    398/0 — the wall is the intended trade.
     """
     r = H.resolve_jobs(pids_max="max", jobs=None, tmp=tmp_path)
     assert r["jobs"] == "1", (
@@ -358,12 +358,11 @@ def test_the_pids_cap_still_bites_on_top_of_an_explicit_jobs(tmp_path):
 def test_the_renice_is_not_defeated_by_inheritance(tmp_path):
     """NEGATIVE CONTROL, paired and from an explicit nice-0 baseline.
 
-    MEASURED THE HARD WAY (battery 2026-11-17T15:21:35Z, 411 PASS / 1 FAIL):
-    inside the battery this control read nice 19 from the MUTANT and reported
-    the renice leg inert — because the battery has already reniced ITSELF to 19,
-    so every child inherits 19 and a neutered renice is indistinguishable from a
-    working one. The control was defeated by INHERITANCE, which is exactly the
-    class of defect it exists to catch.
+    WHY THE BASELINE IS REQUIRED: inside the battery this control reads nice 19
+    from the MUTANT and reports the renice leg inert — because the battery has
+    already reniced ITSELF to 19, so every child inherits 19 and a neutered
+    renice is indistinguishable from a working one. The control is defeated by
+    INHERITANCE, which is exactly the class of defect it exists to catch.
 
     ``renice`` is ABSOLUTE, so from an explicit 0 baseline the real block reads
     19 and the neutered copy reads 0. Both halves must be asserted, or a

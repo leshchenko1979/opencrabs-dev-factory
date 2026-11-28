@@ -43,14 +43,14 @@ THE BOUND, AND WHY IT IS NOT A CPU LIMIT
     the shell leg reads CPU as well (#83, factory#109). ``RLIMIT_CPU`` looks like
     the clean answer — the kernel kills a process that BURNS n seconds of CPU, so
     a starved process simply takes longer in wall time — and it was implemented
-    here FIRST, then rejected on measurement. This defect's spin is a FORK LOOP:
+    here FIRST, then rejected. This defect's spin is a FORK LOOP:
     each iteration forks a ``dirname``, so the CPU is spread across thousands of
     short-lived children each inside any sane limit while the parent accrues its
-    own slowly. ``ulimit -t 5`` needed **47-65 s of wall** to fire (three runs,
+    own slowly. ``ulimit -t 5`` needs **47-65 s of wall** to fire (three runs,
     load 7.3; the parent burns its 5 s budget while the forked ``dirname``s
     burn the rest).
 
-    So the bound is wall time with headroom sized from MEASURED healthy cost:
+    So the bound is wall time with headroom sized from healthy cost:
     the fleet samples burn 0.10-0.41 s CPU and return in 0.17-0.66 s wall (load
     7.3), making a 20 s bound 30-120x headroom. A sample that hits it is
     INCONCLUSIVE, never accused of hanging. What licenses the verdict is the
@@ -92,15 +92,15 @@ SAMPLE_COUNT = 9
 # longer in wall time, so starvation could never masquerade as a hang.
 #
 # It does not work for THIS defect, and the reason is the defect's own shape.
-# Measured on this box: the broken fixture is not a tight loop in one process —
+# The broken fixture is not a tight loop in one process —
 # every iteration forks a `dirname`. So the spin's CPU is spread across thousands
 # of short-lived children, each far inside any sane limit, while the parent
-# accumulates its own CPU slowly: with `ulimit -t 5` the parent took **47-65 s of
-# wall** to burn its 5 s budget (three runs, load 7.3). That is slower than the
-# wall bound it was meant to replace, and it made the leg slower than the 60 s
-# `slow` threshold on its own.
+# accumulates its own CPU slowly: with `ulimit -t 5` the parent takes **47-65 s
+# of wall** to burn its 5 s budget (three runs, load 7.3). That is slower than
+# the wall bound it was meant to replace, and it makes the leg slower than the
+# 60 s `slow` threshold on its own.
 #
-# So the bound is wall time, with headroom sized from MEASURED healthy cost:
+# So the bound is wall time, with headroom sized from healthy cost:
 # the fleet samples burn 0.10-0.41 s CPU and return in ~0.17-0.66 s wall (load
 # 7.3). A 20 s bound is therefore 30-120x headroom, and a sample that hits it is
 # reported INCONCLUSIVE rather than accused of hanging (#83). The negative

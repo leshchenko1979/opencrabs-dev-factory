@@ -45,7 +45,7 @@ RUN_SH = TOOLS_DIR / "tests" / "run.sh"
 # tidier ``\d+[a-z]?\.`` pattern. The labels in run.sh are not a single shape:
 # ``00``, ``00a2``, ``9b2``, and the retired ``9g/9h`` / ``66b/66c`` all open a
 # chunk, so a dot-suffixed regex undercounts by 10 and every ordinal after the
-# first irregular label silently shifts. Measured: ``\d+[a-z]?\.`` finds 63 of
+# first irregular label silently shifts. ``\d+[a-z]?\.`` finds 63 of
 # the extractor's 73.
 SECTION_MARKER = re.compile(r"^# ---- (\d[^.\s]*)\.?\s*(.*)$", re.M)
 
@@ -239,11 +239,11 @@ def resolve_jobs(*, pids_max: str, jobs: str | None, tmp: Path,
         cmd += ["--jobs", str(jobs)]
     cmd += ["--resolve-jobs"]
 
-    # WHY A NICE-0 BASELINE (#76, measured 2026-11-17): run.sh re-nices ITSELF
-    # to 19, so every child inherits 19. A negative control that removes the
-    # renice is then indistinguishable from a working one when the caller is
-    # ALREADY at 19 (inside the battery it always is) -- the control is defeated
-    # by inheritance, which is exactly the class it exists to catch. renice is
+    # WHY A NICE-0 BASELINE (#76): run.sh re-nices ITSELF to 19, so every child
+    # inherits 19. A negative control that removes the renice is then
+    # indistinguishable from a working one when the caller is ALREADY at 19
+    # (inside the battery it always is) -- the control is defeated by
+    # inheritance, which is exactly the class it exists to catch. renice is
     # ABSOLUTE, so from an explicit 0 baseline the real block reads 19 and the
     # neutered copy reads 0.
     preexec = None

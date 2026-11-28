@@ -53,7 +53,7 @@ def test_section_markers_outnumber_section_calls():
 
 @pytest.mark.parametrize("ordinal,title,max_span", [
     # Every entry is a section call whose body is DELIBERATELY one block.
-    # The bound is the block's own measured size plus slack; a leg that grows
+    # The bound is the block's own size plus slack; a leg that grows
     # past it is a sign another block was pasted in under the same call.
     (63, "battery lock: no child inherits the lock fd", 260),
     (64, "battery scratch root: one per-run TEST_TMPDIR", 200),
@@ -149,7 +149,7 @@ def test_cgroup_extraction_stops_at_its_own_end():
         "range end is a name list again" % (len(headers), headers))
     assert headers[0].startswith("# ---- cgroup isolation"), (
         "the extracted block does not begin at the #720 header: %r" % headers[0])
-    # The two measured overruns, asserted by their DISTINCTIVE code, not by name.
+    # The two overruns, asserted by their DISTINCTIVE code, not by name.
     assert "pids budget preflight" not in block, (
         "#74/#720: the extracted block runs PAST the isolation block (it carries "
         "the pids preflight) — the range end is a proxy again")

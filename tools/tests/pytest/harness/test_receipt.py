@@ -38,7 +38,7 @@ def emit_summary_fields() -> list[str]:
 
 
 def test_emit_summary_has_eighteen_fields():
-    """The measured fact: 18, not the 17 the :5545 comment claims."""
+    """The fact: 18, not the 17 the :5545 comment claims."""
     fields = emit_summary_fields()
     assert len(fields) == 18, (
         "run.sh:emit_summary now emits %d fields (%s) — the pytest receipt and "

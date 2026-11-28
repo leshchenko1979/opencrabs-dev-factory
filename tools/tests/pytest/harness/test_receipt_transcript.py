@@ -15,7 +15,7 @@ WHY THIS WAS DEFERRED, AND WHY THE DEFERRAL WAS WRONG
     reason: a limitation of the MEASURING INSTRUMENT misread as a property of
     the subject.
 
-THE CONTRACT (HQ item 5, 2026-09-22; widened by #614)
+THE CONTRACT (HQ item 5; widened by #614)
     A red run must leave its FAIL rows somewhere a LATER reader can still read:
 
     * ``bad()`` appends ``  FAIL - <desc>`` to ``$FAIL_LOG`` **and** prints it,

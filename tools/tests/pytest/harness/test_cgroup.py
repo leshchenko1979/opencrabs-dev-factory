@@ -39,7 +39,7 @@ def test_run_is_not_in_a_service_leaf():
 
     A ``*.service`` leaf means the run inherited the daemon's unit, where
     MemoryMax == MemoryHigh == 1536 MiB and OOMPolicy=kill: one over-limit
-    allocation tears down the daemon (four measured OOM kills on 2026-09-30).
+    allocation tears down the daemon.
     """
     cg = cgroup.read_cgroup_path()
     assert cg, "cannot read /proc/self/cgroup — the cgroup claim is unfalsifiable"

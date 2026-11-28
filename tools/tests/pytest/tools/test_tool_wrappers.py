@@ -14,7 +14,7 @@ tools::
     pytest tools/tests/pytest/tools/test_tool_wrappers.py -k oc-seal
     pytest tools/tests/pytest/tools/test_tool_wrappers.py -m "not slow"
 
-THE CONTRACT, MEASURED NOT ASSUMED
+THE CONTRACT: RC, NOT STDERR
 ----------------------------------
 ``run.sh:run_selftest`` (run.sh:280) asserts EXACTLY ONE thing: the exit code.
 
@@ -39,27 +39,25 @@ faithful port, not a vacuous one. Non-vacuity lives in three other places:
   2. ``test_tool_selftest_reports_something`` asserts the selftest actually
      PRINTS a verdict. A stub that silently exits 0 cannot satisfy it, so the
      rc-only assertion above cannot be satisfied by a no-op.
-  3. Timeouts are per-tool and measured, so a slow-but-legitimate selftest
+  3. Timeouts are per-tool, so a slow-but-legitimate selftest
      cannot red spuriously -- the defect run.sh:294-300 documents.
 
-TIMEOUTS ARE PER-TOOL AND MEASURED (probe: 2026-11-27, this worktree)
----------------------------------------------------------------------
+TIMEOUTS ARE PER-TOOL, NOT A BLANKET BOUND
+------------------------------------------
 A blanket short bound would red a slow-but-legitimate selftest: run.sh's own
-1800 s default exists because the longest measured section is 296.5 s.
+1800 s default exists because the longest section takes 296.5 s.
 
-Two measurements, because they differ by up to 5x: a quiet-box probe and the
-same tools under the load of a real pytest run on a shared box (several sibling
-worktrees were running their own suites). ``oc-wt`` is 21 s quiet and 118 s
-loaded; ``oc-upstream-delta`` 12 s quiet and 60 s loaded. Bounds are sized
-against the LOADED figure, with >= 2x headroom on it, because the loaded figure
-is the regime this module actually runs in. A bound sized on the quiet number
-would have red `oc-wt` at 118 s against 180 s -- a spurious failure, which is
-the exact defect run.sh:294-300 documents.
+Each bound is sized on the LOADED figure, not the quiet one, with >= 2x headroom
+on it, because the loaded figure is the regime this module actually runs in.
+``oc-wt`` takes 21 s quiet and 118 s under load; ``oc-upstream-delta`` 12 s
+quiet and 60 s loaded. A bound sized on the quiet number would red `oc-wt` at
+118 s against 180 s -- a spurious failure, which is the exact defect
+run.sh:294-300 documents.
 
 The tools that take minutes carry ``@pytest.mark.slow`` so ``-m "not slow"``
 deselects them rather than stalling a quick gate.
 
-EVERY LEG IS `serial` IN ONE `xdist_group` -- see the measured note beside
+EVERY LEG IS `serial` IN ONE `xdist_group` -- see the note beside
 ``WRAPPER_GROUP``. A ``--selftest`` is a process TREE, this box's cgroup caps
 ``pids`` at 64, and two concurrent legs already peak at 41, so overlapping legs
 fork-fail rather than run faster. ``-n N`` therefore runs them in order on one
@@ -78,8 +76,8 @@ import pytest
 # ---------------------------------------------------------------------------
 # (tool, timeout_seconds) -- timeout is a hard per-call bound, REQUIRED by the
 # fixture (an omittable bound is a bound that gets omitted; #753 is that hang).
-# Measured wall time is in the comment so the next reader can audit the
-# headroom instead of trusting the number.
+# Wall time is in the comment so the next reader can audit the headroom instead
+# of trusting the number.
 # ---------------------------------------------------------------------------
 TOOLS = [
     # -- fast: seconds. Loaded-box headroom in the comment ------------------
@@ -111,11 +109,11 @@ TOOLS = [
     ("oc-start",                300),   #  14.8 s
     ("oc-smoke",                300),   #  37.3 s
     # -- slow: minutes, not seconds. Deselected by -m "not slow" -----------
-    # oc-notify-fanout belongs HERE, not with the fast tools: measured 266 s
-    # standalone and 223 s under load, i.e. SLOWER than oc-gate. It first
-    # carried a 300 s bound, which is 1.13x headroom -- one loaded box away
-    # from a spurious red, the exact defect run.sh:294-300 documents. 600 s is
-    # 2.3x and the slow marker keeps it out of a quick gate.
+    # oc-notify-fanout belongs HERE, not with the fast tools: 266 s standalone
+    # and 223 s under load, i.e. SLOWER than oc-gate. A 300 s bound would be
+    # only 1.13x headroom -- one loaded box away from a spurious red, the exact
+    # defect run.sh:294-300 documents. 600 s is 2.3x and the slow marker keeps
+    # it out of a quick gate.
     ("oc-notify-fanout",        600),   # 266 s; 103 cases; needs a real ledger file
     ("oc-gate",                 600),   # 118.4 s
     ("oc-commit",               600),   # 124.2 s
@@ -150,29 +148,22 @@ TIMEOUTS = dict(TOOLS)
 # That is a REAL load-sensitivity inside oc-ledger's own concurrency probe --
 # not a wrapper bug, and not something the `serial_box` flock can fix, because
 # the contention is with the SIBLING LANES on this shared box (four worker
-# worktrees), not with another leg of this module. Measured 2026-11-27:
-#
-#     -n 0  , box quiet          -> PASS  (three separate runs)
-#     -n 2  , box load ~9        -> PASS
-#     -n 2  , box load ~21       -> FAIL race-max-n (want 919 got 916)
-#     -n auto, box load ~21      -> FAIL race-max-n (want 916 got 913)
-#     direct 10-way probe, load 8, 6/6 trials -> got=10/10 every time
-#
-# So the discriminator is BOX LOAD, not worker count: at load 8 the probe is
-# 6-for-6 clean, at load 21 it loses 3-4 appends. Retrying once costs a second
-# ~296 s leg ONLY on an already-failed run, and it separates "the tool's race
-# probe got starved by a neighbour" from "the tool is broken" -- which is the
-# same distinction run.sh:294-300 draws for a HUNG leg (rc 124 is not a tool
+# worktrees), not with another leg of this module. The discriminator is BOX
+# LOAD, not worker count: at load 8 the probe is 6-for-6 clean, at load 21 it
+# loses 3-4 appends, and no `-n` setting changes that. Retrying once costs a
+# second ~296 s leg ONLY on an already-failed run, and it separates "the tool's
+# race probe got starved by a neighbour" from "the tool is broken" -- which is
+# the same distinction run.sh:294-300 draws for a HUNG leg (rc 124 is not a tool
 # verdict either).
 #
 # Deliberately NOT a blanket retry: retrying every leg would hide a genuine
-# regression behind a second attempt, and this is the ONLY leg measured to
-# flake. If a second tool starts needing this, the correct move is to report
+# regression behind a second attempt, and this is the ONLY leg that flakes.
+# If a second tool starts needing this, the correct move is to report
 # the flake, not to widen the set.
 RETRY_ONCE = frozenset({"oc-ledger"})
 
 # ---------------------------------------------------------------------------
-# WHY EVERY LEG IS `serial` + ONE xdist_group: the pids cap, measured
+# WHY EVERY LEG IS `serial` + ONE xdist_group: the pids cap
 # ---------------------------------------------------------------------------
 # A `--selftest` is not one process. Every tool here forks git, mktemp, grep,
 # jq and often its own sub-selftests, so ONE leg is a process TREE, and the
@@ -180,42 +171,28 @@ RETRY_ONCE = frozenset({"oc-ledger"})
 #
 # This box runs under a cgroup with `pids.max = 64` (`ulimit -u` is 15532, so
 # the LIMIT THAT BITES is the cgroup, not the login limit -- read the former,
-# never the latter). Measured 2026-11-27 in this worktree, sampling
-# pids.current once a second while running JUST TWO legs (`oc-ledger` and
-# `oc-wt`, `-n 2`): PEAK 41 of 64. Two legs already sit at 64% of the cap, so
-# any third concurrent leg is over it and `fork()` starts returning EAGAIN.
-#
-# That is not a theory, it is what a `-n 4` run of this module did: 17 of 33
-# legs reddened, and 17 of them carried
+# never the latter). Sampling `pids.current` while running JUST TWO legs
+# (`oc-ledger` and `oc-wt`, `-n 2`) peaks at 41 of 64. Two legs already sit at
+# 64% of the cap, so any third concurrent leg is over it and `fork()` returns
+# EAGAIN:
 #     error: cannot fork() for maintenance: Resource temporarily unavailable
 # (git's own message; `rev-list`, `gc`, `pack-objects`, `symbolic-ref` the
-# same). The tools were healthy -- `oc-ledger` reported PASS=737 and failed 4
-# legs on fork errors alone; `oc-wt`, `oc-upstream-delta` and `oc-branch-sweep`
-# failed the same way. It reads as seventeen broken tools and is ONE stated cap,
-# which is the defect test_cgroup.py::test_caps_scale_with_worker_count already
-# names for the shell harness ("read as EIGHT broken tools rather than one
-# stated cap").
+# same). That reads as N broken tools and is ONE stated cap, which is the
+# defect test_cgroup.py::test_caps_scale_with_worker_count already names for
+# the shell harness ("read as EIGHT broken tools rather than one stated cap").
 #
 # THE REMEDY THAT ACTUALLY WORKS IS THE `serial_box` FLOCK FIXTURE, NOT THE
 # `xdist_group` MARKER -- and the difference is the whole point, because the
-# marker LOOKED sufficient and was not.
+# marker LOOKS sufficient and is not.
 #
 # pytest.ini documents `serial` + `xdist_group` as the mechanism, and that is
 # correct ONLY under `--dist loadgroup`. xdist's DEFAULT is `--dist load`,
 # which IGNORES groups entirely, and nothing in this directory sets `--dist`.
-# So the group marker was inert: four workers picked up four selftests and ran
-# them at once. Measured 2026-11-27 in this worktree:
-#
-#   -n auto (nproc=4) -> 19 of 33 legs FAILED, every one carrying
-#       fork: retry: Resource temporarily unavailable
-#       error: cannot fork() for ssh-keygen / rev-list / pack-objects
-#   -n 2             -> ZERO fork errors, but `oc-ledger` still flaked its own
-#       `race-max-n` case (want rc=919, got rc=916) -- two overlapping tool
-#       trees are already enough contention to red a case.
-#
-# Both runs read as broken tools. Neither was: the cgroup is `pids.max = 64`
-# (`ulimit -u` is 15532, so the limit that bites is the cgroup, never the login
-# limit -- read the former). Two legs peak at 41 of 64, so a third is over it.
+# So the group marker is inert: every worker picks up a selftest and runs them
+# all at once, which is the same cap hit again -- fork errors under `-n auto`,
+# and under `-n 2` zero fork errors but `oc-ledger` still flaking its own
+# `race-max-n` case (want rc=919, got rc=916), because two overlapping tool
+# trees are already enough contention to red a case.
 #
 # `serial_box` therefore takes an exclusive `flock` for the duration of each
 # leg. A lock is used INSTEAD OF relying on `--dist loadgroup` because it is
@@ -254,7 +231,7 @@ PARAMS = [
 # NEVER CREATED. The selftest unsets OC_FANOUT_LEDGER for its law-17 arm and
 # falls back to ``$OC_DEV_STATE/events.jsonl``; with a nonexistent directory
 # the roster read fails and the WHOLE run dies rc 3 with NOTHING on either
-# stream. Measured 2026-11-27:
+# stream. Three probes:
 #     OC_DEV_STATE=<nonexistent>  -> rc 3, silent
 #     OC_DEV_STATE unset          -> rc 0, PASS=103 FAIL=0
 #     OC_DEV_STATE=""             -> rc 0, PASS=103 FAIL=0
@@ -297,17 +274,17 @@ def serial_box():
 
     Why a lock and not just ``@pytest.mark.xdist_group``: xdist honours groups
     ONLY under ``--dist loadgroup``, and its DEFAULT is ``--dist load``, which
-    IGNORES them. pytest.ini does not set ``--dist``, so the group marker was
-    inert and four workers ran four selftests at once. Measured 2026-11-27,
-    this worktree, ``-n auto`` (nproc=4) on a box whose cgroup carries
-    ``pids.max = 64``: 19 of 33 legs failed, and every one of them carried
+    IGNORES them. pytest.ini does not set ``--dist``, so the group marker is
+    inert and every worker runs its selftest at once. On a box whose cgroup
+    carries ``pids.max = 64``, that hits the cap: legs fail carrying
 
         fork: retry: Resource temporarily unavailable
         error: cannot fork() for ssh-keygen / rev-list / pack-objects
 
-    -- the SAME cap, not nineteen broken tools. ``-n 2`` had ZERO fork errors
-    but still flaked ``oc-ledger``'s own ``race-max-n`` case (want rc=919,
-    got rc=916), because two tool trees overlapping is already contention.
+    -- the SAME cap, not N broken tools. Serializing to two concurrent legs
+    avoids the fork errors but still flakes ``oc-ledger``'s own ``race-max-n``
+    case (want rc=919, got rc=916), because two tool trees overlapping is
+    already contention.
 
     A lock is used rather than relying on ``--dist loadgroup`` because it is
     correct under ANY dist mode: it cannot be disarmed by a future change to
@@ -360,7 +337,7 @@ def test_tool_selftest(serial_box, run_selftest, fanout_ledger, tool):
     bound = TIMEOUTS[tool]
     result = run_selftest(tool, timeout=bound, env=_env_for(tool, fanout_ledger))
 
-    # One bounded retry, ONLY for the legs measured to flake on BOX LOAD
+    # One bounded retry, ONLY for the legs that flake on BOX LOAD
     # rather than on a defect (see RETRY_ONCE above). The retry runs only
     # after a failure, so a clean run never pays for it.
     if tool in RETRY_ONCE and (result.timed_out or result.rc != 0):

@@ -2,7 +2,7 @@
 #171 hazards that share its fixture.
 
 WHAT §33 IS FOR
-    Three defects, all measured, all inside the same 131 shell lines:
+    Three defects, all inside the same 131 shell lines:
 
     * **#619** — the waiter's flock budget was a flat 30 s while the HOLDER's
       worst case was two bounded network pushes. A ship storm starved
@@ -10,24 +10,23 @@ WHAT §33 IS FOR
       budget from the holder worst case and DISCLOSES both in the refusal, so
       an operator can widen one without silently outrunning the other.
     * **#95** — git ran INSIDE the fleet ledger lock, so one saturated disk froze
-      the ledger for every lane (measured 2026-11-19: the lock held 25 minutes
-      while ``git status`` sat in D-state, 18 lanes queued behind it, every
-      stamp dying rc 4). Git now runs AFTER the release, under its own
-      ``$LEDGER.git-tail.lock``.
+      the ledger for every lane: the lock held 25 minutes while ``git status``
+      sat in D-state, 18 lanes queued behind it, every stamp dying rc 4. Git
+      runs AFTER the release, under its own ``$LEDGER.git-tail.lock``.
     * **#171** — the push tail (``_git_state_commit_now`` → ``push_backlog_if_due``
       → ``push_mirror``) resolves ``SKILL_DIR`` from ``OC_SKILL_DIR``, defaulting
-      to the tree the tool lives in (``cd "$_OC_DIR/.."``). Measured 2026-11-24:
-      a battery run whose clone had a local bare ``origin`` standing in for
-      GitHub PUSHED a lane's unpublished commit onto it. A test run must never
-      publish a lane's work.
+      to the tree the tool lives in (``cd "$_OC_DIR/.."``). Without an explicit
+      ``OC_SKILL_DIR``, a battery run whose clone has a local bare ``origin``
+      standing in for GitHub PUSHES a lane's unpublished commit onto it. A test
+      run must never publish a lane's work.
 
 WHY THESE ARE BEHAVIOURAL AND NOT GREPS
     ``oc-ledger --selftest`` already asserts the DERIVATION structurally
     (``lock-wait-derived-not-flat``, ``lock-die-names-worst-case``,
     ``lock-budget-not-push-shaped`` …), and those legs are built by
     CONCATENATION precisely because a literal grep self-matches the leg that
-    contains it (measured 2026-09-26: ``OC_LEDGER_LOCK_WAIT`` counted 3 hits —
-    two production lines plus the assertion itself). What a grep cannot do, and
+    contains it (``OC_LEDGER_LOCK_WAIT`` counts 3 hits — two production lines
+    plus the assertion itself). What a grep cannot do, and
     the selftest therefore cannot either, is HOLD the lock, vary the push bound
     and read the budget the tool itself reports. That is this module.
 
@@ -76,7 +75,7 @@ EVERY SHELL ASSERTION, AND WHERE IT WENT
     because the shell's ``$SKILL_DIR`` DEFAULT is the checkout it runs in, so the
     only way it can observe "the push went nowhere near the real remote" is to
     fingerprint that remote twice. In pytest the exposure is removed rather than
-    measured: every leg hands the tool an explicit ``OC_SKILL_DIR``, so no leg
+    observed: every leg hands the tool an explicit ``OC_SKILL_DIR``, so no leg
     can reach the real origin in the first place. Two legs carry that claim:
 
       * the #171 pair above proves the seam is LOAD-BEARING (drop it and the
@@ -303,8 +302,8 @@ def test_a_slow_git_tail_does_not_hold_the_ledger_lock(scratch, git_repo,
     THE SHELL'S SHAPE. A ``sleep 3`` ``pre-commit`` hook makes
     ``_git_state_commit_now`` slow. A holder stamps (so its tail sits inside the
     hook); a second stamp then runs with a **1 s** ledger-lock budget. If git
-    still ran under the fleet flock the second stamp would die rc 4 — the
-    measured 2026-11-19 stall. rc 0 proves the lock was released before the tail.
+    still ran under the fleet flock the second stamp would die rc 4 — the #95
+    stall. rc 0 proves the lock was released before the tail.
 
     WHAT THE PORT ADDS. The shell waits ``sleep 1`` and HOPES the holder is in
     the tail by then. This POLLS ``$LEDGER.git-tail.lock`` until the holder
@@ -368,8 +367,8 @@ def test_a_slow_git_tail_does_not_hold_the_ledger_lock(scratch, git_repo,
         # THE ORDERING CLAIM: the tail is running AND the fleet lock is FREE.
         assert _lock_is_free(Path(str(led) + ".lock")), (
             "#95 REGRESSED: the git tail holds the LEDGER lock. One saturated "
-            "disk then freezes the ledger for every lane (measured 2026-11-19: "
-            "25 min held, 18 lanes queued, every stamp rc 4)")
+            "disk then freezes the ledger for every lane: stamps block, lanes "
+            "queue, and every stamp returns rc 4")
 
         # Durability, observed while the commit is still inside the hook.
         events = json.loads(led.read_text()).get("events") or []
@@ -494,7 +493,7 @@ def test_a_test_run_cannot_publish_into_the_tree_it_runs_from(
     assert _rev(poison) == poison_before, (
         "#171 REGRESSED: a test stamp PUSHED into the tree the tool runs from. "
         "On a real lane that tree's origin is GitHub and the run publishes "
-        "unpublished work (measured 2026-11-24):\n%s" % res.combined[-800:])
+        "unpublished work:\n%s" % res.combined[-800:])
     assert "mirror: skill pushed" in res.combined, (
         "the tail's own disclosure is missing — a leg that reads only refs "
         "would not notice the tail going silent:\n%s" % res.combined[-800:])
@@ -514,8 +513,8 @@ def test_the_poison_origin_moves_when_the_seam_is_removed(
     poison = git_repo(bare=True)
     copied_tool_tree.git("remote", "add", "origin", str(poison))
     copied_tool_tree.git("push", "-q", "-u", "origin", "HEAD")
-    # An unpushed commit on the tree: this is the "lane's work" the shell
-    # measured being published by a battery run.
+    # An unpushed commit on the tree: this is the "lane's work" a battery run
+    # would publish.
     (copied_tool_tree / "unpushed.txt").write_text("x\n", encoding="utf-8")
     copied_tool_tree.git("add", "-A")
     copied_tool_tree.git("commit", "-q", "-m", "one unpushed lane commit")

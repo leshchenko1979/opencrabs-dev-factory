@@ -24,10 +24,10 @@ WHY THE NESTED INVOCATION IS CPU-BOUND
     directory it was found in, forever. The shell harness used a 200 s WALL bound
     and, after #76 reniced the parent to 19, a HEALTHY tool under load got killed
     by it and the branch then named the fixpoint as the cause — a false
-    ACCUSATION against a tool that never hung. Measured 2026-11-18: healthy =
-    0.03-0.04 s CPU (identical under nice/ionice); a real fixpoint spin = 19.8 s
-    CPU in a 20 s wall. So CPU time is the discriminator, and the wall bound is
-    only a backstop. The port keeps that split.
+    ACCUSATION against a tool that never hung. CPU time is the discriminator:
+    healthy = 0.03-0.04 s CPU (identical under nice/ionice); a real fixpoint
+    spin = 19.8 s CPU in a 20 s wall. So CPU time is the primary signal, and the
+    wall bound is only a backstop. The port keeps that split.
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ NESTED_SAMPLES = [
     "notify/oc-notify-fanout", "tests/run.sh",
 ]
 
-# A real fixpoint spin measured 19.8 s CPU; a healthy tool 0.03-0.04 s. 5 s
+# A real fixpoint spin burns 19.8 s CPU; a healthy tool 0.03-0.04 s. 5 s
 # sits three orders of magnitude above healthy and well below the spin.
 FIXPOINT_CPU_SECONDS = 5
 

@@ -11,14 +11,14 @@ couple of seconds — no carrier read, no fanout sweep, no network:
   die rc 1 having written nothing but the shadow log
 
 The legs that carry real weight are in ``test_e2e_deploy_stage.py``: the
-log-hermetic ``oc-build --selftest`` (561 assertions, 0 fail, measured ~7m45s
-wall on 2026-11-27 under load 17 on 4 cores), the dispatched-sha SWAP-PENDING
-probe (2.3 s measured) and the stale-pinned-ref round-trip (4.9 s measured).
-Only the selftest is genuinely slow; all three are excluded together because
-they drive REAL subprocesses and build real git repos, so their cost tracks
-machine load rather than the code under test — under load 16 the same two cheap
-legs blew past 200 s. Same reason ``test_e2e_cache.py`` is excluded: a gate that
-waits 15 minutes for one assertion is a gate nobody runs.
+log-hermetic ``oc-build --selftest`` (561 assertions, 0 fail, ~7m45s wall under
+load on 4 cores), the dispatched-sha SWAP-PENDING probe (~2.3 s) and the
+stale-pinned-ref round-trip (~4.9 s). Only the selftest is genuinely slow; all
+three are excluded together because they drive REAL subprocesses and build real
+git repos, so their cost tracks machine load rather than the code under test —
+the two cheap legs alone blew past 200 s on a loaded box. Same reason
+``test_e2e_cache.py`` is excluded: a gate that waits 15 minutes for one
+assertion is a gate nobody runs.
 """
 
 from __future__ import annotations

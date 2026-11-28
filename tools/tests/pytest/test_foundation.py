@@ -171,9 +171,8 @@ def test_run_tool_kills_the_grandchild_on_timeout(run_tool, tmp_path):
     """A two-level process tree must be GONE after the bound fires (#753).
 
     ``subprocess.run(timeout=)`` signals only the direct child: the selftest's
-    grandchildren survive, keep burning the box, and nothing reaps them
-    (measured 2026-10-01: six orphans at 37-39 % CPU for ~5 h). The fixture
-    uses ``start_new_session=True`` + ``os.killpg``, which is what
+    grandchildren survive, keep burning the box, and nothing reaps them. The
+    fixture uses ``start_new_session=True`` + ``os.killpg``, which is what
     ``timeout --kill-after`` did.
 
     The tree is built so the grandchild OUTLIVES its parent if only the direct

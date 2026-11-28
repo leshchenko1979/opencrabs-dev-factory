@@ -10,9 +10,8 @@ THE SUBJECT IS SOURCE TEXT, NOT RUNTIME BEHAVIOUR
              input. This cost a real phantom ``harvest: command not found``.
       ARM B  a heredoc feeding ``python3`` whose DELIMITER IS UNQUOTED — ``$VAR``
              and backticks expand inside the body before python ever sees it.
-             An unquoted heredoc carrying a doubled triple-quote closed the
-             enclosing shell string and destroyed 1607 lines of a tool
-             (2026-09-18).
+             An unquoted heredoc carrying a doubled triple-quote closes the
+             enclosing shell string and destroys the tool that contains it.
       ARM D  an UNESCAPED ``$`` in a ``-c`` body: bash expands it in the Python
              SOURCE (#327 class b), so the program's text is corrupted.
       ARM C  the #323 SYMPTOM: a stray interior ``"`` closes the ``-c`` body
