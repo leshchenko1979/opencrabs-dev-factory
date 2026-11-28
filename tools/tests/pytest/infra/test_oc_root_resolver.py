@@ -140,11 +140,18 @@ def _bootstrap_says(run_tool, probe, *, cwd=None, timeout=60):
     return res
 
 
-def _helper_says(run_tool, script_path, *, timeout=60):
-    """``oc_tools_dir <path>`` from a shell that sourced the real lib."""
+def _helper_says(run_tool, script_path, *, timeout=60, cwd=None):
+    """``oc_tools_dir <path>`` from a shell that sourced the real lib.
+
+    ``cwd`` is forwarded because a RELATIVE argument is resolved against it:
+    ``readlink -f`` happily canonicalises a bare name whose last component does
+    not exist, so the walk starts in the CALLER's directory. A leg asserting
+    that a relative path is unresolvable must therefore choose the directory,
+    or the ambient tree answers for it.
+    """
     script = '. "$1" 2>/dev/null; shift; oc_tools_dir "$1"'
     res = run_tool(["/bin/bash", "-c", script, "_", str(ROOT_SH), str(script_path)],
-                   timeout=timeout)
+                   timeout=timeout, cwd=cwd)
     return res
 
 
@@ -451,15 +458,23 @@ def test_a_bare_lib_without_the_marker_is_not_a_root(tmp_path, run_tool):
 # H-2 — the walk must TERMINATE on an unresolvable path
 # =============================================================================
 @pytest.mark.parametrize("arg", ["nodir/oc-x", "bare-name", "."])
-def test_helper_terminates_on_an_unresolvable_path(run_tool, arg):
+def test_helper_terminates_on_an_unresolvable_path(tmp_path, run_tool, arg):
     """``dirname(".")`` is ``"."`` — a walk that starts there never advances.
 
     The helper carries a progress break (``[ "$_ocd" = "$_ocp" ] && break``).
     Without it this call SPINS FOREVER at 100% CPU with no output, which is
     exactly the #708 shape one layer down. The bound is the assertion: a hang
     reports rc 124 here instead of wedging the suite.
+
+    The cwd is a THROWAWAY dir, and that is load-bearing rather than tidiness:
+    every arg here is relative, and ``readlink -f`` canonicalises a bare name
+    whose last component is missing. Run from inside this repo the walk starts
+    in the real tree and correctly finds the real ``tools/`` — the helper is
+    right and the leg is asking the wrong question. From an empty dir there is
+    no marker above the start, so rc 1 means exactly "this path resolves
+    nowhere", which is what H-2 is about.
     """
-    res = _helper_says(run_tool, arg, timeout=20)
+    res = _helper_says(run_tool, arg, timeout=20, cwd=tmp_path)
     assert not res.timed_out, (
         "oc_tools_dir %r SPUN (killed at 20s) — the progress break is gone"
         % arg)
