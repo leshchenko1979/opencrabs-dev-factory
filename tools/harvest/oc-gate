@@ -416,7 +416,7 @@ Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref> | find --sha <40hex
   find --sha <40hex>  print every gate RECEIPT whose tested_sha is that sha — run id,
                    state (adopted|verdict), verdict (or -), ts, receipt path. Read-only:
                    no dispatch, no watch. rc 0 = at least one match, 1 = none, 2 = unreadable.
-                   Use this INSTEAD of `gh api runs?head_sha=<sha>`, which returns ZERO for
+                   Use this INSTEAD of \`gh api runs?head_sha=<sha>\`, which returns ZERO for
                    every gate: a dispatch run's head_sha is the CARRIER ref, never the tested
                    sha (#205 P2).
   --test-threads N RETIRED 2026-11-20 (#181): the carrier declares the input and IGNORES it
@@ -2049,7 +2049,7 @@ Usage: oc-gate [<branch-or-sha> | resume <run-id> | wait <ref> | find --sha <40h
   find --sha <40hex>  print every gate RECEIPT whose tested_sha is that sha — run id, state
                    (adopted|verdict), verdict (or -), ts, receipt path. Read-only: no dispatch,
                    no watch. rc 0 = at least one match, 1 = none, 2 = unreadable. Use this
-                   INSTEAD of `gh api runs?head_sha=<sha>`, which returns ZERO for every gate:
+                   INSTEAD of \`gh api runs?head_sha=<sha>\`, which returns ZERO for every gate:
                    a dispatch run's head_sha is the CARRIER ref, never the tested sha (#205 P2).
   --fast           fast gate (fmt + clippy only, skip tests on carrier)
   --test-threads N RETIRED 2026-11-20 (#181): the carrier declares the input and IGNORES it;
