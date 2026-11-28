@@ -1658,10 +1658,22 @@ def derive_by(ledger: str) -> str:
     uuid = _actor_label_uuid()
     if not uuid or not (os.path.isfile(ledger) or L.jsonl_mode(ledger)):
         return "(unattributed — pass --by or export OC_ACTOR)"
-    workers = _unified(ledger).get("workers")
+    # TOLERANT BY CONTRACT, and this is not a nicety: the bash reads the roster
+    # through `jq_ledger ... 2>/dev/null || true`, so an UNREADABLE ledger yields
+    # an EMPTY roster with NO diagnostic — jq's parse error is redirected away.
+    # That is load-bearing for stderr ORDER: derive_by runs BEFORE the
+    # `ledger_ok` gate, so on a corrupt or empty ledger the oracle emits only
+    # the roster warning and then dies with "ledger missing or unparseable".
+    # Routing this through `_unified` printed ledger_load's detailed refusal
+    # first (it writes to stderr before raising), which is the one line bash
+    # suppresses. Read the store DIRECTLY and swallow silently; the rc is
+    # unchanged (3 either way) and the message now matches.
+    try:
+        workers = L.load_ledger(ledger).get("workers")
+    except (L.LedgerError, OSError, L.JqError):
+        workers = []
     if not isinstance(workers, list):
         workers = []
-    # M2-3: uuids are lowercase; an UPPERCASE actor could never match a row.
     uuid = _ascii_lower_af(uuid)
     for row in workers:
         if isinstance(row, dict) and L.to_string(_keep(row.get("uuid"), "")) == uuid:
@@ -3496,7 +3508,14 @@ def cmd_sweep_closed_claims(ledger, args):
     events = _unified(ledger).get("events")
     open_rows = oc.open_claims(events if isinstance(events, list) else [])
     if not open_rows:
-        outln("All open claims map to OPEN issues (0 0 0 0 = claim rows, open "
+        # The bash renders the population field from the scanner's own `S` row,
+        # and the scanner EXITS EARLY on an empty claim set (`if not
+        # open_claims: sys.exit(0)`) — so no `S` row is ever written and the
+        # `awk` substitution yields the EMPTY STRING. The line therefore reads
+        # `( = claim rows, ...)`, with a blank where the four counts would sit.
+        # Emitting `0 0 0 0` here is a plausible-looking improvement that makes
+        # the port diverge from the oracle on the most common clean case.
+        outln("All open claims map to OPEN issues ( = claim rows, open "
               "tokens, closed tokens, unresolvable tokens).")
         return L.RC_OK
 
@@ -4593,6 +4612,15 @@ def cmd_migrate(ledger, args):
     except ValueError:
         die(L.RC_REFUSED, "migrate: source is not valid JSON: %s" % src)
 
+    # ``jq -e . "$src"`` is the oracle's FIRST gate, and ``-e`` sets exit 1 when
+    # the last output is null or false — so a source of literal ``null`` or
+    # ``false`` is refused as "not valid JSON" BEFORE the freeze, while ``true``,
+    # ``0``, ``""``, ``[]`` and ``{}`` all pass it (they are truthy to jq -e).
+    # Reproduced exactly: without this, ``null`` would fall through to the count
+    # step and report the wrong message.
+    if source_doc is None or source_doc is False:
+        die(L.RC_REFUSED, "migrate: source is not valid JSON: %s" % src)
+
     # FREEZE FIRST (spec trap 11): the ledger grows while you work — the plan's
     # 6,043 baseline was already 6,044 when it was verified, because a stamp
     # landed. A migration that reads the live file twice can convert a
@@ -4612,6 +4640,29 @@ def cmd_migrate(ledger, args):
     except OSError:
         die(4, "migrate: cannot hash the frozen source at %s" % frozen)
     fsha = digest.hexdigest()
+
+    # ``jq '[.events[]?] | length'`` is the oracle's count, and the `?` covers
+    # the ITERATION, never the INDEX: ``5 | .events`` is "Cannot index number
+    # with string \"events\"" and jq exits nonzero, so a non-object source is
+    # rc 3 "cannot count .events in the frozen copy" BEFORE any serialisation.
+    # Reproduced faithfully — including jq's own error line, which a caller
+    # greps — because a port that refused at the LATER re-parse gate (rc 4)
+    # would report the wrong rc AND the wrong reason on the same input.
+    if not isinstance(source_doc, dict):
+        # jq's type NAME for the error; bool before int (bool subclasses int).
+        if isinstance(source_doc, bool):
+            jq_type = "boolean"
+        elif isinstance(source_doc, (int, float)):
+            jq_type = "number"
+        elif isinstance(source_doc, str):
+            jq_type = "string"
+        elif isinstance(source_doc, list):
+            jq_type = "array"
+        else:
+            jq_type = "null"
+        errln('jq: error (at %s:0): Cannot index %s with string "events"'
+              % (frozen, jq_type))
+        die(L.RC_REFUSED, "migrate: cannot count .events in the frozen copy")
 
     # ``jq '.events[]?'`` iterates a LIST by element and an OBJECT by VALUE
     # (insertion order), and yields nothing for anything else — a scalar or a
