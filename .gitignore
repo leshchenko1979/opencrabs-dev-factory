@@ -44,11 +44,10 @@ tools/tests/.reap.*
 # is non-destructive: the stray file stays on disk and on someone's record.
 reviews/
 
-# The pytest migration's run artifacts (tools/tests/pytest/). Both are per-run
-# state, not source: `pytest-receipt.json` is rewritten by every run (the
-# tracked counterpart `tools/tests/battery-last.json` is the SHELL harness's and
-# stays tracked until parity flips), and `.pytest_cache/` is pytest's own
-# bookkeeping. Untracked they are invisible to the stray-guard (die 7) — the
-# same class this file already ignores for `battery-last-fail.log` and `.reap.*`.
-tools/tests/pytest-receipt.json
+# pytest's own bookkeeping. The RECEIPT is deliberately NOT here: pytest writes
+# the tracked `tools/tests/battery-last.json`, because that exact path is the
+# fleet's version-bump gate (`oc-ledger sync` reads it, dies rc 5 on a missing,
+# stale or RED verdict, and names it in its message). An ignored receipt would
+# leave the gate reading a verdict nothing refreshed — green while the suite is
+# red. A partial run clobbering it is a known hazard: factory #214.
 tools/tests/pytest/.pytest_cache/

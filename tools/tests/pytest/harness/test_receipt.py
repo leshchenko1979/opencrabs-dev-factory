@@ -1,19 +1,17 @@
-"""Receipt parity: the pytest receipt must carry emit_summary's 18 fields.
+"""Receipt shape, path contract, and write-path guards.
 
-The parity check reads the format string out of ``tools/tests/run.sh`` rather
-than re-listing the fields here. A second hand-written copy would drift, and the
-copy that drifts is the one nobody reads — the same defect as ``#111`` (two
-receipt writers that already disagreed) one layer out.
+The canonical path is ``tools/tests/battery-last.json`` because ``oc-ledger sync``
+hard-reads that file and nothing else. This module pins that contract, the 18-field
+schema, and the controller-only write path.
 
-The comment at ``run.sh:5545`` says 17 fields. It is STALE: it was written
-before ``timing`` was added. The count is asserted from the format string, so
-the stale comment cannot propagate into the schema.
+The field list is asserted against ``lib.receipt.FIELDS`` itself, which is the
+single declaration now that the shell harness is retired. Re-listing the names here
+would be a second copy that drifts — the ``#111`` defect one layer out.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -21,38 +19,25 @@ import pytest
 import conftest as cf
 from lib import receipt as R
 
-RUN_SH = cf.REPO_ROOT / "tools" / "tests" / "run.sh"
+
+def test_receipt_has_eighteen_fields():
+    """The schema is 18 fields, and the list is the one the writer validates."""
+    assert len(R.FIELDS) == 18, (
+        "the receipt schema is %d fields (%s) — consumers read it by name"
+        % (len(R.FIELDS), list(R.FIELDS)))
 
 
-def emit_summary_fields() -> list[str]:
-    """The field names in emit_summary's printf, in order."""
-    src = RUN_SH.read_text(encoding="utf-8", errors="replace")
-    start = src.index("emit_summary() {")
-    # The format string ends at the closing quote of the printf, which is the
-    # first line ending in a lone "'" after the opening.
-    seg = src[start:start + 4000]
-    fmt_start = seg.index("printf '{")
-    fmt_end = seg.index("' \\\n", fmt_start)
-    fmt = seg[fmt_start:fmt_end]
-    return re.findall(r'"([a-z_]+)":', fmt)
+def test_canonical_path_is_the_version_bump_gate():
+    """The receipt lands where ``oc-ledger sync`` looks, or the gate reads stale.
 
-
-def test_emit_summary_has_eighteen_fields():
-    """The fact: 18, not the 17 the :5545 comment claims."""
-    fields = emit_summary_fields()
-    assert len(fields) == 18, (
-        "run.sh:emit_summary now emits %d fields (%s) — the pytest receipt and "
-        "every consumer must be updated together" % (len(fields), fields))
-    # The stale comment, named explicitly so nobody "fixes" the code to match it.
-    src = RUN_SH.read_text(encoding="utf-8", errors="replace")
-    assert "the same 17-field printf" in src or "17-field" in src, (
-        "the stale 17-field comment vanished; if it was corrected, delete this "
-        "assertion and update the docstring")
-
-
-def test_receipt_fields_match_emit_summary_exactly():
-    """Same names, same ORDER — a consumer that indexes positionally must work."""
-    assert list(R.FIELDS) == emit_summary_fields()
+    ``sync`` dies rc 5 on a missing/stale/RED receipt and names the file in its
+    message. If the writer moved the path, every bump would either fail or — worse,
+    if the old file were left behind — succeed on a verdict nothing refreshed.
+    """
+    expected = cf.REPO_ROOT / "tools" / "tests" / "battery-last.json"
+    assert R.DEFAULT_RECEIPT == expected, (
+        "receipt path moved to %s — oc-ledger sync reads %s"
+        % (R.DEFAULT_RECEIPT, expected))
 
 
 def test_receipt_has_the_timing_object_shape(tmp_path):

@@ -1,22 +1,28 @@
-"""The battery receipt, written by pytest with the SAME 18 fields as run.sh.
+"""The battery receipt — the SAME 18 fields the shell harness wrote.
 
-Field parity is a hard gate (plan §7): ``emit_summary`` at ``tools/tests/run.sh:1001``
-is the only writer of the canonical receipt today, and its format string carries
-**18** fields. The comment at ``run.sh:5545`` claiming 17 is stale — it was
-written before ``timing`` was added, and a reader who trusts it will drop a
-field from every consumer's schema.
+**The canonical path is ``tools/tests/battery-last.json``, and it is deliberate.**
+That file is the fleet's version-bump gate: ``oc-ledger sync`` reads it, refuses
+with rc 5 unless ``verdict == "PASS"``, ``fail == 0`` and the stamp is under six
+hours old, and names it in its own die message. Every law file that says "battery
+green" (``hq.md``, ``toolsmith.md``, ``triage.md``, ``README.md``) means this file.
+So the receipt path is a CONTRACT with consumers that do not know pytest exists,
+and it does not move when the writer changes. ``pytest-receipt.json`` is retired
+with ``run.sh``; a run that wrote anywhere else would leave the bump gate reading
+a stale shell verdict forever, and reading green while the suite is red is the
+one failure mode this file exists to prevent.
 
-Two rules this module exists to enforce:
+Two rules this module enforces:
 
 * **Controller-only.** No xdist worker may write the canonical path. Guarded with
   ``if not hasattr(config, "workerinput")`` — that attribute is set by xdist on
   worker processes only, so it is the cheapest and most reliable test for
   "am I the controller".
-* **Fail rows are per-worker files, concatenated by the controller.** run.sh's
-  single ``$FAIL_LOG`` is truncated by whoever starts a run and removed on
-  green; with N workers, one green worker removing the shared file would erase a
-  sibling's evidence (the #517/#614 class, one layer out). A worker appends only
-  to its OWN file; the controller concatenates them into ``fail_rows``.
+* **Fail rows are per-worker files, concatenated by the controller.** The shell
+  harness's single ``$FAIL_LOG`` was truncated by whoever started a run and
+  removed on green; with N workers, one green worker removing the shared file
+  would erase a sibling's evidence (the #517/#614 class, one layer out). A worker
+  appends only to its OWN file; the controller concatenates them into
+  ``fail_rows``.
 """
 
 from __future__ import annotations
@@ -55,7 +61,7 @@ SLOWEST_N = 10          # run.sh caps at 10 of 68 sections; so do we
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TOOLS_DIR = REPO_ROOT / "tools"
-DEFAULT_RECEIPT = TOOLS_DIR / "tests" / "pytest-receipt.json"
+DEFAULT_RECEIPT = TOOLS_DIR / "tests" / "battery-last.json"
 
 
 # =============================================================================

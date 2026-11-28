@@ -99,13 +99,16 @@ why the serial fallback needs no changes.
 ## Where the receipt goes
 
 ```
-tools/tests/pytest-receipt.json
+tools/tests/battery-last.json
 ```
 
-Written **controller-only** (`if not hasattr(config, "workerinput")`), with the
-same **18 fields** as `run.sh:emit_summary` (`tools/tests/run.sh:1001`) — the
-comment at `:5545` saying 17 is stale. Override the path with
-`OC_PYTEST_RECEIPT`. A `--collect-only` run writes nothing: it is not a verdict.
+Written **controller-only** (`if not hasattr(config, "workerinput")`), carrying
+the **18 fields** the shell harness used to emit. The path is not a preference:
+`oc-ledger sync` reads that exact file and dies rc 5 on a missing, stale (>6h) or
+RED verdict, so it is the fleet's version-bump gate. Override with
+`OC_PYTEST_RECEIPT` for a scratch run — and do that for any scoped run, because a
+filtered run otherwise stamps a PASS backed by the few tests it selected
+(factory #214). A `--collect-only` run writes nothing: it is not a verdict.
 
 `timing` is `{max_concurrency, section_count, sum_ms, slowest}` where each
 `slowest` entry is `{n, title, ms, start_ms, end_ms}` and holds at most 10 rows.
