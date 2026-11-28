@@ -81,7 +81,7 @@ UNPORTED = {
 def find_selftest(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit)
-    return REPO / "tools" / "state" / "oc-ledger"
+    return REPO / "tools" / "state" / "oc-ledger.bash"
 
 
 def shell_names(path: Path) -> list[tuple[int, str, str]]:

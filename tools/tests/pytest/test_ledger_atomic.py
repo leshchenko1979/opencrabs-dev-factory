@@ -668,7 +668,7 @@ def test_the_scope_audit_runs_in_a_worktree_and_still_skips_a_plain_dir(
     control — without it "the SKIPPED note is absent" would pass on a harness
     that printed nothing at all.
     """
-    source = (tools_dir / "state" / "oc-ledger").read_text(encoding="utf-8")
+    source = cf.LEDGER_BASH.read_text(encoding="utf-8")
     harness = Path(tmp_path) / "scope_fn.sh"
     harness.write_text(_scope_harness(source), encoding="utf-8")
     declarations = {

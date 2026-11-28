@@ -77,6 +77,14 @@ PYTEST_DIR = _PYTEST_DIR
 REPO_ROOT = PYTEST_DIR.parents[2]          # <repo>/tools/tests/pytest -> <repo>
 TOOLS_DIR = REPO_ROOT / "tools"
 
+# The tool at tools/state/oc-ledger is a DISPATCH SHIM since the factory #204
+# flip (2026-11-28): `--selftest` execs the archived bash, every other verb
+# execs the Python port. Tests that measure BASH behaviour, or that read the
+# tool's shell SOURCE, must name LEDGER_BASH; a test that drives the tool by
+# name gets the shim and therefore the port, which is the live path.
+LEDGER_BASH = TOOLS_DIR / "state" / "oc-ledger.bash"
+LEDGER_PY = TOOLS_DIR / "state" / "oc-ledger.py"
+
 # THE LOCK PATH IS NOT DERIVED FROM TMPDIR (#171, trap documented at
 # run.sh:545-549). ``scratch`` exports a per-run TMPDIR; a lock path derived
 # from it would give every lane its OWN lock file while the lanes still share

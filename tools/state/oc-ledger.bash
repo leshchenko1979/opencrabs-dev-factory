@@ -1,0 +1,6909 @@
+#!/usr/bin/env bash
+# =============================================================================
+# oc-ledger — the ONE sanctioned write path for workers-ledger.json
+# (KERNEL items C1–C5, design /root/oc-work/oc-ledger-design-20260829.md;
+#  run-2 Lens C deltas: battery-receipt gate, commit-pending --bundle, enroll;
+#  item-2(b) owner ruling 2026-08-29: the pending-stamp sweep lives HERE as
+#  `commit-pending`, run on the HQ Duty-3/4 cadence).
+#
+# Subcommands:
+#   stamp <kind> "<what>" [--by <label>] [--allow-unattributed] [--allow-no-ref]
+#                                          append event under lock (flock +
+#                                          tmp -> jq-validate -> mv) + git leg.
+#                                          #19 (v0.4.16x): an ANONYMOUS row is
+#                                          REFUSED rc 2 — name the actor with
+#                                          --by / OC_ACTOR, or say the anonymous
+#                                          row is deliberate with the override.
+#                                          residual (2026-09-12, lane c6b1a539):
+#                                          a kind=claim row with NO numeric issue
+#                                          ref is REFUSED rc 2 too — every
+#                                          consumer keys on the ref, so a
+#                                          ref-less claim is a DEAD LETTER the
+#                                          scanner cannot see (it reported the
+#                                          issue CLEAN). Override: --allow-no-ref.
+#   fixture --n N --t <RFC3339> --kind K --by B --what "<text>"|--what-file <p>
+#                                          append a row with a FORCED ordinal and
+#                                          stamp — TEST FIXTURES ONLY (#156):
+#                                          --n and --t are REQUIRED (stamp derives
+#                                          both), so a seeded row keeps the order
+#                                          a "newest wins" assertion depends on.
+#                                          Same lock/append/read-back/view path as
+#                                          stamp, so the one-writer census stays
+#                                          empty. rc 0 / 2 usage / 3 ledger / 4
+#                                          read-back or write failure.
+#   lessons [--kind <lesson|incident|all>] [--class <text>]
+#                                          extract lesson/incident rows by class
+#                                          (H-2 v0.4.116; read-only)
+#   roster [--role <substr>] [--live] [--include-retired] [--json]
+#                                          role -> FULL uuid resolution for
+#                                          Direct Dispatch (2026-09-11 defect
+#                                          fix, lane d18ce16a: the skill cited
+#                                          this verb in 3 role files while it
+#                                          did not exist — lanes hand-assembled
+#                                          uuids). --live keeps only live
+#                                          sessions (profile DB, read-only).
+#                                          rc 1 = NO-MATCH verdict (never a
+#                                          silent empty). Read-only.
+#   events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--full]
+#                                          recent ledger rows, newest last
+#                                          (HQ request 2026-09-11: playbooks
+#                                          kept guessing this verb while the
+#                                          usage line named none — a guess
+#                                          reads as "no such event", the same
+#                                          phantom-verb class as `roster`).
+#                                          rc 1 = NO-MATCH verdict. Read-only.
+#   sync --version <v> --why <text> [--catch-up] [--allow-sweep]
+#                                          ONE atomic write: 3 version fields
+#                                          + skill-bump event; battery-receipt
+#                                          gate; skill-repo commit + tag; tail
+#                                          steps: oc-shadow-rotate (merge A) +
+#                                          mirror push to origin (v0.4.50);
+#                                          --catch-up (T2 verdict n=1695,
+#                                          HQ-approved 2026-09-06): multi-step
+#                                          FORWARD jump when the skill shipped
+#                                          ahead of ledger meta — the dead zone
+#                                          (doc-first gate + +1-only step check
+#                                          admit no legal sequence otherwise);
+#                                          --why REQUIRED (H-4, factory #31): a
+#                                          provenance-free skill-bump row is
+#                                          refused rc 2 (the same family as the
+#                                          CHANGELOG-receipt gate above);
+#                                          downgrades refused;
+#                                          --allow-sweep (v0.4.157): absorb
+#                                          unrelated dirty paths into the bump
+#                                          commit. WITHOUT it the sync REFUSES
+#                                          and names them (stray-guard) - a bump
+#                                          must never absorb another actor's work
+#   check-version                          SKILL.md vs 3 ledger fields (RO);
+#                                          on mismatch names the CAUSE —
+#                                          FLEET-LEVEL (0 workers behind:
+#                                          skipped sync) vs LANE-LEVEL
+#                                          (>=1 worker ack behind) (#359);
+#                                          also compares the LAW-FILE DIGEST
+#                                          against the newest skill-bump stamp
+#                                          and names UNBUMPED-LAW (factory #47)
+#                                          — the failure a version string
+#                                          cannot see, because the missing bump
+#                                          IS the failure
+#   law-digest                             current law-file digest vs the
+#                                          newest stamped one (RO); rc 0
+#                                          MATCH or NO-BASELINE, 1 DRIFT, 3
+#                                          ledger unreadable. Single home for
+#                                          the law-file SET and the algorithm
+#   cadence                                skill-bumps since last review (RO)
+#   ack <uuid> <0.N.N version> [--at <ts>]  worker last_acked + ack event
+#                                          (v0.4.55: full skill version shape —
+#                                          the old N.N regex could never record
+#                                          a real version; folds IDEA A core)
+#   enroll <uuid> <role> [--topic N] [--feature X]   roster row creation
+#   retire <uuid> [--topic N] [--role R] [--why TEXT]
+#                                          REMOVE ONE roster row: drops out of
+#                                          `oc-ledger roster` + `oc-roster` and
+#                                          loses signing (the sign gate keys on
+#                                          uuid presence). The only correction
+#                                          path for a wrongly-enrolled uuid —
+#                                          enroll refuses a dup, promote only
+#                                          mutates, neither can drop a row.
+#                                          ROW-scoped: --topic/--role are EXACT
+#                                          selectors, and a uuid matching >1 row
+#                                          with no selector is REFUSED rc 2
+#                                          (listing the rows) rather than
+#                                          revoking all of them. Records the
+#                                          removed row's data in a
+#                                          roster-retire event.
+#   commit-pending [--bundle]              sweep: commit uncommitted stamps /
+#                                          runtime artifacts (B1–B4 option b);
+#                                          --bundle also sweeps state receipts:
+#                                          tools.log baseline.json orders.json
+#                                          journal (v0.4.49/51 — seal-state and
+#                                          the swap chain write them but never
+#                                          self-commit);
+#                                          any configured origin gets a mirror
+#                                          push tail step (v0.4.50, off-box
+#                                          durability — attach ruling)
+#   sweep-closed-claims [--dry-run]        releases OPEN claims whose issue is
+#                                          CLOSED on a home tracker: scans via the
+#                                          canonical predicate (tools/lib/
+#                                          oc_claims.py) and, unless --dry-run,
+#                                          stamps ONE addressed `unclaim` row
+#                                          per closed issue (deduped — an
+#                                          addressed row releases every lane's
+#                                          claim on that issue). A gh failure is
+#                                          rc 4, never a silent clean. #485: BOTH
+#                                          states are read, so a token resolving
+#                                          to NO fork issue is reported as
+#                                          UNRESOLVED and the clean verdict is
+#                                          withheld (see cmd_sweep_closed_claims).
+#                                          #38: the three home trackers have
+#                                          OVERLAPPING number spaces and a claim
+#                                          token is a bare integer, so a title is
+#                                          printed only when the number was seen
+#                                          on ONE tracker; on an overlap the
+#                                          ambiguity is named, never a title
+#                                          asserted.
+#   --selftest                             fixture suite (585 cases)
+#
+# Exit codes: 0 ok · 1 verdict (cadence FIRE / check-version mismatch — both
+#   FLEET-LEVEL and LANE-LEVEL; check-version names the cause in its output, #359) ·
+#   2 usage (bad kind/shape/dup) · 3 ledger missing/parse/unknown-uuid ·
+#   4 write-fail (live file untouched) · 5 battery gate · 6 version mismatch.
+# Kinds (frozen v1; v1.1 adds claim; v1.2 adds shipchain; v1.3 adds
+#   roster-retire): ruling idea idea-verdict design-feedback design-locked
+#   review-battery incident note ack roster-enroll roster-retire claim confirm
+#   swap-result notify-fanout shipchain
+#   (v1.1 change 2026-08-29: Duty-7 IDEA from editor lane 7e1ebbb6, task #34 —
+#   the ISSUE ROUTING row requires a claim shape; two lanes hit the gap live.)
+#   (v1.2 change 2026-09-11: shipchain — oc-ship journal() lines. The tool
+#   shipped stamping this kind while it was absent from the enum, so the whole
+#   journal path was dead: rc 2 swallowed by `|| true`, 216/216 in tools.log.)
+#   (v1.3 change 2026-09-11: roster-retire — the removal half of the roster
+#   lifecycle. enroll could create and promote could mutate, but NOTHING could
+#   drop a row, so a wrongly-enrolled uuid signed forever; the sign gate keys on
+#   uuid PRESENCE (oc-verify-order selects .role by uuid), which is why a
+#   demote revokes nothing and only removal works. ROW-SCOPED since the same
+#   day's defect fix: retire takes --topic/--role EXACT selectors and refuses
+#   rc 2 when a uuid matches >1 row without one — it used to remove every
+#   row carrying the uuid while its event named only the first.)
+#   (skill-bump is stamp-REFUSED — it exists only via `sync`.)
+# Discipline: n = max(events[].n)+1 computed INSIDE the lock; read-only
+#   subcommands never lock; every mutation journals via lib/oc-log.sh; git is
+#   the audit layer — a stamp NEVER fails on git trouble (commit-lag instead).
+# =============================================================================
+set -u
+# --- oc-root bootstrap: resolve the tools dir at ANY depth (tools/lib/oc-root.sh)
+_oc_r="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _oc_r="."; _oc_d="$_oc_r"; while [ "$_oc_r" != "/" ] && [ "$_oc_r" != "." ] && ! { [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; } && [ "$(basename "$_oc_r")" != "tools" ]; do _oc_r="$(dirname "$_oc_r")"; done
+if [ "$(basename "$_oc_r")" = "tools" ]; then _oc_d="$_oc_r"; fi
+if [ -f "$_oc_r/lib/oc-root.sh" ] && [ ! -L "$_oc_r/lib" ]; then . "$_oc_r/lib/oc-root.sh"; else OC_TOOLS_DIR="$(cd "$_oc_d" && pwd)"; fi
+set -o pipefail   # F7 (lens F, v0.4.72): pipeline failures are never masked
+_OC_DIR="$OC_TOOLS_DIR"
+_OC_LIB="$_OC_DIR/lib/oc-log.sh"
+if [ -f "$_OC_LIB" ]; then source "$_OC_LIB"; oc_log_init "oc-ledger" "$@"; else oc_log_finish() { :; }; fi
+# D2 (2026-09-22, #507): atomic_jq's temp lives INSIDE the state dir, so a
+# SIGKILL/OOM/cgroup teardown mid-write leaves it behind — measured, a 3.0 MB
+# .ledger.IW5b9i sat for 3 days, and the daemon SIGKILLs in-flight children on
+# every restart (9 starts / 9 stops on 2026-09-21). The EXIT trap below covers
+# every CATCHABLE signal (SIGTERM included — verified); the sweep inside
+# atomic_jq is the only cover for the uncatchable ones, which no trap can catch.
+# `_OC_TMP` is the seam that lets the trap name the path at all: atomic_jq's own
+# `tmp` is a function local, so a trap body has no way to see the live temp.
+_OC_TMP=""
+_oc_cleanup_tmp() { [ -n "${_OC_TMP:-}" ] && rm -f "$_OC_TMP"; return 0; }
+_oc_exit() { local rc=$?; _oc_cleanup_tmp; oc_log_finish "$rc"; }
+trap '_oc_exit' EXIT
+
+SKILL_DIR="${OC_SKILL_DIR:-$(cd "$_OC_DIR/.." && pwd)}"
+STATE_DIR_DEFAULT="${OC_DEV_STATE:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
+LEDGER=""
+SELFTEST=0
+# confirm + swap-result: tool-written mechanical kinds (cmd_confirm, oc-deploy
+# ledger_stamp) admitted v0.4.77 — the enum is closed to EVERY writer now.
+# shipchain (2026-09-11, defect fix lane 4b4463d5): the FOURTH tool-written
+# mechanical kind, admitted the same way — oc-ship's journal() stamps one
+# line per leg. Until today it stamped a kind that was never in this enum, so
+# EVERY chain journal line died rc 2 under `|| true` (216/216 rows in tools.log,
+# 0 rows in the ledger): no chain ever had a ledger trail. Note is NOT the
+# fallback here — note is the dominant kind (649 rows) and chain telemetry in it
+# would be unfilterable noise.
+# roster-retire (2026-09-11, HQ ASK): the FIFTH tool-written mechanical kind,
+# same admission path. cmd_retire REMOVES a roster row; the event is the only
+# surviving record of what was removed, so it must be its own kind — `note`
+# would bury a SIGNING REVOCATION among 649 routine rows, and this is exactly
+# the kind of row a later audit asks for by name.
+# D-2 (HQ d72bd52d, 2026-09-12): close/done/unclaim/reject were
+# DOCUMENTED as closing kinds by cmd_claims below, but never admitted here —
+# 4 of the 5 closers were UNSTAMPABLE (`stamp close #N` died rc 2), and the
+# fifth (confirm) wrote to a store cmd_claims never read. A gate that never
+# closes gets ignored: #150 and #191 both shipped and both still read OPEN.
+# D-3 (#312, toolsmith 2026-10-06): `hold` joined the vocabulary. A lane that
+# FILES an issue and parks it (owner design gate, idea box) is not implementing
+# it, so it correctly holds no `claim` row — and the dispatcher, which derived
+# eligibility from claims alone, could not see the reservation at all: #286 was
+# dispatched twice ~3.5 h apart and claimed by the SECOND target. A `hold` is
+# the reservation that is not a claim; oc_claims.open_holds reads it, and
+# oc-issue-dispatch now treats an open hold as claimed.
+KINDS=" ruling idea idea-verdict design-feedback design-locked review-battery incident lesson note ack roster-enroll roster-retire claim hold confirm close done unclaim reject swap-result notify-fanout shipchain proposal "
+
+# Two-stream issue routing (SKILL.md; owner order 2026-10-09 -- fork-first binary
+# issues): the fleet files issues on TWO live trackers, so an issue number is
+# probed against all home repos. BINARY = the FORK (leshchenko1979/opencrabs);
+# FACTORY = leshchenko1979/opencrabs-dev-factory; UPSTREAM (opencrabs/opencrabs)
+# takes no new issues but is probed for its legacy number space. A bare `#N` is
+# still fork space (that is the space the ledger's own rows were written in).
+HOME_REPOS=( leshchenko1979/opencrabs leshchenko1979/opencrabs-dev-factory opencrabs/opencrabs )
+
+# #149 spawn reduction: `date` costs one execve per call and now_iso sits on
+# every stamp's hot path. bash's %()T strftime builtin is byte-identical to
+# `date -u +%Y-%m-%dT%H:%M:%SZ` under TZ=UTC0 (verified against coreutils).
+now_iso() { local t; TZ=UTC0 printf -v t '%(%Y-%m-%dT%H:%M:%SZ)T' -1; printf '%s\n' "$t"; }
+die() { echo "oc-ledger: $2" >&2; exit "$1"; }
+
+parse_global() { # fills LEDGER, strips global flags, leaves subcommand args
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ledger) LEDGER="${2:-}"; [ -n "$LEDGER" ] || die 2 "--ledger needs a path"; shift 2 ;;
+      selftest|--selftest) SELFTEST=1; shift ;;
+      *) break ;;
+    esac
+  done
+  [ -n "$LEDGER" ] || LEDGER="${OC_LEDGER:-}"
+  [ -n "$LEDGER" ] || { [ -n "${OC_DEPLOY_STATE_DIR:-}" ] && {
+    LEDGER="$OC_DEPLOY_STATE_DIR/events.jsonl"
+  }; }
+  [ -n "$LEDGER" ] || {
+    LEDGER="$STATE_DIR_DEFAULT/events.jsonl"
+  }
+  # #177: the record is events.jsonl. Callers may still pass workers.json or
+  # the retired view path. If a sibling events.jsonl exists, use it. A fixture
+  # that only has the compact file (no events.jsonl) stays in legacy mode.
+  # Resolved at call time (_oc_dirname is defined below).
+  case "$(basename -- "$LEDGER")" in
+    workers.json)
+      LEDGER="$(_oc_dirname "$LEDGER")/events.jsonl" ;;
+    workers-ledger.json)
+      # Remap only when the view is gone; if the compact file still exists it
+      # stays the source (migrate --force, legacy fixtures). JSONL mode is
+      # decided by events.jsonl being present, not by this path.
+      _pg_sd="$(_oc_dirname "$LEDGER")"
+      if [ ! -f "$LEDGER" ] && [ -f "$_pg_sd/events.jsonl" ]; then
+        LEDGER="$_pg_sd/events.jsonl"
+      fi
+      ;;
+  esac
+  ARGS=("$@")
+}
+# #149 spawn reduction: `dirname` costs one execve per call and STATE_DIR() is
+# reached ~8x per stamp. Pure-bash and byte-identical to `dirname` on every path
+# shape — trailing slashes collapsed, no-slash -> ".", "/x" -> "/" (verified
+# against coreutils on each case).
+_oc_dirname() { local p=$1; while [ "${p%/}" != "$p" ] && [ "$p" != "/" ]; do p=${p%/}; done; case $p in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac; printf '%s\n' "$p"; }
+STATE_DIR() { _oc_dirname "$LEDGER"; }
+
+# --- THE LIVE STATE DIR, BY AN IDENTITY THAT CANNOT FLOAT (#149, 2026-11-22) --
+# The migrate destination guard compared STATE_DIR() against $STATE_DIR_DEFAULT,
+# and BOTH read $OC_DEV_STATE (:185 and :237) — so with that variable set they
+# were equal BY CONSTRUCTION and the guard fired on any scratch dir. Measured:
+# OC_DEV_STATE=/tmp/scratch → "refusing to migrate the LIVE state dir
+# (/tmp/scratch)". The consequence is worse than a false positive: the only way
+# past it was --live, the flag that permits the REAL live dir, so the guard
+# trained operators to reach for the bypass to do a safe thing. A guard whose
+# false positives are cured by its own bypass has inverted its purpose.
+# So the live dir is spelled from $HOME and NOTHING ELSE. $HOME stays in the
+# expression deliberately: a test can relocate it (HOME=$fake) and exercise the
+# guard without ever pointing it at the real record.
+LIVE_STATE_DIR="$HOME/.opencrabs/profiles/ops/opencrabs-dev"
+is_live_state_dir() { # $1 = candidate dir; rc 0 = it IS the live state dir
+  local d l
+  d="$(cd "${1:-}" 2>/dev/null && pwd -P)" || return 1
+  l="$(cd "$LIVE_STATE_DIR" 2>/dev/null && pwd -P)" || return 1
+  [ -n "$d" ] && [ -n "$l" ] && [ "$d" = "$l" ]
+}
+
+# --- "is this path a git checkout?" (factory #70) -----------------------------
+# `[ -d "$sd/.git" ]` answers FALSE for a LINKED WORKTREE: there `.git` is a small
+# ASCII FILE holding `gitdir: …`, not a directory. Every site below either RUNS
+# git in the path or skips work when it cannot, so a worktree read as "no repo"
+# and the whole state/skill tail silently no-oped (audit printed SKIPPED, commits
+# deferred, pushes dropped, the stray-guard went INERT — the last one being the
+# v0.4.157 defect itself, reachable again from any worktree SKILL_DIR).
+# The sites keep their OWN failure modes: this is a predicate, not a behaviour
+# helper, so a guard still skips and a precondition still aborts.
+_is_git_repo() { git -C "${1:-}" rev-parse --git-dir >/dev/null 2>&1; }
+ledger_ok() {
+  if _jsonl_mode; then jq -e -c . "$(_JSONL_EVENTS)" >/dev/null 2>&1; return $?; fi
+  [ -f "$LEDGER" ] && jq -e . "$LEDGER" >/dev/null 2>&1
+}
+# #149: in JSONL mode `n` is allocated from the RECORD, never from the view.
+# The view is gitignored once cut over, so a fresh clone has none — and a
+# max_n() that read a missing view would answer 0 and hand the next writer
+# n=1, colliding with every live row. Nulls stay null (spec trap 1): `.n // 0`
+# ignores them for the MAX but never rewrites them.
+max_n() {
+  if _jsonl_mode; then
+    jq -s '([.[] | .n // 0] | max // 0)' "$(_JSONL_EVENTS)" 2>/dev/null || echo 0
+    return 0
+  fi
+  jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER"
+}
+# _is_uuid (#441, DRY extraction): the ONE uuid-shape predicate. ack/enroll/
+# promote/retire each carried a byte-identical private copy of this regex;
+# claim-ref was the only verb that shipped WITHOUT one, which is how a bare
+# issue number came to be accepted as an actor. Lowercase hex only — the shape
+# a session id actually carries (derive_by lowercases its input for the same
+# reason, M2-3).
+_is_uuid() { # $1 -> rc 0 iff a canonical 8-4-4-4-12 lowercase-hex uuid
+  printf '%s' "${1:-}" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+}
+
+# ---- state-repo TRACKED namespace: ONE home (#508) --------------------------
+# The v0.4.238 law says a TRACKED class is committed by the state-repo commit
+# path. Until now the whitelist lived INSIDE cmd_commit_pending --bundle while
+# git_state_commit staged workers-ledger.json ALONE, and no cron invoked the
+# bundle verb at all — so tools.log and friends accumulated dirty with nothing
+# sweeping them (live proof: tools.log modified-uncommitted in the state dir).
+# TWO callers now consume this one list: the auto-commit tail of every mutation,
+# and commit-pending --bundle.
+# v0.4.49: seal-state receipts (baseline.json / orders.json) joined the sweep —
+#   the swap chain writes them but never self-commits (the 6a2e66e manual-commit
+#   gap; owner "Go with 1" 2026-08-29). v0.4.51: journal/ joins too — smoke
+#   journals land here, git-tracked since 1232ccd; the overnight cbc77058 swap
+#   (smoke-34) proved the gap live.
+# health-rotation.json (#508): written by oc-health --rotate, already TRACKED in
+#   the state repo but absent from this list, so nothing carried it either.
+# #514 (2026-09-23, editor-lane report): the glossary's TRACKED bullet ALSO names
+#   smoke-verdicts.log, reviews/ and evidence/. All three are tracked in the state
+#   repo and carried by NOTHING here, so every later change accumulated until a
+#   hand-run hygiene commit swept it. smoke-verdicts.log is the receipted one and
+#   is MULTI-ACTOR — measured 33 distinct actor= values across 333 rows — so the
+#   sweep now DISCLOSES it in its commit subject. The append-only carve-out
+#   (toolsmith.md, proposal n=4057) exempts a self-attributing shared log from the
+#   dirty-path ban on condition that foreign rows are explicitly disclosed; the
+#   sweep is the one actor that stages rows it did not write, so it is the one
+#   that owes the sentence.  pacemakers-off is a bare-name MARKER, not a log: the
+#   glossary declares markers TRACKED and it was likewise carried by nothing.
+# #540: runs/ is LIVE RUNTIME STATE (a finished lane's in-flight record is
+# deleted when it completes) and reports/ is actively written; both were
+# tracked-but-unswept, so a DELETION in either was unreachable by every commit
+# path and the sweep still printed success. Chosen by LIVENESS, not by age —
+# the historical evidence dirs (fd-split-*, incident-evidence-*, rescue-299-*,
+# archive/) stay out on purpose: moving them is a migration, not a tool fix.
+# 2026-09-25: questions/ holds SNAPSHOTS of the vpn-side answer backend
+#   (/opt/questions/backend.py + sync.sh). That file carries the whole answer
+#   path and lived ONLY on vpn with no version control, so a bad edit there was
+#   unrecoverable; the snapshot is the revert path, and it is TRACKED rather than
+#   generated because it changes only when someone updates it from vpn.
+# #80 (2026-11-21): `tools.log` is NO LONGER carried by this list. The state repo
+# untracked it and .gitignore'd it (`d57586f4e`), so `git status --porcelain`
+# can never return it -- naming it here claimed a coverage the mechanism cannot
+# provide, and `git add -- tools.log` on the ignored path exits 1, so any path
+# that ever DID hand it to git would report "git add refused". The declaration
+# in reference-glossary.md still lists it under TRACKED; that line is HQ's law
+# surface, so `state_tracked_audit` now WARNs at the next `sync` and the fix
+# belongs there, not here. Growth is bounded instead by `oc_log_rotate`
+# (tools/lib/oc-log.sh, OC_TOOLS_LOG_MAX_BYTES, default 32 MiB, one generation).
+STATE_TRACKED_PATHS="baseline.json orders.json journal deployed.sha deployed.meta.json fanout.state oc-deploy oc-deploy-shadow.log oc-deploy-shadow.archive.log health-rotation.json smoke-verdicts.log reviews evidence pacemakers-off runs reports questions base-red.json harvest-registry.json"
+# The harvest-state class (v0.4.237, HQ ruling 2026-09-22) is a SEPARATE
+# variable: it carries glob metacharacters and must reach git QUOTED and
+# DIRECTLY — an unquoted expansion pathname-expands against the CALLER's cwd.
+# A parked harvest's state file is its ONLY resume record — its resume cron
+# reads it. TRACKING IS NOT AUTHORSHIP: the CONTENT stays the owning lane's;
+# this only makes the record survive the disk.
+# WIDENED at #514 from '*-harvest-state.md' to the class the glossary actually
+# declares ("the lane `*-state.md` records"). Measured 2026-09-23: 33 such files,
+# 20 of them harvest-state and 13 of them ship-/smoke-/fast-follow-state RECORDS
+# (138, 187, 199, 275-279, 291, 302, 321, 330, 341, 352, 444, 446, merge-20260906)
+# — every one already tracked in git, but tracked by a HAND-RUN hygiene commit, so
+# the mechanism carried none of them and the gap simply had not been exercised yet.
+STATE_TRACKED_GLOB='*-state.md'
+
+# ---- commit-with-retry (#116) -------------------------------------------
+# A commit that FAILS must never read as a clean tree. `did` counts only
+# SUCCESS, so the final `[ "$did" -eq 1 ] || echo "sweep: clean — nothing
+# pending"` printed the CLEAN verdict after git REFUSED a commit — measured
+# 2026-11-20 (HQ probe): `.git/index.lock` held by a live concurrent commit, the
+# ledger row staged and demonstrably pending, HEAD unmoved, and the verb
+# reported "nothing pending" at rc 0. The three outcomes must be separable —
+# COMMITTED / NOTHING-PENDING / FAILED — because a self-consistent green that
+# proves nothing is the exact shape a reader (or a cron) cannot detect.
+#
+# One BOUNDED retry first: git's own advice for a lock, which a live concurrent
+# commit releases in seconds. Bounded, so a genuine failure reports instead of
+# spinning. The failure text is carried out in _CW_ERR so each call site can
+# name the path it was committing.
+_CW_ERR=''
+_commit_with_retry() { # $1=dir $2=subject -> rc 0 committed; rc 4 failed (_CW_ERR set)
+  local d="$1" subj="$2" e=''
+  if e="$(git -C "$d" commit -q -m "$subj" 2>&1)"; then return 0; fi
+  sleep 2
+  if e="$(git -C "$d" commit -q -m "$subj" 2>&1)"; then return 0; fi
+  _CW_ERR="$(printf '%s' "$e" | tr '\n' ' ' | cut -c1-300)"
+  return 4
+}
+
+state_sweep_tracked() { # $1=state dir, $2=label -> commits the TRACKED namespace; rc 0 iff something committed
+  local sd="$1" label="${2:-state}" did=0 hits had_f=0 note=''
+STATE_SWEEP_ERR=
+  case $- in *f*) had_f=1 ;; esac
+  # `git add` DIES on a pathspec that matches nothing (rc 128, and it stages
+  # NOTHING at all), so the whitelist is never handed to git wholesale — the
+  # dirty subset is derived from ONE porcelain read first.
+  hits="$(git -C "$sd" status --porcelain -- $STATE_TRACKED_PATHS 2>/dev/null \
+          | cut -c4- | sed 's/^.* -> //')"
+  if [ -n "$hits" ]; then
+    # Paths come from porcelain (repo-relative, no glob metacharacter), and
+    # `set -f` keeps a caller's cwd from expanding them on the way to git.
+    set -f
+    # shellcheck disable=SC2086
+    # Append-only shared logs self-attribute per row (actor=<uuid>), so a sweep
+    # that stages rows it did not write satisfies the carve-out ONLY by saying
+    # so. The disclosure is per-class, not per-actor: the actors are named IN the
+    # file, and enumerating them here would put a lane-uuid list in a commit
+    # subject that nothing parses.
+    case " $hits " in
+      *" smoke-verdicts.log "*)
+        note=' [disclose foreign rows: smoke-verdicts.log rows self-attribute via actor=]' ;;
+      *) note='' ;;
+    esac
+    if git -C "$sd" add -- $hits 2>/dev/null; then
+      if _commit_with_retry "$sd" "state sweep:$hits ($label)$note"; then
+        echo "sweep: state runtime files committed:$hits"
+        did=1
+      else
+        STATE_SWEEP_ERR="state sweep:$hits — $_CW_ERR"
+      fi
+    else
+      STATE_SWEEP_ERR="git add refused:$hits"
+    fi
+    [ "$had_f" -eq 1 ] || set +f
+  fi
+  if [ -n "$(git -C "$sd" status --porcelain -- "$STATE_TRACKED_GLOB" 2>/dev/null)" ]; then
+    if git -C "$sd" add -- "$STATE_TRACKED_GLOB" 2>/dev/null; then
+      if _commit_with_retry "$sd" "state sweep: $STATE_TRACKED_GLOB ($label)"; then
+        echo "sweep: lane state records committed"
+        did=1
+      else
+        STATE_SWEEP_ERR="state sweep:$STATE_TRACKED_GLOB — $_CW_ERR"
+      fi
+    else
+      STATE_SWEEP_ERR="git add refused:$STATE_TRACKED_GLOB"
+    fi
+  fi
+  [ "$did" -eq 1 ]
+}
+
+# ---- declared-vs-mechanism audit (#514) -------------------------------------
+# SKILL.md's state-dir glossary declares a TRACKED class; THIS list is the only
+# mechanism that carries it. The two have now drifted FIVE times — tools.log,
+# baseline.json/orders.json, journal/, health-rotation.json, and #514's
+# smoke-verdicts.log + reviews/ + evidence/ — and the list's own comment block
+# records four of them. Every drift has the same shape: the law reads as covered
+# while the file accumulates untracked, and nothing fails. One more name is the
+# fifth patch, not the fix, so this function is the guard: it parses the
+# glossary's OWN TRACKED bullet and names every entry the mechanism does not
+# carry.
+# Posture mirrors the C8 disposition (v0.4.242): WARN with the remedy, and an
+# explicit SKIP — never a silent clean — when the bullet cannot be located or a
+# token cannot be classified, because a check that cannot observe its failure
+# class must not report one (#485's shape).
+# WARN-only and rc 0 always: the declaration is HQ's law surface and the list is
+# this tool's, so a hard failure here would let one side's edit block the other's
+# work at a boundary it does not own.
+state_tracked_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
+  local bullet tok mech m hit=0 gap=0 unclass=0 src="" found=""
+  # #71 (2026-11-17): search the whole LAW CORPUS, not SKILL.md by name. The
+  # declaration legitimately MOVES — v0.4.310 moved this bullet into
+  # reference-glossary.md — and a reader pinned to one filename goes blind the
+  # moment the law is reorganised, then reports SKIP while the audit it exists to
+  # perform has silently stopped. The audit must follow the DECLARATION, not a
+  # path. LAW_FILES is the authority on what the corpus IS, so an unlisted new
+  # law file cannot hide a declaration from this scan.
+  for src in "${LAW_FILES[@]}"; do
+    [ -f "$SKILL_DIR/$src" ] || continue
+    bullet="$(awk '/^  - \*\*TRACKED\*\* —/ { f=1; print; next } f && (/^  - / || /^  [A-Za-z]/) { f=0 } f { print }' "$SKILL_DIR/$src" 2>/dev/null)"
+    [ -n "$bullet" ] && { found="$src"; break; }
+  done
+  if [ -z "$bullet" ]; then
+    echo "state-tracked: NOTE — declared-vs-mechanism check SKIPPED: no '  - **TRACKED** —' bullet in any of the ${#LAW_FILES[@]} LAW_FILES. This is NOT a clean result and NOT a finding." >&2
+    return 0
+  fi
+  # Names carried by ANY mechanism: the two list variables, plus the LEDGER
+  # RECORD, which `_ledger_tracked_names` answers mode-aware — `events.jsonl
+  # workers.json` in JSONL mode, `workers-ledger.json` in legacy mode. It is
+  # deliberately NOT in STATE_TRACKED_PATHS: the ledger tail commits it under
+  # the ledger lock, and a sweep must not stage it from a path holding no such
+  # lock. After the #149 cutover the blob is gitignored and staged by NOTHING,
+  # so asking the list alone would name the wrong file as the carried one.
+  mech="$STATE_TRACKED_PATHS $STATE_TRACKED_GLOB $(_ledger_tracked_names)"
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    case "$tok" in
+      *[![:print:]]*) continue ;;
+    esac
+    # A backticked span containing whitespace is a COMMAND documented in the
+    # bullet's parenthetical (e.g. `oc-ledger recover-receipt`), not a path.
+    case "$tok" in
+      *[[:space:]]*) unclass=$((unclass + 1)); continue ;;
+    esac
+    # The glossary writes directory entries with a trailing slash (`journal/`)
+    # while the mechanism stores them bare; an unnormalised compare reports both
+    # as gaps.
+    tok="${tok%/}"
+    hit=0
+    for m in $mech; do
+      [ "$tok" = "$m" ] && { hit=1; break; }
+      case "$tok" in
+        *"/$m") hit=1; break ;;
+      esac
+      case "$m" in
+        *"/$tok") hit=1; break ;;
+      esac
+      # a leading-dot token is the second half of a slash-pair in the prose
+      # ('deployed.sha'/'.meta.json' -> the mechanism name deployed.meta.json)
+      case "$tok" in
+        .*) case "$m" in *"$tok") hit=1; break ;; esac ;;
+      esac
+    done
+    [ "$hit" -eq 1 ] && continue
+    echo "state-tracked: WARN — '$tok' is declared TRACKED in $found's state-dir glossary but carried by NEITHER STATE_TRACKED_PATHS nor STATE_TRACKED_GLOB. Add it to the list, or amend the glossary (#514)." >&2
+    gap=$((gap + 1))
+  done <<EOF
+$(printf '%s\n' "$bullet" | grep -o '`[^`]*`' | tr -d '`')
+EOF
+  [ "$unclass" -gt 0 ] && echo "state-tracked: note — $unclass backticked span(s) in the TRACKED bullet are not path-shaped (commands/parentheticals) and were not classified. Disclosed so the skip is never silent." >&2
+  [ "$gap" -eq 0 ] && echo "state-tracked: every name declared TRACKED in $found is carried by the sweep list." >&2
+  return 0
+}
+
+# state_out_of_scope_audit (#540) — the INVERSE of state_tracked_audit.
+# That one runs declaration -> mechanism (a name the glossary declares that the
+# sweep does not carry). This one runs mechanism -> its own blind spot: tracked
+# files in the state repo that NEITHER the sweep list NOR the glossary names.
+# Such a file is unreachable by EVERY commit path (there is no `git add -A` on
+# the state repo), so it can be DELETED and the sanctioned verb still reports
+# success — measured live 2026-09-24 on runs/in-flight/<uuid>.json, where
+# `commit-pending --bundle` committed tools.log and left the deletion untouched.
+#
+# DIRTY out-of-scope files are FINDINGS; the untouched remainder is a COUNT. The
+# mass is historical evidence that has not changed since an explicit `git add`
+# put it there, and a leg that cried wolf on it would be ignored — which is
+# worse than no leg.
+#
+# Models the UNION of every commit path, not just the list: the ledger record
+# is carried by `_ledger_tracked_names` — `events.jsonl workers.json` in JSONL
+# mode, the blob in legacy mode — and is deliberately absent from
+# STATE_TRACKED_PATHS, so a list-only leg would falsely flag the most-committed
+# file in the repo. Since the #149 cutover it would also flag the WRONG NAME:
+# the gitignored blob instead of the JSONL pair that actually carries the rows.
+#
+# WARN-only and rc 0 always — same posture and same reason as state_tracked_audit.
+state_out_of_scope_audit() { # Prints findings to stderr; ALWAYS rc 0 (never a gate).
+  local sd; sd="$(STATE_DIR)"
+  if ! _is_git_repo "$sd"; then
+    echo "state-out-of-scope: NOTE — inverse check SKIPPED: $sd is not a git repo. This is NOT a clean result and NOT a finding." >&2
+    return 0
+  fi
+  local d; d="$(mktemp -d 2>/dev/null)" || return 0
+  if ! git -C "$sd" ls-files > "$d/all" 2>/dev/null; then
+    echo "state-out-of-scope: NOTE — inverse check SKIPPED: 'git ls-files' failed in $sd. This is NOT a clean result." >&2
+    rm -rf "$d"; return 0
+  fi
+  # Union of EVERY commit path (see the header note).
+  # Scope model — matched against what the SWEEP actually does, not a loose
+  # approximation. `git status --porcelain -- orders.json` matches the ROOT
+  # orders.json only, so `archive/orders.json` is genuinely unswept and must NOT
+  # read as carried. The basename test therefore applies to the GLOB ONLY:
+  # `*-state.md` is a git pathspec whose `*` crosses directories, so basename
+  # matching is right for it and wrong for the literal list entries. Testing
+  # every entry against the basename (the shape state_tracked_audit uses for a
+  # different purpose — comparing declared TOKENS) silently marked
+  # archive/orders.json as carried: a false NEGATIVE, i.e. a clean receipt over
+  # an unswept file, which is the exact class this leg exists to expose.
+  local mech="$STATE_TRACKED_PATHS $(_ledger_tracked_names)"
+  local f top base m g hit
+  : > "$d/out"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      */*) top="${f%%/*}"; base="${f##*/}" ;;
+      *)   top="$f";       base="$f" ;;
+    esac
+    hit=0
+    for m in $mech; do
+      [ "$f" = "$m" ] && { hit=1; break; }
+      [ "$top" = "$m" ] && { hit=1; break; }
+    done
+    if [ "$hit" -eq 0 ]; then
+      for g in $STATE_TRACKED_GLOB; do
+        # the glob carries metacharacters, so it must stay UNQUOTED here
+        case "$base" in $g) hit=1; break ;; esac
+      done
+    fi
+    [ "$hit" -eq 1 ] && continue
+    printf '%s\n' "$f" >> "$d/out"
+  done < "$d/all"
+
+  local total out_n dirty_n=0 p
+  total="$(wc -l < "$d/all" | tr -d ' ')"
+  out_n="$(wc -l < "$d/out" | tr -d ' ')"
+  if [ "$out_n" -eq 0 ]; then
+    echo "state-out-of-scope: every one of the $total tracked file(s) is carried by a commit path." >&2
+    rm -rf "$d"; return 0
+  fi
+  # grep -Fxq reads a FILE here, never a pipe, so pipefail cannot see a SIGPIPE.
+  git -C "$sd" status --porcelain > "$d/status" 2>/dev/null
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    p="${p:3}"
+    case "$p" in *" -> "*) p="${p##* -> }" ;; esac
+    if grep -Fxq -- "$p" "$d/out" 2>/dev/null; then
+      dirty_n=$((dirty_n + 1))
+      echo "state-out-of-scope: WARN — '$p' is tracked but carried by NO commit path, and is DIRTY in the worktree; no commit path can reconcile it (#540)." >&2
+    fi
+  done < "$d/status"
+  if [ "$dirty_n" -eq 0 ]; then
+    echo "state-out-of-scope: $out_n of $total tracked file(s) sit outside every commit path, none DIRTY — historical mass, a count and not a finding (#540)." >&2
+  else
+    echo "state-out-of-scope: $dirty_n DIRTY out-of-scope file(s) reported above; $((out_n - dirty_n)) further file(s) sit outside every commit path untouched (historical mass, a count and not a finding)." >&2
+  fi
+  rm -rf "$d"
+  return 0
+}
+
+# ---- #95: git runs OUTSIDE the fleet-wide ledger lock -----------------------
+# `git_state_commit` used to be called from INSIDE every `_*_locked` helper, i.e.
+# while the exclusive flock on $LEDGER.lock was held. That made the HOLDER's
+# worst case a state-repo commit plus two bounded pushes, so one saturated disk
+# froze the ledger for EVERY lane. Measured 2026-11-19: the lock was held 25
+# minutes while `git status` sat in D-state under io pressure (some avg300=84.59),
+# with 18 lanes queued behind it and their stamps dying rc=4 — and the writes
+# that "never landed" were simply never attempted. #641 fixed the *fd
+# inheritance* half (children outliving the parent) but left git inside the
+# lock, which is the root cause. #80 (a 19.4MB tools.log committed per row) and
+# #81 (a waiter budget 60s short of the holder's worst case) are its symptoms.
+#
+# The lock now protects the LEDGER ONLY: append + fsync, release, then the git
+# tail runs under its OWN lock ($LEDGER.git-tail.lock). A lane's row is durable
+# the moment its append lands, so a slow state repo can no longer cost another
+# lane its journal trail. The tail stays serialised — two concurrent appends
+# still commit in a defined order — but nobody waits for it to keep their row.
+_OC_GIT_PENDING=()
+_OC_IN_LOCK=0
+
+git_state_commit() { # $1=message — DEFERRED when called under the ledger lock (#95)
+  if [ "$_OC_IN_LOCK" = "1" ]; then
+    _OC_GIT_PENDING+=("$1")
+  else
+    _git_state_commit_now "$1"
+  fi
+}
+
+_oc_flush_git_tail() { # runs AFTER $LEDGER.lock is released; never fatal
+  [ "${#_OC_GIT_PENDING[@]}" -gt 0 ] || return 0
+  local m n="${#_OC_GIT_PENDING[@]}" wait="${OC_LEDGER_GIT_TAIL_WAIT:-60}"
+  if ! exec 8>>"$LEDGER.git-tail.lock"; then
+    echo "git-tail: cannot open $LEDGER.git-tail.lock — $n state commit(s) deferred; THE LEDGER ROW IS SAFE (already appended and fsynced)" >&2
+    _OC_GIT_PENDING=(); return 0
+  fi
+  if ! flock -w "$wait" 8; then
+    echo "git-tail: state-repo tail busy after ${wait}s — $n state commit(s) deferred; THE LEDGER ROW IS SAFE (already appended and fsynced). Raise with OC_LEDGER_GIT_TAIL_WAIT." >&2
+    exec 8>&-; _OC_GIT_PENDING=(); return 0
+  fi
+  for m in "${_OC_GIT_PENDING[@]}"; do _git_state_commit_now "$m"; done
+  _OC_GIT_PENDING=()
+  exec 8>&-
+  return 0
+}
+
+_git_state_commit_now() { # $1=message — the commit/sweep/push tail itself; never fatal
+  local sd; sd="$(STATE_DIR)"
+  _is_git_repo "$sd" || return 0
+  # #149: in JSONL mode the RECORD is what gets committed. Staging only
+  # `basename "$LEDGER"` would stage the gitignored view and commit NOTHING —
+  # a state commit that reports ok with an empty tree, which is the same
+  # silent-success class as a guard that cannot see its target.
+  local stage_ok=1
+  if _jsonl_mode; then
+    git -C "$sd" add events.jsonl workers.json 2>/dev/null || stage_ok=0
+  else
+    git -C "$sd" add "${LEDGER##*/}" 2>/dev/null || stage_ok=0
+  fi
+  if [ "$stage_ok" -eq 1 ] \
+     && git -C "$sd" commit -q -m "$1" 2>/dev/null; then
+    # n=1744 hygiene: echo the auto-commit sha — a caller claiming "state commit
+    # ok" without a sha in hand has nothing to verify against (phantom class).
+    local sha; sha="$(git -C "$sd" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "git: state commit ok ($1) sha=$sha"
+  else
+    echo "commit-lag: state commit deferred — $1" >&2
+  fi
+  # #177: the TRACKED-namespace sweep no longer runs on every stamp. oc-ship
+  # runs `oc-ledger commit-pending --bundle` once per leg; other callers can
+  # invoke that verb directly. push_backlog_if_due stays here so a stamp still
+  # has a path off-box when the backlog is due.
+  push_backlog_if_due "$sd" state || true
+  push_backlog_if_due "$SKILL_DIR" skill || true
+}
+
+# ---- opportunistic backlog push (durability, #524) --------------------------
+# Every ledger mutation COMMITS via git_state_commit; nothing pushed, so off-box
+# durability rode irregular bundle/sync runs only. Measured 2026-09-23 in the
+# state repo: 121 commits vs 13 pushes, and an 11-commit / 2h53m29s unpushed
+# gap. A commit that never leaves the box is not a recovery point — and the
+# recoverability metric measures exactly this surface.
+# Knobs follow the OC_LEDGER_* convention (cf. OC_LEDGER_TMP_MAX_AGE above).
+_OC_PUSH_MIN="${OC_LEDGER_PUSH_MIN:-10}"              # backlog commits that force a push
+_OC_PUSH_MAX_AGE="${OC_LEDGER_PUSH_MAX_AGE:-1800}"    # seconds; pushes a smaller backlog
+_OC_PUSH_TIMEOUT="${OC_LEDGER_PUSH_TIMEOUT:-30}"      # per-repo bound; the hook holds the lock
+
+push_mirror() { # $1=repo dir, $2=label — off-box durability tail step (v0.4.50)
+  # Push current branch + v0.4.* tags to origin IF one is configured; no
+  # origin = silent no-op (state repo activates the moment one is added).
+  # Durability, not a gate: failure WARNs, never fails the bump/sweep.
+  # Branch push is NON-FORCE — a diverged remote is reported, not
+  # overwritten; local stays the single source of truth.
+  # (Attach ruling, owner 2026-08-30 00:23Z: leshchenko1979/opencrabs-dev-factory
+  # wired as live mirror of the skill repo. The ruling named the repo by its
+  # then-name `opencrabs-skill`; it was RENAMED to `opencrabs-dev-factory`
+  # 2026-10-03, so the citation is updated to the live slug.)
+  local dir="$1" name="$2"
+  _is_git_repo "$dir" || return 0
+  git -C "$dir" remote get-url origin >/dev/null 2>&1 || return 0
+  local out rc
+  # Timeout-bounded because the backlog hook runs INSIDE the ledger lock: a
+  # hung network push must never stall every lane's mutation. Bound lives here
+  # so all call sites (sync, commit-pending, the backlog arm) inherit it.
+  # (#655) Act on the remote's REAL state. Without this the tool both measures
+  # and pushes against a stale @{u}: measured, a stale tracking ref reads
+  # "ahead 1" / count=1 while the truth is "ahead 1, behind 1", and the push is
+  # rejected non-fast-forward -- then WARNs the same way on every later run and
+  # never succeeds. The fetch is bounded by the same timeout and is
+  # best-effort: if it fails we still attempt the push, which reports its own
+  # reason. Cost is confined to this path, which the backlog arm gates.
+  local br; br="$(git -C "$dir" symbolic-ref -q --short HEAD 2>/dev/null)"
+  [ -n "$br" ] && timeout -s KILL "$_OC_PUSH_TIMEOUT" git -C "$dir" fetch -q origin "$br" >/dev/null 2>&1
+  out="$(timeout -s KILL "$_OC_PUSH_TIMEOUT" git -C "$dir" push -q origin HEAD "+refs/tags/v0.4.*:refs/tags/v0.4.*" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "mirror: $name pushed to $(git -C "$dir" remote get-url origin)"
+  else
+    # Distinguish a moved remote from a real divergence: the former clears on
+    # the next push, the latter owes a human merge and must never be forced.
+    local rel=""
+    case "$out" in
+      *non-fast-forward*|*"fetch first"*|*"remote contains work"*)
+        rel="$(git -C "$dir" rev-list --left-right --count '@{u}...HEAD' 2>/dev/null)"
+        rel=" [ahead ${rel#*	} behind ${rel%%	*}]" ;;
+    esac
+    echo "WARN: mirror push failed for $name rc=$rc (local unaffected)$rel: $out" >&2
+  fi
+  oc_log_extra "mirror_push_$name" "rc=$rc"
+  return 0
+}
+
+push_backlog_if_due() { # $1=repo dir, $2=label — inside lock; never fatal
+  # Push ONLY when the local backlog says so. Two arms, because the commit arm
+  # structurally cannot bound the SLOW regime: a quiet box can sit under the
+  # threshold indefinitely, so the age arm fires on the newest unpushed commit.
+  # The measurement itself is local (no network), so the common case — clean or
+  # up to date — costs one rev-list and returns before push_mirror is reached.
+  # Posture stays push_mirror's: durability, never a gate.
+  local dir="$1" name="$2"
+  _is_git_repo "$dir" || return 0
+  git -C "$dir" remote get-url origin >/dev/null 2>&1 || return 0
+  # No upstream configured = nothing to measure against (silent no-op).
+  git -C "$dir" rev-parse --verify -q '@{u}' >/dev/null 2>&1 || return 0
+  local n; n="$(git -C "$dir" rev-list --count '@{u}..HEAD' 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -gt 0 ] || return 0
+  if [ "$n" -ge "$_OC_PUSH_MIN" ]; then
+    echo "mirror-due: $name backlog=$n commit(s) (>= $_OC_PUSH_MIN) — pushing"
+  else
+    local newest age
+    newest="$(git -C "$dir" log -1 --format=%ct '@{u}..HEAD' 2>/dev/null)"
+    case "$newest" in ''|*[!0-9]*) return 0 ;; esac
+    age=$(( $(date +%s) - newest ))
+    [ "$age" -ge "$_OC_PUSH_MAX_AGE" ] || return 0
+    echo "mirror-due: $name backlog=$n commit(s), newest ${age}s old (>= ${_OC_PUSH_MAX_AGE}s) — pushing"
+  fi
+  push_mirror "$dir" "$name"
+  return 0
+}
+
+# ---- atomic mutation core (call under lock) --------------------------------
+# ---- stale temp sweep (D2, #507) -------------------------------------------
+# Every atomic_jq caller is a `_*_locked` helper run under with_lock, so no live
+# temp can be in flight when this runs: any `.ledger.*` present is a corpse from
+# a SIGKILL. The age gate is belt-and-braces for a future caller that is NOT
+# under the lock, and it is what stops this from becoming a blanket `rm
+# .ledger.*` that could reap a temp mid-write. Globs the dir (one readdir, no
+# stat until a match) rather than shelling out to find: the normal case is zero
+# matches and this sits on the hot mutation path.
+_OC_TMP_MAX_AGE_M="${OC_LEDGER_TMP_MAX_AGE:-60}"
+sweep_stale_temps() { # $1 = state dir; best-effort — never fails the caller
+  local f n=0 now
+  now="$(date +%s)"
+  for f in "$1"/.ledger.*; do
+    [ -e "$f" ] || continue                      # no nullglob: the literal glob survives
+    [ "$f" = "${_OC_TMP:-}" ] && continue        # never reap our own live temp
+    [ $(( now - $(stat -c %Y "$f" 2>/dev/null || echo "$now") )) -ge $(( _OC_TMP_MAX_AGE_M * 60 )) ] || continue
+    rm -f "$f" && n=$((n+1))
+  done
+  if [ "$n" -gt 0 ] && command -v oc_log_extra >/dev/null 2>&1; then
+    oc_log_extra "stale_tmp_swept" "n=$n"
+  fi
+  return 0
+}
+# ---- #149: JSONL record + materialized view ---------------------------------
+# THE record is events.jsonl (one JSON object per line, append-only) and
+# workers.json carries the non-event state. workers-ledger.json becomes a
+# MATERIALIZED VIEW regenerated from those two, existing only so the 25 legacy
+# consumers keep working — never authoritative.
+#
+# When events.jsonl is ABSENT the tool runs the LEGACY single-file path
+# unchanged, so every existing fixture, every un-migrated state dir and the
+# whole pre-#149 selftest battery behave exactly as before. That is deliberate:
+# the migration is opt-in per state dir and reversible by deleting one file.
+_JSONL_EVENTS() { printf '%s/events.jsonl' "$(STATE_DIR)"; }
+_JSONL_WORKERS() { printf '%s/workers.json' "$(STATE_DIR)"; }
+_jsonl_mode() { [ -f "$(_JSONL_EVENTS)" ] || [ "$(basename -- "$LEDGER")" = "events.jsonl" ]; }
+# _ledger_tracked_names — the basenames the state commit actually stages.
+# #149 (spec trap 4): the two audit `mech` strings hardcoded workers-ledger.json,
+# so after cutover they would compare a declaration against a file that is no
+# longer tracked — a guard that cannot see its target and reports clean. One
+# home for the answer, so a third format never needs three edits.
+# KEEP THIS FUNCTION SELF-CONTAINED: the selftest extracts the audit functions
+# STANDALONE by awk range, so a call to any helper outside that extraction
+# expands to EMPTY at fixture runtime — which un-carried the ledger and reddened
+# two arms while the live tool was correct. Measured 2026-11-22.
+_ledger_tracked_names() {
+  local ev; ev="$(STATE_DIR)/events.jsonl"
+  if [ -f "$ev" ]; then printf 'events.jsonl workers.json'; else printf 'workers-ledger.json'; fi
+}
+
+# ledger_load — emit the UNIFIED dict on stdout; the ONE reader.
+# A malformed line DIES here with its line number and is NEVER skipped: a
+# skipped line turns a corrupt row into a MISSING row, and every closure and
+# dispatch predicate then reads "no claim" — a false green on exactly the
+# surface this ledger exists to make honest (spec trap 5).
+# Validation is one `jq -e -c .` pass over the whole stream (jq reports
+# "at line N" itself), not one process per line.
+ledger_load() {
+  local ev wf
+  ev="$(_JSONL_EVENTS)"; wf="$(_JSONL_WORKERS)"
+  if [ ! -f "$ev" ]; then cat "$LEDGER"; return $?; fi
+  local jerr=""
+  if ! jerr="$(jq -e -c . "$ev" 2>&1 >/dev/null)"; then
+    echo "oc-ledger: ledger_load REFUSED — malformed JSONL in $ev. A partial read would make a corrupt row look like a missing event (a false 'no claim'): $jerr" >&2
+    return 3
+  fi
+  if [ -f "$wf" ]; then
+    jq -s --slurpfile w "$wf" '($w[0] // {}) + {events: .}' "$ev"
+  else
+    jq -s '{events: .}' "$ev"
+  fi
+}
+
+# jq_ledger — run jq against the unified ledger dict. In JSONL mode the view
+# file is gone, so we build the dict from the record (ledger_load) instead of
+# reading $LEDGER. Legacy mode still jq's the compact file.
+jq_ledger() {
+  if _jsonl_mode; then
+    ledger_load | jq "$@"
+  else
+    jq "$@" "$LEDGER"
+  fi
+}
+
+# _prepare_unified / _cleanup_unified — for python or jq programs that need a
+# filesystem path to the unified dict (not a pipe).
+_prepare_unified() {
+  if _jsonl_mode; then
+    _UNIFIED="$(mktemp "${TMPDIR:-/tmp}/oc-ledger-unified.XXXXXX")" || return 4
+    ledger_load > "$_UNIFIED" || { rm -f "$_UNIFIED"; return 3; }
+  else
+    _UNIFIED="$LEDGER"
+  fi
+  return 0
+}
+_cleanup_unified() {
+  if _jsonl_mode; then rm -f "${_UNIFIED:-}"; fi
+  return 0
+}
+
+# ledger_write_view — retired in #177. The view is no longer written.
+# the same filesystem, spec trap 6): a consumer reading mid-rewrite must never
+# see truncated JSON. $1 = a file holding the already-unified dict.
+ledger_write_view() { # $1 = path to the unified dict; rc 4 on failure
+  local src="$1" sd; sd="$(STATE_DIR)"
+  jq -e . "$src" >/dev/null 2>&1 || return 4
+  local tmp; tmp="$(mktemp "$sd/.view.XXXXXX")" || return 4
+  if ! cp "$src" "$tmp" 2>/dev/null || ! mv "$tmp" "$LEDGER" 2>/dev/null; then
+    rm -f "$tmp"; return 4
+  fi
+  return 0
+}
+
+atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse / 4 write-fail; live untouched on fail
+  local sd; sd="$(STATE_DIR)"
+  sweep_stale_temps "$sd"
+  _OC_TMP="$(mktemp "$sd/.ledger.XXXXXX")" || { _OC_TMP=""; return 4; }
+  local tmp="$_OC_TMP"
+  local jerr=""
+  if ! _jsonl_mode; then
+    # (#570) NEVER let jq's own message die here. `2>/dev/null` turned a clear jq type
+    # error ("string and array cannot be added") into a bare rc=3 that was
+    # indistinguishable from a bad uuid or a missing ledger — Triage spent several turns
+    # re-deriving the cause. The ledger is still UNTOUCHED on failure; only the SILENCE
+    # is removed. stderr is captured (`2>&1 >"$tmp"` — fd2 to the capture, fd1 to the
+    # temp) so the message survives the redirection that used to eat it.
+    if ! jerr="$(jq "$@" "$LEDGER" 2>&1 >"$tmp")"; then
+      rm -f "$tmp"; _OC_TMP=""
+      echo "oc-ledger: atomic_jq failed (rc=3) — the ledger was NOT modified: ${jerr:-<jq gave no message>}" >&2
+      return 3
+    fi
+    if ! jq -e . "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; _OC_TMP=""; return 4; fi
+    mv "$tmp" "$LEDGER" || { rm -f "$tmp"; _OC_TMP=""; return 4; }
+    _OC_TMP=""
+    return 0
+  fi
+  # ---- #149 JSONL path -------------------------------------------------------
+  # The caller's contract is UNCHANGED: it hands a jq program over a dict that
+  # has .events, .workers, .meta, … We load the unified dict, apply the program
+  # to it, then SPLIT the result back into the three files. Six call sites
+  # append events and several more mutate .workers; none of them learns a new
+  # API, so there is no second closure/dispatch predicate in the tree (the
+  # oc-claims-single-source guard would fail the battery for one).
+  local base="$sd/.ledger.base.$$" next="$sd/.ledger.next.$$" app="$sd/.ledger.app.$$"
+  if ! ledger_load > "$base" 2>"$base.err"; then
+    local e; e="$(cat "$base.err" 2>/dev/null)"
+    rm -f "$base" "$base.err" "$next" "$app" "$tmp"; _OC_TMP=""
+    echo "oc-ledger: atomic_jq load failed (rc=3) — the ledger was NOT modified: $e" >&2
+    return 3
+  fi
+  rm -f "$base.err"
+  if ! jerr="$(jq "$@" "$base" 2>&1 >"$next")"; then
+    rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""
+    echo "oc-ledger: atomic_jq failed (rc=3) — the ledger was NOT modified: ${jerr:-<jq gave no message>}" >&2
+    return 3
+  fi
+  if ! jq -e . "$next" >/dev/null 2>&1; then rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; fi
+  # TRUE APPEND when the program pushed exactly ONE event onto the END — that is
+  # the entire point of #149 (one ~200-byte line per stamp instead of a fresh
+  # 2.8MB blob). Anything else (a non-event mutation, or an event edit) falls
+  # back to rewriting the record wholesale, which is still one small file.
+  jq -c --slurpfile o "$base" '
+      (.events // []) as $new | ($o[0].events // []) as $old
+      | if ($new|length) == (($old|length) + 1) and ($new[0:($old|length)] == $old)
+        then $new[-1] else empty end' "$next" > "$app" 2>/dev/null
+  local ev; ev="$(_JSONL_EVENTS)"
+  if [ -s "$app" ]; then
+    # #177: a stamp is an append + fsync of one line. The view is not written,
+    # and workers.json is left alone — an event-only mutation does not change
+    # non-event state (the jq program may bump .updated_at, which we drop).
+    cat "$app" >> "$ev" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
+    sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
+  else
+    if ! jq -c '.events[]?' "$next" > "$ev.tmp.$$" 2>/dev/null; then
+      rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4
+    fi
+    mv "$ev.tmp.$$" "$ev" || { rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4; }
+    # Non-event state: only rewritten when it actually changed.
+    local wf; wf="$(_JSONL_WORKERS)"
+    jq -c 'del(.events)' "$next" > "$wf.tmp.$$" 2>/dev/null \
+      && { cmp -s "$wf.tmp.$$" "$wf" 2>/dev/null || mv "$wf.tmp.$$" "$wf"; } \
+      ; rm -f "$wf.tmp.$$"
+  fi
+  rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""
+  return 0
+}
+
+# #177: stamps (and every other locked mutation) run at normal ionice/nice,
+# even when a parent oc-ship applied idle class 3 / nice 19. Best-effort and
+# never fatal: a failed raise must not refuse a write. This process only —
+# the parent keeps its class.
+_oc_normal_io() {
+  if command -v ionice >/dev/null 2>&1; then
+    ionice -c2 -n0 -p $$ >/dev/null 2>&1 || true
+  fi
+  if command -v renice >/dev/null 2>&1; then
+    renice -n 0 -p $$ >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+with_lock() { # runs "$@" with exclusive flock on $LEDGER.lock
+  local rc
+  _oc_normal_io
+  exec 9>"$LEDGER.lock"
+  # (#619) The waiter budget must EXCEED the holder's worst case, or a normal
+  # ship storm starves concurrent appends and DROPS JOURNAL ROWS SILENTLY.
+  # (#95) THAT PREMISE CHANGED, so the derivation changed with it: the pushes no
+  # longer run under this lock at all (git_state_commit defers into _OC_GIT_PENDING
+  # and _oc_flush_git_tail runs AFTER `exec 9>&-`), so the holder is no longer
+  # bounded by the network. What remains inside is atomic_jq: one read+write over
+  # a multi-MB ledger. Measured 2026-11-19 on the live 6,381,816-byte ledger:
+  # 0.45s / 0.51s / 0.57s over three passes. Even a saturated disk inflating that
+  # by an order of magnitude stays far inside the old 2x-push bound, so the budget
+  # is re-derived DOWN to a single bounded I/O operation (_OC_PUSH_TIMEOUT stays
+  # the fleet's unit for that) plus 30s of slack. Keeping the inflated 2x form
+  # would leave every waiter asleep 90s for work that now takes half a second --
+  # which is #81's complaint from the other side.
+  _OC_LOCK_WORST=$(( _OC_PUSH_TIMEOUT + 30 ))
+  _OC_LOCK_WAIT="${OC_LEDGER_LOCK_WAIT:-$_OC_LOCK_WORST}"
+  flock -w "$_OC_LOCK_WAIT" 9 || die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_WAIT}s (own worst case ${_OC_LOCK_WORST}s = one bounded I/O ${_OC_PUSH_TIMEOUT}s + 30s; git does NOT run under this lock since #95, so a timeout means real contention, a pre-#641 inherited fd, or a holder stuck on I/O — raise with OC_LEDGER_LOCK_WAIT)"
+  _OC_IN_LOCK=1
+  # #641 (measured 2026-09-27): `9>&-` is LOAD-BEARING, not tidiness. bash does not
+  # set close-on-exec on fds > 2, so a child spawned inside the lock INHERITS fd 9,
+  # and flock is released only when the LAST fd on the open file description closes.
+  # `git commit` inside this lock triggers `git gc --auto` -> repack -> pack-objects;
+  # those children outlive the bash parent and kept the lock for 19+ minutes on a
+  # 2.7 GB repo (three lanes timed out at 90s/180s/240s while it held), which is a
+  # fleet-wide claim/stamp stall. Closing the fd for the work bounds the hold to
+  # oc-ledger's own runtime, which is what the wait is derived from.
+  # (#95) The flag brackets ONLY the work: it goes up after the lock is held and
+  # down before the release, so anything a _*_locked helper hands to
+  # git_state_commit is queued rather than committed under the fleet flock.
+  "$@" 9>&-; rc=$?
+  _OC_IN_LOCK=0
+  exec 9>&-
+  # (#95) The git tail runs HERE, after the lock is released. It is bounded and
+  # non-fatal by construction (its own $LEDGER.git-tail.lock, never fatal), so a
+  # slow or saturated disk delays the commit but cannot fail the append and
+  # cannot hold the fleet lock while it waits.
+  _oc_flush_git_tail
+  return $rc
+}
+
+derive_by() { # default stamp attribution (v0.4.58, Duty-4 IDEA from lane 7e1ebbb6, n=1386 trap):
+  # OC_ACTOR wins here BY DESIGN: this is the --by ATTRIBUTION-LABEL path, not a self-identifying verb, so an explicit label must outrank the ambient. -> roster role label; unrostered actor says so; NO actor = LOUD
+  # "(unattributed ...)" — the old silent "supervisor (topic 30220)" default
+  # (quoted verbatim: that role string is now `hq`)
+  # mis-attributed worker stamps (n=1337-correct-via---by vs n=1386-silent-lie).
+  local uuid="${OC_ACTOR:-${OPENCRABS_SESSION_ID:-}}" hit
+  if [ -n "$uuid" ] && { [ -f "$LEDGER" ] || _jsonl_mode; }; then
+    uuid="$(printf '%s' "$uuid" | tr 'A-F' 'a-f')"   # M2-3: uuids are lowercase; an UPPERCASE actor could never match
+    hit="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid==$u)][0] | if . == null then "" else (.role + " " + .uuid) end' 2>/dev/null || true)"
+    if [ -n "$hit" ]; then echo "$hit"; return; fi
+    # M2-3 (census 2026-09-12): the lookup above is an EXACT compare, so a uuid
+    # FRAGMENT can never match — and 8 live rows carry a bare 8-char prefix
+    # (462181e9, 212b3c83, c6b1a539, d5863180, 2fae1230) whose full uuid IS
+    # rostered. Those rows are not "unrostered lanes", they are an UNRESOLVABLE
+    # LOOKUP, and every one of the five resolves to EXACTLY ONE roster uuid.
+    # So resolve the fragment (unique match) instead of labelling it.
+    # NOT a refusal (the queue's first cut, option (b)): 64 of the 86 full-uuid
+    # sentinel rows belong to uuids that ARE rostered today — they were stamped
+    # inside the pre-`enroll` window — so refusing the sentinel would have
+    # blocked legitimate stamps. And `oc-ship` passes an explicit `--by`
+    # fallback: a refusal here would trade its whole ledger trail for a warning
+    # (the chain CONTINUES). Meaningful labels (hq/opencrabs-dev-factory) are
+    # not fragments and keep the sentinel.
+    case "$uuid" in
+      *[!0-9a-f-]*) : ;;   # carries a non-hex/non-dash char -> a LABEL, never resolved
+      *)
+        if [ "${#uuid}" -ge 4 ]; then
+          # .[0] is load-bearing: after the pipe `.` is the ARRAY, so a bare
+          # `.role` indexes an array with a string -> jq rc=5, and the
+          # `2>/dev/null` below turns that ERROR into an empty hit, i.e. an
+          # unresolvable lookup read as "unrostered". Caught by the battery,
+          # 237/2, on the first run of this branch.
+          hit="$(jq_ledger -r --arg p "$uuid" '[.workers[] | select((.uuid // "") | startswith($p))] | if length == 1 then (.[0].role + " " + .[0].uuid) else "" end' 2>/dev/null || true)"
+          if [ -n "$hit" ]; then echo "$hit"; return; fi
+        fi
+        ;;
+    esac
+    # M2-23 (2026-09-12): the sentinel is IDEMPOTENT. A LABEL keeps the
+    # sentinel (hq/opencrabs-dev-factory -> 'unrostered-actor hq/...'), but a
+    # value that ALREADY carries it is echoed VERBATIM. Without this guard a
+    # caller feeding back a prior row's `by` produced
+    # 'unrostered-actor unrostered-actor 2fae1230' — unattributable, and it
+    # breaks an exact-string grep for the actor. Origin: TOOLSMITH stamped
+    # exactly that, having derived OC_ACTOR with `sort -u | tail -1` over the
+    # by column (which picks the alphabetically-LAST value, not the latest).
+    case "$uuid" in
+      unrostered-actor\ *)
+        printf '%s\n' "oc-ledger: WARNING — actor '$uuid' already carries the 'unrostered-actor' sentinel — echoed VERBATIM, never double-prefixed." >&2
+        printf '%s\n' "  Pass a roster role label or a session uuid as OC_ACTOR/--by." >&2
+        echo "$uuid"; return ;;
+    esac
+    # M2-24 (2026-09-12): the value derive_by PRODUCES must be round-trippable.
+    # It emits the composed form `<role> <uuid>`, but every lookup above accepts
+    # only a BARE uuid — the composed form carries a space, hits the LABEL branch
+    # (`*[!0-9a-f-]*`), and fell through to the sentinel. Feeding a prior row's
+    # `by` back is the natural caller pattern, not a slip: `oc-ledger roster
+    # --live --role R` prints a TSV whose first two columns ARE the uuid and the
+    # role, so composing 'role uuid' from that output is the obvious reading.
+    # Live repro: n=3989 was written 'unrostered-actor toolsmith 2fae1230-...'
+    # (retracted n=3990). Resolve the TRAILING token; when it names exactly one
+    # worker, stamp the CANONICAL `<role> <uuid>` from the roster — the same
+    # normalisation as the M2-3 prefix branch (the roster's role, never the
+    # caller's guess). Placed AFTER the M2-23 guard so a sentinel stays verbatim.
+    case "$uuid" in
+      *\ *)
+        local _cb_tail="${uuid##* }"
+        case "$_cb_tail" in
+          *[!0-9a-f-]*) : ;;   # tail is not a uuid/fragment -> a LABEL, keep the sentinel
+          *)
+            if [ "${#_cb_tail}" -ge 4 ]; then
+              hit="$(jq_ledger -r --arg p "$_cb_tail" '[.workers[] | select((.uuid // "") | startswith($p))] | if length == 1 then (.[0].role + " " + .[0].uuid) else "" end' 2>/dev/null || true)"
+              if [ -n "$hit" ]; then echo "$hit"; return; fi
+            fi
+            ;;
+        esac
+        ;;
+    esac
+    # an unresolvable actor is LOUD and names the remedy — never a silent label
+    printf '%s\n' "oc-ledger: WARNING — actor '$uuid' is not in the roster ($LEDGER) — row stamped 'unrostered-actor $uuid'." >&2
+    printf '%s\n' "  If it is a session: oc-ledger enroll $uuid <role> [--topic N]. A factory/lane LABEL is not an actor — stamp as your ROSTER ROLE." >&2
+    echo "unrostered-actor $uuid"; return
+  fi
+  echo "(unattributed — pass --by or export OC_ACTOR)"
+}
+
+# ---- stamp ------------------------------------------------------------------
+# ---- issue-ref tokens (residual after D-2; lane c6b1a539 report 2026-09-12) --
+# The canonical issue reference is "#N", but the live ledger also carries
+# "issue#150", "issue=172" and "issue 76". cmd_claims used to test the ref as a
+# SUBSTRING of "#N", so those rows were INVISIBLE: an issue that IS claimed
+# answered CLEAN — a false-clean on the verify-unclaimed dispatch gate (the
+# #106/#107 class). Extracting the NUMBER instead also kills the mirror false
+# POSITIVE: contains("#76") matched a claim on "#760", so `claims 76` answered
+# for #760's claim. These two helpers are the single owner of ref extraction.
+_issue_ref_tokens() { # $1=text -> every issue ref in it as a bare number, one per line
+  # DELEGATES to the canonical tokenizer (tools/lib/oc_claims.py) instead of
+  # carrying its own copy of the pattern. This one is a WRITE-TIME gate, which
+  # makes agreement load-bearing in both directions: `claim-ref` derives the
+  # issue from the very text `claims` scans, so a tokenizer that drifts by one
+  # character makes the tool DERIVE an issue the scanner cannot see (or scan one
+  # the deriver never wrote) — the "the gate must not LIE" family, live as the
+  # #106/#107 false-clean and the c6b1a539 substring residual. The ~90ms
+  # interpreter spawn is paid only by `stamp claim` and `claim-ref`, not by
+  # every stamp.
+  [ -n "${1:-}" ] || return 0
+  python3 -c '
+import sys, os
+sys.dont_write_bytecode = True   # keep the shared checkout byte-identical
+sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
+import oc_claims as oc
+for tok in oc.issue_ref_tokens(sys.argv[2]):
+    sys.stdout.write("%d\n" % tok)
+' "$_OC_DIR" "$1"
+}
+_issue_ref_has() { # $1=text $2=issue number -> rc 0 when <text> references that issue
+  local toks; toks="$(_issue_ref_tokens "$1" || true)"
+  [ -n "$toks" ] || return 1
+  # space-delimited membership: the padding spaces stop 76 matching 760
+  case " $(printf '%s' "$toks" | tr '\n' ' ') " in *" $2 "*) return 0 ;; esac
+  return 1
+}
+_primary_issue_tokens() { # $1=text -> the issue(s) the text CLAIMS, one per line
+  # #329: the WRITE-time counterpart of the scan-time predicate. `stamp claim`
+  # persists this as the row's structured `issues` field, so a claim's target is
+  # recorded as a FACT instead of being re-inferred from prose on every read —
+  # the same "record it, don't re-derive it" shape the tools already use for
+  # `files`. Delegates to oc_claims.primary_issue_tokens so the writer and the
+  # scanner can never disagree about what a row claims.
+  [ -n "${1:-}" ] || return 0
+  python3 -c '
+import sys, os
+sys.dont_write_bytecode = True   # keep the shared checkout byte-identical
+sys.path.insert(0, os.path.join(sys.argv[1], "lib"))
+import oc_claims as oc
+for tok in oc.primary_issue_tokens(sys.argv[2]):
+    sys.stdout.write("%d\n" % tok)
+' "$_OC_DIR" "$1"
+}
+
+# _by_uuid_shaped_unresolvable <value> — WARN-ONLY guard for an explicit --by (#320).
+#
+# derive_by() already resolves an actor properly: exact uuid match, unique
+# fragment, the composed '<role> <uuid>' form, and a label boundary at
+# `*[!0-9a-f-]*`. But cmd_stamp's `--by` FLAG bypassed all of it and wrote the
+# value verbatim, so a hand-assembled uuid-format string landed as a phantom
+# actor: measured 2026-09-24, row n=10499 carried
+#   by='triage 530c29ec-9ba9-4d3e-9d5f-3b7d1b0d1a1f'
+# where the real lane is 530c29ec-596e-43a4-9c7e-1b6dfc3cd870 — a remembered
+# PREFIX plus an invented TAIL. The row is indistinguishable from a legitimate
+# one, and every consumer that keys on `by` (claim authorship, busy-set
+# resolution, phantom detection) inherits the corruption silently. The lane that
+# hit it had just written the defect up; incident n=2227 is the same tail
+# spliced onto a different prefix, i.e. two faces of one missing check.
+#
+# WARN, never REFUSE. derive_by:604 already records why: 64 of the 86 full-uuid
+# sentinel rows belong to uuids that ARE rostered today — they were stamped
+# inside the pre-`enroll` window — so a hard refusal would retroactively block a
+# legitimately-unresolvable shape. And oc-ship passes an explicit `--by`
+# fallback: a refusal would trade its whole ledger trail for a warning.
+#
+# Silent when: the value is a LABEL (carries a non-hex/non-dash char in the
+# candidate position), the candidate is too short to be a fragment, or the
+# candidate RESOLVES to exactly one roster worker.
+_by_uuid_shaped_unresolvable() { # $1=value; prints a warning to stderr if unresolvable
+  local v="${1:-}" cand
+  [ -n "$v" ] || return 0
+  # the composed '<label> <uuid>' form carries its candidate in the TAIL
+  case "$v" in
+    *\ *) cand="${v##* }" ;;
+    *)   cand="$v" ;;
+  esac
+  case "$cand" in
+    *[!0-9a-f-]*) return 0 ;;   # a LABEL, not a uuid — silent, verbatim
+  esac
+  [ "${#cand}" -ge 4 ] || return 0
+  local hit
+  hit="$(jq_ledger -r --arg p "$cand" '[.workers[] | select((.uuid // "") | startswith($p))] | if length >= 1 then "y" else "" end' 2>/dev/null || true)"
+  [ -n "$hit" ] && return 0
+  printf '%s\n' "oc-ledger: WARNING — --by '$v' is UUID-SHAPED but resolves to NO roster worker; the row is stamped VERBATIM and is indistinguishable from a legitimate attribution." >&2
+  printf '%s\n' "  A hand-assembled uuid (remembered prefix + invented tail) is the usual cause. Fix: copy the uuid from a LIVE read — oc-ledger roster --live, or \$OPENCRABS_SESSION_ID. A genuine label is fine as-is (it carries a non-hex char)." >&2
+  return 0
+}
+
+cmd_stamp() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger stamp <kind> \"<what>\" [--by <actor>] [--what <text>|--what-file <path>|--what-stdin] [--allow-unattributed] [--allow-no-ref]"; exit 0 ;; esac
+  local kind="" what="" by="" by_explicit=0 allow_unattr=0 allow_noref=0 what_file="" what_stdin=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) [ $# -ge 2 ] || { echo "oc-ledger: --by needs a value" >&2; exit 2; }; by=""$2""; by_explicit=1; shift 2 ;;
+      --allow-unattributed) allow_unattr=1; shift ;;
+      --allow-no-ref) allow_noref=1; shift ;;
+      --what) what="${2:-}"; [ -n "$what" ] || die 2 "--what needs a value"; shift 2 ;;
+      --what-file) what_file="${2:-}"; [ -n "$what_file" ] || die 2 "--what-file needs a path"; shift 2 ;;
+      --what-stdin) what_stdin=1; shift ;;
+      --*) die 2 "stamp: unknown flag '$1' (forms: stamp <kind> \"<what>\" | stamp <kind> --what \"<text>\" | stamp <kind> --what-file <path> | stamp <kind> --what-stdin)" ;;
+      *) if [ -z "$kind" ]; then kind="$1"; elif [ -z "$what" ]; then what="$1"; fi; shift ;;
+    esac
+  done
+  # Shell-free text input (defect fix 2026-09-19, lane facd50af report, #341).
+  # Text passed on a BASH COMMAND LINE is expanded by the CALLER's shell BEFORE
+  # this tool sees it: backticks and $(...) run command substitution, and a
+  # substitution yielding EMPTY output leaves NO trace in the stored row. The
+  # read-back below cannot catch that -- it compares the already-expanded value
+  # against the already-expanded stored copy, so it is blind to caller-side
+  # expansion BY CONSTRUCTION, and the tool reported "read-back ok" over a row
+  # that had silently lost a word. --what-file / --what-stdin give the text a
+  # path that never travels through a shell. Both are mutually exclusive with
+  # each other and with --what; a single trailing newline is stripped so
+  # `printf 'x\n' > f` and `--what x` agree byte-for-byte.
+  local _srcs=0
+  [ -n "$what" ] && _srcs=$((_srcs+1))
+  [ -n "$what_file" ] && _srcs=$((_srcs+1))
+  [ "$what_stdin" = 1 ] && _srcs=$((_srcs+1))
+  [ "$_srcs" -le 1 ] || die 2 "stamp: give the text ONE way (--what | --what-file | --what-stdin), not $_srcs"
+  if [ -n "$what_file" ]; then
+    [ -r "$what_file" ] || die 2 "stamp: --what-file not readable: $what_file"
+    what="$(cat -- "$what_file")"
+  elif [ "$what_stdin" = 1 ]; then
+    what="$(cat)"
+  fi
+  [ -n "$kind" ] || die 2 "usage: oc-ledger stamp <kind> \"<what>\" [--by <label>] [--allow-unattributed] [--allow-no-ref]"
+  [ -n "$what" ] || die 2 "stamp: what must be non-empty"
+  [ -n "$by" ] || by="$(derive_by)"
+  kind="${kind//_/-}"   # C-#7 (v0.4.77): underscore input normalizes to enum hyphen form
+  [ "$kind" = "skill-bump" ] && die 2 "stamp: kind skill-bump is sync-only — use: oc-ledger sync --version <v>"
+  case "$KINDS" in *" $kind "*) ;; *) die 2 "stamp: unknown kind '$kind' (v1.3 vocabulary — see header)" ;; esac
+  case "$what" in --*) die 2 "stamp: what looks like a lost flag (\"$what\") — pass text with --what explicitly (glitched-argv class, ledger n=1361/n=1372)" ;; esac
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # #320: an explicit --by bypasses derive_by entirely, so a hand-assembled
+  # uuid-format value lands as a phantom actor. Placed AFTER the ledger_ok gate
+  # so the documented rc precedence holds (a missing/corrupt ledger is rc 3,
+  # never a warning) — the helper reads the roster from $LEDGER.
+  [ "$by_explicit" = 1 ] && _by_uuid_shaped_unresolvable "$by"
+  # #19 (dispatched by Triage 530c29ec, 2026-09-12; found on my own law-12 row
+  # n=3794, and n=3786 before it): an anonymous row IS a defect — it cannot be
+  # traced to a lane or a tool, which is the whole point of the `by` field.
+  # derive_by() correctly REFUSED to invent an actor and returned a sentinel,
+  # but cmd_stamp then wrote that sentinel into the ledger anyway: warn-and-
+  # write made the defect the DEFAULT. Refuse like the sync stray-guard does,
+  # and name both remedies. An explicit --by or OC_ACTOR always wins, and
+  # --allow-unattributed is the deliberate override (the escape hatch a guard
+  # needs — cf. sync --allow-sweep).
+  # Placed AFTER the ledger_ok gate so the documented rc precedence holds: a
+  # missing/corrupt ledger is still rc 3, never masked by an rc 2 actor refusal.
+  if [ "$allow_unattr" = 0 ]; then
+    case "$by" in
+      "(unattributed"*)
+        die 2 "stamp: REFUSED — no actor, and an anonymous row is a defect (it cannot be traced to a lane or a tool). Fix: pass --by \"<label>\" (e.g. --by \"<role> <uuid>\"), or export OC_ACTOR=<your session uuid>. If the anonymous row is deliberate: --allow-unattributed. (kind=$kind)" ;;
+    esac
+  fi
+  # RESIDUAL (lane c6b1a539 report, 2026-09-12; the D-2 family): every consumer
+  # of a claim — `claims <N>`, `claim-ref`, `confirm` (via _latest_claim_issue)
+  # — keys on the issue reference. A claim carrying NONE is therefore a dead
+  # letter, and a SILENT one: cmd_claims cannot see the row, so the
+  # verify-unclaimed dispatch gate answers "clean" for an issue that IS claimed
+  # (the #106/#107 class). Refuse it, symmetric with #19's anonymous refusal.
+  if [ "$kind" = "claim" ] && [ "$allow_noref" = 0 ]; then
+    case "$(_issue_ref_tokens "$what" || true)" in
+      "") die 2 "stamp: REFUSED — a claim must carry a numeric issue reference the scanner can see (\"CLAIM #<N> — ...\"; also accepted: \"issue <N>\", \"issue=#N\"). Every consumer keys on the ref, so a claim without one is a DEAD LETTER: cmd_claims cannot see the row, and the verify-unclaimed gate reports the issue CLEAN. If the row is deliberately ref-less: --allow-no-ref. (kind=$kind)" ;;
+    esac
+  fi
+
+  # A LANDED row is a closing row: it is supposed to address the issue it lands,
+  # so a ref-less one closes NOTHING while reporting success. Measured
+  # 2026-09-25: `stamp done "592 landed: b9ee661cc"` returned "read-back ok"
+  # rc=0 and left the claim open -- the issue kept reading CLAIMED to
+  # oc-issue-dispatch --auto, so it was never re-dispatched and no sweep saw
+  # the gap. "(read-back ok)" confirms the WRITE, never the ADDRESSING.
+  #
+  # WARN, not die, and scoped to LANDED_KINDS rather than CLOSING_KINDS: of 22
+  # ref-less closing rows in the live ledger, 16 are `done` (landings that
+  # should name their issue, incl. bare digits "169" / "235" / "592 landed: ...")
+  # while 6 are `confirm` ship/ACK records ("v0.4.124 ... SHIPPED", "battery
+  # fast-path shipped") that legitimately carry no issue. A blanket refusal
+  # would break that pattern; a blanket warn would fire on it.
+  if [ "$allow_noref" = 0 ]; then
+    case "$kind" in
+      done|close)
+        case "$(_issue_ref_tokens "$what" || true)" in
+          "") echo "oc-ledger: WARN — a '$kind' row carries NO parseable issue reference, so it closes NOTHING while reporting success. The predicate accepts \"#<N>\" or \"issue <N>\" — BARE DIGITS ARE NOT A REF (\"592 landed: ...\" does not close #592; \"#592 landed: ...\" does). If the row deliberately addresses no issue: --allow-no-ref. (what=${what:0:80})" >&2 ;;
+        esac
+        ;;
+    esac
+  fi
+  _stamp_locked() {
+    local n t; n=$(( $(max_n) + 1 )); t="$(now_iso)"
+    # #329: a claim records its TARGETS as structured data. The prose is what a
+    # human reads; `issues` is what the scanner keys on, so the target is a fact
+    # recorded at write time rather than an inference re-made from the sentence
+    # on every read. Before this field the scanner had to guess which of the
+    # note's references was the claim — and a body citation (#323 mentioned while
+    # explaining #327) was read as a SECOND claim, producing 13 phantom open
+    # claims fleet-wide and a false dispatch refusal. null (field absent) is the
+    # correct shape for non-claims and for a deliberately ref-less claim.
+    local issues_json="null"
+    if [ "$kind" = "claim" ]; then
+      issues_json="$(_primary_issue_tokens "$what" \
+        | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber) | if length == 0 then null else . end')"
+    fi
+    if _jsonl_mode; then
+      # #177: append one line and fsync. Do not slurp the record or touch
+      # workers.json / the retired view. n was taken from the record under lock.
+      local ev line
+      ev="$(_JSONL_EVENTS)"
+      [ -f "$ev" ] || : > "$ev"
+      line="$(jq -nc --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
+        --argjson iss "$issues_json" \
+        '{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
+         + (if $iss == null then {} else {issues: $iss} end)')" || return 4
+      printf '%s\n' "$line" >> "$ev" || return 4
+      sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
+    else
+      atomic_jq --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
+        --argjson iss "$issues_json" \
+        '.events += [{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
+                      + (if $iss == null then {} else {issues: $iss} end)] | .updated_at = $t' || return $?
+    fi
+    # read-back self-verify (Duty-6 lens C2, 2026-08-31): never trust the write —
+    # the n=1361/1372 glitched-argv stamps landed with what:"--what" and no check spoke
+    local r_kind r_what r_iss
+    if _jsonl_mode; then
+      local last
+      last="$(tail -n 1 "$(_JSONL_EVENTS)")"
+      r_kind="$(printf '%s' "$last" | jq -r '.kind // ""')"
+      r_what="$(printf '%s' "$last" | jq -r '.what // ""')"
+      r_iss="$(printf '%s' "$last" | jq -c '.issues // null')"
+      # The last line must be the row we just appended (n matches). A torn
+      # write or a concurrent append (should be impossible under the lock)
+      # fails the same way a view-file mismatch used to.
+      local r_n
+      r_n="$(printf '%s' "$last" | jq -r '.n // empty')"
+      [ "$r_n" = "$n" ] || die 4 "stamp READ-BACK MISMATCH: sent n=$n, last line has n=$r_n — ledger corruption; investigate before further stamps"
+    else
+      r_kind="$(jq_ledger -r --argjson n "$n" '[.events[] | select(.n == $n)][0].kind // ""' 2>/dev/null)"
+      r_what="$(jq_ledger -r --argjson n "$n" '[.events[] | select(.n == $n)][0].what // ""' 2>/dev/null)"
+      r_iss="$(jq_ledger -c --argjson n "$n" '[.events[] | select(.n == $n)][0].issues // null' 2>/dev/null)"
+    fi
+    if [ "$r_kind" != "$kind" ] || [ "$r_what" != "$what" ]; then
+      die 4 "stamp READ-BACK MISMATCH: sent kind=$kind what=$what, disk has kind=$r_kind what=$r_what — ledger corruption; investigate before further stamps"
+    fi
+    # The structured field is verified too: it is what the scan keys on, so a
+    # silently-dropped `issues` array would reintroduce the prose inference this
+    # field exists to replace (and a stale one would pin a claim to a WRONG
+    # issue — the _latest_claim_issue 93-vs-94 class).
+    if [ "$kind" = "claim" ] && [ "$r_iss" != "$issues_json" ]; then
+      die 4 "stamp READ-BACK MISMATCH: sent issues=$issues_json, disk has issues=$r_iss — the claim's target is not what was written; investigate before further stamps"
+    fi
+    # Surface WHAT WAS STORED, not merely that something was stored (lane
+    # facd50af report, #341). The read-back above compares two values that were
+    # BOTH already expanded by the caller's shell, so it cannot see caller-side
+    # expansion; this line is the last place a silently-corrupted `what` is
+    # catchable by eye. Prints the value read back OFF DISK (r_what), so it
+    # reports what landed, not what was intended. Sanitised to one line.
+    local w_show w_len w_hash
+    # #588 sibling (2026-09-26, toolsmith): the `what=` READ-BACK line used
+    # `cut -c1-80`, which counts BYTES under C.UTF-8, so a `what` holding
+    # non-ASCII clipped mid-character and printed a dangling lead byte on the
+    # one line whose entire purpose is to let an operator see what landed.
+    # Same class as the oc-smoke clip (#588), same fix (oc_clip_chars in
+    # lib/oc-log.sh).
+    w_show="$(oc_clip_chars "$(printf '%s' "$r_what" | tr '\n' ' ')" 80)"
+    w_len=${#r_what}
+    w_hash="$(printf '%s' "$r_what" | sha256sum | cut -c1-8)"
+    echo "stamped n=$n kind=$kind (read-back ok) what=\"$w_show\" len=$w_len hash8=$w_hash"
+    git_state_commit "ledger n=$n: $kind (oc-ledger stamp)"
+  }
+  with_lock _stamp_locked
+}
+
+# ---- fixture (156 task-2 remainder, 2026-11-23) -----------------------------
+# `fixture` — append a row whose `n` and `t` are FORCED, for test fixtures.
+#
+# WHY A VERB AND NOT A jq ONE-LINER. The one-writer census
+# (`grep -rn 'events *+=' tools/ --include='oc-*' --include='*.sh' | grep -v
+# '^tools/state/oc-ledger'`) must be EMPTY: no code outside this file may
+# mutate `.events`. Test fixtures still need rows at a chosen ordinal and a
+# chosen historical stamp (oc-harvest-dispatch's MODE-register legs seed n=90+
+# at 2026-09-24T00:00:00Z so "newest declaration wins" has a defined order),
+# and `stamp` cannot express that — it DERIVES n inside the lock and stamps
+# `now`. So the forcing lives HERE, behind the same lock/append/read-back/view
+# path as `stamp`, and the census stays countable.
+#
+# --n and --t are REQUIRED and rc 2 without them: that IS the verb's purpose.
+# A fixture row that silently took today's stamp would re-order every
+# "newest wins" assertion it was seeded for. --kind is validated against KINDS
+# exactly as `stamp` does, and --by is REQUIRED (never derived): a fixture row
+# is synthetic and must say who planted it.
+#
+# The text arrives via --what / --what-file / --what-stdin with stamp's
+# single-source rule; it is written VERBATIM (no lost-flag guard: a fixture
+# legitimately carries any bytes).
+cmd_fixture() {
+  case "${1:-}" in -h|--help)
+    printf '%s\n' \
+      'usage: oc-ledger fixture --n N --t <RFC3339> --kind K --by B (--what "<text>"|--what-file <path>|--what-stdin)' \
+      '' \
+      'Append a row with a FORCED ordinal and stamp — test fixtures only.' \
+      '--n and --t are REQUIRED (stamp derives both; a fixture exists to pin them).' \
+      'rc 0 appended + read-back ok · 2 usage · 3 ledger unreadable · 4 read-back/write failure'
+    exit 0 ;;
+  esac
+  local n="" t="" kind="" by="" what="" what_file="" what_stdin=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --n)    [ $# -ge 2 ] || die 2 "fixture: --n needs a value"; n="$2"; shift 2 ;;
+      --t)    [ $# -ge 2 ] || die 2 "fixture: --t needs a value"; t="$2"; shift 2 ;;
+      --kind) [ $# -ge 2 ] || die 2 "fixture: --kind needs a value"; kind="$2"; shift 2 ;;
+      --by)   [ $# -ge 2 ] || die 2 "fixture: --by needs a value"; by="$2"; shift 2 ;;
+      --what) [ $# -ge 2 ] || die 2 "fixture: --what needs a value"; what="$2"; shift 2 ;;
+      --what-file) [ $# -ge 2 ] || die 2 "fixture: --what-file needs a path"; what_file="$2"; shift 2 ;;
+      --what-stdin) what_stdin=1; shift ;;
+      *) die 2 "fixture: unknown arg '$1' (usage: oc-ledger fixture --n N --t <RFC3339> --kind K --by B --what \"<text>\")" ;;
+    esac
+  done
+  case "$n" in
+    '') die 2 "fixture: --n N is REQUIRED — a fixture row exists to FORCE its ordinal (stamp derives one)" ;;
+    *[!0-9]*) die 2 "fixture: --n must be a non-negative integer (got '$n')" ;;
+  esac
+  [ -n "$t" ] || die 2 "fixture: --t <RFC3339> is REQUIRED — a fixture row exists to FORCE its stamp (stamp writes now)"
+  # Shape, not normalisation: the value is stored VERBATIM (the read-back below
+  # pins byte equality). A stamp outside the ISO-8601 UTC family would be
+  # unrankable by `events --since`, which is exactly what a seeded fixture is for.
+  case "$t" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) die 2 "fixture: --t must be RFC3339 UTC (YYYY-MM-DDTHH:MM:SSZ), got '$t'" ;;
+  esac
+  [ -n "$kind" ] || die 2 "fixture: --kind K is REQUIRED"
+  kind="${kind//_/-}"
+  [ "$kind" = "skill-bump" ] && die 2 "fixture: kind skill-bump is sync-only — it is not a fixture row"
+  case "$KINDS" in *" $kind "*) ;; *) die 2 "fixture: unknown kind '$kind' (v1.3 vocabulary — see header)" ;; esac
+  [ -n "$by" ] || die 2 "fixture: --by B is REQUIRED — a fixture row names its planter, it is never derived"
+  local _srcs=0
+  [ -n "$what" ] && _srcs=$((_srcs+1))
+  [ -n "$what_file" ] && _srcs=$((_srcs+1))
+  [ "$what_stdin" = 1 ] && _srcs=$((_srcs+1))
+  [ "$_srcs" -le 1 ] || die 2 "fixture: give the text ONE way (--what | --what-file | --what-stdin), not $_srcs"
+  if [ -n "$what_file" ]; then
+    [ -r "$what_file" ] || die 2 "fixture: --what-file not readable: $what_file"
+    what="$(cat -- "$what_file")"
+  elif [ "$what_stdin" = 1 ]; then
+    what="$(cat)"
+  fi
+  [ -n "$what" ] || die 2 "fixture: what must be non-empty"
+  ledger_ok || die 3 "fixture: ledger missing or unparseable: $LEDGER"
+  # Mirrors cmd_stamp's append shape EXACTLY (same atomic_jq program, same lock,
+  # same read-back discipline) so the JSONL branch is the one already proven:
+  # atomic_jq splits the unified dict back into events.jsonl + workers.json and
+  # regenerates the view. The read-back resolves through `ledger_load` — the
+  # RECORD — and compares the LAST row against all four forced values, so a verb
+  # that quietly derived n or t cannot report success.
+  _fixture_locked() {
+    # The `issues` field is carried for kind=claim exactly as cmd_stamp derives
+    # it: a seeded claim without it is invisible to cmd_claims, so a fixture that
+    # seeds a claim would test a row shape the live writer never produces.
+    local issues_json="null"
+    if [ "$kind" = "claim" ]; then
+      issues_json="$(_primary_issue_tokens "$what" \
+        | jq -Rsc 'split("\n") | map(select(length > 0) | tonumber) | if length == 0 then null else . end')"
+    fi
+    atomic_jq --arg n "$n" --arg t "$t" --arg by "$by" --arg kind "$kind" --arg what "$what" \
+      --argjson iss "$issues_json" \
+      '.events += [{n: ($n|tonumber), t: $t, by: $by, kind: $kind, what: $what}
+                    + (if $iss == null then {} else {issues: $iss} end)] | .updated_at = $t' || return $?
+    local rb
+    rb="$(ledger_load 2>/dev/null | jq -r --argjson n "$n" --arg t "$t" --arg k "$kind" --arg w "$what" '
+      ([.events[]][-1] // {}) as $r
+      | if ($r.n == $n) and (($r.t // "") == $t) and (($r.kind // "") == $k) and (($r.what // "") == $w)
+        then "ok"
+        else "MISMATCH sent n=\($n) t=\($t) kind=\($k) disk n=\($r.n // "<none>") t=\($r.t // "<none>") kind=\($r.kind // "<none>") what=\(($r.what // "<none>")|tostring|.[0:60])"
+        end' 2>/dev/null)"
+    [ "$rb" = "ok" ] || die 4 "fixture READ-BACK ${rb:-FAILED (ledger_load unavailable)} — the forced n/t did not land; investigate before further fixture rows"
+    local w_show w_len w_hash
+    w_show="$(oc_clip_chars "$(printf '%s' "$what" | tr '\n' ' ')" 80)"
+    w_len=${#what}
+    w_hash="$(printf '%s' "$what" | sha256sum | cut -c1-8)"
+    echo "fixtured n=$n kind=$kind t=$t (read-back ok) what=\"$w_show\" len=$w_len hash8=$w_hash"
+    git_state_commit "ledger n=$n: $kind (oc-ledger fixture)"
+  }
+  with_lock _fixture_locked
+}
+
+# ---- sync -------------------------------------------------------------------
+battery_receipt() { echo "$SKILL_DIR/tools/tests/battery-last.json"; }
+# C8 naming WARN (v0.4.242 law, HQ item 1; lens C8 extension of the v0.4.65
+# gate). The EXISTENCE gate above is HARD and stays hard: a bump with no
+# "## v$v" entry is refused (die 6). This is the second leg — the entry must
+# NAME every non-sync commit the sync bundles, per hq.md's Checkable Completion
+# Formula ("entry present" means the entry names every non-sync commit the sync
+# bundles). It is WARN-only, for two structural reasons now recorded in law:
+#   * the range is OTHER LANES' work — a hard gate would let one lane's landing
+#     block the fleet's version record at HQ's boundary;
+#   * the range carries untrailered law commits BY DESIGN, so a hard gate would
+#     need an exclusion list, and an exclusion list is where this class of gate
+#     goes to die.
+# Built for the real miss: v0.4.237 bundled 8e213c5e (#503) and v0.4.238
+# bundled e63b2f56 (#505); neither number appeared anywhere in the entry while
+# every sibling of the same batch was named, so the version record could not
+# state their ship date. #505 was worse still — the v0.4.237 entry left the
+# routing OPEN ("routes to the Toolsmith") for work that had already closed.
+#
+# #94: the entry BODY, factored out of c8_naming_warn because the naming test
+# now reads a SET of entries rather than one. From its `## v<ver>` header to the
+# next `## v` header. Version dots are deliberately unescaped, matching the
+# existence gate's own grep — a version is 0.N.N and no header collides by
+# accident. Missing entry -> empty string, never an error: the existence gate
+# above already refused that case, and a WARN leg must not die on it.
+_c8_entry_body() { # $1 = version, e.g. 0.4.242 (a leading 'v' is tolerated)
+  # The version arrives in TWO forms. `$v` is bare ("0.4.242"), while `$spans`
+  # carries the ledger's own `what` field, whose first token is prefixed
+  # ("v0.4.8"). Building the pattern from the prefixed form searched for
+  # '## vv0.4.8', matched nothing, and returned an EMPTY body — silently, because
+  # a missing entry is deliberately not an error here. That empty body meant the
+  # #94 widening contributed nothing and the earlier-window commit stayed
+  # flagged, so the fix's own arm (m) went red instead of the WARN going quiet.
+  # Normalise at the seam: neither caller can get it wrong.
+  local ver="${1#v}"
+  awk -v v="$ver" '
+    BEGIN { p = "^## v" v "([ —(:]|$)" }
+    $0 ~ p { f = 1; next }
+    f && /^## v/ { exit }
+    f { print }
+  ' "$SKILL_DIR/CHANGELOG.md" 2>/dev/null || true
+}
+c8_naming_warn() { # $1 = version. Prints to stderr; ALWAYS rc 0 (never a gate).
+  local v="$1" anchor anchor_t anchor_e spans entry entries widen_note range c sha subj refs named missing="" skipped=0 selfids="" selfskip=0 self_id
+  local bump_e bump_v range_after="" bounded_note="" 
+  # The anchor is the previous SYNC commit. The pattern must name the SYNC FORM
+  # this tool's own tail writes ("skill v<ver>: oc-ledger sync — <why>"), not
+  # the bare '^skill v' prefix: that prefix also heads bump-only commits
+  # (a98a9729 "skill v0.4.238: state-repo recoverability — ...") and CORRECTION
+  # commits. Measured 2026-09-23: 115 prefixed commits, only 82 of them syncs.
+  # A prefix-only anchor therefore returns the newest COMMIT WITH THAT PREFIX,
+  # which lands too LATE whenever a bump-only commit is newer than the newest
+  # sync — and a late anchor TRUNCATES the range, silently dropping bundled
+  # commits (an under-flag, the exact silent-clean shape the skip-NOTE below
+  # exists to prevent). The pinned form was verified to select exactly the 82.
+  anchor="$(git -C "$SKILL_DIR" log --grep='^skill v[0-9.]*: oc-ledger sync' -1 --format=%H 2>/dev/null || true)"
+  if [ -z "$anchor" ]; then
+    # An unverifiable check must never pass as clean (#485's shape): say SKIPPED
+    # and say it is NOT a clean result, so absence of a WARN is never read as
+    # "every commit was named".
+    echo "sync: NOTE — C8 naming check SKIPPED: no previous 'skill v<ver>: oc-ledger sync' commit is derivable, so the bundled range is unverifiable. This is NOT a clean result and NOT a finding." >&2
+    return 0
+  fi
+  # LEDGER BOUND on the range (#651), then LEDGER CROSS-CHECK (v0.4.243). The
+  # ledger is authoritative for which versions published, and it carries
+  # versions that minted NO commit at all (v0.4.239: ledger row n=10349 exists,
+  # zero commits carry the subject), so git alone cannot see a skipped window.
+  #
+  # #651: the same blindness recurs whenever a LANE authors the version commit,
+  # because its subject is "skill v0.4.267: Duty 4+6 cycle ..." and does not
+  # contain ": oc-ledger sync"; the sync then finds a clean tree, mints the
+  # skill-bump row and commits nothing. Measured at the v0.4.268 sync: rows for
+  # v0.4.266 (06:54:57Z) and v0.4.267 (08:46:55Z) exist, NEITHER has a sync
+  # commit, so the subject predicate returned 782dca68 (the v0.4.265 sync) and
+  # the range spanned 51 commits where the true window was 13 — 10 of them
+  # already named in the 266/267 entries, re-flagged as unnamed by a WARN
+  # reading three windows at once. Twice in 48 hours (v0.4.239, then 266/267),
+  # and it fires on every lane-authored bump.
+  #
+  # The bound is a DATE, not a replacement anchor. Re-anchoring to a commit
+  # ("the newest commit at or before the bump instant") was measured and gives
+  # the same count here — 13 — but it leaves the range's meaning dependent on
+  # where that commit happens to sit: any commit made between it and the bump
+  # instant belongs to the PREVIOUS window and is still swept in. Bounding with
+  # --after=@<newest unpublished row> keeps the subject anchor (so ancestry is
+  # well defined) and excludes the earlier windows by construction.
+  #
+  # It fires ONLY when the anchor is stale. At the current HEAD the newest row
+  # (v0.4.268, 13:02:29Z) is OLDER than its sync commit (3a627c13, 13:02:32Z),
+  # so stale is False and no bound is applied. Measured, an unconditional bound
+  # would have narrowed a correct 1-commit range against the wrong instant.
+  anchor_t="$(git -C "$SKILL_DIR" log -1 --format=%cI "$anchor" 2>/dev/null || true)"
+  if [ -n "$anchor_t" ] && { [ -f "$LEDGER" ] || _jsonl_mode; }; then
+    anchor_e="$(date -u -d "$anchor_t" +%s 2>/dev/null || echo 0)"
+    # Newest skill-bump row as (epoch, version), normalised to epoch BEFORE the
+    # comparison: the commit arrives as "...+00:00" and the row as "...Z", and
+    # 'Z' (0x5A) sorts ABOVE '+' (0x2B), so a string compare reads a row stamped
+    # in the SAME SECOND as newer than the commit that follows it. Same trap the
+    # spans comparison below already fixes; same reason.
+    bump_e="$(jq_ledger -r '[.events[]? | select(.kind == "skill-bump") | (.t // "")
+                     | select(. != "")] | sort | last // empty' 2>/dev/null)"
+    bump_v="$(jq_ledger -r '[.events[]? | select(.kind == "skill-bump")
+                     | [(.t // ""), ((.what // "") | split(" ")[0])]
+                     | select(.[0] != "" and .[1] != "")] | sort_by(.[0]) | last // ["",""]
+                     | .[1]' 2>/dev/null)"
+    if [ -n "$bump_e" ] && [ -n "$bump_v" ]; then
+      bump_e="$(date -u -d "$bump_e" +%s 2>/dev/null || echo 0)"
+      # The bound must never sit PAST HEAD. A skill-bump row stamped later than
+      # every commit in the repo would filter the range to EMPTY, and an empty
+      # range makes this check verify nothing while still printing a note that
+      # reads like a correction — the silent-clean shape (#485), reached from the
+      # opposite direction. Measured: the selftest's own stale-condition leg
+      # injects rows at 2099, and an unguarded bound emptied the range there and
+      # reddened five C8 legs. Degrade to the subject anchor and SAY so; never
+      # bound into nothing.
+      head_e="$(git -C "$SKILL_DIR" log -1 --format=%ct HEAD 2>/dev/null || echo 0)"
+      if [ "$bump_e" -gt "$anchor_e" ] && [ "$bump_e" -le "$head_e" ]; then
+        range_after="--after=@$bump_e"
+        bounded_note="$bump_v@$(date -u -d "@$bump_e" +%FT%TZ)"
+      elif [ "$bump_e" -gt "$head_e" ]; then
+        echo "sync: NOTE — C8 naming: skill-bump row $bump_v is stamped $(date -u -d "@$bump_e" +%FT%TZ), AFTER every commit in the repo ($(date -u -d "@$head_e" +%FT%TZ)), so the range is NOT bounded to it — a bound past HEAD would empty the range and read as a clean check. The subject anchor is kept and the straddle is disclosed instead (#651)." >&2
+      fi
+    fi
+  fi
+  # Skill-bump rows newer than the anchor enumerate the versions published since
+  # the previous sync. When the ledger bound above fired, the range is already
+  # restricted to commits after the newest of them, so the straddle is CORRECTED
+  # rather than merely disclosed — and the note says which, because a reader
+  # must be able to tell a bounded range from an unbounded one.
+  if [ -n "$anchor_t" ] && { [ -f "$LEDGER" ] || _jsonl_mode; }; then
+    # NORMALISE BOTH SIDES TO EPOCH before comparing. The two timestamps arrive
+    # in DIFFERENT ISO forms — the commit as "...+00:00", the ledger row as
+    # "...Z" — and 'Z' (0x5A) sorts ABOVE '+' (0x2B), so a plain string compare
+    # reads a row stamped in the SAME SECOND as NEWER than the commit that
+    # follows it. Caught by this function's own control leg, which fired on an
+    # unmodified fixture: every bump row looked newer than its own sync commit.
+    anchor_e="$(date -u -d "$anchor_t" +%s 2>/dev/null || echo 0)"
+    spans="$(jq_ledger -r '.events[]? | select(.kind == "skill-bump") | [(.t // ""), ((.what // "") | split(" ")[0])] | @tsv' \
+        2>/dev/null \
+      | while IFS="$(printf '\t')" read -r rt rv; do
+          [ -n "$rt" ] || continue
+          [ -n "$rv" ] || continue
+          re="$(date -u -d "$rt" +%s 2>/dev/null || echo 0)"
+          [ "$re" -gt "$anchor_e" ] && printf '%s\n' "$rv"
+        done | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+    if [ -n "$spans" ]; then
+      if [ -n "$range_after" ]; then
+        echo "sync: NOTE — C8 naming: the range is BOUNDED to commits after $bounded_note. Skill-bump rows newer than the subject anchor ($spans) published without an intervening sync commit, so the anchor alone would have swept $range_after's earlier windows in; they are excluded by the bound (#651)." >&2
+      else
+        echo "sync: NOTE — C8 naming: the range spans MORE THAN ONE version window. Skill-bump rows newer than the anchor ($spans) published without an intervening sync commit, so a commit listed below may belong to an earlier window than this one." >&2
+      fi
+    fi
+  fi
+  entry="$(_c8_entry_body "$v")"
+  # #94: the SET the naming test reads. A commit is "named" if any entry in the
+  # range's own window set names it — not only the newest one.
+  #
+  # WIDENING IS CONDITIONAL, and the condition is the whole point. When
+  # `range_after` is EMPTY the ledger bound did NOT fire, so the git range is
+  # unbounded and can span several version windows; a commit shipped under an
+  # earlier window is dated in THAT window's entry, and testing only `## v$v`
+  # flags it for lacking a ship date it actually has. The false positive is
+  # structural: it can only fire when the bound fails, and the bound failing is
+  # exactly what makes the range span more than one window.
+  #
+  # When the bound DID fire, earlier windows are excluded from the range by
+  # construction, so widening there would hide a genuine miss — the commit
+  # would be absent from the range AND we would stop looking for it. So a
+  # bounded range keeps single-entry behaviour.
+  entries="$entry"
+  widen_note=""
+  if [ -z "$range_after" ] && [ -n "$spans" ]; then
+    for sv in $spans; do
+      entries="$entries
+$(_c8_entry_body "$sv")"
+    done
+    widen_note="sync: note — C8 naming: the range is UNBOUNDED and spans more than one version window (v$v + $spans), so the naming test read the entries for all of them. A commit is named if ANY of those entries names it."
+  fi
+  # Every NON-SYNC commit the sync bundles (hq.md:57), newest first.
+  range="$(git -C "$SKILL_DIR" log --format='%h %s' --no-merges "$anchor"..HEAD $range_after 2>/dev/null || true)"
+  [ -n "$range" ] || return 0
+  # #94: the scope note belongs HERE, not where the set was built. A note
+  # describing the scope of a test that never ran is noise, and the early return
+  # above is exactly that case (nothing bundled -> nothing tested).
+  [ -z "$widen_note" ] || echo "$widen_note" >&2
+  # The syncing session's own commits, by Session-Id trailer. Built in ONE git
+  # call (a per-commit read would be one process per commit on every sync).
+  # The ambient session id, env var first (A1b: OC_ACTOR is the retired primary).
+  self_id="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
+  if [ -n "$self_id" ]; then
+    selfids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Session-Id,valueonly)' --no-merges "$anchor"..HEAD $range_after 2>/dev/null \
+      | awk -v id="$self_id" 'NF>1 && index($0, id)>0 { printf "%s ", $1 }' || true)"
+  fi
+  # Commits carrying an Issue-Ref TRAILER -- the machine-readable statement that
+  # a commit IS the work for an issue, as opposed to a subject that merely
+  # MENTIONS one in prose. The trailer is the contract every commit carries;
+  # a subject is free text. Same one-git-call idiom as selfids above.
+  refids="$(git -C "$SKILL_DIR" log --format='%h %(trailers:key=Issue-Ref,valueonly)' --no-merges "$anchor"..HEAD $range_after 2>/dev/null \
+    | awk 'NF>1 { printf "%s ", $1 }' || true)"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    sha="${c%% *}"; subj="${c#* }"
+    # Sync commits name themselves and carry no issue ref; the law scopes the
+    # requirement to NON-sync commits.
+    case "$subj" in "skill v"*) continue ;; esac
+    # The sweeper's own bookkeeping (oc-ledger commit-pending --bundle) is
+    # committed by THIS tool with a subject it writes itself — see
+    # cmd_commit_pending. Those commits correctly carry no issue ref and are
+    # correctly unnamed by CHANGELOG (15 of them on 2026-09-23, 0 named), so
+    # without this they are re-listed as unnamed in EVERY window the sweeper
+    # runs in. Skip by the CONTRACT the tool writes, never a hand-maintained
+    # name list — a list would rot; the marker cannot. The count is reported
+    # at the end so the exclusion stays visible rather than silent.
+    case "$subj" in *"(oc-ledger commit-pending --bundle)"*) skipped=$(( skipped + 1 )); continue ;; esac
+    # The BUMPER'S OWN authoring commits (v0.4.243). The entry is written to
+    # the working tree, the law files are committed, and THEN this sync runs —
+    # so the range always contains the bumper's own law commit(s), and the
+    # entry could not name them even in principle: their shas did not exist
+    # when it was written. Measured on HQ's v0.4.243 run: `18a84fbf` (law files
+    # only) was flagged and CANNOT be named. `git log -S'## v0.4.243'` returns
+    # EMPTY at that moment — the entry itself is still uncommitted — so the
+    # "exclude the commit that introduced the entry" form is unavailable here;
+    # session identity is the discriminator that exists at sync time.
+    # Match on the Session-Id TRAILER (every commit carries one), never on the
+    # author name: a name is shared by every commit a lane ever makes, while
+    # the trailer is this session's own. An unmatched or absent session id
+    # excludes nothing — fail-open, which suits a WARN-only leg.
+    #
+    # TIGHTENED (v0.4.243): skip only a self-commit that ALSO carries no
+    # Issue-Ref trailer. A self-commit that IS the work for an issue is real
+    # shipped work whose ship date belongs in the record, so it stays flagged —
+    # measured on the v0.4.243 range, this keeps the Toolsmith's `873495a2
+    # (#519)` and `0c39b940 (#517)` listed while removing the law commit that
+    # could not be named. Without this, a sync run by a lane that had also
+    # shipped a fix would silently drop that fix from the WARN — trading one
+    # false positive for one false negative.
+    #
+    # CORRECTED (2026-09-25, HQ report, verified first-hand): the test read the
+    # SUBJECT for '#' and a subject is PROSE, so a commit that merely NAMES an
+    # issue was treated as fixing it. Measured: `b1307038` "law: name the four
+    # #547 commits bundled in v0.4.249 (C8 leg)" carries a Session-Id trailer
+    # and NO Issue-Ref trailer, yet its subject's `#547` kept it listed — the
+    # right commit for the wrong reason, so the next reader cannot tell a real
+    # miss from a prose mention. Population over the last 500 non-merge
+    # commits: 177 carry an Issue-Ref trailer, 41 carry '#' in the subject
+    # without one. The trailer is the field the rest of the fleet keys identity
+    # on and prose drift cannot make it lie.
+    case " $selfids " in
+      *" $sha "*)
+        case " $refids " in
+          *" $sha "*) : ;;   # carries an Issue-Ref TRAILER -> real shipped work, keep flagging
+          *) selfskip=$(( selfskip + 1 )); continue ;;
+        esac
+        ;;
+    esac
+    named=0
+    case "$entries" in *"$sha"*) named=1 ;; esac
+    if [ "$named" -eq 0 ]; then
+      refs="$(printf '%s' "$subj" | grep -oE '#[0-9]+' 2>/dev/null || true)"
+      for r in $refs; do
+        case "$entries" in *"$r"*) named=1; break ;; esac
+      done
+    fi
+    [ "$named" -eq 1 ] || missing="$missing$sha $subj
+"
+  done <<EOF
+$range
+EOF
+  # Disclose the exclusion BEFORE the clean-path return: a skip that is never
+  # reported is an exclusion list nobody can audit, which is how this class of
+  # gate dies. This is a lowercase note, not the WARN — the "silence means
+  # everything is named" contract still holds for the WARN itself.
+  if [ "$skipped" -gt 0 ]; then
+    echo "sync: note — C8 naming: $skipped commit(s) skipped as this tool's own sweeper bookkeeping (subject carries '(oc-ledger commit-pending --bundle)'). Disclosed so the exclusion is never silent; those commits carry no issue ref and need no naming." >&2
+  fi
+  if [ "$selfskip" -gt 0 ]; then
+    echo "sync: note — C8 naming: $selfskip commit(s) skipped as made by THIS syncing session (Session-Id trailer = $self_id) and carrying no Issue-Ref trailer. The entry is written before those commits exist, so it cannot name them; disclosed so the exclusion is never silent. A self-commit that DOES carry an Issue-Ref trailer is still listed — only the unnameable ones are skipped." >&2
+  fi
+  [ -n "$missing" ] || return 0   # named-everything is otherwise SILENT
+  # #94: the WARN must describe the entries ACTUALLY READ. When the range was
+  # unbounded and spanned several windows, "the '## v$v' entry" is false twice
+  # over — it was not the only entry read, and it is not the only place a ship
+  # date exists. Guidance that misnames its own scope sends the reader to edit a
+  # file that already names the commit, which is how a WARN gets ignored.
+  if [ -n "$widen_note" ]; then
+    echo "sync: WARN — C8 naming: none of the entries for the version windows this UNBOUNDED range spans (v$v + $spans) names every commit the sync bundles." >&2
+  else
+    echo "sync: WARN — C8 naming: the '## v$v' entry does not name every commit this sync bundles." >&2
+  fi
+  printf '%s' "$missing" | sed 's/^/    unnamed: /' >&2
+  echo "  WARN only, never a refusal: the range is other lanes' work and carries untrailered law commits by design." >&2
+  if [ -n "$widen_note" ]; then
+    # Comma-separate the window list: `$spans` is space-separated (it is built by
+    # `tr '\n' ' '`), so echoing it raw produced "one of v0.4.2, v0.4.8 v0.4.9" —
+    # a list where the reader cannot tell whether "v0.4.8 v0.4.9" is one window
+    # or two. Same normalisation the straddle NOTE above needs and does not do.
+    echo "  Name each one in the entry for the window it actually shipped under — one of $(printf '%s' "v$v $spans" | sed 's/ /, /g') — because each window's entry is the only place that window's ship dates exist." >&2
+  else
+    echo "  Name each one in the '## v$v' entry (short sha or issue ref) — the version record is the only place a bundled fix's ship date exists." >&2
+  fi
+  return 0
+}
+
+# ---- law-file digest (factory #47) -------------------------------------------
+# The skill version is a SELF-REPORT, and a self-report that can be skipped is
+# not an instrument. Measured 2026-10-19 (factory #47): ten law commits between
+# 2026-10-09 and 2026-10-19 all left SKILL.md at `version: 0.4.295`, so
+# `check-version` read "all fields agree" (it compares registry<->roster),
+# `oc-drift-check` read NO-DRIFT for nine days (it reads that same frontmatter),
+# and lanes acked law that had moved underneath them. This is the SECOND
+# occurrence of the class already noted at CHANGELOG.md:65 — a note is not a
+# guard.
+#
+# The BASELINE is the ledger's own append-only skill-bump row, stamped by the
+# same act that publishes the version (HQ ruling 2026-10-19, issue #47 comment).
+# Neither side reads the frontmatter, so an edit that never bumped MOVES THE
+# DIGEST and leaves the stamp behind — the only shape that can observe this
+# failure class, because the missing bump IS the failure.
+#
+# The SET is the law a lane must re-read on a bump. Excluded, deliberately:
+#   CHANGELOG.md   — written by the bumper in the SAME act (HQ constraint);
+#                    including it would redden every legitimate bump
+#   registry/state — sync writes them in the same act (same reason)
+#   tools/docs/**  — tool-surface docs that ship with tools/** commits, a
+#                    separate ownership carve-out with its own battery; coupling
+#                    them to the skill version would redden on tool work
+#   README.md      — partly the Toolsmith's tool-fleet surface (same reason)
+# An ABSENT file hashes as ABSENT, so a rename or deletion is a law change too:
+# an absent file is a state, not a no-op.
+# #71 (2026-11-17): the set went STALE when v0.4.308/309/310 moved law out of
+# SKILL.md. `war-stories.md` left the corpus (`b79161b3`) while still declared —
+# and an absent file hashes as the constant string ABSENT, so it contributed a
+# fixed value forever: stable, never red, and the set silently shrank by one. The
+# split that moved the content ALSO created two law files the set never named
+# (`reference-glossary.md`, `reference-tools.md`), so edits to them were outside
+# the coverage boundary — #47's own failure class, reintroduced by a rename.
+# The battery's #47 legs caught both directions (UNDECLARED + PHANTOM); this is
+# the tool-side follow-up to a law-side move, not a change of intent.
+LAW_FILES=(
+  SKILL.md editor.md editor-ship.md editor-smoke.md hq.md triage.md
+  toolsmith.md harvest.md
+  fleet-directives.md upstream-merge-runbook.md review-lenses.md
+  session-notify.md environment.md s2-swap-journal-spec.md
+  reference-glossary.md reference-tools.md
+)
+law_digest() {
+  local f h out=""
+  for f in "${LAW_FILES[@]}"; do
+    if [ -f "$SKILL_DIR/$f" ]; then
+      h="$(sha256sum "$SKILL_DIR/$f" 2>/dev/null | cut -d' ' -f1)"
+    else
+      h="ABSENT"
+    fi
+    out="$out$f:$h"$'\n'
+  done
+  printf '%s' "$out" | sha256sum | cut -d' ' -f1
+}
+law_digest_stamped() { # newest skill-bump row's stamp; "" when absent (pre-#47 rows)
+  jq_ledger -r '[.events[]? | select(.kind == "skill-bump")] | last | .law_digest // ""' 2>/dev/null
+}
+
+cmd_sync() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger sync --version <v> --why <text> [--catch-up] [--allow-sweep]"; exit 0 ;; esac
+  local v="" why="" catchup=0 allow_sweep=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) [ $# -ge 2 ] || { echo "oc-ledger: --version needs a value" >&2; exit 2; }; v=""$2""; shift 2 ;;
+      --why) [ $# -ge 2 ] || { echo "oc-ledger: --why needs a value" >&2; exit 2; }; why=""$2""; shift 2 ;;
+      --catch-up) catchup=1; shift ;;
+      --allow-sweep) allow_sweep=1; shift ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$v" ] || die 2 "usage: oc-ledger sync --version <v> --why <text> [--catch-up]"
+  echo "$v" | grep -Eq '^0\.[0-9]+\.[0-9]+$' || die 6 "sync: version shape must be 0.N.N, got '$v'"
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # battery gate: receipt must exist, be PASS, fail==0, fresh (<6h)
+  local rcpt; rcpt="$(battery_receipt)"
+  [ -f "$rcpt" ] || die 5 "sync: battery gate — no receipt at $rcpt (run tools/tests/run.sh first)"
+  jq -e '.verdict == "PASS" and (.fail == 0)' "$rcpt" >/dev/null 2>&1 \
+    || die 5 "sync: battery gate — receipt is RED ($(cat "$rcpt" 2>/dev/null | head -1))"
+  local rts rs now
+  rts="$(jq -r '.ts // ""' "$rcpt")"; rs="$(date -u -d "$rts" +%s 2>/dev/null || echo 0)"; now="$(date -u +%s)"
+  [ "$rs" -gt 0 ] && [ $(( now - rs )) -lt 21600 ] || die 5 "sync: battery gate — receipt stale (>6h: $rts)"
+  # SKILL.md must already carry the version (tool never writes it first)
+  grep -Eq "^version: $v\$" "$SKILL_DIR/SKILL.md" \
+    || die 6 "sync: SKILL.md frontmatter does not say version: $v — bump the doc first"
+  # CHANGELOG gate (lens C8, v0.4.65): a bump ships only with its receipt —
+  # the v0.4.54 backfill incident (bump shipped with no CHANGELOG entry) is dead.
+  # Header convention is "## v<ver> (date) — title", so match the version token
+  # at line start followed by space/paren/dash/end — not a bare-line equality.
+  grep -Eq "^## v$v([ —(:]|$)" "$SKILL_DIR/CHANGELOG.md" \
+    || die 6 "sync: CHANGELOG.md has no '## v$v' entry — write the receipt first"
+  # C8 second leg (v0.4.242): WARN, never die — see c8_naming_warn above.
+  c8_naming_warn "$v"
+  # #514: the state-dir glossary is edited by the SAME law commits a sync ships,
+  # so this is the boundary where a declared-but-uncarried name first exists.
+  state_tracked_audit
+  # #540: the INVERSE direction at the same boundary — a tracked file that no
+  # commit path carries can be deleted silently, so it is checked where the
+  # declaration audit already runs rather than left to a hand-run patrol.
+  state_out_of_scope_audit
+  # step check: equal (re-sync) or third-component +1 only; --catch-up (T2
+  # verdict n=1695, HQ-approved 2026-09-06) relaxes ONLY the step size for the
+  # shipped-ahead dead zone — the doc-first gate above still pins v to the
+  # shipped version, so only multi-step FORWARD jumps gain a legal path.
+  local cur skipped=""; cur="$(jq_ledger -r '.meta.skill_version // ""')"
+  if [ "$cur" != "$v" ]; then
+    local c2 c3 v2 v3
+    c2="$(echo "$cur" | cut -d. -f2)"; c3="$(echo "$cur" | cut -d. -f3)"
+    v2="$(echo "$v" | cut -d. -f2)"; v3="$(echo "$v" | cut -d. -f3)"
+    if [ "$c2" = "$v2" ] && [ "$v3" -eq $(( c3 + 1 )) ]; then
+      : # normal +1 patch step — unchanged
+    elif [ "$catchup" -eq 1 ]; then
+      [ -n "$why" ] || die 2 "sync: --catch-up requires --why \"<reason>\" (audit line on the catch-up event)"
+      if [ "$v2" -gt "$c2" ] || { [ "$v2" -eq "$c2" ] && [ "$v3" -gt "$c3" ]; }; then
+        # skipped-range note for the audit event (HQ ruling: from→to + range)
+        if [ "$c2" != "$v2" ]; then
+          skipped="cross-minor jump"
+        elif [ "$v3" -gt $(( c3 + 1 )) ]; then
+          local s=$(( c3 + 1 )); skipped="skipped 0.$c2.$s"
+          while [ "$s" -lt $(( v3 - 1 )) ]; do s=$(( s + 1 )); skipped="$skipped, 0.$c2.$s"; done
+        fi
+      else
+        die 6 "sync: catch-up refused — requested $v is behind current $cur (no downgrades)"
+      fi
+    else
+      die 6 "sync: version step refused — current $cur, requested $v (only +1 patch or re-sync equal; multi-version catch-up: --catch-up --why \"<reason>\")"
+    fi
+  fi
+  _sync_locked() {
+    local n t dup; n=$(( $(max_n) + 1 )); t="$(now_iso)"
+    # idempotent re-sync: a skill-bump event for this version already present
+    # (e.g. re-running after a failed git leg) → fields refreshed, NO dup event
+    dup="$(jq_ledger --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | length')"
+    if [ "${dup:-0}" -gt 0 ]; then
+      # factory #47: a re-sync at the SAME version is an idempotent repair of a
+      # failed git leg — it must never launder a law edit into a published
+      # version. If the digest moved, the bump is missing and the only honest
+      # action is the NEXT version: refreshing meta here would make the stamp
+      # describe law the version never covered. Fail closed (an unrepairable
+      # row is worse than a refused re-run). An empty stamp means a pre-#47 row,
+      # which has no baseline to contradict — allowed, and check-version
+      # discloses the missing baseline instead of inventing one.
+      local dup_stamp; dup_stamp="$(jq_ledger -r --arg v "$v" '[.events[]? | select(.kind == "skill-bump" and ((.what // "") | startswith("v" + $v + " ")))] | last | .law_digest // ""')"
+      if [ -n "$dup_stamp" ] && [ "$dup_stamp" != "$ldg" ]; then
+        die 6 "sync: law files changed since v$v was stamped ($dup_stamp -> $ldg) — a re-sync is not a bump; publish the NEXT version (bump SKILL.md + CHANGELOG, then sync --version <next>)"
+      fi
+      atomic_jq --arg v "$v" --arg t "$t" \
+        '.current_skill_version = $v | .meta.current_skill_version = $v
+         | .meta.skill_version = $v | .updated_at = $t' || return $?
+      echo "re-synced version=$v (event already present — idempotent, no dup)"
+      git_state_commit "ledger: skill-bump v$v re-sync via oc-ledger"
+      return 0
+    fi
+    atomic_jq --arg v "$v" --arg n "$n" --arg t "$t" --arg why "$why" --arg rts "$rts" \
+      --arg cur "$cur" --arg skipped "$skipped" --argjson catchup "$catchup" --arg ldg "$ldg" \
+      '.current_skill_version = $v
+       | .meta.current_skill_version = $v
+       | .meta.skill_version = $v
+       | .updated_at = $t
+       | .events += [{n: ($n|tonumber), t: $t, by: "oc-ledger sync", kind: "skill-bump",
+                      what: ((if $catchup == 1
+                              then ("v" + $v + " — catch-up from " + $cur
+                                    + (if $skipped != "" then " (" + $skipped + ")" else "" end) + ": ")
+                              else ("v" + $v + " — ") end)
+                             + $why + "; battery receipt ts " + $rts),
+                      law_digest: $ldg}]' || return $?
+    echo "synced version=$v (event n=$n)"
+    git_state_commit "ledger n=$n: skill-bump v$v via oc-ledger sync"
+    return 0
+  }
+  # H-4 provenance gate (factory #31, dispatched by Triage 530c29ec): a skill-bump
+  # row must never ship without its why-text. The CHANGELOG gate above protects the
+  # bump's RECEIPT; this protects the row's CONTENT. The tool's own header has always
+  # declared `--why mandatory` (:57) and upstream-merge-runbook.md:411 (H-4) makes it
+  # law, but the code required it only for --catch-up - so an empty --why shipped a
+  # provenance-free row ("v0.4.294 — ; battery receipt ts ...", n=15059).
+  # Placed AFTER the step-check block on purpose: five existing selftest legs run
+  # sync with no --why and expect rc 5/6 from OTHER gates, so the gate must not
+  # pre-empt them. The one SUCCESS-expecting leg (the cadence close-boundary
+  # probe, `sync --version 0.4.7`) was updated to pass --why — the contract now
+  # requires it, and without the flag that leg's bump is refused, cascading into
+  # cadence-counts-after-close and sync-catchup-event (both measured red on the
+  # first selftest run before the fixture was updated).
+  # Polarity is fail-CLOSED - the deliberate INVERSE of the oc-issue-log
+  # foreign-tracker guard (#30): that gated an OUTWARD comment whose absence is the
+  # breach (fail-open); this gates an INWARD append-only row, and a provenance-free
+  # row cannot be repaired in place. die leaves no partial state - it fires before
+  # _sync_locked touches the ledger - and the remedy is a re-run with --why.
+  [ -n "$why" ] || die 2 "sync: --why \"<provenance>\" is required — a skill-bump row must not ship without its why-text (H-4, factory #31)"
+  # stray-guard (v0.4.157): a bump commit must never absorb another actor's work.
+  # The v0.4.63 root-fix stages the FULL tree so a tag can never point at a tree
+  # missing its payload (incident n=1405) - but `git add -A` also swept UNRELATED
+  # dirty paths, landing them under the bumper's commit message with the wrong
+  # provenance. Live repro 2026-09-12: commit 20c8df4f (HQ's v0.4.156 bump)
+  # carried tools/tests/battery-last.json, another lane's dirty receipt; earlier
+  # sweeps fda12336 / 28f7ef41 took a half-written oc-deploy the same way.
+  # Refuse-and-name instead of commit-and-sweep. The v0.4.63 guarantee holds:
+  # with --allow-sweep the full tree is still staged, and without it NO tag is
+  # created at all - a bump tag still never points at a tree missing payload.
+  # Exempt: the version docs (SKILL.md, CHANGELOG.md) and the battery receipt,
+  # which IS this bump's evidence (the gate above just read it).
+  if _is_git_repo "$SKILL_DIR" && [ "$allow_sweep" -ne 1 ]; then
+    local stray
+    stray="$(git -C "$SKILL_DIR" status --porcelain | sed 's/^...//' \
+      | grep -vE '^(SKILL\.md|CHANGELOG\.md|tools/tests/battery-last\.json|tools/tests/battery-last-fail\.log)$' || true)"
+    if [ -n "$stray" ]; then
+      echo "sync: REFUSED - unrelated dirty paths in the skill repo would ride the bump commit:" >&2
+      printf '%s\n' "$stray" | sed 's/^/    /' >&2
+      echo "  commit them first (preferred - they keep their own message and provenance)," >&2
+      echo "  or re-run with --allow-sweep to absorb them into the bump deliberately." >&2
+      die 7 "sync: refusing to sweep unrelated dirty paths (stray-guard v0.4.157)"
+    fi
+  fi
+  # factory #47: the law-file digest is stamped by the SAME act that publishes
+  # the version — no second write to forget, and the append-only row cannot be
+  # retro-edited by a later bump. Computed only after every gate above passed, so
+  # a refused sync leaves no stamp behind (a refused bump must leave no drift).
+  local ldg; ldg="$(law_digest)"
+  with_lock _sync_locked || exit $?
+  # skill-repo git leg: commit the version docs + tag.
+  # v0.4.63 root-fix (incident n=1405, three strikes v0.4.58/61/62): stage the
+  # FULL working tree, never a hardcoded doc list — a bump tag must never
+  # point at a tree missing its payload files. Swept non-doc payload is named
+  # LOUDLY on stderr so the sweep is visible in tools.log, never silent.
+  if _is_git_repo "$SKILL_DIR"; then
+    ( cd "$SKILL_DIR" || exit 1
+      # v0.4.157: the old filter matched `^(.. )?` against a `p" "$0` render, but
+      # porcelain emits a ONE-char status for a worktree modification (" M SKILL.md"),
+      # so the exempt list was INERT - SKILL.md/CHANGELOG.md were reported as swept on
+      # every sync. `sed 's/^...//'` strips XY<space> exactly, so the list works now.
+      swept="$(git status --porcelain | sed 's/^...//' | grep -vE '^(SKILL\.md|CHANGELOG\.md|tools/tests/battery-last\.json|tools/tests/battery-last-fail\.log)$' || true)"
+      git add -A
+      [ -n "$swept" ] && echo "PAYLOAD SWEPT into bump commit (--allow-sweep; silent-stray class, pre-v0.4.63): $(printf '%s' "$swept" | tr '\n' '; ')" >&2
+      # #467: `git commit` exits non-zero for BOTH a genuine failure and the
+      # benign 'nothing to commit' case, so this `||` arm reported a commit-lag
+      # on every idempotent re-sync — a clean tree is not a deferred commit.
+      # `git diff --cached --quiet` exits 0 exactly when the index matches HEAD
+      # (nothing staged), so the commit is attempted only when there is work.
+      if ! git diff --cached --quiet; then
+        git commit -q -m "skill v$v: oc-ledger sync — ${why:-version sync}" 2>/dev/null \
+          || echo "commit-lag: skill commit deferred" >&2
+      fi
+      git tag "v$v" 2>/dev/null || echo "tag v$v exists or failed" >&2 )
+  fi
+
+  # Tail step (merge A, v0.4.48): shadow-rotate rides the bump cadence —
+  # the anchor for rotation becomes mechanical instead of prose. Rotation is
+  # durability, not a gate: failure WARNS, never fails the bump. Selftests
+  # redirect STATE_DIR to fixtures, so this stays side-effect-free there.
+  ROT_OUT="$("$_OC_DIR/state/oc-shadow-rotate" 2>&1)"; ROT_RC=$?
+  if [ "$ROT_RC" -eq 0 ]; then
+    echo "shadow-rotate: $ROT_OUT"
+  else
+    echo "WARN: shadow-rotate tail step rc=$ROT_RC (bump unaffected): $ROT_OUT" >&2
+  fi
+  oc_log_extra "shadow_rotate" "rc=$ROT_RC"
+
+  # Mirror tail step (v0.4.50): push both repos to origin if configured —
+  # off-box durability rides the bump cadence exactly like rotate does.
+  push_mirror "$SKILL_DIR" skill
+  push_mirror "$(STATE_DIR)" state
+
+  cmd_cadence || true
+}
+
+# ---- check-version (RO) -----------------------------------------------------
+cmd_check_version() {
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  local sv a b c bad=0
+  sv="$(grep -m1 '^version:' "$SKILL_DIR/SKILL.md" | awk '{print $2}')"
+  a="$(jq_ledger -r '.current_skill_version // ""')"
+  b="$(jq_ledger -r '.meta.current_skill_version // ""')"
+  c="$(jq_ledger -r '.meta.skill_version // ""')"
+  for pair in "SKILL.md:$sv:$sv" "current_skill_version:$a:$sv" "meta.current_skill_version:$b:$sv" "meta.skill_version:$c:$sv"; do
+    local nm got want; nm="${pair%%:*}"; got="$(echo "$pair" | cut -d: -f2)"; want="$(echo "$pair" | cut -d: -f3)"
+    if [ "$nm" = "SKILL.md" ]; then continue; fi
+    if [ "$got" != "$want" ]; then echo "MISMATCH $nm=$got (SKILL.md=$want)"; bad=1; fi
+  done
+  # factory #47: the version fields can ALL agree while the LAW moved — the case
+  # the version string cannot see, because the missing bump IS the failure. The
+  # baseline is the newest skill-bump row's stamp (append-only, written by the
+  # publishing act), never the frontmatter: a baseline that can be skipped
+  # re-creates the blind spot one layer down.
+  local ldg stamped lawbad=0
+  ldg="$(law_digest)"
+  stamped="$(law_digest_stamped)"
+  if [ -z "$stamped" ]; then
+    # Pre-#47 row: there is no baseline to contradict. Disclosed, never
+    # invented, and never a failure — the next sync stamps it. A note here is
+    # honest; a red would be a claim the instrument cannot support.
+    echo "note: law digest baseline absent (newest skill-bump row predates #47) — stamped at the next sync; un-bumped law is not yet observable"
+  elif [ "$stamped" != "$ldg" ]; then
+    lawbad=1
+    echo "MISMATCH law_digest=$ldg (newest skill-bump stamp=$stamped)"
+  fi
+  if [ "$bad" -eq 0 ] && [ "$lawbad" -eq 0 ]; then echo "ok: all fields agree at $sv"; return 0; fi
+  if [ "$bad" -eq 0 ]; then
+    echo "CAUSE UNBUMPED-LAW: the law files changed after the newest skill-bump stamp — the version fields agree because no bump was attempted; publish the NEXT version (bump SKILL.md + CHANGELOG, then: oc-ledger sync --version <next>)"
+    return 1
+  fi
+  # #359: name the CAUSE, because two structurally different states shared one
+  # rc and a bare MISMATCH could not tell them apart. The exit code stays 1 for
+  # BOTH — hq.md:109 codifies rc=1 as the FLEET-LEVEL heal ("treat rc=1 as a
+  # bump-propagation failure to heal with `oc-ledger sync --version ...`, not as
+  # a worker defect"), so the contract is made LEGIBLE, not changed.
+  #   FLEET-LEVEL — registry fields lag SKILL.md with NO worker behind: a
+  #     skipped `oc-ledger sync`; heal with: oc-ledger sync --version $sv
+  #   LANE-LEVEL  — >=1 worker's last_acked.version is behind SKILL.md: real
+  #     lane drift; each lagging lane must re-ack.
+  local behind
+  behind="$(jq_ledger --arg v "$sv" '[.workers[]? | select(.last_acked.version != null and .last_acked.version != $v)] | length' 2>/dev/null)" || behind=""
+  case "${behind:-}" in ''|*[!0-9]*) behind=0 ;; esac
+  if [ "$behind" -eq 0 ]; then
+    echo "CAUSE FLEET-LEVEL: registry lags SKILL.md with 0 worker(s) behind — skipped sync, not lane drift; heal with: oc-ledger sync --version $sv"
+  else
+    echo "CAUSE LANE-LEVEL: $behind worker(s) ack behind SKILL.md — real drift; those lanes must re-ack"
+  fi
+  return 1
+}
+
+# ---- law-digest (RO) ---------------------------------------------------------
+# Single home for the law-file SET and the algorithm: sync stamps with
+# law_digest(), check-version compares with it, and oc-drift-check consumes THIS
+# verb instead of re-implementing the shape — the same rule that made its roster
+# read go through oc-ledger rather than re-read the ledger schema.
+cmd_law_digest() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger law-digest [--json]"; echo "Exit: 0 MATCH or NO-BASELINE / 1 DRIFT / 3 ledger unreadable"; exit 0 ;; esac
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  local ldg stamped verdict rc
+  ldg="$(law_digest)"; stamped="$(law_digest_stamped)"
+  if [ -z "$stamped" ]; then verdict="NO-BASELINE"; rc=0
+  elif [ "$stamped" = "$ldg" ]; then verdict="MATCH"; rc=0
+  else verdict="DRIFT"; rc=1; fi
+  if [ "${1:-}" = "--json" ]; then
+    jq -n --arg v "$verdict" --arg cur "$ldg" --arg st "$stamped" \
+      '{verdict:$v, current:$cur, stamped:$st}'
+  else
+    case "$verdict" in
+      MATCH)       echo "law-digest: MATCH $ldg" ;;
+      NO-BASELINE) echo "law-digest: NO-BASELINE (newest skill-bump row predates #47; stamped at the next sync) — current $ldg" ;;
+      DRIFT)       echo "law-digest: DRIFT — the law files moved after the newest skill-bump stamp"
+                   echo "  current: $ldg"
+                   echo "  stamped: $stamped"
+                   echo "  a law edit without a bump: publish the NEXT version (bump SKILL.md + CHANGELOG, then: oc-ledger sync --version <next>)" ;;
+    esac
+  fi
+  return $rc
+}
+
+# ---- cadence (RO) ------------------------------------------------------------
+cmd_cadence() {
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # Boundary = the latest review-CYCLE-CLOSE row. Cycle closes land as kind=note
+  # whose text starts "vX.Y.Z ACCEPTED" (HQ acceptance = the close receipt,
+  # n=2349 lesson: the old review-battery/skill-review boundary predated the
+  # cycle it claimed to close — stale-boundary drift, instance 2). Falls back
+  # to review-battery/skill-review rows for pre-close epochs (selftest fixtures).
+  local out c b
+  out="$(jq_ledger -r '([.events[]? | select((.kind // "") == "note" and ((.what // "") | test("^v[0-9]+\\.[0-9]+\\.[0-9]+ ACCEPTED")))] | map(.n // 0) | max // 0) as $close
+    | (if $close > 0 then $close
+       else ([.events[]? | select(.kind == "review-battery" or ((.kind // "") | startswith("skill-review")))] | map(.n // 0) | max // 0) end) as $b
+    | ([.events[]? | select(.kind == "skill-bump" and ((.n // 0) > $b))] | length) as $c
+    | "\($c) \($b)"')"
+  c="${out%% *}"; b="${out##* }"
+  if [ "$c" -ge 5 ]; then echo "cadence: $c/5 FIRE (boundary n=$b) — Duties 4+6 due"; return 1
+  else echo "cadence: $c/5 WAIT (boundary n=$b)"; return 0; fi
+}
+
+# ---- ack ---------------------------------------------------------------------
+# ---- A1b: SELF-verb uuid resolution (default half) ---------------------------
+# A SELF verb acts on the CALLER, so its uuid is read from the environment and
+# the argument becomes optional. That is the owner's directive: "tools still
+# require the lanes to pass session id as a param, while there is an env var".
+#
+# A1b's second half is SHIPPED AS A WARNING, NOT A REFUSAL (#657). A refusal
+# REMOVES A DOCUMENTED CAPABILITY: `ack`/`enroll` act on ANOTHER lane's uuid (a
+# roster-admin action) and the selftest exercises that deliberately -- 60 legs
+# redden under a hard cross-check, including `ack2-otheruuid-rc0`. So the tool
+# now NAMES the mismatch without blocking it, which surfaces the accidental case
+# (a lane stamping under a lane that is not its own) and keeps the admin path.
+# Same disposition as `--by` in #320: warn, never refuse, when refusal would
+# break legitimate use.
+#
+# The ambient source is the SAME one the rest of this tool uses (derive_by in
+# cmd_stamp, and the C8 self-id) so one caller cannot resolve to two actors.
+_self_uuid() { # $1 = verb name, $2 = supplied uuid (may be empty)
+  local verb="$1" given="${2:-}"
+  if [ -n "$given" ]; then
+    _is_uuid "$given" || die 2 "$verb: uuid shape invalid (want 8-4-4-4-12 hex): '$given'"
+    # (#657) name a mismatch, never block it. Gated on the ambient being a real
+    # UUID so a label ambient (fixtures, non-session shells) stays silent.
+    local amb="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
+    if [ -n "$amb" ] && _is_uuid "$amb" && [ "$amb" != "$given" ]; then
+      printf '%s\n' "note: $verb acts on '$given', which is NOT the ambient session '$amb' -- correct for a roster-admin action; a mistake if you meant yourself (omit the uuid to default to the ambient)." >&2
+    fi
+    printf '%s\n' "$given"; return 0
+  fi
+  local env_id="${OPENCRABS_SESSION_ID:-${OC_ACTOR:-}}"
+  [ -n "$env_id" ] || die 2 "$verb: no uuid supplied and no ambient session id. Fix: run inside a lane turn (OPENCRABS_SESSION_ID is set), or pass the uuid explicitly."
+  printf '%s\n' "$env_id"
+}
+
+cmd_ack() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger ack [<uuid>] <0.N.N version> [--at <ts>]"; exit 0 ;; esac
+  local uuid="${1:-}" version="${2:-}" at=""; shift 2 2>/dev/null || true
+  while [ $# -gt 0 ]; do case "$1" in --at) at="${2:-}"; shift 2 ;; *) shift ;; esac; done
+  # A1b: `ack` is SELF, so the uuid is optional. A single non-uuid argument is
+  # the VERSION (`oc-ledger ack 0.4.268`), which is the form the owner asked for.
+  if [ -n "$uuid" ] && [ -z "$version" ] && ! _is_uuid "$uuid"; then
+    version="$uuid"; uuid=""
+  fi
+  uuid="$(_self_uuid ack "$uuid")" || exit $?
+  [ -n "$version" ] || die 2 "usage: oc-ledger ack [<uuid>] <0.N.N version> [--at <ts>]"
+  version="${version#v}"  # tolerate display spelling v0.N.N; store bare, matching sync
+  echo "$version" | grep -Eq '^0\.[0-9]+\.[0-9]+$' || die 2 "ack: version shape invalid (want 0.N.N, v prefix tolerated): '$version'"
+  [ -n "$at" ] || at="$(now_iso)"
+  # H-2 (c23) WRITE-SIDE VALIDATION. `--at` is the ONLY caller-supplied stamp on
+  # any path, and it was written verbatim. The live ledger carried 19 stamps that
+  # cannot be true -- 9 with a literal `x` for a redacted digit ("2026-09-05T10:1xZ"),
+  # 2 space-separated ("2026-08-27 03:25:54Z") and 8 minute-precision values
+  # missing their seconds -- and because `events --since` compares
+  # BYTE-LEXICOGRAPHICALLY on the stamp, each one silently MIS-RANKED instead of
+  # erroring: a blank or malformed value is always-less-than and drops out of
+  # every window. A stamp that cannot be parsed is not a cosmetic problem; it is
+  # a row that no window can reach. Validate here, refuse loudly, never guess.
+  # Accept the ISO-8601 UTC FAMILY and canonicalise it, rather than demanding one
+  # spelling. A stamp carrying fractional seconds or an explicit +00:00 offset is
+  # WELL-FORMED; refusing it would be a guard that blocks a legitimate write --
+  # the same defect as one that admits a malformed value, failing in the
+  # direction nobody reports. Normalising on write is what keeps the stored form
+  # single-shaped, which is what --since's byte-lexicographic compare needs.
+  at="$(printf '%s' "$at" | sed -E 's/\.[0-9]+//; s/\+00:00$//; s/Z$//')Z"
+  echo "$at" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' \
+    || die 2 "ack: --at must be an ISO-8601 UTC stamp (YYYY-MM-DDThh:mm:ssZ, fractional seconds and +00:00 accepted); got '$at'"
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
+    || die 3 "ack: unknown uuid $uuid — roster discovery first (Duty 2), or: oc-ledger enroll"
+  _ack_locked() {
+    local n t dup; n=$(( $(max_n) + 1 )); t="$(now_iso)"
+    # M2-4 (2026-09-12): idempotent re-ack, mirroring _sync_locked's dup guard.
+    # An ack of a (uuid, version) already ON RECORD is not new information — the
+    # roster's last_acked already says it. It fired in the wild because
+    # `oc-drift-check --ack` DELEGATES here (oc-drift-check:78), so one adoption
+    # that both drift-checked and acked wrote TWO byte-identical rows seconds
+    # apart (lane 1a63f103 n=3717/3718; d18ce16a n=3713/3714; 462181e9 x3).
+    # Shape mirrors sync's "event already present — idempotent, no dup": refresh
+    # last_acked + updated_at, append NO event, still rc 0 (oc-drift-check does
+    # `|| die 3`, so a non-zero here would break the delegated ack outright).
+    # The KEY is (uuid, version) — a different worker at the same version, or the
+    # same worker at a new version, is new information and still appends. The
+    # compare is EXACT string equality on the composed `what`, never `contains`:
+    # a substring test would make 0.4.1 match 0.4.10 and swallow a real bump.
+    dup="$(jq_ledger --arg u "$uuid" --arg v "$version" \
+      '[.events[]? | select(.kind == "ack" and ((.what // "") == ("worker " + $u + " acked " + $v)))] | length')"
+    if [ "${dup:-0}" -gt 0 ]; then
+      # fields STILL refreshed (--at may carry a new timestamp) — a lane that
+      # re-acks after a failed git leg must not keep a stale last_acked.at
+      atomic_jq --arg u "$uuid" --arg v "$version" --arg at "$at" --arg t "$t" \
+        '(.workers[] | select(.uuid == $u)).last_acked = {version: $v, at: $at}
+         | .updated_at = $t' || return $?
+      echo "acked $uuid at $version (already on record — idempotent, no dup event)"
+      git_state_commit "ledger: ack $uuid v$version re-ack via oc-ledger"
+      return 0
+    fi
+    atomic_jq --arg u "$uuid" --arg v "$version" --arg at "$at" --arg n "$n" --arg t "$t" \
+      '(.workers[] | select(.uuid == $u)).last_acked = {version: $v, at: $at}
+       | .events += [{n: ($n|tonumber), t: $t, by: "oc-ledger ack", kind: "ack", what: ("worker " + $u + " acked " + $v)}]
+       | .updated_at = $t' || return $?
+    echo "acked $uuid at $version (event n=$n)"
+    git_state_commit "ledger n=$n: ack $uuid v$version (oc-ledger)"
+  }
+  with_lock _ack_locked
+}
+
+# ---- enroll ------------------------------------------------------------------
+cmd_enroll() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger enroll [<uuid>] <role> [--topic N] [--feature X]"; exit 0 ;; esac
+  local uuid="${1:-}" role="${2:-}" topic="-" feature="-"; shift 2 2>/dev/null || true
+  # A1b: `enroll` is SELF, so a single non-uuid argument is the ROLE
+  # (`oc-ledger enroll editor` = enroll myself).
+  if [ -n "$uuid" ] && [ -z "$role" ] && ! _is_uuid "$uuid"; then
+    role="$uuid"; uuid=""
+  fi
+  uuid="$(_self_uuid enroll "$uuid")" || exit $?
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --topic) [ $# -ge 2 ] || { echo "oc-ledger: --topic needs a value" >&2; exit 2; }; topic=""$2""; shift 2 ;;
+      --feature) [ $# -ge 2 ] || { echo "oc-ledger: --feature needs a value" >&2; exit 2; }; feature=""$2""; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$uuid" ] && [ -n "$role" ] || die 2 "usage: oc-ledger enroll [<uuid>] <role> [--topic N] [--feature X]"
+  # arg-shape guard (fork quirk 2026-09-04, #95 lane): a missing role positional
+  # let "--topic" land in $role and pass the non-empty check. Roles are prose
+  # words — a leading dash is always a parsing error, never a role.
+  case "$role" in
+    -*) die 2 "enroll: role looks like a flag: '$role' (role positional missing?)" ;;
+  esac
+  _is_uuid "$uuid" \
+    || die 2 "enroll: uuid shape invalid: '$uuid'"
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
+    && die 2 "enroll: uuid already enrolled: $uuid"
+  # TOPIC EXISTENCE GUARD (fork #503, Toolsmith 2026-09-22). --topic used to be
+  # taken verbatim and coerced with tonumber, so ANY numeric value enrolled rc 0
+  # and a real forum topic was indistinguishable from an issue number — a live
+  # row carried topic_id 478 (an ISSUE id, never a topic) and only a retire could
+  # undo it. WARN, never refuse: enroll runs at lane bring-up and must not be
+  # blockable by an absent or busy session DB (a refusal here would be a worse
+  # defect than the one it guards), and the live roster resolves 32 of 32 today,
+  # so this fires on a genuinely wrong value rather than on normal traffic.
+  # Mirrors derive_by, which warns for an unresolvable actor and still writes.
+  case "${topic:-}" in
+    ''|'-'|*[!0-9]*) : ;;   # omitted, or non-numeric (the jq coercion fails that later)
+    *)
+      local _tdb _tn
+      _tdb="${OC_LEDGER_DB:-$(dirname "$(STATE_DIR)")/opencrabs.db}"
+      if [ -f "$_tdb" ]; then
+        _tn="$("$_OC_DIR/lib/oc_sqlite" "file:${_tdb}?mode=ro" \
+          "SELECT count(*) FROM session_bindings WHERE thread_id = ${topic};" 2>/dev/null | tr -d '[:space:]')"
+        if [ "${_tn:-}" = "0" ]; then
+          printf '%s\n' "oc-ledger enroll: WARNING topic $topic names no live binding in $_tdb — if that is an ISSUE number rather than a forum topic the roster mapping is wrong and only a retire can undo it (fork #503); if the topic was simply created and its lane has not messaged yet, ignore this." >&2
+        fi
+      fi
+      ;;
+  esac
+  _enroll_locked() {
+    local n t; n=$(( $(max_n) + 1 )); t="$(now_iso)"
+    atomic_jq --arg u "$uuid" --arg r "$role" --arg tp "$topic" --arg f "$feature" --arg n "$n" --arg t "$t" \
+      '.workers += [{uuid: $u, role: $r, topic_id: (if $tp == "-" then null else ($tp|tonumber) end),
+                     feature: $f, confirmed: false, first_seen: $t, last_acked: null, notes: [], events: []}]
+       | .events += [{n: ($n|tonumber), t: $t, by: "oc-ledger enroll", kind: "roster-enroll", what: ("enrolled " + $r + " " + $u + (if $tp == "-" then "" else " (topic " + $tp + ")" end))}]
+       | .updated_at = $t' || return $?
+    echo "enrolled $role $uuid (event n=$n)"
+    git_state_commit "ledger n=$n: enroll $role $uuid (oc-ledger)"
+  }
+  with_lock _enroll_locked
+}
+
+# ---- promote (T2 verdict n=1695, HQ confirmed NON-KERNEL 2026-09-06) --------
+cmd_promote() { # promote <uuid> <new-role> [--topic N] [--feature X] — update
+  # an enrolled roster row IN PLACE. Until this verb existed the only path was
+  # a disclosed atomic-jq hand-edit (n=1691, state commit 301e926). ONE worker
+  # = ONE row: promote only mutates, never creates — last_acked / confirmed /
+  # notes carry across the role change (HQ implementation guard). Audit trail:
+  # one global note event (frozen v1.1 kind enum respected) + a worker note.
+  local uuid="${1:-}" role="${2:-}" topic="" feature=""; shift 2 2>/dev/null || true
+  # -h|--help is answered BEFORE the role-shape disambiguation below: with
+  # `promote --help` the single argument would be read as a ROLE, so the old
+  # path died rc 2 ("role looks like a flag") and this verb's own usage was
+  # unreachable — the one verb without a help arm (#686).
+  case "$uuid" in -h|--help) echo "usage: oc-ledger promote <uuid> <new-role> [--topic N] [--feature X]"; exit 0 ;; esac
+  case "$role" in -h|--help) echo "usage: oc-ledger promote <uuid> <new-role> [--topic N] [--feature X]"; exit 0 ;; esac
+  # A1b (#659): promote is SELF when the uuid is omitted. A single non-uuid
+  # argument is disambiguated BY SHAPE, exactly as enroll does -- for promote it
+  # is the new ROLE (`oc-ledger promote editor` = promote myself).
+  if [ -n "$uuid" ] && [ -z "$role" ] && ! _is_uuid "$uuid"; then
+    role="$uuid"; uuid=""
+  fi
+  uuid="$(_self_uuid promote "$uuid")" || exit $?
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --topic) [ $# -ge 2 ] || { echo "oc-ledger: --topic needs a value" >&2; exit 2; }; topic=""$2""; shift 2 ;;
+      --feature) [ $# -ge 2 ] || { echo "oc-ledger: --feature needs a value" >&2; exit 2; }; feature=""$2""; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [ -n "$uuid" ] && [ -n "$role" ] || die 2 "usage: oc-ledger promote <uuid> <new-role> [--topic N] [--feature X]"
+  case "$role" in
+    -*) die 2 "promote: role looks like a flag: '$role' (role positional missing?)" ;;
+  esac
+  _is_uuid "$uuid" \
+    || die 2 "promote: uuid shape invalid: '$uuid'"
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  jq_ledger -e --arg u "$uuid" '.workers[]? | select(.uuid == $u)' >/dev/null 2>&1 \
+    || die 2 "promote: uuid not enrolled — use enroll to create the row: $uuid"
+  # current values (null renders as "-" — the enroll convention)
+  local cur_role cur_topic cur_feature
+  cur_role="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].role // "-"')"
+  cur_topic="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].topic_id // "-" | tostring')"
+  cur_feature="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid == $u)][0].feature // "-"')"
+  local changes=""
+  [ "$role" != "$cur_role" ] && changes="role: $cur_role -> $role"
+  if [ -n "$topic" ] && [ "$topic" != "$cur_topic" ]; then
+    case "$topic" in ''|-*|[!0-9]*) [ "$topic" = "-" ] || die 2 "promote: --topic must be a number or '-'" ;; esac
+    changes="${changes:+$changes; }topic: $cur_topic -> $topic"
+  fi
+  if [ -n "$feature" ] && [ "$feature" != "$cur_feature" ]; then
+    changes="${changes:+$changes; }feature: $cur_feature -> $feature"
+  fi
+  [ -n "$changes" ] || die 2 "promote: nothing to change (role/topic/feature all unchanged)"
+  _promote_locked() {
+    local n t; n=$(( $(max_n) + 1 )); t="$(now_iso)"
+    local tid="null"
+    [ -n "$topic" ] && [ "$topic" != "-" ] && tid="$topic"
+    atomic_jq --arg u "$uuid" --arg r "$role" --arg f "$feature" --arg n "$n" --arg t "$t" \
+      --arg changes "$changes" --argjson tid "$tid" \
+      --argjson has_topic "$([ -n "$topic" ] && echo true || echo false)" \
+      --argjson has_feature "$([ -n "$feature" ] && echo true || echo false)" \
+      '(.workers[] | select(.uuid == $u)) |= (
+         .role = $r
+         | (if $has_topic then .topic_id = $tid else . end)
+         | (if $has_feature then .feature = $f else . end)
+         | .notes = (((.notes // []) | if type == "array" then . else [.] end)
+                     + [("promoted at " + $t + ": " + $changes)]))
+       | .events += [{n: ($n|tonumber), t: $t, by: "oc-ledger promote", kind: "note",
+                      what: ("promoted " + $u + ": " + $changes)}]
+       | .updated_at = $t' || return $?
+    echo "promoted $uuid ($changes) — event n=$n"
+    git_state_commit "ledger n=$n: promote $uuid (oc-ledger)"
+  }
+  with_lock _promote_locked
+}
+
+# ---- retire (HQ ASK 2026-09-11) ---------------------------------------------
+cmd_retire() { # retire <uuid> [--topic N] [--role R] [--why TEXT] — REMOVE one roster row.
+  # The correction path the roster lifecycle was missing. enroll refuses a dup
+  # uuid, promote only mutates in place, and the sign gate keys on uuid
+  # PRESENCE (`oc-verify-order` selects .role by uuid) — so a wrongly-enrolled
+  # uuid kept signing and NOTHING could drop it. A demote revokes nothing;
+  # only removal does. Live case that motivated this: enrollment n=2457 put
+  # `editor 359fe71b` on topic 49607 + feature cron-session-isolation, which
+  # belong to lane 6cd8175f — two editor rows for one topic, the wrong one
+  # unable to be dropped.
+  #
+  # ROW-SCOPED, NOT UUID-SCOPED (defect fix 2026-09-11, HQ report d72bd52d).
+  # The first cut removed `.workers |= map(select(.uuid != $u))` — EVERY row
+  # carrying that uuid — and snapshotted the event from `[0]`, so a uuid with
+  # two rows would have had both revoked by an event naming only one. That was
+  # LATENT on the roster of the day (every uuid held exactly one row) but the
+  # roster model plainly permits two: an editor row on one topic plus an
+  # auditor row on another. So the verb takes `--topic N` / `--role R`
+  # selectors — EXACT match, deliberately NOT the substring match that
+  # `roster --role` uses, because this verb DESTROYS a row and a fuzzy selector
+  # would be a foot-gun — and REFUSES rc 2 when the uuid matches more than one
+  # row and no selector disambiguates, listing the rows so the caller can pick.
+  # A guard with no selector would have been a dead end: a legitimately
+  # two-row uuid could then never be retired at all.
+  # Removal is by ARRAY INDEX (del(.workers[$i])), never by re-matching a
+  # predicate, so the row removed is exactly the row shown and snapshotted.
+  #
+  # The row is REMOVED, so the event is the only surviving record: it carries
+  # role/topic/feature plus the caller's --why. --why is OPTIONAL on purpose —
+  # a correction verb must never be blocked when the fix is urgent; an absent
+  # reason is recorded verbatim as "(no reason given)", which is itself a
+  # visible signal in the audit trail rather than a silent omission.
+  # rc: 0 retired · 2 usage / bad uuid / bad selector / no row / ambiguous · 3 ledger unreadable.
+  local uuid="${1:-}" why="" sel_topic="" sel_role=""; shift 2>/dev/null || true
+  # A1b (#659): retire is the ONE self-verb deliberately WITHOUT an env default.
+  # `ack`/`enroll`/`promote` take it (ack is harmless, the other two are
+  # additive or recoverable), but retire DESTROYS a roster row — a no-argument
+  # `oc-ledger retire` would silently remove the AMBIENT lane's own enrollment,
+  # and the fixture pin `retire-no-args` (rc 2) exists for that reason. So the
+  # uuid stays REQUIRED here; the owner directive is satisfied where the
+  # omission is safe. Flagged in #659 rather than absorbed silently.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --why)   [ -n "${2:-}" ] || die 2 "retire: --why needs a value"; why="$2"; shift 2 ;;
+      --topic) [ -n "${2:-}" ] || die 2 "retire: --topic needs a value"; sel_topic="$2"; shift 2 ;;
+      --role)  [ -n "${2:-}" ] || die 2 "retire: --role needs a value"; sel_role="$2"; shift 2 ;;
+      -h|--help) echo "usage: oc-ledger retire <uuid> [--topic N] [--role R] [--why TEXT]"; exit 0 ;;
+      *) die 2 "retire: unknown arg '$1' (usage: oc-ledger retire <uuid> [--topic N] [--role R] [--why TEXT])" ;;
+    esac
+  done
+  [ -n "$uuid" ] || die 2 "usage: oc-ledger retire <uuid> [--topic N] [--role R] [--why TEXT]"
+  _is_uuid "$uuid" \
+    || die 2 "retire: uuid shape invalid: '$uuid'"
+  # Selector shape is validated BEFORE the match query, so a malformed --topic
+  # can never be misread as "no row matches" — that confusion is exactly what
+  # the ambiguity selftest would otherwise paper over.
+  if [ -n "$sel_topic" ]; then
+    echo "$sel_topic" | grep -Eq '^[0-9]+$' \
+      || die 2 "retire: --topic must be an integer, got '$sel_topic'"
+  fi
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # The MATCH SET: rows carrying the uuid, narrowed by the exact-match
+  # selectors when given. An absent topic_id can never equal a numeric
+  # --topic ("" != "49607"), so a selector never matches a null-topic row.
+  local n_match
+  n_match="$(jq_ledger -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
+    [ .workers[] | select(.uuid == $u)
+      | select($tp == "" or ((.topic_id // "") | tostring) == $tp)
+      | select($rl == "" or ((.role // "") == $rl)) ] | length' 2>/dev/null)" \
+    || die 3 "retire: ledger unreadable: $LEDGER"
+  case "$n_match" in ''|*[!0-9]*) die 3 "retire: ledger unreadable: $LEDGER" ;; esac
+  [ "$n_match" -gt 0 ] || die 2 "retire: no row matches $uuid${sel_topic:+ (topic $sel_topic)}${sel_role:+ (role $sel_role)} — nothing to remove"
+  if [ "$n_match" -gt 1 ]; then
+    echo "retire: ambiguous — $n_match rows carry $uuid; add --topic N and/or --role R to pick exactly one:" >&2
+    jq_ledger -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
+      .workers[] | select(.uuid == $u)
+      | select($tp == "" or ((.topic_id // "") | tostring) == $tp)
+      | select($rl == "" or ((.role // "") == $rl))
+      | "  " + (.role // "-") + "  topic " + ((.topic_id // "-") | tostring)
+        + "  feature " + (.feature // "-") + "  confirmed " + ((.confirmed // false) | tostring)' \
+      >&2
+    die 2 "retire: ambiguous uuid — refusing to remove more than one row"
+  fi
+  # Exactly one match: pin it to an ARRAY INDEX so the removal is exact.
+  local idx
+  idx="$(jq_ledger -r --arg u "$uuid" --arg tp "$sel_topic" --arg rl "$sel_role" '
+    [ .workers | to_entries[]
+      | select(.value.uuid == $u)
+      | select($tp == "" or ((.value.topic_id // "") | tostring) == $tp)
+      | select($rl == "" or ((.value.role // "") == $rl)) ][0].key')"
+  case "$idx" in ''|*[!0-9]*) die 3 "retire: ledger unreadable (no index for the matched row): $LEDGER" ;; esac
+  [ -n "$why" ] || why="(no reason given)"
+  # Snapshot the row BEFORE removal — the event is its only surviving record.
+  local cur_role cur_topic cur_feature cur_confirmed
+  cur_role="$(jq_ledger -r --argjson i "$idx" '.workers[$i].role // "-"')"
+  cur_topic="$(jq_ledger -r --argjson i "$idx" '(.workers[$i].topic_id // "-") | tostring')"
+  cur_feature="$(jq_ledger -r --argjson i "$idx" '.workers[$i].feature // "-"')"
+  cur_confirmed="$(jq_ledger -r --argjson i "$idx" '(.workers[$i].confirmed // false) | tostring')"
+  _retire_locked() {
+    local n t; n=$(( $(max_n) + 1 )); t="$(now_iso)"
+    atomic_jq --argjson i "$idx" --arg u "$uuid" --arg r "$cur_role" --arg tp "$cur_topic" \
+      --arg f "$cur_feature" --arg c "$cur_confirmed" --arg w "$why" \
+      --arg n "$n" --arg t "$t" \
+      '.workers |= del(.[$i])
+       | .events += [{n: ($n|tonumber), t: $t, by: "oc-ledger retire", kind: "roster-retire",
+                      what: ("retired " + $r + " " + $u + " (topic " + $tp + ", feature " + $f
+                             + ", confirmed " + $c + "): " + $w)}]
+       | .updated_at = $t' || return $?
+    echo "retired $cur_role $uuid (event n=$n) — row removed, signing revoked"
+    git_state_commit "ledger n=$n: retire $cur_role $uuid (oc-ledger)"
+  }
+  with_lock _retire_locked
+}
+
+# ---- commit-pending (item-2(b) sweep) ----------------------------------------
+# v0.4.60 migration: deploy artifacts moved to the STATE dir (owner order
+# 2026-08-31 06:03Z) — skill repo keeps only the battery receipt; the moved
+# set joined the state sweep below (git-tracked in the state repo, where the
+# ledger already lives).
+RUNTIME_ARTIFACTS="tools/tests/battery-last.json"
+cmd_commit_pending() {
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger commit-pending [--bundle]   (--bundle also sweeps the TRACKED state paths and commits the skill runtime artifacts; both mirrors are pushed either way)"; exit 0 ;; esac
+  local bundle=0; [ "${1:-}" = "--bundle" ] && bundle=1
+  local sd; sd="$(STATE_DIR)"; local did=0 failed=0 _cp_errs=''
+  STATE_SWEEP_ERR=''
+  # state repo: ledger first
+  if _is_git_repo "$sd"; then
+    local head_n disk_n
+    if _jsonl_mode; then
+      # #149 (spec trap 3): the commit-window comparison must read the RECORD at
+      # HEAD. `HEAD:workers-ledger.json` is a materialized view that is
+      # gitignored after cutover — comparing against it would always report a
+      # window of zero (or a git error swallowed by `|| echo`) while real rows
+      # sat uncommitted. Read the committed JSONL and count its lines.
+      disk_n="$(jq -s '([.[] | .n // 0] | max // 0)' "$(_JSONL_EVENTS)" 2>/dev/null || echo 0)"
+      head_n="$(git -C "$sd" show HEAD:events.jsonl 2>/dev/null | jq -s '([.[] | .n // 0] | max // 0)' 2>/dev/null || echo 0)"
+      if [ "$(git -C "$sd" status --porcelain events.jsonl workers.json 2>/dev/null)" != "" ]; then
+        if git -C "$sd" add events.jsonl workers.json 2>/dev/null; then
+          if _commit_with_retry "$sd" "ledger commit-pending: events n=$((head_n+1))..$disk_n uncommitted (HQ sweep)"; then
+            echo "sweep: state ledger committed (n=$((head_n+1))..$disk_n)"
+            did=1
+          else
+            failed=1; _cp_errs="$_cp_errs; events.jsonl: $_CW_ERR"
+          fi
+        else
+          failed=1; _cp_errs="$_cp_errs; git add refused events.jsonl"
+        fi
+      fi
+    else
+    disk_n="$(jq '([.events[]? | .n // 0] | max // 0)' "$LEDGER" 2>/dev/null || echo 0)"
+    head_n="$(git -C "$sd" show HEAD:workers-ledger.json 2>/dev/null | jq '([.events[]? | .n // 0] | max // 0)' 2>/dev/null || echo "$disk_n")"
+    if [ "$(git -C "$sd" status --porcelain workers-ledger.json 2>/dev/null)" != "" ]; then
+      if git -C "$sd" add workers-ledger.json 2>/dev/null; then
+        if _commit_with_retry "$sd" "ledger commit-pending: events n=$((head_n+1))..$disk_n uncommitted (HQ sweep)"; then
+          echo "sweep: state ledger committed (n=$((head_n+1))..$disk_n)"
+          did=1
+        else
+          failed=1; _cp_errs="$_cp_errs; workers-ledger.json: $_CW_ERR"
+        fi
+      else
+        failed=1; _cp_errs="$_cp_errs; git add refused workers-ledger.json"
+      fi
+    fi
+    fi
+    if [ "$bundle" -eq 1 ]; then
+      # #508 (DRY): the TRACKED namespace lives in ONE home above, consumed by
+      # both this verb and the auto-commit tail. The rationale for each member
+      # (v0.4.49 seal-state receipts, v0.4.51 journal/, v0.4.237 harvest-state,
+      # #508 health-rotation.json) rides STATE_TRACKED_PATHS.
+      if state_sweep_tracked "$sd" "commit-pending --bundle"; then
+        did=1
+      fi
+      [ -z "${STATE_SWEEP_ERR:-}" ] || { failed=1; _cp_errs="$_cp_errs; $STATE_SWEEP_ERR"; }
+    fi
+  fi
+  # skill repo: whitelisted runtime artifacts only (never doc edits)
+  if [ "$bundle" -eq 1 ] && _is_git_repo "$SKILL_DIR"; then
+    local hits=""
+    for p in $RUNTIME_ARTIFACTS; do
+      [ -n "$(git -C "$SKILL_DIR" status --porcelain -- "$p" 2>/dev/null)" ] && hits="$hits $p"
+    done
+    if [ -n "$hits" ]; then
+      # shellcheck disable=SC2086
+      if git -C "$SKILL_DIR" add -- $hits 2>/dev/null; then
+        if _commit_with_retry "$SKILL_DIR" "runtime-artifacts sweep (B3):$hits (oc-ledger commit-pending --bundle)"; then
+          echo "sweep: skill runtime artifacts committed:$hits"
+          did=1
+        else
+          failed=1; _cp_errs="$_cp_errs; skill:$hits: $_CW_ERR"
+        fi
+      else
+        failed=1; _cp_errs="$_cp_errs; git add refused skill:$hits"
+      fi
+    fi
+  fi
+  # mirror tail step (v0.4.50): push whatever moved (and catch up any earlier
+  # commit-lag) — runs regardless of $did, up-to-date pushes are rc 0 no-ops
+  push_mirror "$sd" state
+  push_mirror "$SKILL_DIR" skill
+  # The verdict is THREE-WAY. "clean" may only be said when nothing was
+  # ATTEMPTED; a refused commit is a FAILURE and exits rc 4 (the contract's
+  # `write` code — rc 1 is a VERDICT for this tool and would journal a write
+  # failure as a benign outcome).
+  if [ "$failed" -eq 1 ]; then
+    echo "sweep: FAILED — a commit was attempted and git refused it: ${_cp_errs#; }" >&2
+    return 4
+  fi
+  [ "$did" -eq 1 ] || echo "sweep: clean — nothing pending"
+}
+
+# ---- #149: migrate — legacy single-file ledger -> append-only JSONL ----------
+# Owner order: "can the ledger be stored as text and not blob?" The RECORD
+# becomes events.jsonl (one JSON object per line) + workers.json; the old
+# workers-ledger.json survives as a regenerated MATERIALIZED VIEW so the legacy
+# consumers keep working.
+#
+# THE THREE SCHEMA GENERATIONS ARE CARRIED VERBATIM (spec trap 9, measured on the
+# live ledger): 87 rows carry no `kind`, 61 carry ts/at instead of `t`, 55 put
+# their text in text/summary/note/detail rather than `what`. Normalising them
+# would be silent data loss, so each row is copied with `jq -c '.events[]?'` and
+# nothing is rewritten. `n` is NOT unique either (trap 10: n=1258 x3 after the
+# 2026-09-03 merge), so nothing here keys, dedupes or joins on it — the rows are
+# a STREAM, not a map.
+#
+# EVERY ARTIFACT IS BUILT FROM THE FROZEN COPY AND INSTALLED LAST, so a failure
+# anywhere leaves the state dir exactly as it was. In particular the view is a
+# pure function of the RECORD being installed, never of the live file.
+cmd_migrate() {
+  local to="" src_override="" force=0 live_ok=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) echo "usage: oc-ledger migrate --to jsonl [--source <workers-ledger.json>] [--ledger <path>] [--force] [--live]
+  Convert a legacy single-file ledger into events.jsonl + workers.json.
+  The compact view is no longer written. Refuses to clobber an existing
+  events.jsonl unless --force, and refuses the LIVE state dir unless --live
+  (flipping the live write path is a declared window, not a side effect).
+  --ledger <path> points the STATE dir at a copy (the destination), so
+  'migrate --to jsonl --ledger /tmp/x/workers-ledger.json' migrates a scratch
+  copy; OC_LEDGER=<path> with OC_DEV_STATE unset is the same seam. #149: this
+  flag is named by the refusal below, so it must exist in THIS verb's arg loop
+  (a global --ledger only parses BEFORE the subcommand).
+  Prints the frozen source path, its sha256 and the row count so a parity gate
+  has something to check against."; exit 0 ;;
+      --to) [ $# -ge 2 ] || die 2 "migrate: --to needs a value (jsonl)"; to="$2"; shift 2 ;;
+      --source) [ $# -ge 2 ] || die 2 "migrate: --source needs a path"; src_override="$2"; shift 2 ;;
+      --ledger) LEDGER="${2:-}"; [ -n "$LEDGER" ] || die 2 "migrate: --ledger needs a path"; shift 2 ;;
+      --force) force=1; shift ;;
+      --live) live_ok=1; shift ;;
+      *) die 2 "migrate: unknown argument '$1' (see --help)" ;;
+    esac
+  done
+  [ "$to" = "jsonl" ] || die 2 "migrate: --to jsonl is the only supported target (got '${to:-<empty>}')"
+
+  local sd; sd="$(STATE_DIR)"
+  # THE LIVE STATE DIR IS NOT A TEST TARGET. Measured 2026-11-22: a scratch run
+  # that set $LEDGER in the environment silently migrated the LIVE state dir,
+  # because parse_global resets LEDGER="" at :186 before reading it — so the
+  # "isolated" copy was never isolated and the write path flipped without a
+  # declared window. A guard on the DESTINATION catches that class regardless of
+  # how the path got there: flipping the live record is an explicit act.
+  # The identity comes from is_live_state_dir() (:242) — NOT from
+  # $STATE_DIR_DEFAULT, which reads $OC_DEV_STATE and so made this comparison
+  # compare a value with itself (#149, measured: a /tmp scratch dir was refused
+  # as "the LIVE state dir").
+  if [ "$live_ok" -eq 0 ] && is_live_state_dir "$sd"; then
+    die 2 "migrate: refusing to migrate the LIVE state dir ($sd) — that flips the live write path (P3, a declared window). Migrate a COPY instead: 'migrate --to jsonl --ledger <scratch>/workers-ledger.json' (or OC_LEDGER=<scratch>/workers-ledger.json with OC_DEV_STATE unset), or pass --live to acknowledge the cutover on the real one."
+  fi
+  local src="${src_override:-$LEDGER}"
+  [ -f "$src" ] || die 2 "migrate: source ledger not found: $src"
+  local ev; ev="$(_JSONL_EVENTS)"
+  if [ -f "$ev" ] && [ "$force" -eq 0 ]; then
+    die 2 "migrate: $ev already exists — refusing to clobber a live record (freeze a copy and pass --force only if that is what you mean)"
+  fi
+  jq -e . "$src" >/dev/null 2>&1 || die 3 "migrate: source is not valid JSON: $src"
+
+  # FREEZE FIRST (spec trap 11): the ledger grows while you work — the plan's
+  # 6,043 baseline was already 6,044 when it was verified, because a stamp
+  # landed. A migration that reads the live file twice can convert a different
+  # population than the one it reports. Copy once, hash the copy, convert ONLY
+  # the copy.
+  local ts; ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  local frozen="$sd/migrate-source-$ts.json"
+  cp "$src" "$frozen" || die 4 "migrate: cannot freeze the source at $frozen"
+  local fsha; fsha="$(sha256sum "$frozen" | awk '{print $1}')"
+  local n_src; n_src="$(jq '[.events[]?] | length' "$frozen")" || die 3 "migrate: cannot count .events in the frozen copy"
+
+  local evtmp="$sd/.mig.ev.$$" wftmp="$sd/.mig.workers.$$" vtmp="$sd/.mig.view.$$"
+  _mig_clean() { rm -f "$evtmp" "$wftmp" "$vtmp" "$vtmp.err"; }
+  trap '_mig_clean' EXIT
+
+  if ! jq -c '.events[]?' "$frozen" > "$evtmp" 2>/dev/null; then
+    die 4 "migrate: could not serialise .events to JSONL"
+  fi
+  # A row spanning a newline would break the one-object-per-line contract and
+  # turn the next reader's "malformed line" die into a permanent refusal.
+  if ! jq -e -c . "$evtmp" >/dev/null 2>&1; then
+    die 4 "migrate: emitted JSONL does not re-parse — refusing to install it"
+  fi
+  local n_out; n_out="$(wc -l < "$evtmp" | tr -d ' ')"
+  [ "$n_out" = "$n_src" ] || die 4 "migrate: row count changed in flight (source $n_src, emitted $n_out) — refusing"
+
+  jq -c 'del(.events)' "$frozen" > "$wftmp" 2>/dev/null || die 4 "migrate: could not build workers.json"
+
+  # #177: install the record only. The materialized view is no longer written.
+  mv "$wftmp" "$(_JSONL_WORKERS)" || die 4 "migrate: could not install workers.json"
+  mv "$evtmp" "$ev" || die 4 "migrate: could not install events.jsonl"
+  rm -f "$vtmp" "$vtmp.err"
+  trap - EXIT
+
+  echo "migrate: ok"
+  echo "  frozen source: $frozen"
+  echo "  source sha256: $fsha"
+  echo "  rows:          $n_out (source $n_src)"
+  echo "  record:        $ev"
+  echo "  workers:       $(_JSONL_WORKERS)"
+  echo "  NOTE: this state dir is now in JSONL mode — the live write path changed with it."
+}
+
+# ---- selftest (418 cases) -----------------------------------------------------
+cmd_selftest() {
+  export OC_SHIP_AUDIT_CHAIN=0
+  export OC_TOOLS_NOLOG=1
+  local T P=0 F=0
+  T="$(mktemp -d)"; mkdir -p "$T/state" "$T/skill/tools/tests"
+  # v0.4.157: keep tools/ TRACKED in the fixture. An entirely-untracked directory
+  # collapses to `?? tools/` in porcelain, which the stray-guard would (correctly)
+  # read as an unrelated dirty path — a fixture artifact, not a guard bug. A .keep
+  # file makes the receipt show as the untracked FILE it is in the real repo.
+  : > "$T/skill/tools/tests/.keep"
+  ok() { P=$((P+1)); }; bad() { F=$((F+1)); echo "  FAIL selftest - $*" >&2; }
+  chk() { # $1 desc, $2 want_rc, $3 got_rc
+    if [ "$2" = "$3" ]; then ok; else bad "$1 (want rc=$2 got rc=$3)"; fi
+  }
+  # fixture ledger + repos
+  cat > "$T/state/workers-ledger.json" <<EOF
+{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},
+ "updated_at":"2026-01-01T00:00:00Z","workers":[{"uuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","role":"tester","topic_id":1,"feature":"-","confirmed":true,"last_acked":null,"notes":[],"events":[]}],"events":[]}
+EOF
+  printf 'name: fixture\nversion: 0.4.2\n---\n# fixture\n' > "$T/skill/SKILL.md"
+  printf '# fixture changelog\n' > "$T/skill/CHANGELOG.md"
+  for r in "$T/state" "$T/skill"; do
+    git -C "$r" init -q 2>/dev/null
+    git -C "$r" config user.email t@t; git -C "$r" config user.name t
+    git -C "$r" config commit.gpgsign false
+    git -C "$r" add -A; git -C "$r" commit -q -m base
+  done
+  export OC_LEDGER="$T/state/workers-ledger.json" OC_SKILL_DIR="$T/skill" OC_DEPLOY_STATE_DIR="$T/state"
+  # #19: stamp now REFUSES an anonymous row, so the fixture stamps carry an
+  # actor the way a lane's shell does. The attribution cases below override it
+  # inline (an explicit OC_ACTOR always wins; the refusal has its own block).
+  export OC_ACTOR="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  local ME="$0"
+  # 1-3: stamp happy + n continuity + fields
+  bash "$ME" stamp note "one" >/dev/null 2>&1; chk "stamp#1" 0 $?
+  bash "$ME" stamp ruling "two" >/dev/null 2>&1; bash "$ME" stamp incident "three" >/dev/null 2>&1
+  chk "n-continuity" "3" "$(jq '([.events[].n] | max)' "$OC_LEDGER")"
+  chk "event-fields" "true" "$(jq '[.events[-1] | has("n") and has("t") and has("by") and has("kind") and has("what")] | .[0]' "$OC_LEDGER")"
+  # 4-8: refusals
+  bash "$ME" stamp bogus-kind "x" >/dev/null 2>&1; chk "unknown-kind" 2 $?
+  bash "$ME" stamp note "" >/dev/null 2>&1; chk "empty-what" 2 $?
+  bash "$ME" stamp skill-bump "x" >/dev/null 2>&1; chk "skill-bump-refused" 2 $?
+  bash "$ME" stamp claim "CLAIM #1234 — v1.1 kind" >/dev/null 2>&1; chk "stamp-claim-v1.1" 0 $?
+  # Duty-4 `proposal` (v0.4.152 A1): the law mandates `stamp proposal` in four
+  # places (hq.md Duty 4, editor.md, fleet-directives.md §Unified Event Capture,
+  # CHANGELOG v0.4.144) but the kind was absent from KINDS, so the verb died
+  # rc 2 and the channel had NEVER accepted a row (0 of 3558 events, 2026-09-12).
+  # A law that names a verb the tool refuses is a dead channel, not a lane error.
+  bash "$ME" stamp proposal "Duty-4 proposal (fixture)" >/dev/null 2>&1; chk "stamp-proposal" 0 $?
+  chk "stamp-proposal-kind" "proposal" "$(jq -r '[.events[] | select(.kind == "proposal")] | last | .kind // ""' "$OC_LEDGER")"
+  # --what flag form + flag-glitch guards (Duty-4 2026-08-31: n=1361/n=1372 class)
+  bash "$ME" stamp note --what "flag-form text" >/dev/null 2>&1; chk "stamp-what-flag" 0 $?
+  chk "stamp-what-value" "flag-form text" "$(jq -r '[.events[] | select(.kind == "note")] | last | .what // ""' "$OC_LEDGER")"
+  bash "$ME" stamp note --what >/dev/null 2>&1; chk "stamp-what-novalue" 2 $?
+  bash "$ME" stamp note --bogus x >/dev/null 2>&1; chk "stamp-unknown-flag" 2 $?
+  OC_LEDGER="$T/nope.json" bash "$ME" stamp note "x" >/dev/null 2>&1; chk "ledger-missing" 3 $?
+  echo "{broken" > "$T/bad.json"; OC_LEDGER="$T/bad.json" bash "$ME" stamp note "x" >/dev/null 2>&1; chk "ledger-corrupt" 3 $?
+  # --- #341 (2026-09-19): shell-free stamp input + observable stored text ------
+  # The defect: text passed on a COMMAND LINE is expanded by the CALLER's shell
+  # BEFORE this tool runs, so backticks and $(...) execute, and a substitution
+  # that yields EMPTY output leaves NO trace in the stored row -- while the
+  # read-back self-verify above still reports "(read-back ok)". That check
+  # compares the already-expanded value against the already-expanded stored
+  # copy, so it is blind to caller-side expansion BY CONSTRUCTION. --what-file /
+  # --what-stdin give the text a path that never enters a shell; the success
+  # line now echoes what actually landed. A length assertion here would pass on
+  # a wrong-but-same-length string, so the legs compare CONTENT.
+  local WANT_TEXT H1 H2
+  # content-equality helper: `chk` above is rc-specific, so routing a CONTENT
+  # comparison through it reports "want rc=<text> got rc=<text>" -- nonsense.
+  chkeq() { if [ "$2" = "$3" ]; then ok; else bad "$1 (want '$2' got '$3')"; fi; }
+  cat > "$T/payload.txt" <<'PAYLOAD'
+names the messages table in backticks `messages` and a dollar `$HOME` too
+PAYLOAD
+  WANT_TEXT="$(cat "$T/payload.txt")"
+  bash "$ME" stamp note --what-file "$T/payload.txt" >"$T/wf.out" 2>&1; chk "stamp-what-file-rc" 0 $?
+  chkeq "stamp-what-file-roundtrip" "$WANT_TEXT" "$(jq -r '[.events[] | select(.kind=="note")] | last | .what' "$OC_LEDGER")"
+  # the success line must SURFACE the stored bytes (len + hash8) so a caller
+  # whose shell ate a word can SEE the bite -- the read-back cannot tell them.
+  case "$(cat "$T/wf.out")" in *"len=$(printf '%s' "$WANT_TEXT" | wc -c | tr -d ' ')"*) ok ;; *) bad "stamp-success-line-len" ;; esac
+  case "$(cat "$T/wf.out")" in *"hash8=$(printf '%s' "$WANT_TEXT" | sha256sum | cut -c1-8)"*) ok ;; *) bad "stamp-success-line-hash8" ;; esac
+  bash "$ME" stamp note --what-stdin < "$T/payload.txt" >/dev/null 2>&1; chk "stamp-what-stdin-rc" 0 $?
+  chkeq "stamp-what-stdin-roundtrip" "$WANT_TEXT" "$(jq -r '[.events[] | select(.kind=="note")] | last | .what' "$OC_LEDGER")"
+  # ANTI-VACUITY: the surfaced hash8 is computed FROM THE STORED BYTES, not a
+  # constant -- two different texts must not collide on it.
+  H1="$(printf '%s' "$WANT_TEXT" | sha256sum | cut -c1-8)"
+  H2="$(printf '%s' 'x' | sha256sum | cut -c1-8)"
+  if [ "$H1" != "$H2" ]; then ok; else bad "stamp-hash8-anti-vacuity"; fi
+  # guards: exactly ONE text source; an unreadable file is a usage error (rc 2).
+  # The missing-file leg asserts the TOOL's OWN diagnostic, not merely that the
+  # path appears in stderr: with the -r guard removed, `cat` still fails and its
+  # own message still names the path, so a path-substring assertion passes on a
+  # tool that never checked anything (mutation-checked -- M4 stayed GREEN on
+  # that weaker form). "not readable" is a string `cat` cannot produce.
+  bash "$ME" stamp note --what x --what-file "$T/payload.txt" >/dev/null 2>&1; chk "stamp-two-sources-refused" 2 $?
+  bash "$ME" stamp note --what-file "$T/does-not-exist.txt" >/dev/null 2>"$T/wfmiss.err"; chk "stamp-what-file-missing" 2 $?
+  case "$(cat "$T/wfmiss.err")" in *"not readable"*) ok ;; *) bad "stamp-what-file-missing-owned-diagnostic" ;; esac
+  # --- fixture verb (#156 task-2 remainder, 2026-11-23) ---------------------
+  # The one-writer census forbids `.events +=` outside this file, so a fixture
+  # builder that needs a CHOSEN ordinal and a CHOSEN stamp must come through a
+  # verb. `stamp` derives both, so these arms pin the FORCING itself: the record
+  # is seeded at n=7 and the fixture asks for n=9, so an implementation that
+  # derived n would land 8 and fail BOTH the equality and the anti-vacuity arm.
+  # The forced `t` is a date in the PAST on purpose (2026-09-24) — a verb that
+  # stamped `now` would store today and redden the verbatim arm.
+  local FX="$T/fixture-jsonl"; mkdir -p "$FX"
+  printf '{"n":7,"t":"2026-11-01T00:00:00Z","by":"seed","kind":"note","what":"seed row"}\n' > "$FX/events.jsonl"
+  printf '{"workers":[],"meta":{}}\n' > "$FX/workers.json"
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 9 --t 2026-09-24T00:00:00Z \
+    --kind note --by hq --what "forced fixture row" >"$T/fx.out" 2>&1; chk "fixture-rc" 0 $?
+  _fxn="$(jq -s -r '[.[]][-1].n' "$FX/events.jsonl" 2>/dev/null)"
+  chk "fixture-forced-n" "9" "$_fxn"
+  [ "$_fxn" != "8" ] && ok || bad "fixture-forced-n-not-derived (a derived ordinal would have been 8)"
+  chkeq "fixture-forced-t-verbatim" "2026-09-24T00:00:00Z" \
+    "$(jq -s -r '[.[]][-1].t' "$FX/events.jsonl" 2>/dev/null)"
+  chkeq "fixture-kind-by-what-verbatim" "note|hq|forced fixture row" \
+    "$(jq -s -r '[.[]][-1] | "\(.kind)|\(.by)|\(.what)"' "$FX/events.jsonl" 2>/dev/null)"
+  # the row landed on the RECORD, not on the derived view
+  [ "$(wc -l < "$FX/events.jsonl" | tr -d ' ')" = 2 ] && ok || bad "fixture-row-on-the-record"
+  # --what-file carries shell-hostile bytes through a path (#341 class)
+  printf 'forced `text` with $HOME\n' > "$T/fx-payload.txt"
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 12 --t 2026-09-24T00:00:01Z \
+    --kind note --by hq --what-file "$T/fx-payload.txt" >/dev/null 2>&1; chk "fixture-what-file-rc" 0 $?
+  chkeq "fixture-what-file-verbatim" 'forced `text` with $HOME' \
+    "$(jq -s -r '[.[]][-1].what' "$FX/events.jsonl" 2>/dev/null)"
+  # a seeded CLAIM carries the structured `issues` field cmd_stamp derives, so
+  # it is visible to the scanner that keys on it (a fixture that seeds a claim
+  # without it would test a row shape the live writer never produces).
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 13 --t 2026-09-24T00:00:02Z \
+    --kind claim --by hq --what "CLAIM #777 — fixture claim" >/dev/null 2>&1; chk "fixture-claim-rc" 0 $?
+  chkeq "fixture-claim-issues-field" "777" \
+    "$(jq -s -r '[.[]][-1].issues[0]' "$FX/events.jsonl" 2>/dev/null)"
+  chkeq "fixture-claim-visible-to-claims" "1" \
+    "$(OC_LEDGER="$FX/workers-ledger.json" bash "$ME" claims 777 2>/dev/null | grep -c 'fixture claim')"
+  # --n and --t are REQUIRED — that is the verb's purpose, so their absence is
+  # rc 2 (not a silently derived value), and nothing is written on those paths.
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --t 2026-09-24T00:00:00Z --kind note --by hq --what x >/dev/null 2>&1; chk "fixture-n-required" 2 $?
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 11 --kind note --by hq --what x >/dev/null 2>&1; chk "fixture-t-required" 2 $?
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 11 --t 2026-09-24T00:00:00Z --kind bogus --by hq --what x >/dev/null 2>&1; chk "fixture-kind-validated" 2 $?
+  OC_LEDGER="$FX/workers-ledger.json" bash "$ME" fixture --n 11 --t 2026-09-24T00:00:00Z --kind note --what x >/dev/null 2>&1; chk "fixture-by-required" 2 $?
+  chk "fixture-refusals-wrote-nothing" "4" "$(wc -l < "$FX/events.jsonl" | tr -d ' ')"
+  # 9-13: sync gates
+  bash "$ME" sync --version 0.4.2 >/dev/null 2>&1; chk "sync-no-receipt" 5 $?
+  echo '{"verdict":"FAIL","fail":2,"ts":"'"$(now_iso)"'"}' > "$T/skill/tools/tests/battery-last.json"
+  bash "$ME" sync --version 0.4.2 >/dev/null 2>&1; chk "sync-red-receipt" 5 $?
+  echo '{"verdict":"PASS","fail":0,"ts":"'"$(now_iso)"'"}' > "$T/skill/tools/tests/battery-last.json"
+  bash "$ME" sync --version banana >/dev/null 2>&1; chk "sync-bad-shape" 6 $?
+  sed -i 's/version: 0.4.2/version: 0.4.9/' "$T/skill/SKILL.md"
+  bash "$ME" sync --version 0.4.2 >/dev/null 2>&1; chk "sync-skillmd-mismatch" 6 $?
+  sed -i 's/version: 0.4.9/version: 0.4.2/' "$T/skill/SKILL.md"
+  bash "$ME" sync --version 0.4.9 >/dev/null 2>&1; chk "sync-step-gap" 6 $?
+  # C8 (v0.4.65): sync refuses a bump whose CHANGELOG entry is missing
+  bash "$ME" sync --version 0.4.2 >/dev/null 2>&1; chk "sync-changelog-missing" 6 $?
+  printf '\n## v0.4.2\nfixture receipt\n' >> "$T/skill/CHANGELOG.md"
+  # H-4 (factory #31): a skill-bump row must not ship without its why-text.
+  # Every OTHER gate is satisfied here (receipt present, SKILL.md=0.4.2, equal
+  # step) and no skill-bump event exists yet, so an empty --why is the ONLY thing
+  # that can refuse — and a mutant that drops the gate writes the row AND exits 0,
+  # reddening BOTH the rc leg and the no-event leg.
+  _ew_before="$(jq '[.events[] | select(.kind == "skill-bump")] | length' "$OC_LEDGER")"
+  bash "$ME" sync --version 0.4.2 >/dev/null 2>"$T/emptywhy.err"; chk "sync-empty-why-refused" 2 $?
+  _ew_after="$(jq '[.events[] | select(.kind == "skill-bump")] | length' "$OC_LEDGER")"
+  chk "sync-empty-why-no-event" "$_ew_before" "$_ew_after"
+  grep -q -- '--why' "$T/emptywhy.err" && ok || bad "sync-empty-why-names-the-flag"
+  # 14-17: sync happy + git legs + re-sync
+  SYNC_OUT="$(bash "$ME" sync --version 0.4.2 --why selftest 2>&1)"; chk "sync-happy" 0 $?
+  case "$SYNC_OUT" in *"shadow-rotate:"*) ok ;; *) bad "sync-tail-rotate-line" ;; esac
+  chk "sync-three-fields" "true" "$(jq '(.current_skill_version == "0.4.2") and (.meta.current_skill_version == "0.4.2") and (.meta.skill_version == "0.4.2")' "$OC_LEDGER")"
+  chk "sync-event" "skill-bump" "$(jq -r '[.events[] | select(.kind == "skill-bump")] | last | .kind // ""' "$OC_LEDGER")"
+  git -C "$T/state" log --oneline | grep "skill-bump v0.4.2" >/dev/null && ok || bad "sync-state-commit"   # no -q: pipefail v0.4.72 — grep -q early-close can SIGPIPE git log (141)
+  git -C "$T/skill" tag | grep -q '^v0\.4\.2$' && ok || bad "sync-skill-tag"
+  bash "$ME" sync --version 0.4.2 --why resync >"$T/resync.out" 2>"$T/resync.err"; chk "sync-resync-equal" 0 $?
+  # #467: AC-1 — a re-sync on an UNCHANGED tree commits nothing, so `git commit`
+  # exits non-zero for the benign 'nothing to commit' case and the `||` arm used to
+  # cry commit-lag on every idempotent re-sync. A clean tree is not a deferral.
+  case "$(cat "$T/resync.err")" in
+    *"commit-lag: skill commit deferred"*) bad "sync-clean-tree-no-commit-lag" ;;
+    *) ok ;;
+  esac
+  # #467: AC-2 — a GENUINE deferral must STILL be reported. A failing pre-commit
+  # hook with something staged is what makes `git commit` fail while the tree is
+  # otherwise sound, so the `||` arm is then the only thing that can say so.
+  printf '#!/bin/sh\nexit 1\n' > "$T/skill/.git/hooks/pre-commit"
+  chmod +x "$T/skill/.git/hooks/pre-commit"
+  printf 'fixture\n' >> "$T/skill/CHANGELOG.md"
+  bash "$ME" sync --version 0.4.2 --why hookfail >"$T/lag.out" 2>"$T/lag.err"; chk "sync-hook-fail-rc" 0 $?
+  case "$(cat "$T/lag.err")" in
+    *"commit-lag: skill commit deferred"*) ok ;;
+    *) bad "sync-genuine-deferral-reported" ;;
+  esac
+  rm -f "$T/skill/.git/hooks/pre-commit"
+  git -C "$T/skill" reset -q; git -C "$T/skill" checkout -q -- CHANGELOG.md
+  # 17b-pre (v0.4.157): the stray-guard REFUSES an unrelated dirty path, names it,
+  # and writes NO skill-bump event (a refused sync must leave no drift behind).
+  sed -i 's/version: 0.4.2/version: 0.4.3/' "$T/skill/SKILL.md"
+  printf '\n## v0.4.3\npayload receipt\n' >> "$T/skill/CHANGELOG.md"
+  echo "stray-leg" > "$T/skill/tools/stray-probe.sh"
+  STRAY_OUT="$(bash "$ME" sync --version 0.4.3 --why stray 2>&1)"; chk "sync-stray-refused" 7 $?
+  case "$STRAY_OUT" in *"stray-probe.sh"*) ok ;; *) bad "sync-stray-names-path" ;; esac
+  chk "sync-stray-no-event" "0" "$(jq '[.events[] | select(.kind == "skill-bump" and ((.what // "") | startswith("v0.4.3 ")))] | length' "$OC_LEDGER")"
+  rm -f "$T/skill/tools/stray-probe.sh"
+  # 17b: payload-sweep root-fix (n=1405: v0.4.58/61/62 strayed payload via hardcoded add list)
+  # v0.4.157: the sweep is now EXPLICIT - --allow-sweep is the consent, so a bump can
+  # no longer absorb a path nobody agreed to (the 20c8df4f class).
+  echo "payload-leg" > "$T/skill/tools/payload-probe.sh"
+  PSWEEP_OUT="$(bash "$ME" sync --version 0.4.3 --why payload-sweep --allow-sweep 2>&1)"; chk "sync-payload-sweep" 0 $?
+  case "$PSWEEP_OUT" in *"PAYLOAD SWEPT"*) ok ;; *) bad "sync-payload-warning" ;; esac
+  git -C "$T/skill" show v0.4.3 --name-only | grep -q "payload-probe.sh" && ok || bad "sync-sweeps-payload"
+  # 18-19: check-version
+  bash "$ME" check-version >/dev/null 2>&1; chk "check-version-ok" 0 $?
+  # factory #47: the LAW DIGEST leg. The version is a self-report, so the only
+  # observable for "law moved without a bump" is a digest stamped by the
+  # publishing act and compared against the tree. These legs run while the
+  # version FIELDS still agree, so a red here cannot be the field mismatch the
+  # legs below manufacture — the discriminator is the point: the nine-day case
+  # was every field saying 0.4.295 while the law moved underneath.
+  bash "$ME" law-digest >/dev/null 2>&1; chk "law-digest-match-rc" 0 $?
+  LDG_STAMP="$(jq -r '[.events[] | select(.kind=="skill-bump")] | last | .law_digest // ""' "$OC_LEDGER")"
+  # 64 hex chars, no non-hex: a constant or an empty field fails this.
+  if [ "${#LDG_STAMP}" -eq 64 ] && [ "${LDG_STAMP#*[!0-9a-f]}" = "$LDG_STAMP" ]; then ok; else bad "law-digest-stamped-in-bump-row"; fi
+  # ANTI-VACUITY: the stamp is a function of the law BYTES, not a constant. A law
+  # file APPEARING where there was none is a law change too (ABSENT -> hash), so
+  # this also covers the deletion/rename direction.
+  printf 'fixture law\n' > "$T/skill/editor.md"
+  LDG_MOVED="$(bash "$ME" law-digest --json 2>/dev/null | jq -r '.current')"
+  if [ -n "$LDG_MOVED" ] && [ "$LDG_MOVED" != "$LDG_STAMP" ]; then ok; else bad "law-digest-moves-with-law"; fi
+  bash "$ME" law-digest >/dev/null 2>&1; chk "law-digest-drift-rc" 1 $?
+  bash "$ME" check-version >"$T/lawdrift.out" 2>&1; chk "check-version-unbumped-law-rc" 1 $?
+  grep -q "UNBUMPED-LAW" "$T/lawdrift.out" && ok || bad "check-version-names-unbumped-law"
+  if grep -q "ok: all fields agree" "$T/lawdrift.out"; then bad "check-version-unbumped-law-is-not-a-field-mismatch"; else ok; fi
+  # A re-sync at the SAME version must never launder moved law into a published
+  # version. --allow-sweep is passed deliberately: the stray-guard's consent must
+  # NOT override this refusal, or the consent flag becomes the laundering route.
+  bash "$ME" sync --version 0.4.3 --why relaw --allow-sweep >"$T/relaw.out" 2>&1; chk "sync-resync-law-moved-refused" 6 $?
+  grep -q "a re-sync is not a bump" "$T/relaw.out" && ok || bad "sync-resync-law-moved-names-cause"
+  # restoring the law restores the verdict — a leg stuck red after the state is
+  # repaired would be a false alarm generator, not a guard.
+  rm -f "$T/skill/editor.md"
+  bash "$ME" law-digest >/dev/null 2>&1; chk "law-digest-restored-rc" 0 $?
+  bash "$ME" check-version >/dev/null 2>&1; chk "check-version-restored-rc" 0 $?
+  jq '.meta.skill_version = "0.4.1"' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
+  bash "$ME" check-version > "$T/cv.out" 2>&1; grep -q "meta.skill_version" "$T/cv.out" && ok || bad "check-version-names-field"   # v0.4.72 pipefail: capture-then-grep, pipeline rc no longer masks tool exit
+  bash "$ME" check-version >/dev/null 2>&1; chk "check-version-drift-rc" 1 $?
+  # #359: a mismatch must NAME its cause, and both shapes keep rc 1.
+  bash "$ME" check-version > "$T/cv1.out" 2>&1; chk "check-version-fleet-rc" 1 $?
+  grep -q "FLEET-LEVEL" "$T/cv1.out" && ok || bad "check-version-names-fleet-cause"
+  jq '.workers[0].last_acked = {version:"0.4.1", at:"2026-01-01T00:00:00Z"}' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
+  bash "$ME" check-version > "$T/cv2.out" 2>&1; chk "check-version-lane-rc" 1 $?
+  grep -q "LANE-LEVEL" "$T/cv2.out" && ok || bad "check-version-names-lane-cause"
+  jq '.workers[0].last_acked = null' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
+  jq '.meta.skill_version = "0.4.2"' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
+  # 20-22: cadence
+  bash "$ME" cadence | grep -q "2/5 WAIT" && ok || bad "cadence-count"   # two skill-bumps (happy + payload-sweep; re-syncs were idempotent)
+  for i in 3 4 5 6; do
+    sed -i "s/^version: .*/version: 0.4.$i/" "$T/skill/SKILL.md"
+    printf '\n## v0.4.%s\npad receipt\n' "$i" >> "$T/skill/CHANGELOG.md"
+    bash "$ME" sync --version "0.4.$i" --why pad >/dev/null 2>&1
+  done
+  bash "$ME" cadence >/dev/null 2>&1; chk "cadence-fire-rc" 1 $?
+  bash "$ME" stamp review-battery "boundary" >/dev/null 2>&1
+  bash "$ME" cadence | grep -q "0/5 WAIT" && ok || bad "cadence-reset-on-review"
+  # 22a. cycle-close boundary (v0.4.129, n=2349 stale-boundary class): a note
+  # "vX.Y.Z ACCEPTED" is the canonical reset point; bumps after it recount.
+  bash "$ME" stamp note "0.4.6 ACCEPTED (fixture cycle close)" >/dev/null 2>&1
+  bash "$ME" cadence | grep -q "0/5 WAIT" && ok || bad "cadence-reset-on-cycle-close"
+  sed -i 's/^version: .*/version: 0.4.7/' "$T/skill/SKILL.md"
+  printf '\n## v0.4.7\nclose-boundary probe\n' >> "$T/skill/CHANGELOG.md"
+  bash "$ME" sync --version 0.4.7 --why cadence-close-probe >/dev/null 2>&1
+  bash "$ME" cadence | grep -q "1/5 WAIT" && ok || bad "cadence-counts-after-close"
+  # 22b: sync --catch-up (T2 verdict n=1695, HQ-approved 2026-09-06): the
+  # shipped-ahead dead zone gains a legal path — multi-step FORWARD jump with
+  # mandatory --why; without the flag the old rc6 stands; downgrades refused.
+  sed -i 's/^version: .*/version: 0.4.9/' "$T/skill/SKILL.md"
+  printf '\n## v0.4.9\ncatch-up receipt\n' >> "$T/skill/CHANGELOG.md"
+  bash "$ME" sync --version 0.4.9 >/dev/null 2>&1; chk "sync-catchup-needs-flag" 6 $?
+  bash "$ME" sync --version 0.4.9 --catch-up >/dev/null 2>&1; chk "sync-catchup-needs-why" 2 $?
+  sed -i 's/^version: .*/version: 0.4.4/' "$T/skill/SKILL.md"
+  bash "$ME" sync --version 0.4.4 --catch-up --why downgrade-probe >/dev/null 2>&1; chk "sync-catchup-downgrade-rc6" 6 $?
+  sed -i 's/^version: .*/version: 0.4.9/' "$T/skill/SKILL.md"
+  bash "$ME" sync --version 0.4.9 --catch-up --why selftest-catchup >/dev/null 2>&1; chk "sync-catchup-happy" 0 $?
+  chk "sync-catchup-event" "true" "$(jq -r '[.events[] | select(.kind == "skill-bump")] | last | .what | contains("catch-up from 0.4.7 (skipped 0.4.8)")' "$OC_LEDGER")"
+  chk "sync-catchup-heal" "true" "$(jq '(.current_skill_version == "0.4.9") and (.meta.current_skill_version == "0.4.9") and (.meta.skill_version == "0.4.9")' "$OC_LEDGER")"
+  # C8 naming WARN (v0.4.242 law, HQ item 1). The v0.4.65 EXISTENCE gate above
+  # stays HARD (die 6); this second leg only LISTS the commits the entry does
+  # not name, because the range is other lanes' work and carries untrailered law
+  # commits by design. Discriminating: on the pre-fix artifact c8_naming_warn
+  # does not exist, so no C8 line is emitted at all and (a)-(c) go red.
+  C8S="$T/c8skill"; C8D="$T/c8state"
+  mkdir -p "$C8S/tools/tests" "$C8D"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8S/SKILL.md"
+  printf '# fixture changelog\n' > "$C8S/CHANGELOG.md"
+  : > "$C8S/tools/tests/.keep"
+  printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$C8S/tools/tests/battery-last.json"
+  printf '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}\n' > "$C8D/workers-ledger.json"
+  for r in "$C8S" "$C8D"; do
+    git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+    git -C "$r" config commit.gpgsign false
+    git -C "$r" add -A; git -C "$r" commit -q -m base
+  done
+  c8sync() { # $1 = version
+    OC_LEDGER="$C8D/workers-ledger.json" OC_SKILL_DIR="$C8S" OC_DEPLOY_STATE_DIR="$C8D" \
+      OPENCRABS_SESSION_ID="${OC_ACTOR:-}" \
+      bash "$ME" sync --version "$1" --why selftest-c8 2>&1
+  }
+  # (a) UNDERIVABLE anchor: no 'skill v...' commit exists in the fixture yet, so
+  #     the comparison must be SKIPPED out loud and must not read as clean.
+  printf '\n## v0.4.2\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8U="$(c8sync 0.4.2)"; C8URC=$?
+  chk "c8-naming-skip-rc" 0 "$C8URC"
+  case "$C8U" in *"C8 naming check SKIPPED"*) ok ;; *) bad "c8-naming-skip-note-missing" ;; esac
+  case "$C8U" in *"NOT a clean result"*) ok ;; *) bad "c8-naming-skip-must-not-read-clean" ;; esac
+  # (b) anchor present, one bundled commit the entry does NOT name -> listed.
+  git -C "$C8S" commit -q --allow-empty -m "skill v0.4.1: oc-ledger sync — fixture anchor"
+  printf 'x\n' > "$C8S/unnamed.txt"; git -C "$C8S" add -A
+  git -C "$C8S" commit -q -m "fix(tools): #778 a commit the entry does not name"
+  C8SHA="$(git -C "$C8S" rev-parse --short HEAD)"
+  C8B="$(c8sync 0.4.2)"; C8BRC=$?
+  case "$C8B" in *"unnamed: $C8SHA"*) ok ;; *) bad "c8-naming-unnamed-not-listed ($C8SHA)" ;; esac
+  # the WARN is NOT a refusal: case (b) warned AND still synced rc 0 (the law's
+  # whole point — a hard gate here would let one lane's landing block the
+  # fleet's version record at HQ's boundary).
+  case "$C8B" in *"WARN — C8 naming"*) chk "c8-naming-warn-never-blocks" 0 "$C8BRC" ;; *) bad "c8-naming-warn-missing" ;; esac
+  # (c) same commit NAMED in the entry -> SILENT. Both directions, because a
+  #     one-way test cannot tell a working check from one that never fires.
+  printf 'name: fixture\nversion: 0.4.3\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.3\nc8 receipt naming %s and #778\n' "$C8SHA" >> "$C8S/CHANGELOG.md"
+  C8C="$(c8sync 0.4.3)"; chk "c8-naming-named-rc" 0 $?
+  case "$C8C" in *"unnamed:"*) bad "c8-naming-not-silent-when-named" ;; *) ok ;; esac
+  # (d) THE ANCHOR MUST BE A SYNC, not merely a commit whose subject starts
+  #     'skill v'. A bump-only commit is created NEWER than the last sync; the
+  #     prefix-only pattern anchors on it, truncating the range to empty and
+  #     reading CLEAN (silent) — an UNDER-flag, the dangerous direction. The
+  #     pinned pattern anchors on the sync and still sees the bundled commit.
+  #     Discriminating: pre-fix emits no 'unnamed:' line at all here.
+  printf 'y\n' > "$C8S/unnamed2.txt"; git -C "$C8S" add -A
+  git -C "$C8S" commit -q -m "fix(tools): #779 a second commit the entry does not name"
+  C8D2SHA="$(git -C "$C8S" rev-parse --short HEAD)"
+  git -C "$C8S" commit -q --allow-empty -m "skill v0.4.4: bump only (no sync commit here)"
+  printf 'name: fixture\nversion: 0.4.4\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.4\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8D2="$(c8sync 0.4.4)"
+  case "$C8D2" in *"unnamed: $C8D2SHA"*) ok ;; *) bad "c8-anchor-not-sync-under-flags ($C8D2SHA)" ;; esac
+  # (e) MULTI-WINDOW NOTE. The ledger is authoritative for what published — it
+  #     carries versions that minted no commit at all. Skill-bump rows newer
+  #     than the anchor mean the range straddles windows; the check must SAY so
+  #     rather than silently presenting a two-window span as one. Control first:
+  #     with no such rows the NOTE must be ABSENT (a note that always fires
+  #     carries no information).
+  printf 'name: fixture\nversion: 0.4.5\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.5\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8E0="$(c8sync 0.4.5)"
+  case "$C8E0" in *"MORE THAN ONE version window"*) bad "c8-multi-window-note-false-positive" ;; *) ok ;; esac
+  # NOTE the target: the C8 block's own ledger, NOT $OC_LEDGER — that variable
+  # holds the selftest's main fixture ledger (set far above this block), so
+  # writing there would seed rows the C8 check never reads and pollute later
+  # legs. Both paths were measured; this is the one c8sync drives.
+  jq '.events += [{n: 90001, t: "2099-01-01T00:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.9 — fixture row"},
+                  {n: 90002, t: "2099-01-02T00:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.10 — fixture row"}]' \
+    "$C8D/workers-ledger.json" > "$C8D/wl.tmp" && mv "$C8D/wl.tmp" "$C8D/workers-ledger.json"
+  C8E="$(c8sync 0.4.5)"
+  case "$C8E" in *"MORE THAN ONE version window"*) ok ;; *) bad "c8-multi-window-note-missing" ;; esac
+  case "$C8E" in *"v0.4.9"*) ok ;; *) bad "c8-multi-window-note-names-no-window" ;; esac
+  # (f) THE SWEEPER'S OWN BOOKKEEPING is skipped by the marker the tool WRITES
+  #     (not a hand-maintained list), and the skip is DISCLOSED — an unreported
+  #     exclusion is an exclusion list nobody can audit, which is how this class
+  #     of gate dies. Both halves asserted: absent from the unnamed set, and
+  #     visible as a count.
+  printf 'z\n' > "$C8S/sweep.txt"; git -C "$C8S" add -A
+  git -C "$C8S" commit -q -m "runtime-artifacts sweep (B3): tools/tests/battery-last.json (oc-ledger commit-pending --bundle)"
+  C8FSHA="$(git -C "$C8S" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.6\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.6\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8F="$(c8sync 0.4.6)"
+  case "$C8F" in *"unnamed: $C8FSHA"*) bad "c8-sweeper-listed-as-unnamed" ;; *) ok ;; esac
+  case "$C8F" in *"skipped as this tool's own sweeper bookkeeping"*) ok ;; *) bad "c8-sweeper-skip-undisclosed" ;; esac
+  # (g) THE BUMPER'S OWN unnameable commit is skipped by Session-Id TRAILER and
+  #     the skip is DISCLOSED. A commit by the syncing session naming no issue
+  #     cannot be named by the entry — its sha does not exist when the entry is
+  #     written — so it is excluded structurally, and reported, because an
+  #     unreported skip is an exclusion list nobody can audit.
+  printf 'w\n' > "$C8S/law.txt"; git -C "$C8S" add -A
+  git -C "$C8S" commit -q -m "law: fixture cycle commit (no issue ref)" -m "Session-Id: $OC_ACTOR"
+  C8GSHA="$(git -C "$C8S" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.7\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.7\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8G="$(c8sync 0.4.7)"
+  case "$C8G" in *"unnamed: $C8GSHA"*) bad "c8-selfcommit-no-issue-listed" ;; *) ok ;; esac
+  case "$C8G" in *"skipped as made by THIS syncing session"*) ok ;; *) bad "c8-selfskip-undisclosed" ;; esac
+  # (h) TIGHTENING: a self-commit that DOES name an issue is real shipped work
+  #     and stays LISTED. Without this the skip would trade a false positive for
+  #     a false negative on exactly the commits this leg exists to surface.
+  printf 'v\n' > "$C8S/fix.txt"; git -C "$C8S" add -A
+  git -C "$C8S" commit -q -m "fix(tools): a self-commit that ships real work (#780)" -m "Session-Id: $OC_ACTOR" -m "Issue-Ref: #780"
+  C8HSHA="$(git -C "$C8S" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.8\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.8\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8H="$(c8sync 0.4.8)"
+  case "$C8H" in *"unnamed: $C8HSHA"*) ok ;; *) bad "c8-selfcommit-with-issue-hidden" ;; esac
+  # (i) CORRECTED (2026-09-25, HQ report, verified first-hand): a self-commit
+  #     whose SUBJECT merely MENTIONS an issue in prose carries no Issue-Ref
+  #     trailer and IS skipped. Measured on HQ's v0.4.250 sync: `b1307038`
+  #     "law: name the four #547 commits bundled in v0.4.249 (C8 leg)" was
+  #     flagged although it fixes nothing -- it NAMES that window's commits.
+  #     A subject is prose; the trailer is the contract the fleet keys on.
+  #     Discriminating: pre-fix the subject test saw '#' and kept it listed.
+  printf 'w\n' > "$C8S/prose.txt"; git -C "$C8S" add -A
+  git -C "$C8S" commit -q -m "law: name the four #781 commits bundled elsewhere (C8 leg)" -m "Session-Id: $OC_ACTOR"
+  C8ISHA="$(git -C "$C8S" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.9\n---\n' > "$C8S/SKILL.md"
+  printf '\n## v0.4.9\nc8 receipt\n' >> "$C8S/CHANGELOG.md"
+  C8I="$(c8sync 0.4.9)"
+  case "$C8I" in *"unnamed: $C8ISHA"*) bad "c8-prose-mention-still-listed ($C8ISHA)" ;; *) ok ;; esac
+  case "$C8I" in *"skipped as made by THIS syncing session"*) ok ;; *) bad "c8-prose-mention-skip-undisclosed" ;; esac
+  # ------------------------------------------------------------------
+  # #651 — THE LEDGER BOUND ON THE C8 RANGE.
+  # The subject anchor cannot see a bump whose version commit is LANE-authored
+  # ("skill v0.4.4: Duty 4+6 cycle ..."), because it does not carry the
+  # ": oc-ledger sync" form; the sync then finds a clean tree, mints the
+  # skill-bump row and commits nothing. Measured at the real v0.4.268 sync:
+  # rows for v0.4.266 and v0.4.267 exist with NO sync commit, the subject
+  # predicate returned the v0.4.265 sync, and the range spanned 51 commits where
+  # the true window was 13. Each arm gets its OWN fixture dirs, because leg (e)
+  # above seeds the shared C8D ledger with 2099 rows on purpose and a bound leg
+  # reading it would measure that pollution instead of its own condition.
+  c8mk() { # $1 = dir suffix. Prints nothing; creates $T/c8$1/{skill,state}
+    local x="$T/c8$1"
+    mkdir -p "$x/skill/tools/tests" "$x/state"
+    printf 'name: fixture\nversion: 0.4.1\n---\n' > "$x/skill/SKILL.md"
+    printf '# fixture changelog\n' > "$x/skill/CHANGELOG.md"
+    printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$x/skill/tools/tests/battery-last.json"
+    printf '{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}\n' > "$x/state/workers-ledger.json"
+    for r in "$x/skill" "$x/state"; do
+      git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+      git -C "$r" config commit.gpgsign false
+      git -C "$r" add -A; git -C "$r" commit -q -m base
+    done
+    printf '%s' "$x"
+  }
+  c8commit() { # $1 = dir  $2 = subject  $3 = iso date ("" = now)
+    local d="$1" s="$2" dt="$3"
+    if [ -n "$dt" ]; then
+      GIT_AUTHOR_DATE="$dt" GIT_COMMITTER_DATE="$dt" git -C "$d" commit -q --allow-empty -m "$s"
+    else
+      git -C "$d" commit -q --allow-empty -m "$s"
+    fi
+  }
+  # (j) THE BOUND FIRES AND CORRECTS. A lane-authored bump mints a skill-bump row
+  #     at 09:00 with no sync commit; three earlier-window commits sit behind the
+  #     subject anchor. Without the bound all four are swept in; with it only the
+  #     true-window commit is listed, the straddle is CORRECTED (so the old
+  #     disclosure note must go quiet), and the correction is named.
+  C8J="$(c8mk j)"
+  c8commit "$C8J/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  for i in 1 2 3; do
+    c8commit "$C8J/skill" "fix(tools): #77$i earlier window" "2026-09-27T07:0$i:00 +0000"
+  done
+  c8commit "$C8J/skill" "skill v0.4.4: Duty 4+6 cycle — lane authored, no sync commit" "2026-09-27T09:00:00 +0000"
+  printf 'n\n' > "$C8J/skill/true.txt"; git -C "$C8J/skill" add -A
+  GIT_AUTHOR_DATE="2026-09-27T09:30:00 +0000" GIT_COMMITTER_DATE="2026-09-27T09:30:00 +0000" \
+    git -C "$C8J/skill" commit -q -m "fix(tools): #780 the true window"
+  C8JSHA="$(git -C "$C8J/skill" rev-parse --short HEAD)"
+  jq '.events += [{n: 9101, t: "2026-09-27T09:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.4 — lane-authored bump"}]' \
+    "$C8J/state/workers-ledger.json" > "$C8J/wl.tmp" && mv "$C8J/wl.tmp" "$C8J/state/workers-ledger.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8J/skill/SKILL.md"
+  printf '\n## v0.4.2\nc8 receipt names nothing\n' >> "$C8J/skill/CHANGELOG.md"
+  C8JO="$(OC_LEDGER="$C8J/state/workers-ledger.json" OC_SKILL_DIR="$C8J/skill" \
+    OC_DEPLOY_STATE_DIR="$C8J/state" bash "$ME" sync --version 0.4.2 --why selftest-651 2>&1 || true)"
+  case "$C8JO" in *"BOUNDED to commits after v0.4.4"*) ok ;; *) bad "c8-651-bound-note-missing" ;; esac
+  case "$C8JO" in *"unnamed: $C8JSHA"*) ok ;; *) bad "c8-651-true-window-commit-lost ($C8JSHA)" ;; esac
+  case "$C8JO" in *"#771 earlier window"*|*"#772 earlier window"*|*"#773 earlier window"*)
+      bad "c8-651-earlier-window-still-swept" ;; *) ok ;; esac
+  case "$C8JO" in *"MORE THAN ONE version window"*)
+      bad "c8-651-straddle-note-should-be-suppressed-when-corrected" ;; *) ok ;; esac
+  # (k) CONTROL — THE BOUND MUST NOT FIRE WHEN THE ANCHOR IS FRESH. The newest
+  #     skill-bump row is OLDER than the anchor commit, so stale is False. An
+  #     unconditional bound would narrow a correct range against the wrong
+  #     instant; measured, it widened a 1-commit range to 2 and would
+  #     double-report the previous window's work.
+  C8K="$(c8mk k)"
+  jq '.events += [{n: 9201, t: "2026-09-27T05:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.1 — old row"}]' \
+    "$C8K/state/workers-ledger.json" > "$C8K/wl.tmp" && mv "$C8K/wl.tmp" "$C8K/state/workers-ledger.json"
+  c8commit "$C8K/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  printf 'k\n' > "$C8K/skill/k.txt"; git -C "$C8K/skill" add -A
+  git -C "$C8K/skill" commit -q -m "fix(tools): #790 the only bundled commit"
+  C8KSHA="$(git -C "$C8K/skill" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8K/skill/SKILL.md"
+  printf '\n## v0.4.2\nc8 receipt names nothing\n' >> "$C8K/skill/CHANGELOG.md"
+  C8KO="$(OC_LEDGER="$C8K/state/workers-ledger.json" OC_SKILL_DIR="$C8K/skill" \
+    OC_DEPLOY_STATE_DIR="$C8K/state" bash "$ME" sync --version 0.4.2 --why selftest-651k 2>&1 || true)"
+  case "$C8KO" in *"BOUNDED to commits after"*)
+      bad "c8-651-bound-fired-on-fresh-anchor" ;; *) ok ;; esac
+  case "$C8KO" in *"unnamed: $C8KSHA"*) ok ;; *) bad "c8-651-fresh-anchor-range-broken ($C8KSHA)" ;; esac
+  # (l) THE PAST-HEAD GUARD. A row stamped after EVERY commit in the repo would
+  #     filter the range to EMPTY, and an empty range reads as a clean check
+  #     while verifying nothing (#485's shape from the opposite direction). The
+  #     bound must be refused, the subject anchor kept, and the refusal said.
+  #     This is not hypothetical: leg (e) above injects exactly such rows.
+  C8L="$(c8mk l)"
+  c8commit "$C8L/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  printf 'l\n' > "$C8L/skill/l.txt"; git -C "$C8L/skill" add -A
+  git -C "$C8L/skill" commit -q -m "fix(tools): #791 the bundled commit"
+  C8LSHA="$(git -C "$C8L/skill" rev-parse --short HEAD)"
+  jq '.events += [{n: 9301, t: "2099-01-01T00:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.9 — future row"}]' \
+    "$C8L/state/workers-ledger.json" > "$C8L/wl.tmp" && mv "$C8L/wl.tmp" "$C8L/state/workers-ledger.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8L/skill/SKILL.md"
+  printf '\n## v0.4.2\nc8 receipt names nothing\n' >> "$C8L/skill/CHANGELOG.md"
+  C8LO="$(OC_LEDGER="$C8L/state/workers-ledger.json" OC_SKILL_DIR="$C8L/skill" \
+    OC_DEPLOY_STATE_DIR="$C8L/state" bash "$ME" sync --version 0.4.2 --why selftest-651l 2>&1 || true)"
+  case "$C8LO" in *"AFTER every commit in the repo"*) ok ;; *) bad "c8-651-past-head-guard-note-missing" ;; esac
+  case "$C8LO" in *"BOUNDED to commits after"*)
+      bad "c8-651-bound-applied-past-head-would-empty-the-range" ;; *) ok ;; esac
+  case "$C8LO" in *"unnamed: $C8LSHA"*) ok ;; *) bad "c8-651-past-head-guard-emptied-the-range" ;; esac
+  # ------------------------------------------------------------------
+  # #94 — THE NAMING TEST MUST READ THE ENTRY SET THE RANGE SPANS.
+  # The existence gate and the naming test both read `## v$v`. When the range is
+  # BOUNDED that is correct: earlier windows are excluded by construction. When
+  # the bound does NOT fire the range is unbounded and can span several version
+  # windows, so a commit shipped under an earlier window is dated in THAT
+  # window's entry — and testing only `## v$v` flags it for lacking a ship date
+  # it actually has. The false positive is structural: it can only fire when the
+  # bound fails, and the bound failing is exactly what makes the range span more
+  # than one window.
+  #
+  # WIDENING IS CONDITIONAL, and arms (n) and (o) are the two directions: (m)/(n)
+  # prove an earlier-window entry silences an unbounded range, (o) proves a
+  # BOUNDED range still reads one entry — widening there would hide a genuine
+  # miss, because the commit is absent from the range's own window yet we would
+  # stop looking for it.
+  #
+  # The unbounded-with-spans shape is reachable ONLY through the past-head guard
+  # (leg (l)): a bump row stamped after every commit leaves the range unbounded
+  # while rows newer than the anchor still enumerate windows. That is the real
+  # incident shape — a lane publishes the bump row before the commit lands, or
+  # the clocks disagree — so the fixture builds it the same way.
+  C8M="$(c8mk m)"
+  c8commit "$C8M/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  c8commit "$C8M/skill" "fix(tools): #781 named in the earlier window" "2026-09-27T07:00:00 +0000"
+  C8MSHA="$(git -C "$C8M/skill" rev-parse --short HEAD)"
+  c8commit "$C8M/skill" "fix(tools): #782 named NOWHERE at all" "2026-09-27T07:30:00 +0000"
+  C8M2SHA="$(git -C "$C8M/skill" rev-parse --short HEAD)"
+  jq '.events += [{n: 9401, t: "2026-09-27T07:05:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.8 — in-range row"},
+                  {n: 9402, t: "2099-01-01T00:00:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.9 — past-head row"}]' \
+    "$C8M/state/workers-ledger.json" > "$C8M/wl.tmp" && mv "$C8M/wl.tmp" "$C8M/state/workers-ledger.json"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8M/skill/SKILL.md"
+  printf '# fixture changelog\n\n## v0.4.2\nc8 receipt names nothing\n\n## v0.4.8\nc8 earlier-window receipt names %s\n' "$C8MSHA" \
+    >> "$C8M/skill/CHANGELOG.md"
+  C8MO="$(OC_LEDGER="$C8M/state/workers-ledger.json" OC_SKILL_DIR="$C8M/skill" \
+    OC_DEPLOY_STATE_DIR="$C8M/state" bash "$ME" sync --version 0.4.2 --why selftest-94m 2>&1 || true)"
+  # (m) THE FIX: a commit dated in an earlier window's entry is NOT flagged. On
+  #     the pre-fix artifact only `## v0.4.2` is read, so this commit is listed
+  #     for lacking a ship date it has two windows back.
+  case "$C8MO" in *"unnamed: $C8MSHA"*) bad "c8-94-earlier-window-entry-ignored ($C8MSHA)" ;; *) ok ;; esac
+  # (n) POSITIVE CONTROL, same fixture: a commit named NOWHERE is still listed.
+  #     Without this the widening could have been "silence everything" and (m)
+  #     would have passed on a check that reads no entries at all.
+  case "$C8MO" in *"unnamed: $C8M2SHA"*) ok ;; *) bad "c8-94-unnamed-commit-lost ($C8M2SHA)" ;; esac
+  # the widening is DISCLOSED — a scope change nobody can see is how a check
+  # starts reporting on something other than what its message says.
+  case "$C8MO" in *"UNBOUNDED and spans more than one version window"*) ok ;; *) bad "c8-94-widen-note-missing" ;; esac
+  # The window list must be in the WIDEN NOTE ITSELF, not merely somewhere in the
+  # output: the older straddle NOTE above already prints "($spans)", so a bare
+  # *"v0.4.8"* match here is satisfied whether or not the widen note exists at
+  # all — measured, it stayed green under the mutation that neutered the
+  # widening. Assert the note's own wording and its window list together.
+  case "$C8MO" in *"more than one version window (v0.4.2 + v0.4.8 v0.4.9)"*) ok ;; *) bad "c8-94-widen-note-names-no-window" ;; esac
+  # and the guidance must be a READABLE list — `$spans` is space-separated, so the
+  # raw form "one of v0.4.2, v0.4.8 v0.4.9" leaves the reader unable to tell one
+  # window from two.
+  case "$C8MO" in *"one of v0.4.2, v0.4.8, v0.4.9"*) ok ;; *) bad "c8-94-guidance-window-list-unreadable" ;; esac
+  # and the WARN must describe the entries ACTUALLY read: claiming the '## v0.4.2'
+  # entry is the only place a ship date exists sends the reader to edit a file
+  # that already names the commit.
+  case "$C8MO" in *"none of the entries for the version windows this UNBOUNDED range spans"*) ok ;; *) bad "c8-94-warn-misnames-its-scope" ;; esac
+  # (o) THE BOUNDED DIRECTION — WIDENING MUST NOT APPLY. Here the bound fires, so
+  #     earlier windows are excluded from the range by construction; a commit IN
+  #     the range that is named only in an earlier entry must STILL be flagged.
+  #     Widening unconditionally would silence exactly the miss this leg exists
+  #     to surface, trading a false positive for a false negative.
+  C8N="$(c8mk n)"
+  c8commit "$C8N/skill" "skill v0.4.1: oc-ledger sync — fixture anchor" "2026-09-27T06:00:00 +0000"
+  jq '.events += [{n: 9501, t: "2026-09-27T06:30:00Z", by: "oc-ledger sync", kind: "skill-bump", what: "v0.4.5 — in-range row"}]' \
+    "$C8N/state/workers-ledger.json" > "$C8N/wl.tmp" && mv "$C8N/wl.tmp" "$C8N/state/workers-ledger.json"
+  c8commit "$C8N/skill" "fix(tools): #783 in the bounded window, named only earlier" "2026-09-27T07:00:00 +0000"
+  C8NSHA="$(git -C "$C8N/skill" rev-parse --short HEAD)"
+  printf 'name: fixture\nversion: 0.4.2\n---\n' > "$C8N/skill/SKILL.md"
+  printf '# fixture changelog\n\n## v0.4.2\nc8 receipt names nothing\n\n## v0.4.5\nc8 earlier receipt names %s\n' "$C8NSHA" \
+    >> "$C8N/skill/CHANGELOG.md"
+  C8NO="$(OC_LEDGER="$C8N/state/workers-ledger.json" OC_SKILL_DIR="$C8N/skill" \
+    OC_DEPLOY_STATE_DIR="$C8N/state" bash "$ME" sync --version 0.4.2 --why selftest-94n 2>&1 || true)"
+  case "$C8NO" in *"BOUNDED to commits after"*) ok ;; *) bad "c8-94-bounded-note-missing" ;; esac
+  case "$C8NO" in *"unnamed: $C8NSHA"*) ok ;; *) bad "c8-94-bounded-range-widened-anyway ($C8NSHA)" ;; esac
+  case "$C8NO" in *"UNBOUNDED and spans"*) bad "c8-94-widen-note-fired-on-a-bounded-range" ;; *) ok ;; esac
+  # 23-26: ack (v0.4.55: full 0.N.N shape — the old N.N regex could never
+  # record a real skill version, which broke the reload convention's ack step)
+  bash "$ME" ack short-uuid 0.4.2 >/dev/null 2>&1; chk "ack-bad-uuid" 2 $?
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4 >/dev/null 2>&1; chk "ack-bad-version" 2 $?
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 1.2.3 >/dev/null 2>&1; chk "ack-bad-major" 2 $?
+  bash "$ME" ack 11111111-1111-1111-1111-111111111111 0.4.2 >/dev/null 2>&1; chk "ack-unknown-uuid" 3 $?
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.2 >/dev/null 2>&1; chk "ack-happy" 0 $?
+  chk "ack-written" "0.4.2" "$(jq -r '.workers[0].last_acked.version' "$OC_LEDGER")"
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee v0.4.3 >/dev/null 2>&1; chk "ack-vprefix" 0 $?
+  # #441: the uuid-shape predicate is now ONE function (_is_uuid) instead of
+  # four byte-identical private copies, and claim-ref — the verb that shipped
+  # without one — uses it too. These pin the extraction: the four migrated
+  # guards must still refuse a non-uuid shape with rc 2.
+  bash "$ME" ack not-a-uuid 0.4.2 >/dev/null 2>&1; chk "is-uuid-ack-shape-rc2" 2 $?
+  bash "$ME" enroll not-a-uuid tester >/dev/null 2>&1; chk "is-uuid-enroll-shape-rc2" 2 $?
+  bash "$ME" promote not-a-uuid editor >/dev/null 2>&1; chk "is-uuid-promote-shape-rc2" 2 $?
+  bash "$ME" retire not-a-uuid >/dev/null 2>&1; chk "is-uuid-retire-shape-rc2" 2 $?
+  chk "ack-vprefix-normalized" "0.4.3" "$(jq -r '.workers[0].last_acked.version' "$OC_LEDGER")"
+  # M2-4 (2026-09-12): ack is IDEMPOTENT per (uuid, version), mirroring sync's
+  # dup guard. `oc-drift-check --ack` DELEGATES here, so one adoption that both
+  # drift-checked and acked wrote two byte-identical rows seconds apart (lane
+  # 1a63f103 n=3717/3718; d18ce16a n=3713/3714; 462181e9 x3).
+  # NOTE the shared legs below are deliberately STATE-NEUTRAL: promote CARRIES
+  # last_acked across a role change (it never writes the field), so the later
+  # `promote-ack-carries` assertion needs the shared fixture to still read 0.4.3
+  # when this block ends. Every leg that MOVES last_acked to a new version runs
+  # on the isolated ledger below. (v1 missed that: promote-ack-carries red.)
+  local A0; A0="$(jq '[.events[]? | select(.kind == "ack")] | length' "$OC_LEDGER")"
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.3 >/dev/null 2>&1; chk "ack-reack-rc0" 0 $?
+  chk "ack-reack-no-dup-event" "$A0" "$(jq '[.events[]? | select(.kind == "ack")] | length' "$OC_LEDGER")"
+  chk "ack-reack-last-acked-kept" "0.4.3" "$(jq -r '.workers[0].last_acked.version' "$OC_LEDGER")"
+  A0="$(jq '[.events[]? | select(.kind == "ack")] | length' "$OC_LEDGER")"
+  # the v-prefix display spelling normalizes to the SAME (uuid, version) -> still a dup
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee v0.4.3 >/dev/null 2>&1; chk "ack-reack-vprefix-rc0" 0 $?
+  chk "ack-reack-vprefix-no-dup" "$A0" "$(jq '[.events[]? | select(.kind == "ack")] | length' "$OC_LEDGER")"
+  # the dup path still REFRESHES last_acked.at — a re-ack after a failed git leg
+  # must not leave a stale timestamp behind (the roster's last_acked reads it)
+  A0="$(jq '[.events[]? | select(.kind == "ack")] | length' "$OC_LEDGER")"
+  bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.3 --at 2026-01-02T03:04:05Z >"$T/reack.out" 2>&1
+  chk "ack-reack-at-rc0" 0 $?
+  chk "ack-reack-refreshes-at" "2026-01-02T03:04:05Z" "$(jq -r '.workers[0].last_acked.at' "$OC_LEDGER")"
+  chk "ack-reack-at-no-dup" "$A0" "$(jq '[.events[]? | select(.kind == "ack")] | length' "$OC_LEDGER")"
+  chk "ack-reack-says-idempotent" "true" "$(grep -qF 'idempotent' "$T/reack.out" && echo true || echo false)"
+  # ---- isolated ledger: every leg that MOVES last_acked ----------------------
+  mkdir -p "$T/ack2"
+  cat > "$T/ack2/led.json" <<'ACKEOF'
+{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},
+ "updated_at":"2026-01-01T00:00:00Z","workers":[
+ {"uuid":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","role":"tester","topic_id":1,"feature":"-","confirmed":true,"last_acked":null,"notes":[],"events":[]},
+ {"uuid":"cccccccc-dddd-eeee-ffff-000000000000","role":"editor","topic_id":2,"feature":"-","confirmed":true,"last_acked":null,"notes":[],"events":[]}],"events":[]}
+ACKEOF
+  AL="$T/ack2/led.json"
+  # DELTA-BASED, deliberately: an ABSOLUTE count would CASCADE — a wrongly
+  # appended event in one leg shifts every later count and turns 4 assertions
+  # red for 1 root cause (measured: the v2 control red-lined 10 for 6 causes).
+  # Each assertion below measures its OWN step, so the control's red set is
+  # exactly the no-dup assertions.
+  ackn() { jq '[.events[]? | select(.kind == "ack")] | length' "$1"; }
+  local B; B="$(ackn "$AL")"
+  OC_LEDGER="$AL" bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.5 >/dev/null 2>&1; chk "ack2-first-rc0" 0 $?
+  chk "ack2-first-appends" "$((B + 1))" "$(ackn "$AL")"
+  B="$(ackn "$AL")"
+  OC_LEDGER="$AL" bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.5 >/dev/null 2>&1; chk "ack2-reack-rc0" 0 $?
+  chk "ack2-reack-no-dup" "$B" "$(ackn "$AL")"
+  chk "ack2-reack-last-acked" "0.4.5" "$(jq -r '[.workers[] | select(.uuid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")][0].last_acked.version' "$AL")"
+  B="$(ackn "$AL")"
+  # a NEW version IS new information -> appends
+  OC_LEDGER="$AL" bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.1 >/dev/null 2>&1; chk "ack2-newver-rc0" 0 $?
+  chk "ack2-newver-appends" "$((B + 1))" "$(ackn "$AL")"
+  B="$(ackn "$AL")"
+  # PREFIX TRAP: 0.4.1 is on record; 0.4.10 must NOT be deduped by it (an
+  # exact-equality key, never `contains`) — it must land as its own event
+  OC_LEDGER="$AL" bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.10 >/dev/null 2>&1; chk "ack2-prefixtrap-rc0" 0 $?
+  chk "ack2-prefixtrap-appends" "$((B + 1))" "$(ackn "$AL")"
+  B="$(ackn "$AL")"
+  OC_LEDGER="$AL" bash "$ME" ack aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0.4.10 >/dev/null 2>&1; chk "ack2-prefixtrap-reack-rc0" 0 $?
+  chk "ack2-prefixtrap-reack-no-dup" "$B" "$(ackn "$AL")"
+  B="$(ackn "$AL")"
+  # the dedup KEY includes the uuid: ANOTHER worker at the SAME version appends
+  OC_LEDGER="$AL" bash "$ME" ack cccccccc-dddd-eeee-ffff-000000000000 0.4.5 >/dev/null 2>&1; chk "ack2-otheruuid-rc0" 0 $?
+  chk "ack2-otheruuid-appends" "$((B + 1))" "$(ackn "$AL")"
+  B="$(ackn "$AL")"
+  OC_LEDGER="$AL" bash "$ME" ack cccccccc-dddd-eeee-ffff-000000000000 0.4.5 >/dev/null 2>&1; chk "ack2-otheruuid-reack-rc0" 0 $?
+  chk "ack2-otheruuid-reack-no-dup" "$B" "$(ackn "$AL")"
+  chk "ack2-both-workers-tracked" "2" "$(jq '[.workers[] | select(.last_acked != null)] | length' "$AL")"
+  # 27-29: enroll
+  bash "$ME" enroll nope editor >/dev/null 2>&1; chk "enroll-bad-uuid" 2 $?
+  bash "$ME" enroll 22222222-2222-2222-2222-222222222222 editor --topic 42 >/dev/null 2>&1; chk "enroll-happy" 0 $?
+  bash "$ME" enroll 22222222-2222-2222-2222-222222222222 editor >/dev/null 2>&1; chk "enroll-dup" 2 $?
+  chk "enroll-row" "42" "$(jq '.workers[1].topic_id' "$OC_LEDGER")"
+  # 29b: promote (T2 verdict n=1695, HQ confirmed NON-KERNEL): audited in-place
+  # roster-row update — ONE worker ONE row (no create path), ack state carries
+  bash "$ME" promote 33333333-3333-3333-3333-333333333333 editor >/dev/null 2>&1; chk "promote-not-enrolled" 2 $?
+  bash "$ME" promote 22222222-2222-2222-2222-222222222222 editor >/dev/null 2>&1; chk "promote-nothing-to-change" 2 $?
+  bash "$ME" promote 22222222-2222-2222-2222-222222222222 --topic 99 >/dev/null 2>&1; chk "promote-role-flag-guard" 2 $?
+  bash "$ME" promote 22222222-2222-2222-2222-222222222222 toolsmith --topic 39171 --feature tools >/dev/null 2>&1; chk "promote-happy" 0 $?
+  chk "promote-role-updated" "toolsmith" "$(jq -r '.workers[1].role' "$OC_LEDGER")"
+  chk "promote-topic-updated" "39171" "$(jq -r '.workers[1].topic_id | tostring' "$OC_LEDGER")"
+  chk "promote-one-row" "1" "$(jq '[.workers[] | select(.uuid == "22222222-2222-2222-2222-222222222222")] | length' "$OC_LEDGER")"
+  chk "promote-event" "true" "$(jq -r '[.events[] | select(.by == "oc-ledger promote")] | last | .what | startswith("promoted 22222222")' "$OC_LEDGER")"
+  bash "$ME" promote aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee tester2 >/dev/null 2>&1; chk "promote-ack-carries-rc" 0 $?
+  chk "promote-ack-carries" "0.4.3" "$(jq -r '.workers[0].last_acked.version' "$OC_LEDGER")"
+  # #686: this verb's own usage was UNREACHABLE. `promote --help` reads the
+  # single argument as a ROLE, so the old path died rc 2 ("role looks like a
+  # flag") and promote was the one verb with no help arm. Both forms must answer
+  # usage at rc 0.
+  _o686="$(bash "$ME" promote --help 2>&1)"; chk "promote-help-rc" 0 $?
+  case "$_o686" in *"usage: oc-ledger promote <uuid> <new-role>"*) ok "promote-help-text" ;; *) bad "promote-help-text: $_o686" ;; esac
+  _o686="$(bash "$ME" promote 22222222-2222-2222-2222-222222222222 --help 2>&1)"; chk "promote-help-uuid-rc" 0 $?
+  # #686: the reconcile REMEDY the tool EMITS must be a form that RUNS. The old
+  # string named `promote --uuid <u>` while the verb takes the uuid POSITIONALLY
+  # (:1616), so the remedy died rc 2 "uuid shape invalid: '--uuid'" -- a lane
+  # reading it, trusting it and running it had no next step. POSITIVE: the
+  # positionally-correct shape PARSES. Unchanged role/topic stops at the
+  # 'nothing to change' guard, so this leg asserts reachability, not mutation.
+  _o686="$(bash "$ME" promote 22222222-2222-2222-2222-222222222222 toolsmith --topic 39171 2>&1)"; _r686=$?
+  chk "remedy-shape-rc" 2 $_r686
+  case "$_o686" in *"uuid shape invalid"*) bad "remedy-shape: uuid NOT parsed -- $_o686" ;; *) ok "remedy-shape: uuid parsed (positional form reaches the guard)" ;; esac
+  case "$_o686" in *"nothing to change"*) ok "remedy-shape reached the nothing-to-change guard" ;; *) bad "remedy-shape: did not reach guard -- $_o686" ;; esac
+  # CONTROL: the OLD emitted shape must still be REJECTED, or the leg above
+  # would pass on any string that happens to reach the guard.
+  _o686="$(bash "$ME" promote --uuid 22222222-2222-2222-2222-222222222222 --topic 39171 2>&1)"
+  case "$_o686" in *"uuid shape invalid"*) ok "remedy-control: old --uuid form is still rejected" ;; *) bad "remedy-control: old form unexpectedly accepted -- $_o686" ;; esac
+  chk "remedy-no-mutation" "toolsmith" "$(jq -r '.workers[1].role' "$OC_LEDGER")"
+  # 29c: retire (HQ ASK 2026-09-11) — the REMOVAL half of the roster lifecycle.
+  # enroll creates, promote mutates, retire drops the row so the uuid leaves
+  # `oc-ledger roster` + `oc-roster` and loses signing (the sign gate keys on
+  # uuid PRESENCE, so only removal revokes). The event is the only surviving
+  # record of the row, hence the data + reason assertions below.
+  bash "$ME" retire >/dev/null 2>&1; chk "retire-no-args" 2 $?
+  bash "$ME" retire nope >/dev/null 2>&1; chk "retire-bad-uuid" 2 $?
+  bash "$ME" retire 44444444-4444-4444-4444-444444444444 >/dev/null 2>&1; chk "retire-not-enrolled" 2 $?
+  bash "$ME" retire 22222222-2222-2222-2222-222222222222 --bogus >/dev/null 2>&1; chk "retire-unknown-arg" 2 $?
+  bash "$ME" retire 22222222-2222-2222-2222-222222222222 --why "wrong topic 49607" >/dev/null 2>&1; chk "retire-happy" 0 $?
+  chk "retire-row-gone" "0" "$(jq '[.workers[] | select(.uuid == "22222222-2222-2222-2222-222222222222")] | length' "$OC_LEDGER")"
+  chk "retire-roster-drops" "0" "$(bash "$ME" roster 2>/dev/null | grep -c '22222222-2222-2222-2222-222222222222' || true)"
+  # the sign gate's own predicate (oc-verify-order:98): .role selected by uuid.
+  # After retire it is EMPTY -> the gate's `[ -n "$ROLE" ] || fail 3 UNSIGNED`.
+  chk "retire-loses-signing" "" "$(jq -r --arg u 22222222-2222-2222-2222-222222222222 '.workers[] | select(.uuid == $u) | .role // empty' "$OC_LEDGER")"
+  chk "retire-event-kind" "roster-retire" "$(jq -r '[.events[] | select(.by == "oc-ledger retire")] | last | .kind' "$OC_LEDGER")"
+  chk "retire-event-carries-row" "true" "$(jq -r '[.events[] | select(.by == "oc-ledger retire")] | last | .what | startswith("retired toolsmith 22222222-2222-2222-2222-222222222222 (topic 39171, feature tools, confirmed false): wrong topic 49607")' "$OC_LEDGER")"
+  # a SECOND retire is refused — the row is gone, so this is the not-enrolled path
+  bash "$ME" retire 22222222-2222-2222-2222-222222222222 >/dev/null 2>&1; chk "retire-twice" 2 $?
+  # --why is OPTIONAL by design (a correction verb must never block on ceremony);
+  # the absence is RECORDED verbatim, never silently omitted.
+  bash "$ME" enroll 55555555-5555-5555-5555-555555555555 probe --topic 7 >/dev/null 2>&1
+  bash "$ME" retire 55555555-5555-5555-5555-555555555555 >/dev/null 2>&1; chk "retire-why-optional" 0 $?
+  chk "retire-why-recorded" "true" "$(jq -r '[.events[] | select(.by == "oc-ledger retire")] | last | .what | endswith("(no reason given)")' "$OC_LEDGER")"
+  chk "retire-event-n-unique" "true" "$(jq -r '[.events[].n] | length == (unique | length)' "$OC_LEDGER")"
+  # fixture hygiene: the retire cases above REMOVED a row; the later roster
+  # assertions in THIS fixture count 3 workers and name 2222 as
+  # toolsmith/topic 39171, so restore it to the exact pre-retire state. The
+  # retire assertions already ran against the removed state — this restores the
+  # fixture, it does not undo them.
+  bash "$ME" enroll 22222222-2222-2222-2222-222222222222 toolsmith --topic 39171 --feature tools >/dev/null 2>&1
+  # 29d: retire is ROW-SCOPED, not UUID-scoped (defect fix 2026-09-11, HQ report
+  # d72bd52d). A uuid CAN legitimately hold two rows — an editor row on one
+  # topic plus an auditor row on another — and the roster model plainly permits
+  # it. Build that state BY HAND: enroll refuses a dup uuid by design, which is
+  # exactly why a two-row uuid can only arrive via a migration/incident path.
+  # The first cut did `.workers |= map(select(.uuid != $u))` and snapshotted the
+  # event from `[0]`, so BOTH rows would have been revoked by an event naming
+  # one. Latent on the roster of the day (every uuid held one row), which is
+  # precisely why it needs a fixture that is not the live shape.
+  local U6=66666666-6666-6666-6666-666666666666
+  local REV0; REV0="$(jq '[.events[] | select(.by == "oc-ledger retire")] | length' "$OC_LEDGER")"
+  jq '.workers += [{uuid:"'"$U6"'", role:"editor", topic_id:49607, feature:"cron-session-isolation",
+                    confirmed:false, last_acked:null, notes:[], events:[]},
+                   {uuid:"'"$U6"'", role:"auditor", topic_id:30220, feature:"triage",
+                    confirmed:false, last_acked:null, notes:[], events:[]}]' \
+    "$OC_LEDGER" > "$T/dual.json" && mv "$T/dual.json" "$OC_LEDGER"
+  chk "retire-rowscope-fixture" "2" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  # ambiguous without a selector: rc 2, NOTHING removed, NO event written
+  bash "$ME" retire "$U6" >/dev/null 2>&1; chk "retire-ambiguous-rc2" 2 $?
+  chk "retire-ambiguous-keeps-both" "2" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  chk "retire-ambiguous-no-event" "$REV0" "$(jq '[.events[] | select(.by == "oc-ledger retire")] | length' "$OC_LEDGER")"
+  # a selector that matches nothing is rc 2, never a silent no-op
+  bash "$ME" retire "$U6" --topic 99999 >/dev/null 2>&1; chk "retire-selector-nomatch-rc2" 2 $?
+  chk "retire-selector-nomatch-keeps-both" "2" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  # --topic disambiguates, and the event names the row ACTUALLY removed
+  bash "$ME" retire "$U6" --topic 30220 --why "auditor row on 30220" >/dev/null 2>&1; chk "retire-topic-selector-rc0" 0 $?
+  chk "retire-topic-removed-one" "1" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  chk "retire-topic-kept-sibling" "editor" "$(jq -r --arg u "$U6" '[.workers[] | select(.uuid == $u)][0].role' "$OC_LEDGER")"
+  chk "retire-topic-event-names-removed" "true" "$(jq -r '[.events[] | select(.by == "oc-ledger retire")] | last | .what | startswith("retired auditor 66666666-6666-6666-6666-666666666666 (topic 30220, feature triage, confirmed false): auditor row on 30220")' "$OC_LEDGER")"
+  # --role is an EXACT match, NOT the substring match roster --role uses: this
+  # verb DESTROYS a row, so a fuzzy selector would be a foot-gun.
+  bash "$ME" retire "$U6" --role edit >/dev/null 2>&1; chk "retire-selector-exact" 2 $?
+  chk "retire-exact-kept-row" "1" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  bash "$ME" retire "$U6" --role editor >/dev/null 2>&1; chk "retire-role-selector-rc0" 0 $?
+  chk "retire-role-removed-last" "0" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  # selector arg validation — the uuid is enrolled FIRST so each case fails on
+  # the SELECTOR, not on not-enrolled (a vacuous rc 2 would pass either way)
+  bash "$ME" enroll "$U6" editor --topic 49607 >/dev/null 2>&1
+  bash "$ME" retire "$U6" --topic >/dev/null 2>&1;   chk "retire-topic-novalue-rc2" 2 $?
+  bash "$ME" retire "$U6" --role  >/dev/null 2>&1;   chk "retire-role-novalue-rc2" 2 $?
+  bash "$ME" retire "$U6" --topic abc >/dev/null 2>&1; chk "retire-topic-nonnum-rc2" 2 $?
+  chk "retire-badselector-removes-nothing" "1" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  # fixture hygiene: drop the probe row so the later roster assertions still
+  # count exactly 3 workers (aaaa, 2222, W2)
+  bash "$ME" retire "$U6" >/dev/null 2>&1
+  chk "retire-rowscope-restored" "0" "$(jq --arg u "$U6" '[.workers[] | select(.uuid == $u)] | length' "$OC_LEDGER")"
+  # 30-32: commit-pending
+  bash "$ME" commit-pending | grep -q "clean" && ok || bad "commit-pending-clean"
+  jq '.events += [{"n": 900, "t": "x", "by": "tool", "kind": "note", "what": "stray"}]' "$OC_LEDGER" > "$T/d.json" && mv "$T/d.json" "$OC_LEDGER"
+  bash "$ME" commit-pending | grep -q "state ledger committed" && ok || bad "commit-pending-sweep"
+  git -C "$T/state" status --porcelain workers-ledger.json | grep -q . && bad "commit-pending-left-dirty" || ok
+  # (#116) A REFUSED COMMIT IS NOT A CLEAN TREE. `did` counts only SUCCESS, so
+  # a git refusal (a held .git/index.lock) used to fall through to
+  # "sweep: clean -- nothing pending" at rc 0 with the row demonstrably staged
+  # and HEAD unmoved -- measured 2026-11-20 (HQ probe). Three outcomes must be
+  # separable: COMMITTED / NOTHING-PENDING / FAILED. The POSITIVE control is the
+  # `commit-pending-sweep` arm above (a dirty ledger DOES commit), so a probe
+  # that simply could not write would redden that instead of passing this one.
+  # NOTE this runs through the DISPATCHER (`bash "$ME" commit-pending`), so the
+  # rc-4 arm doubles as the propagation arm for oc_ship_audit_chain swallowing it.
+  jq '.events += [{"n": 902, "t": "x", "by": "tool", "kind": "note", "what": "refused-probe"}]' "$OC_LEDGER" > "$T/d3.json" && mv "$T/d3.json" "$OC_LEDGER"
+  _rf_h0="$(git -C "$T/state" rev-parse HEAD)"
+  : > "$T/state/.git/index.lock"
+  _rf_out="$(bash "$ME" commit-pending 2>&1)"; _rf_rc=$?
+  rm -f "$T/state/.git/index.lock"
+  chk "commit-pending-refused-rc4" 4 "$_rf_rc"
+  case "$_rf_out" in *"sweep: FAILED"*) ok ;; *) bad "commit-pending-refused-says-FAILED: $_rf_out" ;; esac
+  case "$_rf_out" in *"clean — nothing pending"*) bad "commit-pending-refused-must-not-say-clean: $_rf_out" ;; *) ok ;; esac
+  chk "commit-pending-refused-head-unmoved" "$_rf_h0" "$(git -C "$T/state" rev-parse HEAD)"
+  git -C "$T/state" status --porcelain workers-ledger.json | grep -q . && ok || bad "commit-pending-refused-row-still-pending"
+  # the failed commit must not be silently retried into a false clean: a SECOND
+  # run with the lock gone DOES commit, proving the row was genuinely pending
+  bash "$ME" commit-pending >/dev/null 2>&1; chk "commit-pending-after-lock-released-rc0" 0 $?
+  # (#722) `commit-pending --help` USED TO RUN THE SWEEP: the dispatcher passed
+  # the flag straight into cmd_commit_pending, which had NO help arm, so `--help`
+  # fell through as an ignored positional (bundle stayed 0) and the sweep ran
+  # anyway -- committing the state ledger and PUSHING both mirrors. Help must be
+  # a READ. Two-sided, same probe both ways: NEGATIVE (help writes nothing) and
+  # POSITIVE (a dirtied ledger DOES advance HEAD), so a probe that could not see
+  # a write reddens the POSITIVE leg instead of passing the negative as calm.
+  _cp_h0="$(git -C "$T/state" rev-parse HEAD)"
+  _cp_out="$(bash "$ME" commit-pending --help 2>&1)"; _cp_rc=$?
+  chk "commit-pending-help-rc" 0 "$_cp_rc"
+  case "$_cp_out" in *"usage: oc-ledger commit-pending"*) ok ;; *) bad "commit-pending-help-text: $_cp_out" ;; esac
+  chk "commit-pending-help-is-read" "$_cp_h0" "$(git -C "$T/state" rev-parse HEAD)"
+  jq '.events += [{"n": 901, "t": "x", "by": "tool", "kind": "note", "what": "help-probe"}]' "$OC_LEDGER" > "$T/d2.json" && mv "$T/d2.json" "$OC_LEDGER"
+  bash "$ME" commit-pending >/dev/null 2>&1
+  if [ "$(git -C "$T/state" rev-parse HEAD)" != "$_cp_h0" ]; then ok; else bad "commit-pending-help-probe-cannot-see-writes"; fi
+  # (#722) `selftest --help` is a READ even though parse_global consumes the bare
+  # `selftest` token as a GLOBAL flag -- which makes the dispatcher's own arm
+  # UNREACHABLE and leaves the arm before the SELFTEST branch as the only live one.
+  # Bounded by `timeout` and guarded by OC_LEDGER_SELFTEST: on a REGRESSION this
+  # invocation would start a NESTED battery, and the guard makes that fail the leg
+  # instead of recursing into it.
+  if [ "${OC_LEDGER_SELFTEST:-0}" != "1" ]; then
+    _st_out="$(OC_LEDGER_SELFTEST=1 timeout 10 bash "$ME" selftest --help 2>&1)"; _st_rc=$?
+    chk "selftest-help-rc" 0 "$_st_rc"
+    case "$_st_out" in *"usage: oc-ledger selftest"*) ok ;; *) bad "selftest-help-text: $(printf '%s' "$_st_out" | head -1)" ;; esac
+  fi
+  echo artifact > "$T/skill/deployed.sha"
+  # v0.4.63: sync now sweeps untracked files (payload root-fix), so the bundle
+  # needs a freshly dirty runtime artifact — pre-root-fix the test leaked the
+  # battery receipt's untracked dirt from the sync-gate block above
+  echo '{"verdict":"PASS","fail":0,"ts":"'"$(now_iso)"'","probe":"bundle"}' > "$T/skill/tools/tests/battery-last.json"
+  bash "$ME" commit-pending --bundle | grep -q "runtime artifacts" && ok || bad "commit-pending-bundle"
+  echo '{"sha":"fixture"}' > "$T/state/baseline.json"
+  bash "$ME" commit-pending --bundle | grep -q "baseline.json" && ok || bad "commit-pending-baseline-sweep"
+  git -C "$T/state" status --porcelain baseline.json | grep -q . && bad "commit-pending-baseline-left-dirty" || ok
+  # journal/ sweep (v0.4.51) — smoke journals land in the state dir, tracked
+  # since 1232ccd; the overnight cbc77058 swap proved the gap
+  mkdir -p "$T/state/journal"
+  echo '{"probe":true}' > "$T/state/journal/sweep-probe.json"
+  bash "$ME" commit-pending --bundle | grep -q "state runtime files committed.*journal" && ok || bad "commit-pending-journal-sweep"
+  # harvest-state class (v0.4.237, HQ ruling 2026-09-22) -- the bundle whitelist
+  # omitted it entirely, so a parked harvest's ONLY resume record sat untracked
+  # while its resume cron kept reading it. Tracking is not authorship: the
+  # content stays the owning lane's, and the file must simply survive the disk.
+  echo '# probe' > "$T/state/341-harvest-state.md"
+  bash "$ME" commit-pending --bundle | grep -q "lane state records committed" && ok || bad "commit-pending-harvest-state-sweep"
+  git -C "$T/state" status --porcelain -- '*-harvest-state.md' | grep -q . && bad "commit-pending-harvest-state-left-dirty" || ok
+  # ---- #514: the class the glossary declares, one wideness up ----
+  # The glossary says "the lane `*-state.md` records"; the mechanism carried only
+  # `*-harvest-state.md`. Measured 2026-09-23: 33 `*-state.md` files, 20 harvest
+  # and 13 ship-/smoke-/fast-follow-state RECORDS — all 13 already tracked, but by
+  # a HAND-RUN hygiene commit, so the mechanism carried none of them.
+  echo '# probe' > "$T/state/444-ship-state.md"
+  bash "$ME" commit-pending --bundle | grep -q "lane state records committed" && ok || bad "commit-pending-ship-state-sweep"
+  git -C "$T/state" status --porcelain -- '*-state.md' | grep -q . && bad "commit-pending-ship-state-left-dirty" || ok
+  # smoke-verdicts.log: TRACKED per the glossary, in the list since nothing, and
+  # MULTI-ACTOR (33 distinct actor= values / 333 rows measured) — so the sweep
+  # owes the append-only carve-out's disclosure sentence (toolsmith.md n=4057).
+  echo 'verdict=PASS actor=deadbeef-dead-4dead-8dead-deaddeadbeef' > "$T/state/smoke-verdicts.log"
+  bash "$ME" commit-pending --bundle | grep -q "smoke-verdicts.log" && ok || bad "commit-pending-smoke-verdicts-sweep"
+  git -C "$T/state" status --porcelain smoke-verdicts.log | grep -q . && bad "commit-pending-smoke-verdicts-left-dirty" || ok
+  git -C "$T/state" log -1 --format=%s | grep -q "disclose foreign rows" && ok || bad "commit-pending-smoke-verdicts-disclosed"
+  # a sweep that did NOT stage the shared log must NOT carry the disclosure —
+  # an unconditional sentence would be noise on every other commit
+  echo '# probe' > "$T/state/555-ship-state.md"
+  bash "$ME" commit-pending --bundle | grep -q "lane state records committed" && ok || bad "commit-pending-plain-sweep"
+  git -C "$T/state" log -1 --format=%s | grep -q "disclose foreign rows" && bad "commit-pending-disclosure-unconditional" || ok
+  mkdir -p "$T/state/reviews/2026probe" && echo 'probe' > "$T/state/reviews/2026probe/p.md"
+  bash "$ME" commit-pending --bundle | grep -q "reviews" && ok || bad "commit-pending-reviews-sweep"
+  git -C "$T/state" status --porcelain -- reviews | grep -q . && bad "commit-pending-reviews-left-dirty" || ok
+  # ---- the GUARD itself: declared-vs-mechanism, HERMETIC ----
+  # SKILL_DIR is pointed at a fixture doc so a LAW-side edit can never redden
+  # these legs: the declaration is HQ's surface and the list is this tool's, and
+  # coupling my battery to HQ's prose would block my commits for their edit.
+  chk "state-tracked-audit-single-source" "1" "$(grep -c '^state_tracked_audit()' "$ME")"
+  mkdir -p "$T/auditskill"
+  awk '/^state_tracked_audit\(\)/,/^}$/' "$ME" > "$T/auditfn.sh"
+  eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
+  eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
+  # (a) SKIP path: no bullet derivable -> a NOTE that SAYS it is not clean
+  printf '# fixture with no TRACKED bullet\n' > "$T/auditskill/SKILL.md"
+  export STATE_TRACKED_PATHS STATE_TRACKED_GLOB
+  # LAW_FILES is a multi-line ARRAY assignment, so it cannot be eval'd by grep
+  # like the two lists. The fixture declares its OWN one-entry corpus: pointing
+  # SKILL_DIR at a temp dir while leaving LAW_FILES at the real 16 names made
+  # arm (a) pass VACUOUSLY (every path missing -> empty bullet -> SKIP branch,
+  # which is not the case under test).
+  _corpus='LAW_FILES=(SKILL.md)'
+  _aout="$(SKILL_DIR="$T/auditskill" bash -c "$_corpus"'; . '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
+  grep -q 'SKIPPED' <<< "$_aout" && ok || bad "state-tracked-audit-skip-note"
+  grep -q 'NOT a clean result' <<< "$_aout" && ok || bad "state-tracked-audit-skip-not-silent"
+  [ "$(printf '%s' "$_aout" | grep -c '^state-tracked: WARN')" = "0" ] && ok || bad "state-tracked-audit-skip-no-warn"
+  # (b) the discriminating half: a declared name the mechanism does NOT carry.
+  # HERMETIC (#71): the bullet is WRITTEN here, never sliced out of live law
+  # text. The old `sed -n` derivation coupled these three legs to HQ's prose —
+  # the day v0.4.310 moved the bullet into reference-glossary.md the slice came
+  # back EMPTY, the `sed -i` anchor matched nothing, and three legs went red for
+  # a law edit that was entirely correct. A fixture must not depend on the thing
+  # it is testing.
+  cat > "$T/auditskill/SKILL.md" <<'FIXTURE'
+  - **TRACKED** — state-dir files under `journal/` · `baseline.json` · `bogus-new-record.json` ·
+  - **GENERATED-IGNORED** — not audited
+FIXTURE
+  grep -q 'bogus-new-record.json' "$T/auditskill/SKILL.md" && ok || bad "state-tracked-audit-fixture-injected"
+  _bout="$(SKILL_DIR="$T/auditskill" bash -c "$_corpus"'; . '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
+  [ "$(printf '%s' "$_bout" | grep -c '^state-tracked: WARN')" = "1" ] && ok || bad "state-tracked-audit-warns-once"
+  grep -q "bogus-new-record.json" <<< "$_bout" && ok || bad "state-tracked-audit-names-the-gap"
+  # (c) THE REGRESSION ITSELF: the declaration lives in a law file that is NOT
+  # SKILL.md. A reader pinned to one filename reports SKIP here while the audit
+  # it exists to perform has silently stopped — the exact 2026-11-17 failure.
+  printf '# no bullet here\n' > "$T/auditskill/SKILL.md"
+  printf '  - **TRACKED** — state-dir files under `journal/` · `baseline.json` ·\n  - **NEXT** — stop\n' > "$T/auditskill/reference-glossary.md"
+  _cout="$(SKILL_DIR="$T/auditskill" bash -c 'LAW_FILES=(SKILL.md reference-glossary.md); . '"$T"'/auditfn.sh; state_tracked_audit' 2>&1)"
+  grep -q 'SKIPPED' <<< "$_cout" && bad "state-tracked-audit-moved-declaration-found" || ok
+  [ "$(printf '%s' "$_cout" | grep -c '^state-tracked: WARN')" = "0" ] && ok || bad "state-tracked-audit-moved-declaration-clean"
+  # the success line must NAME the file it found, or a moved declaration is
+  # invisible in the log even when the audit works
+  grep -q 'reference-glossary.md' <<< "$_cout" && ok || bad "state-tracked-audit-names-source"
+  # (d) NO ARM. The `[ -f "$SKILL_DIR/$src" ] || continue` guard is defensive
+  # but UNOBSERVABLE: awk is silent on a missing path AND on a directory, so the
+  # guard changes no output and no rc. A leg asserting it would pass with the
+  # guard deleted — decoration, which is the defect class #71 exists to remove.
+  # Disclosed rather than shipped as a green row that tests nothing.
+  # ---- #540: the INVERSE audit — tracked files NO commit path carries -------
+  # state_tracked_audit runs declaration -> mechanism. This runs the other way:
+  # tracked files that NEITHER the sweep list NOR the glossary names. Such a file
+  # is unreachable by every commit path, so it can be DELETED and the sanctioned
+  # verb still reports success (measured live on runs/in-flight/<uuid>.json).
+  chk "state-out-of-scope-single-source" "1" "$(grep -c '^state_out_of_scope_audit()' "$ME")"
+  # the extracted function calls _is_git_repo, so the harness must carry it too --
+  # a snippet sourced WITHOUT its helper makes every arm below report SKIPPED and
+  # the assertions then measure a fixture that never ran (measured #70: 4 arms).
+  awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$T/scope_fn.sh"
+  awk '/^_ledger_tracked_names\(\)/,/^}$/' "$ME" >> "$T/scope_fn.sh"
+  awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" >> "$T/scope_fn.sh"
+  # STATE_DIR is a FUNCTION in the tool, so the harness supplies its own.
+  _scope() { SD="$1" STATE_TRACKED_PATHS="$STATE_TRACKED_PATHS" STATE_TRACKED_GLOB="$STATE_TRACKED_GLOB" \
+    bash -c 'STATE_DIR() { printf "%s\n" "$SD"; }; . '"$T"'/scope_fn.sh; state_out_of_scope_audit' 2>&1; }
+  # (a) SKIP path: not a git repo -> a NOTE that SAYS it is not clean
+  mkdir -p "$T/notgit"
+  _sout="$(_scope "$T/notgit")"
+  grep -q 'SKIPPED' <<< "$_sout" && ok || bad "state-out-of-scope-skip-note"
+  grep -q 'NOT a clean result' <<< "$_sout" && ok || bad "state-out-of-scope-skip-not-silent"
+  # (b) THE FINDING. Vacuous-guard first: the probe must be BOTH tracked AND
+  #     dirty, or the assertion below would pass without the fix.
+  mkdir -p "$T/state/archive-540probe"
+  printf 'probe\n' > "$T/state/archive-540probe/thing.txt"
+  git -C "$T/state" add archive-540probe/thing.txt
+  git -C "$T/state" commit -q -m "probe: out-of-scope tracked file (#540)"
+  rm "$T/state/archive-540probe/thing.txt"
+  [ "$(git -C "$T/state" status --porcelain -- archive-540probe/thing.txt)" != "" ] \
+    && ok || bad "state-out-of-scope-probe-not-dirty"
+  _sout="$(_scope "$T/state")"
+  grep -q 'archive-540probe/thing.txt' <<< "$_sout" \
+    && ok || bad "state-out-of-scope-reports-dirty-out-of-scope"
+  grep -q '^state-out-of-scope: WARN' <<< "$_sout" \
+    && ok || bad "state-out-of-scope-warns-on-dirty"
+  # (c) AC3 — the ledger record is deliberately absent from STATE_TRACKED_PATHS
+  #     and carried by `_ledger_tracked_names` instead, so a list-only leg would
+  #     falsely flag the most-committed file in the repo. THIS FIXTURE IS LEGACY
+  #     MODE (no events.jsonl), so the carrier is workers-ledger.json; in JSONL
+  #     mode the same arm would have to dirty events.jsonl, because the blob is
+  #     gitignored there and `git ls-files` never lists it. Make it DIRTY and
+  #     prove silence.
+  printf '\n' >> "$T/state/workers-ledger.json"
+  [ "$(git -C "$T/state" status --porcelain -- workers-ledger.json)" != "" ] \
+    && ok || bad "state-out-of-scope-ledger-probe-not-dirty"
+  _sout="$(_scope "$T/state")"
+  grep -q 'workers-ledger.json' <<< "$_sout" \
+    && bad "state-out-of-scope-false-positives-on-ledger" || ok
+  git -C "$T/state" checkout -- workers-ledger.json
+  # (d) the COUNT arm: an out-of-scope file that is TRACKED but NOT dirty is
+  #     historical mass — a count, not a finding. The leg must not cry wolf.
+  #     (The first version of this leg asserted the count line while the fixture
+  #     held NO out-of-scope file at all, so it exercised the all-carried arm
+  #     instead and failed — the arms need separate fixtures.)
+  printf 'kept\n' > "$T/state/archive-540probe/keep.txt"
+  git -C "$T/state" add archive-540probe/keep.txt
+  git -C "$T/state" commit -q -m "probe: clean out-of-scope file (#540)"
+  git -C "$T/state" rm -q --cached archive-540probe/thing.txt 2>/dev/null
+  git -C "$T/state" commit -q -m "probe: drop the dirty out-of-scope file (#540)"
+  _sout="$(_scope "$T/state")"
+  grep -q '^state-out-of-scope: WARN' <<< "$_sout" \
+    && bad "state-out-of-scope-warns-when-clean" || ok
+  grep -q 'not a finding' <<< "$_sout" \
+    && ok || bad "state-out-of-scope-count-arm-labelled"
+  # (e) the all-carried arm: no out-of-scope file at all -> the clean line, and
+  #     it must still SAY what it checked rather than print nothing (a leg that
+  #     prints nothing when clean cannot be told from one that did not run).
+  rm -rf "$T/state/archive-540probe"
+  git -C "$T/state" rm -q --cached archive-540probe/keep.txt 2>/dev/null
+  git -C "$T/state" commit -q -m "probe: drop the clean out-of-scope file (#540)"
+  _sout="$(_scope "$T/state")"
+  grep -q 'every one of' <<< "$_sout" \
+    && ok || bad "state-out-of-scope-all-carried-arm"
+  # 32c: mirror push (v0.4.50) — a configured origin receives branch + tags;
+  # bare fixture remote stands in for GitHub (offline selftest rule)
+  git init -q --bare "$T/mirror.git"
+  git -C "$T/skill" remote add origin "$T/mirror.git"
+  echo '{"verdict":"PASS","fail":0,"mirror":"probe"}' > "$T/skill/tools/tests/battery-last.json"
+  bash "$ME" commit-pending --bundle | grep -q "mirror: skill pushed" && ok || bad "commit-pending-mirror-push"
+  git -C "$T/mirror.git" rev-parse --verify HEAD >/dev/null 2>&1 && ok || bad "commit-pending-mirror-received"
+  # #508: the AUTO-COMMIT tail covers the TRACKED namespace, not the ledger
+  # alone. Before this, git_state_commit staged workers-ledger.json ONLY, while
+  # the whitelist sat inside `commit-pending --bundle` -- a verb NO cron invokes
+  # -- so tools.log sat modified-uncommitted in the live state dir for days.
+  # The first assertion is the vacuity guard: if the probe were not dirty to
+  # begin with, the second would pass without the fix.
+  # #80 (2026-11-21): tools.log is NO LONGER swept -- the real state repo
+  # untracked and .gitignore'd it, so the mechanism must not claim it. The
+  # fixture therefore carries the same .gitignore, and the leg asserts the NEW
+  # contract instead of the old one. baseline.json is the POSITIVE CONTROL: it
+  # is still in STATE_TRACKED_PATHS, so a green result cannot be vacuous -- if
+  # the auto-commit tail stopped sweeping entirely, that arm fails.
+  printf 'tools.log\ntools.log.*\n' > "$T/state/.gitignore"
+  git -C "$T/state" add .gitignore; git -C "$T/state" commit -q -m "probe: gitignore tools.log (#80)"
+  printf 'probe\n' >> "$T/state/tools.log"
+  git -C "$T/state" status --porcelain -- tools.log | grep -q . \
+    && bad "auto-commit-probe-still-dirty: tools.log is not ignored in the fixture (#80)" || ok
+  printf '{"probe":"#80 control"}\n' > "$T/state/baseline.json"
+  git -C "$T/state" status --porcelain -- baseline.json | grep -q . && ok || bad "auto-commit-control-not-dirty"
+  bash "$ME" stamp note "#508/#80 auto-commit probe" >/dev/null 2>&1
+  # #177: a stamp no longer sweeps the TRACKED namespace (that runs once per
+  # oc-ship leg, or via commit-pending --bundle). The control must stay dirty
+  # after the stamp, then clean after the explicit sweep.
+  git -C "$T/state" status --porcelain -- baseline.json | grep -q . \
+    && ok "stamp leaves TRACKED files dirty (#177: no per-stamp sweep)" \
+    || bad "auto-commit-tail-still-sweeps: baseline.json was committed by the stamp"
+  bash "$ME" commit-pending --bundle >/dev/null 2>&1
+  git -C "$T/state" status --porcelain -- baseline.json | grep -q . \
+    && bad "commit-pending-bundle-inert: baseline.json left dirty -- the sweep stopped running" \
+    || ok "commit-pending --bundle sweeps the TRACKED namespace (baseline.json control)"
+  # and the ignored log is neither staged nor lost
+  git -C "$T/state" ls-files --error-unmatch tools.log >/dev/null 2>&1 \
+    && bad "auto-commit-tools-log-tracked: the ignored log was committed (#80 regression)" || ok
+  grep -q probe "$T/state/tools.log" 2>/dev/null \
+    && ok "the log survives on disk (rotation, never deletion)" \
+    || bad "auto-commit-tools-log-lost: the log was deleted, not rotated"
+  # DRY proof: the whitelist has exactly ONE home, and both callers reach it
+  # through the shared function (a re-inlined copy is the regression this
+  # guards -- the same shape as the claim-closure duplication in #441).
+  chk "state-tracked-single-source" "1" "$(grep -c '^STATE_TRACKED_PATHS=' "$ME")"
+  chk "state-sweep-fn-single-source" "1" "$(grep -c '^state_sweep_tracked()' "$ME")"
+
+  # #701: harvest-registry.json is written by `oc-harvest-census record` and IS
+  # tracked in the state repo, but it was absent from the whitelist -- so the
+  # sweep never staged it and it accumulated dirty forever (measured: it sat
+  # modified across many sweeps). The whitelist is the ONLY thing that makes a
+  # TRACKED artifact durable, so membership gets an assertion AND a behavioural
+  # control: a dirty listed file is committed, an unlisted dirty file is not.
+  grep -qw harvest-registry.json <<<"$STATE_TRACKED_PATHS" \
+    && ok || bad "state-tracked-carries-harvest-registry"
+  # behavioural: build a throwaway repo, dirty one LISTED and one UNLISTED file,
+  # and prove the sweep is selective rather than committing the whole worktree.
+  _sweepd="$T/sweep701"; rm -rf "$_sweepd"; mkdir -p "$_sweepd"
+  git -C "$_sweepd" init -q 2>/dev/null
+  git -C "$_sweepd" config user.email t@t; git -C "$_sweepd" config user.name t
+  git -C "$_sweepd" config commit.gpgsign false
+  printf '{}\n' > "$_sweepd/harvest-registry.json"
+  printf 'unlisted\n' > "$_sweepd/not-carried.txt"
+  git -C "$_sweepd" add -A 2>/dev/null; git -C "$_sweepd" commit -q -m base 2>/dev/null
+  printf '{"registries":[]}\n' > "$_sweepd/harvest-registry.json"
+  printf 'dirty\n' > "$_sweepd/not-carried.txt"
+  # the sweep now commits through _commit_with_retry, so the fixture must
+  # source BOTH functions or it fails with "command not found" and the
+  # selectivity assertion below would be measuring a broken fixture.
+  awk '/^_CW_ERR=/,/^}$/' "$ME" > "$T/sweep_fn.sh"
+  awk '/^state_sweep_tracked\(\)/,/^}$/' "$ME" >> "$T/sweep_fn.sh"
+  eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
+  eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
+  ( export STATE_TRACKED_PATHS STATE_TRACKED_GLOB
+    . "$T/sweep_fn.sh"
+    state_sweep_tracked "$_sweepd" "selftest #701" ) >/dev/null 2>&1
+  _subj="$(git -C "$_sweepd" log -1 --format=%s 2>/dev/null)"
+  case "$_subj" in
+    *harvest-registry.json*) ok ;;
+    *) bad "state-sweep-commits-harvest-registry (subject=$_subj)" ;;
+  esac
+  [ "$(git -C "$_sweepd" status --porcelain -- not-carried.txt)" != "" ] \
+    && ok || bad "state-sweep-still-selective (an unlisted file must NOT be committed)"
+
+  # #524 (HQ durability gap, 2026-09-23): every ledger mutation COMMITS via
+  # git_state_commit and NOTHING pushed, so off-box durability rode irregular
+  # sync/bundle runs alone (measured in the state repo: 121 commits vs 13
+  # pushes, and an 11-commit / 2h53m29s unpushed gap). The dispatch below
+  # pushes when the local backlog crosses a COMMIT threshold OR the newest
+  # unpushed commit passes an AGE bound -- two arms, because the commit arm
+  # structurally cannot bound the SLOW regime (a quiet box sits under any
+  # threshold indefinitely).
+  # DRY: one helper, and exactly the two call sites (state + skill).
+  chk "push-helper-single-source" "1" "$(grep -c '^push_backlog_if_due()' "$ME")"
+  # anchored on the CALL-SITE indent: the bare pattern also matches this very
+  # assertion line, so an unanchored count self-matches (3, not 2).
+  chk "push-wired-both-dirs" "2" "$(grep -c '^  push_backlog_if_due ' "$ME")"
+  # (#619) The waiter budget must EXCEED the holder's worst case, or a ship storm
+  # starves concurrent appends and DROPS JOURNAL ROWS SILENTLY. The holder pushes
+  # TWO repos under this same lock (the #524 hook), each bounded by
+  # _OC_PUSH_TIMEOUT, so its worst case is 2x that bound -- and a flat 30 was
+  # HALF of it. The assertions are on the DERIVATION, not on a literal, so a
+  # future retune of the push bound cannot silently break the invariant again.
+  # (#619) Structural legs for the lock budget. Each pattern is built by
+  # CONCATENATION so this leg's own text cannot satisfy it -- a literal grep here
+  # SELF-MATCHES: 'OC_LEDGER_LOCK_WAIT' measured 3 hits (two production lines plus
+  # this leg) and 'holder worst case' 2, so the legs reddened on their own source
+  # rather than on the tool (measured 2026-09-26). The BEHAVIOURAL coverage lives
+  # in tools/tests/run.sh ("oc-ledger lock budget (#619)"): it holds the lock and
+  # varies the push bound, which a grep cannot do.
+  _p_derived='_OC_LOCK_WOR''ST=$(( _OC_PUSH_TIMEOUT'
+  chk "lock-wait-derived-not-flat" "1" "$(grep -cF "$_p_derived" "$ME")"
+  _p_tunable='_OC_LOCK_WAIT="${OC_LEDGER_LOCK_''WAIT'
+  chk "lock-wait-tunable" "1" "$(grep -cF "$_p_tunable" "$ME")"
+  _p_die='die 4 "lock timeout on $LEDGER.lock after ${_OC_LOCK_''WAIT}s'
+  chk "lock-die-names-worst-case" "1" "$(grep -cF "$_p_die" "$ME")"
+  # (#95) The budget must NOT be push-shaped any more: git left the lock, so the
+  # 2x-push derivation is a STALE premise. Built by concatenation (see above) so
+  # this leg cannot satisfy itself; asserting ZERO is what makes it discriminating
+  # -- a future edit that reintroduces the doubled form reddens here.
+  _p_2x='$(( 2 * _OC_PUSH''_TIMEOUT'
+  chk "lock-budget-not-push-shaped" "0" "$(grep -cF "$_p_2x" "$ME")"
+  _p_flag_on='_OC_IN_LO''CK=1'
+  chk "git-tail-flag-set-under-lock" "1" "$(grep -cF "$_p_flag_on" "$ME")"
+  _p_flag_off='_OC_IN_LO''CK=0'
+  chk "git-tail-flag-cleared" "2" "$(grep -cF "$_p_flag_off" "$ME")"
+  git init -q --bare "$T/mirror2.git"
+  git -C "$T/state" remote remove origin 2>/dev/null || true
+  git -C "$T/state" remote add origin "$T/mirror2.git"
+  git -C "$T/state" push -q --set-upstream origin HEAD 2>/dev/null
+  local MIR2="$T/mirror2.git"
+  local BR; BR="$(git -C "$T/state" rev-parse --abbrev-ref HEAD)"
+  local mir_head loc_head
+  mir_head() { git -C "$MIR2" rev-parse "refs/heads/$BR" 2>/dev/null; }
+  loc_head() { git -C "$T/state" rev-parse HEAD 2>/dev/null; }
+
+  # (a) BELOW threshold and YOUNG -> no push. Asserted first so the ordering
+  #     is itself evidence: the mutation ran, the arm declined.
+  for i in 1 2 3; do git -C "$T/state" commit -q --allow-empty -m "bl-$i"; done
+  local _h0; _h0="$(mir_head)"
+  local _o; _o="$(OC_LEDGER_PUSH_MIN=99 OC_LEDGER_PUSH_MAX_AGE=99999 bash "$ME" stamp note push-under 2>&1)"
+  chk "push-below-threshold-silent" "true" "$(grep -q 'mirror-due' <<< "$_o" && echo false || echo true)"
+  chk "push-below-threshold-mirror-unmoved" "$_h0" "$(mir_head)"
+  chk "push-below-threshold-really-behind" "true" "$([ "$(mir_head)" != "$(loc_head)" ] && echo true || echo false)"
+
+  # (b) COMMIT ARM: threshold set AT the pre-stamp backlog, so the stamp's own
+  #     commit is exactly what crosses it.
+  local _n; _n="$(git -C "$T/state" rev-list --count '@{u}..HEAD')"
+  _o="$(OC_LEDGER_PUSH_MIN="$_n" OC_LEDGER_PUSH_MAX_AGE=99999 bash "$ME" stamp note push-threshold 2>&1)"
+  chk "push-commit-arm-announced" "true" "$(grep -q 'mirror-due: state backlog=' <<< "$_o" && echo true || echo false)"
+  chk "push-commit-arm-mirror-caught-up" "$(loc_head)" "$(mir_head)"
+  # the push carries what THIS mutation wrote, not a stale tree
+  chk "push-carries-this-mutation" "true" "$(git -C "$MIR2" show "refs/heads/$BR:workers-ledger.json" 2>/dev/null | grep -q 'push-threshold' && echo true || echo false)"
+
+  # (c) AGE ARM: below threshold, but the newest unpushed commit passes the
+  #     bound (MAX_AGE=0 makes any backlog qualify -- no sleep needed).
+  git -C "$T/state" commit -q --allow-empty -m bl-age
+  _o="$(OC_LEDGER_PUSH_MIN=99 OC_LEDGER_PUSH_MAX_AGE=0 bash "$ME" stamp note push-age 2>&1)"
+  chk "push-age-arm-announced" "true" "$(grep -q 'mirror-due: state backlog=.*newest .*s old' <<< "$_o" && echo true || echo false)"
+
+  # (#655) push_mirror must act on the remote's REAL state. Measured: with a
+  # stale @{u} the tool reads "ahead N" while the truth is "ahead N, behind M",
+  # so it both measures and pushes against a stale view and WARNs identically on
+  # every later mutation. The fetch is asserted structurally, and the DISCLOSURE
+  # is asserted behaviourally against two tiny real repos -- because a
+  # disclosure leg that reads the source would pass on a message never printed.
+  chk "push-fetches-before-push" "1" \
+    "$(awk '/^push_mirror\(\)/,/^}$/' "$ME" | grep -c 'fetch -q origin')"
+  awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$T/pm_fn.sh"   # push_mirror calls it
+  awk '/^push_mirror\(\)/,/^}$/' "$ME" >> "$T/pm_fn.sh"
+  _p655dir="$T/push655"
+  rm -rf "$P"; mkdir -p "$P"
+  git init -q --bare "$_p655dir/origin.git"
+  git -C "$_p655dir/origin.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$_p655dir/origin.git" "$_p655dir/w" 2>/dev/null
+  git -C "$_p655dir/w" config user.email sa@sb; git -C "$_p655dir/w" config user.name sa
+  git -C "$_p655dir/w" config commit.gpgsign false
+  ( cd "$_p655dir/w" && echo base > f && git add f && git commit -q -m base && git push -q origin main )
+  # a second clone diverges: it commits, and the remote also advances
+  git clone -q "$_p655dir/origin.git" "$_p655dir/d" 2>/dev/null
+  git -C "$_p655dir/d" config user.email sa@sb; git -C "$_p655dir/d" config user.name sa
+  git -C "$_p655dir/d" config commit.gpgsign false
+  git -C "$_p655dir/d" checkout -q main
+  ( cd "$_p655dir/w" && echo remote > r && git add r && git commit -q -m remote && git push -q origin main )
+  ( cd "$_p655dir/d" && echo local > l && git add l && git commit -q -m local )
+  # stale tracking ref: make d believe it is strictly ahead
+  git -C "$_p655dir/d" update-ref refs/remotes/origin/main "$(git -C "$_p655dir/d" rev-parse HEAD~1)"
+  _p655out="$(bash -c '_OC_PUSH_TIMEOUT=20; oc_log_extra() { :; }; . '"$T"'/pm_fn.sh; push_mirror '"$_p655dir"'/d probe' 2>&1)"
+  grep -q '\[ahead .* behind .*\]' <<< "$_p655out" \
+    && ok || bad "push-rejection-discloses-the-relationship"
+  # CONTROL, not a signal: asserts the failure is never SILENT. It must not key
+  # on git's wording -- measured, the same divergence prints "non-fast-forward"
+  # on one path and "fetch first" on the other, so a wording assertion reddens
+  # on a git-version change rather than on a defect.
+  grep -q 'mirror push failed for probe rc=1' <<< "$_p655out" \
+    && ok || bad "push-rejection-is-never-silent"
+  chk "push-age-arm-mirror-caught-up" "$(loc_head)" "$(mir_head)"
+
+  # (d) NO origin -> silent no-op (never a line, never a failure)
+  git -C "$T/state" remote remove origin
+  git -C "$T/state" commit -q --allow-empty -m bl-noorigin
+  _o="$(OC_LEDGER_PUSH_MIN=1 OC_LEDGER_PUSH_MAX_AGE=0 bash "$ME" stamp note push-noorigin 2>&1)"
+  chk "push-no-origin-silent" "0" "$(printf '%s' "$_o" | grep -c 'mirror-due\|^mirror: state')"
+  chk "push-no-origin-stamp-still-ok" "0" "$(bash "$ME" stamp note push-noorigin2 >/dev/null 2>&1; echo $?)"
+
+  # (e) origin but NO upstream tracking -> silent no-op (nothing to measure)
+  git -C "$T/state" remote add origin "$T/mirror2.git"
+  git -C "$T/state" commit -q --allow-empty -m bl-noupstream
+  _o="$(OC_LEDGER_PUSH_MIN=1 OC_LEDGER_PUSH_MAX_AGE=0 bash "$ME" stamp note push-noupstream 2>&1)"
+  chk "push-no-upstream-silent" "0" "$(printf '%s' "$_o" | grep -c 'mirror-due\|^mirror: state')"
+
+  # 33: concurrent race
+  local before; before="$(jq '([.events[].n] | max)' "$OC_LEDGER")"
+  for i in 1 2 3 4 5; do bash "$ME" stamp note "race-a-$i" >/dev/null 2>&1 & bash "$ME" stamp note "race-b-$i" >/dev/null 2>&1 & done
+  wait
+  chk "race-max-n" "$((before + 10))" "$(jq '([.events[].n] | max)' "$OC_LEDGER")"
+  chk "race-no-dup" "true" "$(jq '[.events[].n] | length == (unique | length)' "$OC_LEDGER")"
+  # 34: git trouble never fails a stamp
+  rm -rf "$T/state/.git"
+  bash "$ME" stamp note "no-git" >/dev/null 2>&1; chk "stamp-survives-no-git" 0 $?
+  # 35-40 (v0.4.58): derive_by default attribution + confirm verb
+  local W2="11111111-2222-3333-4444-555555555555"
+  git -C "$T/state" init -q 2>/dev/null; git -C "$T/state" add -A 2>/dev/null; git -C "$T/state" -c user.email=t@t -c user.name=t commit -q -m regit 2>/dev/null
+  bash "$ME" enroll "$W2" tester --topic 42 >/dev/null 2>&1; chk "enroll-w2" 0 $?
+  # #19: an anonymous row is REFUSED (warn-and-write made the defect the default)
+  OC_ACTOR= OPENCRABS_SESSION_ID= bash "$ME" stamp note "anon-stamp" >/dev/null 2>&1; chk "anon-refused-rc" 2 $?
+  OC_ACTOR= OPENCRABS_SESSION_ID= bash "$ME" stamp note "anon-stamp" >/dev/null 2>"$T/anon.err"
+  chk "anon-refused-names-by" "true" "$(grep -qF -- '--by' "$T/anon.err" && echo true || echo false)"
+  chk "anon-refused-names-actor" "true" "$(grep -qF -- 'OC_ACTOR' "$T/anon.err" && echo true || echo false)"
+  chk "anon-refused-names-override" "true" "$(grep -qF -- '--allow-unattributed' "$T/anon.err" && echo true || echo false)"
+  chk "anon-refused-wrote-nothing" "0" "$(jq -r '[.events[] | select(.what=="anon-stamp")] | length' "$OC_LEDGER")"
+  OC_ACTOR= OPENCRABS_SESSION_ID= bash "$ME" stamp note "anon-stamp" --allow-unattributed >/dev/null 2>&1; chk "anon-override-rc" 0 $?
+  chk "derive-by-no-actor-loud" "true" "$(jq -r '[.events[] | select(.what=="anon-stamp")][0].by | test("unattributed")' "$OC_LEDGER")"
+  OC_ACTOR= OPENCRABS_SESSION_ID="$W2" bash "$ME" stamp note "session-id-stamp" >/dev/null 2>&1; chk "derive-by-session-id-rc" 0 $?
+
+  chk "derive-by-session-id-label" "tester $W2" "$(jq -r '[.events[] | select(.what=="session-id-stamp")][0].by' "$OC_LEDGER")"
+  OC_ACTOR="$W2" bash "$ME" stamp note "worker-stamp" >/dev/null 2>&1; chk "derive-by-roster-rc" 0 $?
+  chk "derive-by-roster-label" "tester $W2" "$(jq -r '[.events[] | select(.what=="worker-stamp")][0].by' "$OC_LEDGER")"
+  OC_ACTOR="99999999-8888-7777-6666-555555555555" bash "$ME" stamp note "ghost-stamp" >/dev/null 2>&1
+  chk "derive-by-unrostered" "true" "$(jq -r '[.events[] | select(.what=="ghost-stamp")][0].by | startswith("unrostered-actor")' "$OC_LEDGER")"
+  # M2-3 (2026-09-12): a uuid FRAGMENT resolves against the roster. The lookup
+  # was an exact compare, so 8 live rows carry a bare 8-char prefix whose full
+  # uuid IS rostered — an unresolvable lookup, not an unrostered lane.
+  local W2P="${W2%%-*}"    # 11111111 — the unique prefix of the enrolled W2
+  OC_ACTOR="$W2P" bash "$ME" stamp note "prefix-stamp" >/dev/null 2>&1; chk "derive-by-prefix-rc" 0 $?
+  chk "derive-by-prefix-resolves" "tester $W2" "$(jq -r '[.events[] | select(.what=="prefix-stamp")][0].by' "$OC_LEDGER")"
+  chk "derive-by-prefix-not-sentinel" "false" "$(jq -r '[.events[] | select(.what=="prefix-stamp")][0].by | startswith("unrostered-actor")' "$OC_LEDGER")"
+  # a fragment matching NOTHING keeps the sentinel (honest, never invented) and
+  # says so LOUDLY, naming the remedy
+  OC_ACTOR="ffffffff" bash "$ME" stamp note "nomatch-stamp" >/dev/null 2>"$T/nomatch.err"; chk "derive-by-nomatch-rc" 0 $?
+  chk "derive-by-nomatch-sentinel" "true" "$(jq -r '[.events[] | select(.what=="nomatch-stamp")][0].by | startswith("unrostered-actor")' "$OC_LEDGER")"
+  chk "derive-by-nomatch-names-enroll" "true" "$(grep -qF 'oc-ledger enroll' "$T/nomatch.err" && echo true || echo false)"
+  # M2-23 (2026-09-12): the sentinel is IDEMPOTENT — an actor already in
+  # sentinel form is echoed VERBATIM, never prefixed a second time.
+  OC_ACTOR="unrostered-actor 2fae1230" bash "$ME" stamp note "sentinel-idem-stamp" >/dev/null 2>"$T/idem.err"
+  chk "derive-by-sentinel-idem-rc" 0 $?
+  chk "derive-by-sentinel-idem-verbatim" "unrostered-actor 2fae1230" "$(jq -r '[.events[] | select(.what=="sentinel-idem-stamp")][0].by' "$OC_LEDGER")"
+  chk "derive-by-sentinel-idem-warns" "true" "$(grep -qF 'already carries' "$T/idem.err" && echo true || echo false)"
+  # M2-24 (2026-09-12): the composed `<role> <uuid>` form derive_by EMITS must
+  # be consumable — feeding a prior row's `by` back is the natural caller
+  # pattern (the roster TSV's first two columns are uuid and role).
+  OC_ACTOR="tester aaaaaaaa" bash "$ME" stamp note "composed-stamp" >/dev/null 2>"$T/comp.err"
+  chk "derive-by-composed-rc" 0 $?
+  # expected is DERIVED from the fixture roster (role + FULL uuid), never hardcoded:
+  # the fixture's role for this uuid is not `tester` at this point in the run.
+  chk "derive-by-composed-canonical" "$(jq -r '.workers[] | select(.uuid=="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") | .role + " " + .uuid' "$OC_LEDGER")" "$(jq -r '[.events[] | select(.what=="composed-stamp")][0].by' "$OC_LEDGER")"
+  chk "derive-by-composed-not-sentinel" "false" "$(jq -r '[.events[] | select(.what=="composed-stamp")][0].by | startswith("unrostered-actor")' "$OC_LEDGER")"
+  # a two-word LABEL whose tail is NOT a uuid must still take the sentinel
+  OC_ACTOR="some lane label" bash "$ME" stamp note "composed-label-stamp" >/dev/null 2>&1
+  chk "derive-by-composed-label-sentinel" "true" "$(jq -r '[.events[] | select(.what=="composed-label-stamp")][0].by | startswith("unrostered-actor")' "$OC_LEDGER")"
+  # a meaningful LABEL is not a fragment: --by is written VERBATIM (HQ stamps
+  # hq/opencrabs-dev-factory; refusing the label form would break it outright)
+  bash "$ME" stamp note "label-stamp" --by "hq/opencrabs-dev-factory" >/dev/null 2>&1; chk "stamp-label-rc" 0 $?
+  chk "stamp-label-verbatim" "hq/opencrabs-dev-factory" "$(jq -r '[.events[] | select(.what=="label-stamp")][0].by' "$OC_LEDGER")"
+  # ---- #320: a uuid-SHAPED --by that resolves nowhere must WARN, not refuse --
+  # derive_by resolves an actor properly, but the --by FLAG bypassed it and wrote
+  # verbatim, so a hand-assembled uuid (remembered prefix + invented tail) landed
+  # as a phantom actor indistinguishable from a real one (row n=10499). The
+  # warning is the fix; a REFUSAL would be wrong for the reason derive_by:604
+  # records (64/86 sentinel rows belong to uuids rostered TODAY, stamped inside
+  # the pre-enroll window).
+  bash "$ME" stamp note "by-fabricated-stamp" --by "triage 530c29ec-9ba9-4d3e-9d5f-3b7d1b0d1a1f" >/dev/null 2>"$T/by_fab.err"
+  chk "by-uuid-shaped-rc" 0 $?
+  chk "by-uuid-shaped-warns" "true" "$(grep -qF 'UUID-SHAPED' "$T/by_fab.err" && echo true || echo false)"
+  chk "by-uuid-shaped-names-remedy" "true" "$(grep -qF 'roster --live' "$T/by_fab.err" && echo true || echo false)"
+  chk "by-uuid-shaped-still-stamps-verbatim" "triage 530c29ec-9ba9-4d3e-9d5f-3b7d1b0d1a1f" \
+    "$(jq -r '[.events[] | select(.what=="by-fabricated-stamp")][0].by' "$OC_LEDGER")"
+  # the label form stays SILENT (the negative control: a fix that warns on any
+  # unrecognised --by reddens this and the verbatim leg above)
+  bash "$ME" stamp note "by-label-silent-stamp" --by "hq/opencrabs-dev-factory" >/dev/null 2>"$T/by_lab.err"
+  chk "by-label-no-warn" "false" "$(grep -qF 'UUID-SHAPED' "$T/by_lab.err" && echo true || echo false)"
+  # a RESOLVABLE uuid is silent too — the warning is about resolution, not shape
+  bash "$ME" stamp note "by-real-uuid-stamp" --by "tester aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" >/dev/null 2>"$T/by_real.err"
+  chk "by-real-uuid-rc" 0 $?
+  chk "by-real-uuid-no-warn" "false" "$(grep -qF 'UUID-SHAPED' "$T/by_real.err" && echo true || echo false)"
+  # and the OC_ACTOR path is UNTOUCHED: the guard is for an explicit --by only
+  OC_ACTOR="tester aaaaaaaa" bash "$ME" stamp note "by-actor-path-stamp" >/dev/null 2>"$T/by_actor.err"
+  chk "by-actor-path-rc" 0 $?
+  chk "by-actor-path-no-warn" "false" "$(grep -qF 'UUID-SHAPED' "$T/by_actor.err" && echo true || echo false)"
+  # an AMBIGUOUS fragment must NOT resolve — a wrong pick is worse than an
+  # honest sentinel. Built on an ISOLATED ledger: the shared fixture roster is
+  # deliberately pinned at 3 workers by the roster-count assertions below.
+  mkdir -p "$T/amb"
+  cat > "$T/amb/amb-ledger.json" <<'AMBEOF'
+{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},
+ "updated_at":"2026-01-01T00:00:00Z","workers":[
+ {"uuid":"77777777-aaaa-1111-1111-111111111111","role":"editor","topic_id":1,"feature":"-","confirmed":true,"last_acked":null,"notes":[],"events":[]},
+ {"uuid":"77777777-bbbb-2222-2222-222222222222","role":"editor","topic_id":2,"feature":"-","confirmed":true,"last_acked":null,"notes":[],"events":[]}],"events":[]}
+AMBEOF
+  OC_LEDGER="$T/amb/amb-ledger.json" OC_ACTOR="77777777" bash "$ME" stamp note "amb-stamp" >/dev/null 2>&1; chk "derive-by-ambiguous-rc" 0 $?
+  chk "derive-by-ambiguous-sentinel" "true" "$(jq -r '[.events[] | select(.what=="amb-stamp")][0].by | startswith("unrostered-actor")' "$T/amb/amb-ledger.json")"
+  OC_LEDGER="$T/amb/amb-ledger.json" OC_ACTOR="77777777-aaaa-1111-1111-111111111111" bash "$ME" stamp note "amb-exact-stamp" >/dev/null 2>&1
+  chk "derive-by-amb-exact-resolves" "editor 77777777-aaaa-1111-1111-111111111111" "$(jq -r '[.events[] | select(.what=="amb-exact-stamp")][0].by' "$T/amb/amb-ledger.json")"
+  printf '#!/bin/sh\nexit 0\n' > "$T/gh-ok.sh"; chmod +x "$T/gh-ok.sh"
+  printf '#!/bin/sh\nexit 1\n' > "$T/gh-fail.sh"; chmod +x "$T/gh-fail.sh"
+  OC_ACTOR="$W2" bash "$ME" stamp claim "CLAIM #999 — fixture claim for confirm" >/dev/null 2>&1
+  jq --arg u "$W2" '(.workers[] | select(.uuid==$u) | .confirmed) = false' "$OC_LEDGER" > "$T/tmp.json" && mv "$T/tmp.json" "$OC_LEDGER"
+  bash "$ME" confirm "$W2" --gh "$T/gh-ok.sh" >/dev/null 2>&1; chk "confirm-ok" 0 $?
+  chk "confirm-flipped" "true" "$(jq -r --arg u "$W2" '[.workers[] | select(.uuid==$u)][0].confirmed' "$OC_LEDGER")"
+  chk "confirm-event" "true" "$(jq -r --arg u "$W2" '[.workers[] | select(.uuid==$u)][0].events[-1].kind == "confirm"' "$OC_LEDGER")"
+  jq --arg u "$W2" '(.workers[] | select(.uuid==$u) | .confirmed) = false' "$OC_LEDGER" > "$T/tmp.json" && mv "$T/tmp.json" "$OC_LEDGER"
+  bash "$ME" confirm "$W2" --gh "$T/gh-fail.sh" >/dev/null 2>&1; chk "confirm-gh-fail-rc3" 3 $?
+  # v0.4.284: the tracker probe walks ALL THREE home trackers, so the shim below
+  # answers for exactly ONE of them and fails the others. These two legs are the
+  # DISCRIMINATING control for that change -- a probe that still asked only the
+  # fork fails both, and a `_found` hardwired to 1 fails the fail-all leg below.
+  # The leg that used to sit here ran the REAL gh and relied on the fork having
+  # no #999: non-hermetic, and now simply false -- opencrabs/opencrabs#999
+  # EXISTS, so under the new law confirming it is correct, not an error.
+  printf '#!/bin/sh\ncase "$*" in *"opencrabs-dev-factory"*) exit 0 ;; *) exit 1 ;; esac\n' > "$T/gh-factory-only.sh"; chmod +x "$T/gh-factory-only.sh"
+  printf '#!/bin/sh\ncase "$*" in *"opencrabs/opencrabs"*) exit 0 ;; *) exit 1 ;; esac\n' > "$T/gh-binary-only.sh"; chmod +x "$T/gh-binary-only.sh"
+  jq --arg u "$W2" '(.workers[] | select(.uuid==$u) | .confirmed) = false' "$OC_LEDGER" > "$T/tmp.json" && mv "$T/tmp.json" "$OC_LEDGER"
+  bash "$ME" confirm "$W2" --gh "$T/gh-factory-only.sh" >/dev/null 2>&1; chk "confirm-probes-factory-tracker-rc0" 0 $?
+  jq --arg u "$W2" '(.workers[] | select(.uuid==$u) | .confirmed) = false' "$OC_LEDGER" > "$T/tmp.json" && mv "$T/tmp.json" "$OC_LEDGER"
+  bash "$ME" confirm "$W2" --gh "$T/gh-binary-only.sh" >/dev/null 2>&1; chk "confirm-probes-binary-tracker-rc0" 0 $?
+  GH_BIN="$T/no-such-gh-binary" bash "$ME" confirm "$W2" >/dev/null 2>&1  # gh unavailable -> refuse, never take
+  chk "confirm-no-github-rc3" 3 $?
+  # 41-45 (v0.4.77 F-M4): claim-ref — the oc-commit Issue-Ref backend
+  bash "$ME" claim-ref "$W2" >/dev/null 2>&1; chk "claim-ref-after-claim" 0 $?
+  chk "claim-ref-value" "999" "$(bash "$ME" claim-ref "$W2" 2>/dev/null)"
+  # M2-24 round trip (#441): derive_by EMITS the composed '<role> <uuid>' form,
+  # so that form must keep resolving. The domain guard accepts it by testing the
+  # TRAILING token and the MATCH is untouched (shape 1), so the round trip is
+  # exact — and the same guard must still refuse a composed form whose tail is
+  # not a uuid.
+  bash "$ME" claim-ref "tester $W2" >/dev/null 2>&1; chk "claim-ref-composed-rc0" 0 $?
+  chk "claim-ref-composed-value" "999" "$(bash "$ME" claim-ref "tester $W2" 2>/dev/null)"
+  bash "$ME" claim-ref "tester not-a-uuid" >/dev/null 2>&1; chk "claim-ref-composed-bad-tail-rc2" 2 $?
+  local W3="22222222-3333-4444-5555-666666666666"
+  # RESIDUAL (lane c6b1a539 report, 2026-09-12): a claim with NO issue ref is
+  # now REFUSED (symmetric with #19) — every consumer keys on the ref, so such
+  # a row is a dead letter that cmd_claims cannot see (it answered CLEAN).
+  OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM without issue ref" >/dev/null 2>&1; chk "stamp-claim-no-ref-refused" 2 $?
+  # #379 + v0.4.284: the dead-letter rule covers a claim naming ONLY a repository
+  # we do not own. The v0.4.284 change is that `opencrabs/opencrabs` is now one
+  # OF OURS (the binary tracker), so a claim on it ANCHORS -- the second leg
+  # proves that -- while a genuinely FOREIGN slug is still REFUSED. Without the
+  # foreign leg a predicate that accepted EVERY slug would pass the anchor leg
+  # vacuously, so this pair is a CONTROL, not a restatement.
+  OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM third-party acme/widgets#7 only" >/dev/null 2>&1; chk "stamp-claim-foreign-only-refused" 2 $?
+  OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM upstream opencrabs/opencrabs#1419 only" >/dev/null 2>&1; chk "stamp-claim-binary-tracker-anchors" 0 $?
+  chk "stamp-claim-binary-tracker-ref-value" "1419" "$(bash "$ME" claim-ref "$W3" 2>/dev/null)"
+  # ...and the guard must carry an escape hatch (#19 has --allow-unattributed,
+  # sync has --allow-sweep): a caller who DELIBERATELY wants a ref-less claim
+  # says so. The row lands, and claim-ref still answers rc 3 for it — which is
+  # the honest verdict, not a silent clean.
+  OC_ACTOR="$W3" bash "$ME" stamp claim "CLAIM without issue ref" --allow-no-ref >/dev/null 2>&1; chk "stamp-claim-no-ref-hatch-rc" 0 $?
+  bash "$ME" claim-ref "$W3" >/dev/null 2>&1; chk "claim-ref-no-ref-rc3" 3 $?
+
+  # A LANDED (done/close) row that carries no parseable ref closes NOTHING
+  # while reporting success. Reported by editor lane 2ed8adeb: `stamp done
+  # "592 landed: b9ee661cc"` returned "read-back ok" rc=0 and left the claim
+  # OPEN, so the issue kept reading CLAIMED to oc-issue-dispatch --auto and was
+  # never re-dispatched. "(read-back ok)" confirms the WRITE, never the
+  # ADDRESSING. BARE DIGITS ARE NOT A REF — the predicate accepts "#<N>" or
+  # "issue <N>". MUTATION KILL: drop the LANDED_KINDS warn block and legs
+  # (i)-(iv) redden.
+  _lw="NO parseable issue reference"
+  _o="$(OC_ACTOR="$W3" bash "$ME" stamp done "601 landed: b9ee661cc" 2>&1)"
+  chk "stamp-done-ref-less-WARNS" 1 "$(printf '%s' "$_o" | grep -c "$_lw")"
+  _o="$(OC_ACTOR="$W3" bash "$ME" stamp done "#601 landed: b9ee661cc" 2>&1)"
+  chk "stamp-done-with-ref-is-silent" 0 "$(printf '%s' "$_o" | grep -c "$_lw")"
+  # A ref-less `confirm` is a ship/ACK record, not a landing: of the 22 ref-less
+  # closing rows in the live ledger, 6 are confirm and every one is legitimate
+  # ("v0.4.124 ... SHIPPED", "battery fast-path shipped", "reload ACK"). A
+  # blanket CLOSING_KINDS warn would fire on all of them.
+  _o="$(OC_ACTOR="$W3" bash "$ME" stamp confirm "v0.4.124 batch SHIPPED: sync ok" 2>&1)"
+  chk "stamp-confirm-ref-less-is-silent" 0 "$(printf '%s' "$_o" | grep -c "$_lw")"
+  _o="$(OC_ACTOR="$W3" bash "$ME" stamp done --allow-no-ref "deliberately ref-less" 2>&1)"
+  chk "stamp-done-no-ref-hatch-silent" 0 "$(printf '%s' "$_o" | grep -c "$_lw")"
+  bash "$ME" claim-ref "00000000-0000-0000-0000-000000000000" >/dev/null 2>&1; chk "claim-ref-no-claim-rc3" 3 $?
+  # #588 sibling (2026-09-26, toolsmith): the `what=` READ-BACK line must be
+  # CHARACTER-safe. `cut -c1-80` counts BYTES under C.UTF-8, so a `what` holding
+  # non-ASCII clipped mid-character printed a dangling lead byte on the one line
+  # whose entire purpose is to let an operator see what landed. Same class as
+  # the oc-smoke clip (#588), same fix (oc_clip_chars).
+  # The construction MUST actually trigger the clip: dash's `${#}` counts BYTES
+  # while the tool's bash counts CHARACTERS, so a fixture sized by eye can sit
+  # under the cap and assert a boundary it never reached. This value is 106
+  # CHARACTERS (6-byte prefix + 100 single-char marks), so the 80-char cap clips
+  # and byte offset 80 lands 2 bytes INTO the 25th 3-byte mark.
+  _mb="#601  $(printf '\342\234\205%.0s' $(seq 1 100))"
+  _o="$(OC_ACTOR="$W3" bash "$ME" stamp done "$_mb" 2>&1)"
+  if printf '%s' "$_o" | python3 -c "import sys; sys.stdin.buffer.read().decode('utf-8')" 2>/dev/null; then
+    ok "stamp read-back line stays decodable with a multi-byte what (#588)"
+  else
+    bad "stamp read-back line is NOT valid UTF-8 with a multi-byte what (#588)"
+  fi
+  # Control: still BOUNDED at 80 CHARACTERS — the fix must not stop clipping.
+  _wlen="$(printf '%s' "$_o" | sed -n 's/.*what="\(.*\)" len=.*/\1/p' | python3 -c "import sys; print(len(sys.stdin.read().rstrip(chr(10))))")"
+  chk "stamp-read-back-clipped-to-80-chars" 80 "$_wlen"
+  # And len= must report CHARACTERS, not bytes: 106, not 306.
+  _slen="$(printf '%s' "$_o" | sed -n 's/.*len=\([0-9]*\) hash8=.*/\1/p')"
+  chk "stamp-len-reports-characters-not-bytes" 106 "$_slen"
+  # #441 (Design Q shape 1, Decision 15): the ARGUMENT DOMAIN. Until the fix
+  # this verb validated PRESENCE only, so a plain issue number was accepted as
+  # the actor and _latest_claim_issue's free substring answered with a FOREIGN
+  # lane's claim at rc 0 — an answer a caller cannot tell from a real one. The
+  # two arguments below are the SAME class, failing in OPPOSITE directions
+  # pre-fix, which is why the failure MODE was unlearnable: '4400' is a
+  # substring of a real enrolled uuid (the lie, rc 0), while '438' matches
+  # nothing (rc 3, read as "this lane has no claim").
+  local WF="44004400-1111-2222-3333-444444444444"   # '4400' sits inside it
+  # The foreign lane lives in its OWN ledger (the amb-* legs' pattern) so the
+  # main fixture's worker and event counts — asserted by the roster and events
+  # blocks further down — are not perturbed by enrolling it here.
+  mkdir -p "$T/dom"
+  cat > "$T/dom/dom-ledger.json" <<'DOMEOF'
+{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},
+ "updated_at":"2026-01-01T00:00:00Z","workers":[
+ {"uuid":"44004400-1111-2222-3333-444444444444","role":"tester","topic_id":43,"feature":"-","confirmed":true,"last_acked":null,"notes":[],"events":[]}],"events":[]}
+DOMEOF
+  local DL="$T/dom/dom-ledger.json"
+  OC_LEDGER="$DL" OC_ACTOR="$WF" bash "$ME" stamp claim "CLAIM #4242 — foreign-lane fixture" >/dev/null 2>&1
+  OC_LEDGER="$DL" bash "$ME" claim-ref "$WF" >/dev/null 2>&1; chk "claim-ref-foreign-lane-rc0" 0 $?
+  chk "claim-ref-foreign-lane-value" "4242" "$(OC_LEDGER="$DL" bash "$ME" claim-ref "$WF" 2>/dev/null)"
+  # the FRAGMENT of that uuid: pre-fix this answered 4242 at rc 0 — the lie.
+  OC_LEDGER="$DL" bash "$ME" claim-ref 4400 >"$T/domain.out" 2>"$T/domain.err"; chk "claim-ref-non-uuid-rc2" 2 $?
+  chk "claim-ref-non-uuid-hint" "true" "$(grep -qF -- 'claims <N>' "$T/domain.err" && echo true || echo false)"
+  chk "claim-ref-non-uuid-no-stdout" "" "$(cat "$T/domain.out")"
+  bash "$ME" claim-ref 2fae >/dev/null 2>&1; chk "claim-ref-fragment-rc2" 2 $?
+  bash "$ME" claim-ref 4400-1111-2222-3333-444444444444 >/dev/null 2>&1; chk "claim-ref-short-uuid-rc2" 2 $?
+  bash "$ME" claim-ref 44004400-1111-2222-3333-44444444444Z >/dev/null 2>&1; chk "claim-ref-nonhex-uuid-rc2" 2 $?
+  # AC-1, the substantive half: the failure names the verb that DOES take an
+  # issue number, and that verb actually answers for it.
+  OC_LEDGER="$DL" bash "$ME" claims 4242 >"$T/claims4242.out" 2>/dev/null; chk "claims-4242-rc" 0 $?
+  grep -qF "$WF" "$T/claims4242.out" && grep -qF '#4242' "$T/claims4242.out" \
+    && ok || bad "claims-4242-row"
+  # ...and the two negative controls above are untouched: rc 3, same diagnostic.
+  bash "$ME" claim-ref "$W3" >"$T/domain2.err" 2>&1; chk "claim-ref-no-ref-rc3-kept" 3 $?
+  # W3 DOES hold a claim row — it is the REF that is missing, so the diagnostic
+  # is the second branch of _latest_claim_issue. Pin its exact text: a
+  # domain guard that swallowed this case into "not a uuid" would redden here.
+  chk "claim-ref-no-ref-diagnostic-kept" "true" "$(grep -qF "latest claim by $W3 carries no numeric issue ref" "$T/domain2.err" && echo true || echo false)"
+  # RESIDUAL (lane c6b1a539 report, 2026-09-12; the D-2 family): ref extraction
+  # is the SINGLE OWNER's (_issue_ref_tokens), so (a) a claim written "issue N"
+  # with NO '#' resolves at all, and (b) the FIRST-WRITTEN ref wins — the old
+  # "first '#<digits>' anywhere in the prose" grep derived the WRONG issue when
+  # the claim named its issue in the "issue N" form and a passing mention
+  # carried a '#'. Fixture shape taken from live row n=1585 (claims "issue 94",
+  # prose mentions the "#93 options hook" -> old derived 93, the wrong issue,
+  # which cmd_confirm would then verify against GitHub and close).
+  local W7="77777777-3333-4444-5555-666666666666"
+  OC_ACTOR="$W7" bash "$ME" stamp claim "issue 6060 claimed: no hash form; a passing mention of the #7070 hook" >/dev/null 2>&1
+  chk "claim-ref-nohash-rc" 0 $?
+  chk "claim-ref-nohash-value" "6060" "$(bash "$ME" claim-ref "$W7" 2>/dev/null)"
+  # #335 (Toolsmith, 2026-09-18): an explicit `--issue` must WIN over a prose
+  # mention. The old prefix check was a SUBSTRING search over the whole prose
+  # (`case *"#$issue"*`), so a lane claiming #299 while narrating "fixed #294"
+  # had its prefix suppressed and the row anchored on the LEADING cluster —
+  # #294 — i.e. the claim landed on the WRONG issue, and oc-commit derived
+  # Issue-Ref #294 from it and posted a comment onto a finished issue.
+  local W8="88888888-3333-4444-5555-666666666666"
+  OC_ACTOR="$W8" bash "$ME" claim --issue 299 --what "fixed #294 (superseded), now claiming #299" >/dev/null 2>&1
+  chk "claim-issue-flag-wins-rc" 0 $?
+  chk "claim-issue-flag-wins-target" "[299]" "$(jq -c --arg u "$W8" '[.events[] | select((.by // "") | contains($u))][-1].issues // null' "$OC_LEDGER")"
+  chk "claim-issue-flag-wins-prose" "299" "$(bash "$ME" claim-ref "$W8" 2>/dev/null)"
+  # `--issue #N` must normalise: a stray '#' used to build "CLAIM ##N", which
+  # both looked wrong AND dodged the membership test.
+  OC_ACTOR="$W8" bash "$ME" claim --issue '#298' --what "second fixture" >/dev/null 2>&1
+  chk "claim-issue-hash-normalised" "true" "$(jq -r --arg u "$W8" '[.events[] | select((.by // "") | contains($u)) | select(.what | contains("second fixture"))][0].what | startswith("CLAIM #298 — ") and (contains("##") | not)' "$OC_LEDGER")"
+  # ...and a prose that ALREADY leads with the claim cluster is kept verbatim
+  # (the suppression is still correct in the one case it was written for).
+  OC_ACTOR="$W8" bash "$ME" claim --issue 297 --what "CLAIM #297 — already led" >/dev/null 2>&1
+  chk "claim-issue-leading-cluster-verbatim" "CLAIM #297 — already led" "$(jq -r --arg u "$W8" '[.events[] | select((.by // "") | contains($u)) | select(.what | contains("already led"))][0].what' "$OC_LEDGER")"
+  # #335: `claim-ref --open` — the ref a consumer may safely ACT on. W2's #999
+  # claim is CLOSED by this point (the confirm verb above appended a closing
+  # event), so the plain form still answers while --open must refuse.
+  bash "$ME" claim-ref "$W2" --open >/dev/null 2>&1; chk "claim-ref-open-closed-rc3" 3 $?
+  bash "$ME" claim-ref "$W2" --open --open >/dev/null 2>&1; chk "claim-ref-open-repeat-rc3" 3 $?
+  bash "$ME" claim-ref --open "$W2" >/dev/null 2>&1; chk "claim-ref-open-before-uuid-rc3" 3 $?
+  bash "$ME" claim-ref "$W2" --bogus >/dev/null 2>&1; chk "claim-ref-unknown-flag-rc2" 2 $?
+  bash "$ME" claim-ref --open >/dev/null 2>&1; chk "claim-ref-open-no-uuid-rc2" 2 $?
+  local WC="cccccccc-3333-4444-5555-666666666666"
+  OC_ACTOR="$WC" bash "$ME" claim --issue 5555 --what "fixture open for --open" >/dev/null 2>&1
+  chk "claim-ref-open-live-rc" 0 $?
+  chk "claim-ref-open-live-value" "5555" "$(bash "$ME" claim-ref "$WC" --open 2>/dev/null)"
+  OC_ACTOR="$WC" bash "$ME" stamp done "done #5555 — fixture release" >/dev/null 2>&1
+  bash "$ME" claim-ref "$WC" --open >/dev/null 2>&1; chk "claim-ref-open-released-rc3" 3 $?
+  chk "claim-ref-plain-ignores-closure" "5555" "$(bash "$ME" claim-ref "$WC" 2>/dev/null)"
+  # #492: `claim-ref --open` resolves the NEWEST STILL-OPEN claim row, not the
+  # newest row. Fixture: $WO claims #8801 and leaves it open, then claims #8802,
+  # which a done row CLOSES. The newest row is therefore closed while an older
+  # one is open — the exact shape that made the verb answer rc 3 for a lane that
+  # DOES hold an open claim, so oc-commit derived no Issue-Ref and refused to
+  # commit (#492's live instance: rc 3 while `claims 318` showed an open row).
+  # MUTATION KILL: restore the latest-row-only selection and
+  # claim-ref-open-older-open-row-wins fails with an empty answer and rc 3.
+  local WO="abcdef01-2345-6789-abcd-ef0123456789"
+  OC_ACTOR="$WO" bash "$ME" stamp claim "CLAIM #8801 — older claim left open" >/dev/null 2>&1
+  OC_ACTOR="$WO" bash "$ME" stamp claim "CLAIM #8802 — newer claim, closed below" >/dev/null 2>&1
+  OC_ACTOR="$WO" bash "$ME" stamp done "done #8802 — closure of the NEWER claim" >/dev/null 2>&1
+  chk "claim-ref-open-older-open-row-wins" "8801" "$(bash "$ME" claim-ref "$WO" --open 2>/dev/null)"
+  bash "$ME" claim-ref "$WO" --open >/dev/null 2>&1; chk "claim-ref-open-older-open-rc0" 0 $?
+  chk "claim-ref-plain-still-latest-row" "8802" "$(bash "$ME" claim-ref "$WO" 2>/dev/null)"
+  OC_ACTOR="$WO" bash "$ME" stamp done "done #8801 — now every claim row is closed" >/dev/null 2>&1
+  out="$(bash "$ME" claim-ref "$WO" --open 2>"$T/wo.err")"; rc=$?
+  if [ "$rc" -eq 3 ] && [ -z "$out" ]; then
+    ok
+  else
+    bad "claim-ref-open-none-left-rc3 (want rc=3 got rc=$rc, out=[$out], err=[$(head -c 200 "$T/wo.err")])"
+  fi
+  grep -q "older claim row(s) by $WO were also scanned and none is open" "$T/wo.err" \
+    && ok || bad "claim-ref-open-none-left-diagnostic"
+  # #631: `claim-ref --open --max-age-d N` — an over-age claim is NOT a weaker
+  # answer, it is NOT AN ANSWER. Measured incident (factory #311, 2026-11-09):
+  # oc-commit derived an Issue-Ref from a claim made 51.1 days earlier and the
+  # per-commit note landed on leshchenko1979/opencrabs#311 — an unrelated OPEN
+  # issue on the fork, because the derivation and the comment leg disagreed on
+  # the repo. The bound is OPT-IN (default 0 = unbounded) so the plain read and
+  # every existing consumer keep their exact behaviour.
+  # Fixtures: WA claimed long ago and never closed, WB claimed just now, WD's
+  # claim stamp is unparseable.
+  local WA="aaaa6310-1111-4222-8333-444455556666"
+  local WB="bbbb6310-1111-4222-8333-444455556666"
+  local WD="dddd6310-1111-4222-8333-444455556666"
+  local L631="$T/wl631.json"
+  cat > "$L631" <<JSON
+{"workers":[{"uuid":"$WA","role":"editor"},{"uuid":"$WB","role":"editor"},{"uuid":"$WD","role":"editor"}],"events":[
+ {"t":"2020-01-01T00:00:00Z","kind":"claim","by":"editor $WA","what":"CLAIM #311 — abandoned long ago, never closed"},
+ {"t":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","kind":"claim","by":"editor $WB","what":"CLAIM #3110 — claimed just now"},
+ {"t":"not-a-timestamp","kind":"claim","by":"editor $WD","what":"CLAIM #3111 — undateable"}]}
+JSON
+  out="$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 7 2>"$T/a631.err")"; rc=$?
+  if [ "$rc" -eq 3 ] && [ -z "$out" ]; then ok; else bad "claim-ref-age-stale-rc3 (want rc=3 got rc=$rc, out=[$out])"; fi
+  grep -q 'STALE' "$T/a631.err" && ok || bad "claim-ref-age-stale-diagnostic (got: $(tr '\n' ' ' < "$T/a631.err"))"
+  grep -q -- '--issue' "$T/a631.err" && ok || bad "claim-ref-age-stale-offers-escape-hatch"
+  #     POSITIVE CONTROL: the SAME bound on a FRESH claim must still ANSWER. A
+  #     leg that only ever refuses passes on a verb that never derives at all.
+  chk "claim-ref-age-fresh-answers" "3110" "$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WB" --open --max-age-d 7 2>/dev/null)"
+  #     KNOB: --max-age-d 0 is unbounded, so the stale lane answers again. Without
+  #     this the arm above could be red for ANY refusal, not the age.
+  chk "claim-ref-age-zero-unbounded" "311" "$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 0 2>/dev/null)"
+  #     BACKWARD COMPAT: the bound is opt-in. An absent flag must behave exactly
+  #     as it did before #631 — this is the leg that reddens if the bound is ever
+  #     made the DEFAULT, which would silently change every existing consumer.
+  chk "claim-ref-age-absent-unbounded" "311" "$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open 2>/dev/null)"
+  #     UNDECIDABLE != FRESH: an unparseable stamp must REFUSE under a bound, not
+  #     be read as age 0. Same fail-closed direction as the rest of this family.
+  out="$(OC_LEDGER="$L631" bash "$ME" claim-ref "$WD" --open --max-age-d 7 2>"$T/d631.err")"; rc=$?
+  if [ "$rc" -eq 3 ] && [ -z "$out" ]; then ok; else bad "claim-ref-age-undecidable-rc3 (want rc=3 got rc=$rc, out=[$out])"; fi
+  grep -q 'UNDECIDABLE' "$T/d631.err" && ok || bad "claim-ref-age-undecidable-diagnostic (got: $(tr '\n' ' ' < "$T/d631.err"))"
+  #     ARG VALIDATION: a flag that needs a value must say so, not read the next
+  #     token as one (an accepted-but-inert bound is indistinguishable from an
+  #     honoured one).
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WB" --open --max-age-d >/dev/null 2>&1; chk "claim-ref-age-missing-value-rc2" 2 $?
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WB" --open --max-age-d=7 >/dev/null 2>&1; chk "claim-ref-age-equals-form-rc0" 0 $?
+  #     NON-NUMERIC BOUND: `--max-age-d 7d` used to parse into max_age_d="7d"
+  #     and then be read by the helper as 0 = UNBOUNDED, so a caller who
+  #     believed the bound was on had none at all. Refuse rc 2 with a
+  #     diagnostic that names the offending value. POSITIVE CONTROL: the
+  #     numeric forms above still answer, so this cannot pass on a verb that
+  #     rejects every value.
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 7d >"$T/n631.out" 2>"$T/n631.err"
+  _rc=$?; if [ "$_rc" -eq 2 ] && [ -z "$(cat "$T/n631.out")" ]; then ok; else bad "claim-ref-age-nonnumeric-rc2 (want rc=2 got rc=$_rc, out=[$(cat "$T/n631.out")])"; fi
+  grep -q 'must be a number' "$T/n631.err" && ok || bad "claim-ref-age-nonnumeric-diagnostic (got: $(tr '\n' ' ' < "$T/n631.err"))"
+  grep -q '7d' "$T/n631.err" && ok || bad "claim-ref-age-nonnumeric-names-the-value (got: $(tr '\n' ' ' < "$T/n631.err"))"
+  OC_LEDGER="$L631" bash "$ME" claim-ref "$WA" --open --max-age-d 1.2.3 >/dev/null 2>&1; chk "claim-ref-age-twodots-rc2" 2 $?
+  # 46-50 (v0.4.97, #129 family): claims <N> — open claim-refs by issue.
+  # Fixture: W2 claimed #999 above; W3's claim has no #N. Claim #777 as W4,
+  # verify OPEN, close it via a later close event, verify GONE.
+  local W4="44444444-3333-4444-5555-666666666666"
+  OC_ACTOR="$W4" bash "$ME" stamp claim "CLAIM #777 — fixture open claim" >/dev/null 2>&1
+  bash "$ME" claims 777 > "$T/claims-open.out" 2>/dev/null; chk "claims-open-rc" 0 $?
+  grep -q "$W4" "$T/claims-open.out" && grep -q '#777' "$T/claims-open.out" \
+    && ok || bad "claims-open-row"
+  # D-2 (HQ d72bd52d, 2026-09-12): `confirm` now appends the TOP-LEVEL
+  # .events row that cmd_claims scans. The assertion that used to sit here
+  # required #999 to still read OPEN after the confirm verb ran — it asserted
+  # the DEFECT (confirm wrote only to .workers[].events, a store cmd_claims
+  # never reads). Assert the closure instead.
+  bash "$ME" claims 999 2>/dev/null | grep -q "$W2" \
+    && bad "claims-999-still-open-after-confirm" || ok
+  bash "$ME" claims 123456 > "$T/claims-empty.out" 2>/dev/null; chk "claims-clean-rc" 0 $?
+  [ ! -s "$T/claims-empty.out" ] && ok || bad "claims-clean-not-empty"
+  OC_ACTOR="$W4" bash "$ME" stamp confirm "CONFIRM #777 — fixture closure (confirm = closing kind in v1.1 vocabulary)" >/dev/null 2>&1
+  bash "$ME" claims 777 > "$T/claims-closed.out" 2>/dev/null; chk "claims-closed-rc" 0 $?
+  grep -q "$W4" "$T/claims-closed.out" && bad "claims-closed-still-open" || ok
+  bash "$ME" claims >/dev/null 2>&1; chk "claims-noarg-rc0" 0 $?
+  bash "$ME" claims abc >/dev/null 2>&1; chk "claims-nonnum-rc2" 2 $?
+  # D-2: KINDS carried none of close/done/unclaim/reject, so 4 of the 5
+  # documented closers were UNSTAMPABLE (`stamp close #N` died rc 2) — the
+  # contract cmd_claims documents was a dead letter by vocabulary, and confirm
+  # could not close either. Each newly-admitted kind must be stampable AND
+  # must actually close a claim (live impact: #150 and #191 both shipped and
+  # both still read OPEN).
+  local W5="55555555-3333-4444-5555-666666666666"
+  for k in close done unclaim reject; do
+    OC_ACTOR="$W5" bash "$ME" stamp claim "CLAIM #888 — fixture for kind $k" >/dev/null 2>&1
+    chk "closure-kind-$k-claim-rc" 0 $?
+    OC_ACTOR="$W5" bash "$ME" stamp "$k" "$k #888 — fixture closure" >/dev/null 2>&1
+    chk "closure-kind-$k-stampable" 0 $?
+    bash "$ME" claims 888 > "$T/claims-888-$k.out" 2>/dev/null
+    grep -q "$W5" "$T/claims-888-$k.out" && bad "closure-kind-$k-did-not-close" || ok
+  done
+  # RESIDUAL (lane c6b1a539 report, 2026-09-12; D-2 family — the gate must not
+  # LIE). (1) FALSE-CLEAN: the scan matched the ref as a substring of "#N", so
+  # a claim written "issue=N" (no hash) was INVISIBLE and claims <N> answered
+  # CLEAN for an issue that IS claimed. (2) The mirror false POSITIVE: the same
+  # substring test made "#76" match a claim on "#760".
+  local W6="66666666-3333-4444-5555-666666666666"
+  OC_ACTOR="$W6" bash "$ME" stamp claim "issue=4242 task='fixture ref without a hash'" >/dev/null 2>&1; chk "claims-nohash-claim-rc" 0 $?
+  bash "$ME" claims 4242 > "$T/claims-4242.out" 2>/dev/null; chk "claims-nohash-rc" 0 $?
+  grep -q "$W6" "$T/claims-4242.out" && ok || bad "claims-nohash-false-clean"
+  OC_ACTOR="$W6" bash "$ME" stamp claim "CLAIM #760 — fixture substring trap" >/dev/null 2>&1
+  bash "$ME" claims 76 > "$T/claims-76.out" 2>/dev/null
+  grep -q "$W6" "$T/claims-76.out" && bad "claims-76-matched-760" || ok
+  bash "$ME" claims 760 > "$T/claims-760.out" 2>/dev/null
+  grep -q "$W6" "$T/claims-760.out" && ok || bad "claims-760-not-matched"
+  # (2c) #329 — a claim's TARGET is its ADDRESS, never every reference in the
+  # note. Before this, an issue MENTIONED while explaining another read as a
+  # second claim: 13 phantoms fleet-wide, one of which made sweep-closed-claims
+  # want to write a false unclaim row and made oc-issue-dispatch refuse an OPEN
+  # issue. The fixture text is live row n=8226 verbatim, and the write path now
+  # persists the target structurally so it is never re-inferred from prose.
+  local W9="editor 99999999-9999-9999-9999-999999999999"
+  OC_ACTOR="$W9" bash "$ME" stamp claim "filed fragility class issue (#327): one proven live break (#323)" >/dev/null 2>&1
+  chk "claims329-claim-rc" 0 $?
+  bash "$ME" claims 323 > "$T/claims-323-329.out" 2>/dev/null
+  grep -q "$W9" "$T/claims-323-329.out" && bad "claims329-phantom-on-mentioned-issue" || ok
+  bash "$ME" claims 327 > "$T/claims-327-329.out" 2>/dev/null
+  grep -q "$W9" "$T/claims-327-329.out" && ok || bad "claims329-addressed-issue-not-open"
+  local i329; i329="$(jq -c --arg u "$W9" '[.events[] | select((.by // "") | contains($u))][-1].issues // null' "$OC_LEDGER")"
+  [ "$i329" = "[327]" ] && ok || bad "claims329-structured-issues-field (got $i329)"
+  # a genuine dual claim keeps BOTH targets (live shape: n=4802 "CLAIM #193, #205")
+  OC_ACTOR="$W9" bash "$ME" stamp claim "CLAIM #193, #205 — fixture dual claim" >/dev/null 2>&1
+  i329="$(jq -c --arg u "$W9" '[.events[] | select((.by // "") | contains($u))][-1].issues // null' "$OC_LEDGER")"
+  [ "$i329" = "[193,205]" ] && ok || bad "claims329-dual-claim-issues-field (got $i329)"
+  # non-claim rows carry NO issues field (the array is a claim's target, not a
+  # general ref list — a note's references are not claims on anything)
+  OC_ACTOR="$W9" bash "$ME" stamp note "note referencing #323 and #327" >/dev/null 2>&1
+  i329="$(jq -c --arg u "$W9" '[.events[] | select((.by // "") | contains($u))][-1].issues // null' "$OC_LEDGER")"
+  [ "$i329" = "null" ] && ok || bad "claims329-note-carries-no-issues-field (got $i329)"
+  # (3) UNCLOSABLE: a claim whose `by` is the unattributed sentinel could never
+  # close — the linker is contains($by) and no real closure carries that
+  # literal. The actor test is DROPPED for an unattributed claim, so a later
+  # closer referencing #N closes it; an ATTRIBUTED claim still needs its own
+  # actor. Raw fixtures: deterministic, and independent of derive_by. The
+  # sentinel is read from the tool's own source so it cannot drift.
+  local SENT; SENT="$(grep -m1 -oE '\(unattributed[^)]*\)' "$ME")"
+  [ -n "$SENT" ] || bad "claims-fixture-sentinel-unresolved"
+  local UAT="$T/uat"; mkdir -p "$UAT"
+  jq -n --arg by "$SENT" '{workers:[], events:[
+      {n:1, t:"2026-09-12T00:00:00Z", by:$by, kind:"claim", what:"CLAIM #5150 — unattributed fixture"}]}' > "$UAT/open.json"
+  OC_LEDGER="$UAT/open.json" bash "$ME" claims 5150 > "$T/claims-5150a.out" 2>/dev/null
+  grep -q "unattributed" "$T/claims-5150a.out" && ok || bad "claims-unattr-not-open"
+  jq -n --arg by "$SENT" '{workers:[], events:[
+      {n:1, t:"2026-09-12T00:00:00Z", by:$by, kind:"claim", what:"CLAIM #5150 — unattributed fixture"},
+      {n:2, t:"2026-09-12T00:01:00Z", by:"editor 44444444-3333-4444-5555-666666666666", kind:"confirm", what:"CONFIRM #5150 — closure by another lane"}]}' > "$UAT/closed.json"
+  OC_LEDGER="$UAT/closed.json" bash "$ME" claims 5150 > "$T/claims-5150b.out" 2>/dev/null
+  grep -q "unattributed" "$T/claims-5150b.out" && bad "claims-unattr-unclosable" || ok
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-12T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #5151 — attributed fixture"},
+      {n:2, t:"2026-09-12T00:01:00Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"confirm", what:"CONFIRM #5151 — closure by a DIFFERENT lane"}]}' > "$UAT/attr.json"
+  OC_LEDGER="$UAT/attr.json" bash "$ME" claims 5151 > "$T/claims-5151.out" 2>/dev/null
+  grep -q "11111111" "$T/claims-5151.out" && ok || bad "claims-attributed-closed-by-other-actor"
+  # SIBLING SENTINEL (lane a5b34466 report; corroborated by 6cd8175f): the
+  # `unrostered-actor <uuid>` sentinel gets the SAME treatment as
+  # `(unattributed` — its rows could otherwise only be closed by hand-
+  # reproducing the historical `by` string, which writes a row attributed to
+  # another actor. Two assertions: the natural closer now closes it, and the
+  # 5151 guard above still proves an ATTRIBUTED claim is NOT over-closed.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-12T00:00:00Z", by:"unrostered-actor 99999999-9999-9999-9999-999999999999", kind:"claim", what:"CLAIM #5152 — unrostered-actor fixture"},
+      {n:2, t:"2026-09-12T00:01:00Z", by:"editor 44444444-3333-4444-5555-666666666666", kind:"confirm", what:"CONFIRM #5152 — closure by the now-rostered lane"}]}' > "$UAT/unrostered.json"
+  OC_LEDGER="$UAT/unrostered.json" bash "$ME" claims 5152 > "$T/claims-5152.out" 2>/dev/null; chk "claims-unrostered-rc" 0 $?
+  [ -s "$T/claims-5152.out" ] && bad "claims-unrostered-still-unclosable" || ok
+  # ...and the sentinel is matched as a PREFIX: the malformed legacy labels
+  # (`unrostered-actor d5863180-editor`, `… editor-141`) all start with it, so
+  # they are covered by the same arm rather than needing a second one.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-12T00:00:00Z", by:"unrostered-actor d5863180-editor", kind:"claim", what:"CLAIM #5153 — malformed legacy label"},
+      {n:2, t:"2026-09-12T00:01:00Z", by:"editor 44444444-3333-4444-5555-666666666666", kind:"confirm", what:"CONFIRM #5153 — closure"}]}' > "$UAT/unrostered2.json"
+  OC_LEDGER="$UAT/unrostered2.json" bash "$ME" claims 5153 > "$T/claims-5153.out" 2>/dev/null
+  [ -s "$T/claims-5153.out" ] && bad "claims-unrostered-label-unclosable" || ok
+  # 51-54 (v0.4.116, H-2): lessons — lesson/incident row extraction by class.
+  OC_ACTOR="$W4" bash "$ME" stamp lesson "LESSON-FIXTURE uncoded gate-bypass lesson" >/dev/null 2>&1
+  OC_ACTOR="$W4" bash "$ME" stamp incident "INCIDENT-FIXTURE phantom write without receipt" >/dev/null 2>&1
+  bash "$ME" lessons --kind lesson > "$T/lessons-l.out" 2>/dev/null; chk "lessons-lesson-rc" 0 $?
+  grep -q "LESSON-FIXTURE" "$T/lessons-l.out" && ok || bad "lessons-lesson-row"
+  grep -q "INCIDENT-FIXTURE" "$T/lessons-l.out" && bad "lessons-wrong-kind-leak" || ok
+  bash "$ME" lessons --kind all --class "phantom" > "$T/lessons-c.out" 2>/dev/null; chk "lessons-class-rc" 0 $?
+  grep -q "phantom" "$T/lessons-c.out" && ok || bad "lessons-class-match"
+  bash "$ME" lessons --kind bogus >/dev/null 2>&1; chk "lessons-bad-kind-rc2" 2 $?
+  # F-4 (v0.4.119): --class is substring, not regex — invalid-regex input must
+  # be a clean rc-0 empty match (the old test($cls;"i") silently false-cleaned).
+  bash "$ME" lessons --class '[patch-id' > "$T/lessons-ir.out" 2>/dev/null; chk "lessons-invalidregex-clean" 0 $?
+  [ -s "$T/lessons-ir.out" ] && bad "lessons-invalidregex-empty" || ok
+  bash "$ME" lessons --class "GATE-BYPASS" > "$T/lessons-ci.out" 2>/dev/null
+  grep -q "LESSON-FIXTURE" "$T/lessons-ci.out" && ok || bad "lessons-case-insensitive"
+  # 54b (#272, toolsmith 2fae1230; anchored by #329): sweep-closed-claims token
+  # extraction & multi-ref. Verifies that dates, GitHub handles, UUID prefixes,
+  # and multi-ref strings are parsed by issue tokens rather than naive digit
+  # runs (#?(\d+)), and that mock gh closed detection works.
+  # #329 UPDATE: the sweep now keys on a claim's ADDRESS (its leading reference
+  # cluster), not on every reference in the note. Row 2 therefore claims #52 and
+  # merely MENTIONS #49 — so #49 must NOT be swept. The old assertion demanded
+  # #49 be released, which is precisely the phantom-claim defect #329 removes;
+  # #52 is now in the mock's closed list so the row still proves the HANDLE form
+  # is extracted (its original intent) under the anchored rule.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-12T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"Claimed compaction-signal feature 2026-08-27 #29 #1256"},
+      {n:2, t:"2026-09-12T00:00:00Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"claim", what:"claim leshchenko1979/opencrabs#52 row-budget share #49"},
+      {n:3, t:"2026-09-12T00:00:00Z", by:"unrostered-actor 6630dc9a-0eeb-46c2-95b8-000000000000", kind:"claim", what:"CLAIM #126 session 6630dc9a-0eeb"},
+      {n:4, t:"2026-09-12T00:00:00Z", by:"editor 33333333-3333-3333-3333-333333333333", kind:"claim", what:"CLAIM #38, #80 — bg-resume multi-ref"},
+      {n:5, t:"2026-09-12T00:01:00Z", by:"editor 33333333-3333-3333-3333-333333333333", kind:"close", what:"CLOSE #38 — half closed"}]}' > "$UAT/sweep_fixture.json"
+  
+  # Create a mock gh script to return known closed issues (29, 49, 126, 80)
+  # and the OPEN ones (#485: the sweep now reads BOTH states, because the closed
+  # list alone cannot tell "genuinely open" from "resolves to no issue at all").
+  mkdir -p "$T/mock_bin"
+  cat << 'EOF' > "$T/mock_bin/gh"
+#!/bin/sh
+# REPO-AWARE + STATE-AWARE (v0.4.284): the sweep now probes THREE trackers in
+# both states, so a mock that ignores --repo makes every repo answer alike and
+# a mock that ignores --state cannot distinguish OPEN from CLOSED. The data per
+# repo is deliberate:
+#   FORK    closed {29,49,52,55,126,80,64}  open {38,63}
+#   FACTORY closed {77,64}                  open {55}
+#   BINARY  (none)
+# #55 is the fail-safe discriminator: CLOSED on the fork, OPEN on the factory.
+# #64 is the OVERLAP discriminator (#38): CLOSED on BOTH, with a DIFFERENT title
+# on each. Its release verdict is unambiguous (closed everywhere, open nowhere)
+# but the bare token cannot say which repo it means, so NEITHER title may be
+# printed. A tool that prints the first-probed title fails the overlap legs.
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  case "$*" in
+    *"opencrabs/opencrabs"*) echo '[]' ;;
+    *"opencrabs-dev-factory"*)
+      case "$*" in
+        *"--state closed"*) echo '[{"number":77,"title":"factory-closed"},{"number":64,"title":"factory-sixtyfour"}]' ;;
+        *"--state open"*)   echo '[{"number":55,"title":"factory-open"}]' ;;
+      esac ;;
+    *)
+      case "$*" in
+        *"--state closed"*) echo '[{"number":29,"title":"compaction"},{"number":49,"title":"cap"},{"number":52,"title":"row-budget"},{"number":55,"title":"fork-closed"},{"number":126,"title":"ontology"},{"number":80,"title":"bg-resume"},{"number":64,"title":"fork-sixtyfour"}]' ;;
+        *"--state open"*)   echo '[{"number":38,"title":"bg-resume-half"},{"number":63,"title":"open fork issue"}]' ;;
+      esac ;;
+  esac
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$T/mock_bin/gh"
+  
+  PATH="$T/mock_bin:$PATH" OC_LEDGER="$UAT/sweep_fixture.json" bash "$ME" sweep-closed-claims > "$T/sweep.out" 2>/dev/null; chk "sweep-closed-claims-rc" 0 $?
+  grep -q "Issue #29 (CLOSED: compaction)" "$T/sweep.out" && ok || bad "sweep-date-prefix-token-extracted"
+  grep -q "Issue #52 (CLOSED: row-budget)" "$T/sweep.out" && ok || bad "sweep-gh-handle-token-extracted"
+  # #329: row 2's note MENTIONS #49 but claims #52 — the mention must not become a claim.
+  grep -q "Issue #49" "$T/sweep.out" && bad "sweep-prose-mention-not-a-claim" || ok
+  grep -q "Issue #126 (CLOSED: ontology)" "$T/sweep.out" && ok || bad "sweep-uuid-prefix-token-extracted"
+  grep -q "Issue #80 (CLOSED: bg-resume)" "$T/sweep.out" && ok || bad "sweep-multi-ref-token-extracted"
+  # #38 was closed in event 5, so it should NOT be flagged
+  grep -q "Issue #38 " "$T/sweep.out" && bad "sweep-closed-half-multi-ref-flagged" || ok
+
+  # 54b2 (#485): a claim token that resolves to NO fork issue is REPORTED, and
+  # the clean verdict is NOT printed. Before this fix the scan compared tokens
+  # against the CLOSED list only, so three states collapsed into one: an OPEN
+  # issue (the intended clean case), an issue that does not exist, and an
+  # upstream-qualified ref read in fork space. All three printed "All open
+  # claims map to OPEN issues." — which is how n=1678 stayed OPEN for 15 days
+  # against work that had shipped, found by a hand census rather than the tool.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-21T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #1419 — upstream-qualified ref read in fork space"},
+      {n:2, t:"2026-09-21T00:00:01Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"claim", what:"CLAIM #63 — a genuinely OPEN fork issue"}]}' > "$UAT/sweep_unres.json"
+  PATH="$T/mock_bin:$PATH" OC_LEDGER="$UAT/sweep_unres.json" bash "$ME" sweep-closed-claims > "$T/sweep-unres.out" 2>/dev/null
+  chk "sweep-unresolved-rc" 0 $?
+  grep -q "UNRESOLVED: 1 claim token(s)" "$T/sweep-unres.out" && ok || bad "sweep-unresolved-class-reported"
+  grep -q "Issue #1419 is on no home tracker" "$T/sweep-unres.out" && ok || bad "sweep-unresolved-names-the-token"
+  # THE DEFECT ITSELF: the clean verdict must NOT be printable while an
+  # unresolvable token is in the population. MUTATION KILL: restore the
+  # closed-list-only scan and this assertion fails with the false-clean line.
+  grep -q "All open claims map to OPEN issues" "$T/sweep-unres.out" \
+    && bad "sweep-unresolved-false-clean-verdict" || ok
+  # ...and the claim on the genuinely OPEN issue (#63) is NOT reported as
+  # unresolvable, so the new class is discriminating rather than a blanket.
+  grep -q "Issue #63 is on no home tracker" "$T/sweep-unres.out" \
+    && bad "sweep-unresolved-over-reports-open-issues" || ok
+  # ...and NOTHING is released: an unresolvable token is not a licence to write.
+  chk "sweep-unresolved-writes-nothing" "0" \
+    "$(jq '[.events[] | select(.kind == "unclaim")] | length' "$UAT/sweep_unres.json")"
+
+  # 54b3 (#485 positive control): when EVERY token resolves to an OPEN fork
+  # issue the clean verdict IS printed, and it names the population it is a
+  # claim about. Without this, a fix that never printed the verdict would pass
+  # 54b2 vacuously.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-21T00:00:00Z", by:"editor 33333333-3333-3333-3333-333333333333", kind:"claim", what:"CLAIM #63 — a genuinely OPEN fork issue"}]}' > "$UAT/sweep_clean.json"
+  PATH="$T/mock_bin:$PATH" OC_LEDGER="$UAT/sweep_clean.json" bash "$ME" sweep-closed-claims > "$T/sweep-clean.out" 2>/dev/null
+  chk "sweep-clean-rc" 0 $?
+  grep -q "All open claims map to OPEN issues (1 1 0 0 =" "$T/sweep-clean.out" && ok || bad "sweep-clean-verdict-with-population"
+  grep -q "UNRESOLVED" "$T/sweep-clean.out" && bad "sweep-clean-false-unresolved" || ok
+
+  # 54c (#314, toolsmith 2fae1230): sweep-closed-claims WRITE PATH. Before this
+  # fix the verb had NO write path — `--dry-run` was parsed, passed to the
+  # embedded scan, and the live branch printed the SAME scan and exited 0, so
+  # the flag changed nothing and the selftest above pinned that no-op as
+  # correct. Now the flag must be load-bearing in BOTH directions: --dry-run
+  # must not mutate (event count identical), and the live sweep must write
+  # exactly ONE addressed `unclaim` row per CLOSED issue — deduped across
+  # lanes, since one addressed row releases every lane's claim on it — and
+  # thereby actually CLOSE those claims while leaving open-issue claims alone.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-18T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #61 — stale, lane A"},
+      {n:2, t:"2026-09-18T00:00:01Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"claim", what:"CLAIM #61 — stale, lane B"},
+      {n:3, t:"2026-09-18T00:00:02Z", by:"editor 33333333-3333-3333-3333-333333333333", kind:"claim", what:"CLAIM #62 — stale, lane C"},
+      {n:4, t:"2026-09-18T00:00:03Z", by:"editor 33333333-3333-3333-3333-333333333333", kind:"claim", what:"CLAIM #63 — claim on an OPEN issue"}]}' > "$UAT/sweep_write.json"
+  mkdir -p "$T/mock_bin2"
+  cat << 'EOF' > "$T/mock_bin2/gh"
+#!/bin/sh
+# STATE-AWARE (v0.4.284): this mock used to echo the same list for BOTH states,
+# which was harmless while the sweep tested CLOSED first -- but the probe now
+# applies OPEN WINS (a token open on ANY home tracker is never released), so a
+# mock that reports 61/62 as OPEN would correctly refuse to release them and
+# this whole write-path block would fail for the RIGHT reason. 63 is the
+# genuinely-open control.
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  case "$*" in
+    *"--state closed"*) echo '[{"number":61,"title":"stale-a"},{"number":62,"title":"stale-b"}]' ;;
+    *"--state open"*)   echo '[{"number":63,"title":"still-open"}]' ;;
+  esac
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$T/mock_bin2/gh"
+  local SW="$UAT/sweep_write.json" SBEFORE SAFTER
+  SBEFORE="$(jq '.events | length' "$SW")"
+  PATH="$T/mock_bin2:$PATH" OC_LEDGER="$SW" bash "$ME" sweep-closed-claims --dry-run > "$T/sweep-dry.out" 2>/dev/null
+  chk "sweep-dry-run-rc" 0 $?
+  grep -q -- "--dry-run: no ledger rows written" "$T/sweep-dry.out" && ok || bad "sweep-dry-run-receipt"
+  SAFTER="$(jq '.events | length' "$SW")"
+  [ "$SBEFORE" = "$SAFTER" ] && ok || bad "sweep-dry-run-mutated-ledger ($SBEFORE -> $SAFTER)"
+  PATH="$T/mock_bin2:$PATH" OC_LEDGER="$SW" bash "$ME" sweep-closed-claims > "$T/sweep-live.out" 2>/dev/null
+  chk "sweep-live-rc" 0 $?
+  SAFTER="$(jq '.events | length' "$SW")"
+  [ "$SAFTER" = "$(( SBEFORE + 2 ))" ] && ok || bad "sweep-live-row-count (want $(( SBEFORE + 2 )) got $SAFTER)"
+  chk "sweep-live-two-unclaims" "2" \
+    "$(jq '[.events[] | select(.kind == "unclaim")] | length' "$SW")"
+  chk "sweep-live-addressed" "2" \
+    "$(jq '[.events[] | select(.kind == "unclaim")
+            | select((.what | startswith("#")) and (.what | contains("closed-issue stale claim sweep")))] | length' "$SW")"
+  chk "sweep-live-dedup-by-issue" "2" \
+    "$(jq '[.events[] | select(.kind == "unclaim") | .what[0:3]] | unique | length' "$SW")"
+  OC_LEDGER="$SW" bash "$ME" claims 61 > "$T/sweep-c61.out" 2>/dev/null; chk "sweep-claims-61-rc" 0 $?
+  [ -s "$T/sweep-c61.out" ] && bad "sweep-61-still-open" || ok
+  OC_LEDGER="$SW" bash "$ME" claims 62 > "$T/sweep-c62.out" 2>/dev/null
+  [ -s "$T/sweep-c62.out" ] && bad "sweep-62-still-open" || ok
+  OC_LEDGER="$SW" bash "$ME" claims 63 > "$T/sweep-c63.out" 2>/dev/null
+  grep -q "33333333" "$T/sweep-c63.out" && ok || bad "sweep-open-issue-claim-released"
+
+  # 54e (v0.4.284, toolsmith 2fae1230): THREE trackers, OVERLAPPING number
+  # spaces. The sweep must (a) RELEASE a claim whose issue is closed on a home
+  # tracker other than the fork, and (b) NEVER release one that is open on ANY
+  # home tracker -- even when a same-numbered issue is closed elsewhere. (b) is
+  # the direction that matters: the pre-split probe only ever asked the fork, so
+  # a claim whose issue moved to the factory/upstream tracker read "still open"
+  # forever; the naive repair ("closed on any tracker") is WORSE, because it
+  # releases a live claim on the strength of an unrelated repo's issue number.
+  # #77 is the (a) leg; #55 -- CLOSED on the fork, OPEN on the factory -- is the
+  # (b) discriminator, and a `closed-anywhere` implementation fails it.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-10-03T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #77 — closed on the factory tracker only"},
+      {n:2, t:"2026-10-03T00:00:01Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"claim", what:"CLAIM #55 — closed on the fork, OPEN on the factory"},
+      {n:3, t:"2026-10-03T00:00:02Z", by:"editor 33333333-3333-3333-3333-333333333333", kind:"claim", what:"CLAIM #99 — on no home tracker"}]}' > "$UAT/sweep_cross.json"
+  PATH="$T/mock_bin:$PATH" OC_LEDGER="$UAT/sweep_cross.json" bash "$ME" sweep-closed-claims > "$T/sweep-cross.out" 2>/dev/null
+  chk "sweep-cross-rc" 0 $?
+  grep -q "Issue #77 (CLOSED: factory-closed)" "$T/sweep-cross.out" && ok || bad "sweep-cross-releases-factory-closed"
+  grep -q "Issue #55 (CLOSED" "$T/sweep-cross.out" \
+    && bad "sweep-cross-released-open-elsewhere-claim" || ok
+  grep -q "UNRESOLVED: 1 claim token(s)" "$T/sweep-cross.out" && ok || bad "sweep-cross-unresolved-count"
+  grep -q "Issue #99 is on no home tracker" "$T/sweep-cross.out" && ok || bad "sweep-cross-unresolved-named"
+  grep -q "All open claims map to OPEN issues" "$T/sweep-cross.out" \
+    && bad "sweep-cross-false-clean-verdict" || ok
+  chk "sweep-cross-released-77" "0" \
+    "$(OC_LEDGER="$UAT/sweep_cross.json" bash "$ME" claims 77 2>/dev/null | wc -l | tr -d ' ')"
+  OC_LEDGER="$UAT/sweep_cross.json" bash "$ME" claims 55 > "$T/sweep-cross-c55.out" 2>/dev/null
+  grep -q "22222222" "$T/sweep-cross-c55.out" && ok || bad "sweep-cross-55-claim-survived"
+
+  # 54f (#38, toolsmith 2fae1230): THE OVERLAP SHAPE. 54e covers a number closed
+  # on ONE non-fork tracker (#77) and a number closed on the fork but OPEN on the
+  # factory (#55). Neither builds the case that hid #38: a number CLOSED on TWO
+  # home trackers, where the release verdict is unambiguous but the TITLE is not.
+  # probe() keeps the FIRST-probed repo title (the fork, since HOME_REPOS is
+  # ordered fork-first) and the emit used to print it, so a factory claim on #33
+  # was reported as "Comatose sessions after restart" -- the fork's #33. The
+  # claim token is a bare int (parse_issue_ref_value DISCARDS the slug), so the
+  # token names no repo and NO title may be asserted. #64 is the discriminator;
+  # #29 (fork-only) is the in-run positive control, so a fix that withheld EVERY
+  # title would fail here rather than pass vacuously.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-10-14T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #64 — closed on BOTH the fork and the factory"},
+      {n:2, t:"2026-10-14T00:00:01Z", by:"editor 22222222-2222-2222-2222-222222222222", kind:"claim", what:"CLAIM #29 — closed on the fork alone"}]}' > "$UAT/sweep_overlap.json"
+  PATH="$T/mock_bin:$PATH" OC_LEDGER="$UAT/sweep_overlap.json" bash "$ME" sweep-closed-claims > "$T/sweep-overlap.out" 2>/dev/null
+  chk "sweep-overlap-rc" 0 $?
+  # Positive control: a number seen on exactly ONE home tracker KEEPS its title.
+  grep -q "Issue #29 (CLOSED: compaction)" "$T/sweep-overlap.out" \
+    && ok || bad "sweep-overlap-single-tracker-title-kept"
+  # THE DEFECT: on an overlap NEITHER title may be printed -- the fork's is the
+  # one the pre-#38 emit asserted (first-probed wins), the factory's is equally
+  # unsupported. MUTATION KILL: make the emit print the first-probed title
+  # unconditionally and BOTH of these redden.
+  grep -q "fork-sixtyfour" "$T/sweep-overlap.out" \
+    && bad "sweep-overlap-prints-fork-title" || ok
+  grep -q "factory-sixtyfour" "$T/sweep-overlap.out" \
+    && bad "sweep-overlap-prints-factory-title" || ok
+  grep -q "no single title" "$T/sweep-overlap.out" && ok || bad "sweep-overlap-ambiguity-named"
+  grep -q "2 home trackers" "$T/sweep-overlap.out" && ok || bad "sweep-overlap-names-the-count"
+  # ...and the RELEASE VERDICT is untouched: closed everywhere, open nowhere.
+  chk "sweep-overlap-released-64" "0" \
+    "$(OC_LEDGER="$UAT/sweep_overlap.json" bash "$ME" claims 64 2>/dev/null | wc -l | tr -d ' ')"
+  OC_LEDGER="$UAT/sweep_overlap.json" bash "$ME" claims 29 > "$T/sweep-overlap-c29.out" 2>/dev/null
+  [ -s "$T/sweep-overlap-c29.out" ] && bad "sweep-overlap-29-still-open" || ok
+
+  # 54d (#313, toolsmith 2fae1230): CROSS-LANE STANDDOWN closure — canonical
+  # rule signal 2. `STANDDOWN #N (<uuid>) — …` is stamped by a DIFFERENT lane
+  # (Triage stands a claim down on the claimant's behalf), so an author test
+  # alone closed nothing: the claim stayed OPEN until its claimant hand-stamped
+  # a redundant row (live n=7803 / n=8055). An addressed row closes it. The
+  # NEGATIVE half is the #305 fence: a foreign row that merely MENTIONS `#N` in
+  # prose must NOT release another lane's claim — that is the whole point of
+  # anchoring the address at the start of `what`.
+  jq -n '{workers:[], events:[
+      {n:1, t:"2026-09-18T00:00:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #71 — stood down by another lane"},
+      {n:2, t:"2026-09-18T00:01:00Z", by:"triage 22222222-2222-2222-2222-222222222222", kind:"done", what:"STANDDOWN #71 (11111111) — shipped and verified, claim released"},
+      {n:3, t:"2026-09-18T00:02:00Z", by:"editor 11111111-1111-1111-1111-111111111111", kind:"claim", what:"CLAIM #72 — foreign prose mention must not release"},
+      {n:4, t:"2026-09-18T00:03:00Z", by:"triage 22222222-2222-2222-2222-222222222222", kind:"unclaim", what:"UNCLAIM #72 — stood down in favour of editor lane 11111111"}]}' > "$UAT/standdown.json"
+  OC_LEDGER="$UAT/standdown.json" bash "$ME" claims 71 > "$T/claims-71.out" 2>/dev/null; chk "claims-standdown-rc" 0 $?
+  [ -s "$T/claims-71.out" ] && bad "claims-standdown-did-not-close" || ok
+  OC_LEDGER="$UAT/standdown.json" bash "$ME" claims 72 > "$T/claims-72.out" 2>/dev/null
+  grep -q "11111111" "$T/claims-72.out" && ok || bad "claims-foreign-prose-released-claim"
+
+  # 55 (v0.4.131, WAVE-GROUP-B B3): notify-fanout kind acceptance — wave
+  # completions stamp natively, ending the note-row workaround.
+  OC_ACTOR="$W4" bash "$ME" stamp notify-fanout "fanout 'T': sent=1 skipped=0 failed=0 ids: 99999999" >/dev/null 2>&1
+  chk "notify-fanout-kind-accepted" 0 $?
+  jq -e --arg u "$W4" '[.events[] | select(.kind=="notify-fanout")] | length > 0' "$OC_LEDGER" >/dev/null 2>&1 && ok || bad "notify-fanout-row-on-ledger"
+  # 55b (2026-09-11, defect fix lane 4b4463d5): shipchain kind acceptance —
+  # oc-ship's journal() stamps this kind per leg; it was absent from the
+  # enum, so 216/216 journal stamps died rc 2 under `|| true` and no chain ever
+  # had a ledger trail. Regression guard: the kind must be accepted AND land.
+  OC_ACTOR="$W4" bash "$ME" stamp shipchain "[CHAIN-abc12345-20260911T000000Z] LEG1 gate GREEN" >/dev/null 2>&1
+  chk "shipchain-kind-accepted" 0 $?
+  jq -e --arg u "$W4" '[.events[] | select(.kind=="shipchain")] | length > 0' "$OC_LEDGER" >/dev/null 2>&1 && ok || bad "shipchain-row-on-ledger"
+  chk "shipchain-what-preserved" "true" \
+    "$(jq -r '[.events[] | select(.kind=="shipchain")][-1].what | startswith("[CHAIN-abc12345-")' "$OC_LEDGER")"
+  bash "$ME" stamp shipchai "x" >/dev/null 2>&1; chk "shipchain-no-prefix-match" 2 $?
+  # 56-66 (2026-09-11, defect fix lane d18ce16a): roster — role -> FULL uuid
+  # resolution, the verb the skill cited in 3 role files while it did not exist
+  # (`oc-ledger roster` fell through to the usage branch, rc 2). Fixture state
+  # here: aaaa=tester2 (promoted), 2222=toolsmith/topic 39171, W2=tester/topic 42,
+  # plus one LEGACY retired row (WR, state=RETIRED, injected with jq): the real
+  # ledger carries 12 such rows predating v1.3 retire-removal (2026-09-11), and
+  # e756b84b (retired_compiler) was FIRST in two HQ fanout waves because both
+  # the fanout target set and this resolver ignored .state. Law 9 (owner order
+  # 2026-09-12): default target/resolution surfaces exclude RETIRED.
+  local WR="99999999-9999-9999-9999-999999999999"
+  bash "$ME" enroll "$WR" retired_compiler >/dev/null 2>&1
+  jq --arg u "$WR" '.workers |= map(if .uuid == $u then (. + {state: "RETIRED"}) else . end)' \
+    "$OC_LEDGER" > "$T/rl.tmp" && mv "$T/rl.tmp" "$OC_LEDGER"
+  bash "$ME" roster > "$T/roster-all.out" 2>/dev/null; chk "roster-all-rc" 0 $?
+  chk "roster-all-count" "3" "$(grep -c . "$T/roster-all.out")"
+  awk -F'\t' -v u="$W2" '$1==u {found=1} END{exit !found}' "$T/roster-all.out" && ok || bad "roster-prints-full-uuid"
+  bash "$ME" roster --role tester2 > "$T/roster-r.out" 2>/dev/null; chk "roster-role-rc" 0 $?
+  chk "roster-role-count" "1" "$(grep -c . "$T/roster-r.out")"
+  awk -F'\t' '$2=="tester2"' "$T/roster-r.out" | grep -q . && ok || bad "roster-role-label"
+  # substring (case-insensitive) match: 'TESTER' hits BOTH tester and tester2
+  bash "$ME" roster --role TESTER > "$T/roster-sub.out" 2>/dev/null; chk "roster-role-ci-rc" 0 $?
+  chk "roster-role-substring" "2" "$(grep -c . "$T/roster-sub.out")"
+  # law 9 (2026-09-12, defect #6): RETIRED rows are excluded by default and
+  # --include-retired is the ONLY way to see them; a retired-only role is a
+  # rc-1 NO-MATCH whose stderr names retirement as the reason, and the plain
+  # roster listing keeps its pre-law count with a retired row present.
+  bash "$ME" roster --role retired_compiler > "$T/roster-ret.out" 2>"$T/roster-ret.err"; chk "roster-retired-excluded-rc1" 1 $?
+  [ -s "$T/roster-ret.out" ] && bad "roster-retired-excluded-empty" || ok
+  grep -q "RETIRED row" "$T/roster-ret.err" && ok || bad "roster-retired-stderr-reason"
+  bash "$ME" roster --role retired_compiler --include-retired > "$T/roster-reti.out" 2>/dev/null; chk "roster-include-retired-rc" 0 $?
+  chk "roster-include-retired-count" "1" "$(grep -c . "$T/roster-reti.out")"
+  awk -F'\t' -v u="$WR" '$1==u' "$T/roster-reti.out" | grep -q . && ok || bad "roster-include-retired-row"
+  bash "$ME" roster --include-retired > "$T/roster-ir.out" 2>/dev/null; chk "roster-include-retired-all-rc" 0 $?
+  chk "roster-include-retired-all-count" "4" "$(grep -c . "$T/roster-ir.out")"
+  bash "$ME" roster --role zzznope > "$T/roster-none.out" 2>/dev/null; chk "roster-nomatch-rc1" 1 $?
+  [ -s "$T/roster-none.out" ] && bad "roster-nomatch-empty" || ok
+  bash "$ME" roster --json > "$T/roster.json" 2>/dev/null; chk "roster-json-rc" 0 $?
+  chk "roster-json-array" "true" "$(jq 'type == "array" and (length == 3)' "$T/roster.json" 2>/dev/null)"
+  chk "roster-json-fields" "true" "$(jq --arg u "$W2" '[.[] | select(.uuid == $u)][0] | has("role") and has("topic_id") and has("feature") and has("last_acked")' "$T/roster.json" 2>/dev/null)"
+  bash "$ME" roster --bogus >/dev/null 2>&1; chk "roster-unknown-flag-rc2" 2 $?
+  bash "$ME" roster --role >/dev/null 2>&1; chk "roster-role-novalue-rc2" 2 $?
+  bash "$ME" roster -h >/dev/null 2>&1; chk "roster-help-rc0" 0 $?
+  OC_LEDGER="$T/bad.json" bash "$ME" roster >/dev/null 2>&1; chk "roster-bad-ledger-rc3" 3 $?
+  # --live: same live-session query as oc-notify-fanout law 3 (read-only DB);
+  # archived/subagent rows are NOT live. OC_LEDGER_DB keeps it off the real DB.
+  # The fixture DB is built with tools/lib/oc_sqlite, not the `sqlite3` CLI
+  # (#371). This block used to sit behind `command -v sqlite3`, so on a box
+  # without that binary every roster --live leg SKIPPED silently and the
+  # selftest stayed green while the production verb was dead. The legs are now
+  # unconditional, so they assert the path that actually runs.
+  local WS="77777777-7777-7777-7777-777777777777"
+  bash "$ME" enroll "$WS" subprobe >/dev/null 2>&1
+  # Fallback probe: a LIVE session that is ENROLLED but carries NO
+  # session_bindings row — the topic must then come from the ledger's stored
+  # field. 777 is deliberately different from every binding below, so a leg
+  # that silently read the wrong source cannot pass.
+  bash "$ME" enroll 66666666-6666-6666-6666-666666666666 fallbackprobe --topic 777 >/dev/null 2>&1
+  "$_OC_DIR/lib/oc_sqlite" "$T/sessions.db" "CREATE TABLE sessions (id TEXT PRIMARY KEY, archived_at TEXT, title TEXT);
+    CREATE TABLE session_bindings (session_id TEXT PRIMARY KEY, channel TEXT, chat_id TEXT, thread_id INTEGER);
+    INSERT INTO sessions VALUES ('$W2', NULL, NULL);
+    INSERT INTO sessions VALUES ('$WS', NULL, 'subagent: probe');
+    INSERT INTO sessions VALUES ('66666666-6666-6666-6666-666666666666', NULL, NULL);
+    INSERT INTO session_bindings VALUES ('$W2', 'telegram', '-100', 55555);" >/dev/null 2>&1
+  chk "roster-live-fixture-db-rc" 0 $?
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role TESTER --live > "$T/roster-live.out" 2>/dev/null; chk "roster-live-rc" 0 $?
+  chk "roster-live-count" "1" "$(grep -c . "$T/roster-live.out")"
+  awk -F'\t' -v u="$W2" '$1==u' "$T/roster-live.out" | grep -q . && ok || bad "roster-live-keeps-live-row"
+  # TOPIC DERIVATION (2026-09-19, Toolsmith). session_bindings.thread_id is the
+  # daemon-written delivery route; the ledger's workers[].topic_id is a copy
+  # stamped at enroll time that goes stale the moment a topic is REASSIGNED —
+  # measured over the 32 live-bound workers: 28 matched, 4 had drifted, and all
+  # 4 were lanes that had MOVED. So --live must prefer the binding, and the
+  # stored field survives only as the fallback for a session with no binding.
+  # The fixture pins the two sources to DIFFERENT values (ledger 42 vs binding
+  # 55555) so a regression to the stored field reddens here rather than in prod.
+  chk "roster-live-derives-topic-from-binding" "55555" "$(awk -F'\t' -v u="$W2" '$1==u {print $3}' "$T/roster-live.out")"
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role fallbackprobe --live > "$T/roster-fb.out" 2>/dev/null
+  chk "roster-live-fallback-rc" 0 $?
+  chk "roster-live-fallback-uses-stored-topic" "777" "$(awk -F'\t' '$3 != "-" {print $3}' "$T/roster-fb.out")"
+  # ...and WITHOUT --live the stored field is untouched, so the historical
+  # (ledger-order, stored-topic) output stays byte-compatible for every caller
+  # that never asked for a live read.
+  bash "$ME" roster --role TESTER > "$T/roster-nl.out" 2>/dev/null
+  chk "roster-nonlive-keeps-stored-topic" "42" "$(awk -F'\t' -v u="$W2" '$1==u {print $3}' "$T/roster-nl.out")"
+
+  # ---- J-3 (c23): BINDING-MISMATCH detection ------------------------------
+  # The fixture above is ALREADY the drifted case by construction: the ledger
+  # stores topic_id 42 for $W2 while the authoritative binding says 55555.
+  # The table silently PREFERS the binding, which is exactly why the drift is
+  # invisible without --reconcile -- so these legs assert the DETECTION, not
+  # the table.
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role TESTER --live --reconcile > "$T/rec.out" 2> "$T/rec.err"
+  chk "reconcile-rc" 0 $?
+  grep -q "BINDING-MISMATCH" "$T/rec.err" && grep -q "stored=42 live=55555" "$T/rec.err" && ok || bad "reconcile-names-the-drift"
+  # #686: the remedy must RUN, not merely be NAMED. This leg used to assert the
+  # string `promote --uuid $W2 --topic 55555` -- pinning the DEFECT as spec --
+  # while the verb takes the uuid POSITIONALLY, so that exact form died rc 2
+  # "uuid shape invalid: '--uuid'". A lane reading it, trusting it and running
+  # it had no next step. Now: name the runnable form, then EXECUTE it.
+  grep -q "promote $W2 tester --topic 55555" "$T/rec.err" && ok || bad "reconcile-names-the-remedy"
+  # Run the emitted remedy against a COPY of the fixture ledger, so the shared
+  # fixture keeps stored=42 for the legs below.
+  _remedy="$(sed -n 's/.*reconcile with: oc-ledger //p' "$T/rec.err" | head -1)"
+  if [ -n "$_remedy" ]; then
+    cp "$OC_LEDGER" "$T/ledger-remedy.json"
+    _ro="$(OC_LEDGER="$T/ledger-remedy.json" bash "$ME" $_remedy 2>&1)"; _rr=$?
+    chk "reconcile-remedy-runs" 0 $_rr
+    case "$_ro" in *"uuid shape invalid"*) bad "reconcile-remedy-runs: uuid NOT parsed -- $_ro" ;; *) ok "reconcile-remedy-runs: uuid parsed" ;; esac
+    chk "reconcile-remedy-applied" "55555" "$(jq -r '.workers[] | select(.uuid == "'"$W2"'") | .topic_id | tostring' "$T/ledger-remedy.json")"
+  else
+    bad "reconcile-remedy-runs: no remedy line emitted"
+  fi
+  grep -q "1 BINDING-MISMATCH row(s)" "$T/rec.err" && ok || bad "reconcile-counts-the-drift"
+  # The CLEAN case must say so explicitly -- an empty result must never read as
+  # "no such data" (the class this whole cycle is closing).
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role fallbackprobe --live --reconcile >/dev/null 2> "$T/rec2.err"
+  grep -q "0 BINDING-MISMATCH" "$T/rec2.err" && ok || bad "reconcile-clean-is-explicit"
+  # --reconcile without --live has no binding to reconcile against: refuse.
+  bash "$ME" roster --reconcile >/dev/null 2>&1; chk "reconcile-requires-live" 2 $?
+
+  # ---- H-3 (c23): duplicated identities -----------------------------------
+  # Plant the two classes the finding names. The pair carries DIFFERENT `by`
+  # strings for one act -- grouping by the actor finds nothing on exactly the
+  # specimens the verb exists for, which is the bug this leg pins.
+  bash "$ME" stamp note "h3 dup specimen one" --by "editor aaa11111" >/dev/null 2>&1
+  bash "$ME" stamp note "h3 dup specimen one" --by "editor aaa11111" >/dev/null 2>&1
+  bash "$ME" stamp note "h3 split specimen two" --by "editor bbb22222" >/dev/null 2>&1
+  bash "$ME" stamp note "h3 split specimen two" --by "editor ccc33333" >/dev/null 2>&1
+  bash "$ME" duplicates > "$T/dup.out" 2>&1; chk "duplicates-rc" 0 $?
+  grep -q "DUPLICATE kind=note count=2 by=editor aaa11111" "$T/dup.out" && ok || bad "duplicates-finds-same-actor-pair"
+  grep -q "IDENTITY-SPLIT kind=note count=2" "$T/dup.out" && ok || bad "duplicates-finds-identity-split"
+  grep -qE "[0-9]+ DUPLICATE \(one fact" "$T/dup.out" && grep -qE "[0-9]+ IDENTITY-SPLIT \(one act" "$T/dup.out" && ok || bad "duplicates-splits-the-two-classes"
+  # A kind filter that matches nothing must say "none", not print a blank.
+  bash "$ME" duplicates --kind no-such-kind > "$T/dup2.out" 2>&1
+  grep -q "duplicates: none" "$T/dup2.out" && ok || bad "duplicates-clean-is-explicit"
+  # --json must be parseable JSON, and its length must equal the text count.
+  bash "$ME" duplicates --json > "$T/dup3.out" 2>&1
+  # >= 2: the two planted classes must both appear; a fixture may carry more
+  chk "duplicates-json-parseable" "true" "$(jq 'length >= 2' "$T/dup3.out" 2>/dev/null || echo BAD)"
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role subprobe --live >/dev/null 2>&1; chk "roster-live-subagent-excluded" 1 $?
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" roster --role subprobe --live --json >/dev/null 2>&1; chk "roster-live-json-nomatch-rc1" 1 $?
+  OC_LEDGER_DB="$T/nope.db" bash "$ME" roster --live >/dev/null 2>&1; chk "roster-live-db-missing-rc3" 3 $?
+  # TOPIC EXISTENCE GUARD legs (fork #503, Toolsmith 2026-09-22). The fixture
+  # binds ONLY thread 55555, so 55555 is the live case and 478 is the dead one —
+  # 478 being the real INCIDENT's value (an ISSUE number a caller enrolled as a
+  # forum topic). Both must enrol rc 0, because the guard WARNS and never
+  # refuses; only the dead topic may warn. OC_LEDGER_DB is passed explicitly so
+  # these legs read the FIXTURE db rather than the live profile's (the guard
+  # derives its db from the state dir, which the fixture does not override).
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" enroll ab000000-0000-4000-8000-000000000503 deadtopic --topic 478 >"$T/enroll-dead.out" 2>&1
+  chk "enroll-dead-topic-rc0" 0 $?
+  grep -q "WARNING topic 478 names no live binding" "$T/enroll-dead.out" && ok || bad "enroll-dead-topic-warns"
+  OC_LEDGER_DB="$T/sessions.db" bash "$ME" enroll ab000000-0000-4000-8000-000000000504 livetopic --topic 55555 >"$T/enroll-live.out" 2>&1
+  chk "enroll-live-topic-rc0" 0 $?
+  grep -q "WARNING topic 55555" "$T/enroll-live.out" && bad "enroll-live-topic-must-not-warn" || ok
+  # ...and the enroll EVENT must carry the supplied topic, so a wrong value stays
+  # recoverable after the fact — the phantom row's own event recorded none, which
+  # is why its bad topic_id could not be traced from the trail.
+  grep -q '(topic 478)' "$OC_LEDGER" && ok || bad "enroll-event-records-topic"
+  bash "$ME" retire ab000000-0000-4000-8000-000000000503 >/dev/null 2>&1
+  bash "$ME" retire ab000000-0000-4000-8000-000000000504 >/dev/null 2>&1
+  # fixture hygiene: the two probe rows leave the roster as they found it (the
+  # WS retire comes AFTER the subagent-exclusion legs above, which assert on a
+  # row that still EXISTS — retiring it first would make them pass for the
+  # wrong reason, a vanished row rather than a subagent-filtered one).
+  bash "$ME" retire 66666666-6666-6666-6666-666666666666 >/dev/null 2>&1
+  bash "$ME" retire "$WS" >/dev/null 2>&1
+  # 66b (2026-09-11, ontology fold c586e61f): the HQ role string was
+  # `hq-supervisor`, now `hq`. Lanes had `roster --live --role hq-supervisor` in
+  # ACTIVE habit (tools.log 11:51:28Z, minutes before the fold was announced),
+  # so the legacy spelling must keep resolving: a rc 1 NO-MATCH there reads to a
+  # lane as "HQ is unrostered", a false negative in exactly the place lanes
+  # check HQ's existence. Both spellings must select the SAME row set.
+  local WH=88888888-8888-8888-8888-888888888888
+  bash "$ME" enroll "$WH" hq --topic 30220 >/dev/null 2>&1
+  bash "$ME" roster --role hq > "$T/rh-new.out" 2>/dev/null; chk "role-alias-new-rc" 0 $?
+  bash "$ME" roster --role hq-supervisor > "$T/rh-old.out" 2>/dev/null; chk "role-alias-legacy-rc" 0 $?
+  chk "role-alias-same-set" "true" "$(cmp -s "$T/rh-new.out" "$T/rh-old.out" && echo true || echo false)"
+  awk -F'\t' -v u="$WH" '$1==u' "$T/rh-new.out" | grep -q . && ok || bad "role-alias-finds-hq-row"
+  # the alias is EXACT, never a blanket 'supervisor' match — a stale query
+  # written with the bare retired term must still fail loudly (rc 1), or a lane
+  # would read success where nothing matched
+  bash "$ME" roster --role supervisor >/dev/null 2>&1; chk "role-alias-bare-term-rc1" 1 $?
+  # fixture hygiene: drop the probe row via jq, so no extra ledger events are
+  # written and the later assertions see the fixture they expect
+  jq --arg u "$WH" '.workers |= map(select(.uuid != $u))' "$OC_LEDGER" > "$T/rh.json" && mv "$T/rh.json" "$OC_LEDGER"
+  # 67-70 (2026-09-11, HQ request): events|tail — the read verb the playbooks
+  # kept guessing while the usage line named no event reader at all. Assertions
+  # are relative to jq over the same fixture file, never to a frozen count.
+  bash "$ME" events --n 3 > "$T/ev.out" 2>/dev/null; chk "events-rc" 0 $?
+  chk "events-n-count" "3" "$(grep -c . "$T/ev.out")"
+  chk "events-newest-last" "$(jq -r '.events[-1].n' "$OC_LEDGER")" "$(tail -1 "$T/ev.out" | cut -f1)"
+  bash "$ME" tail --n 1 > "$T/ev-alias.out" 2>/dev/null; chk "events-tail-alias-rc" 0 $?
+  chk "events-tail-alias-count" "1" "$(grep -c . "$T/ev-alias.out")"
+  bash "$ME" events --kind zzznope >/dev/null 2>&1; chk "events-nomatch-rc1" 1 $?
+  bash "$ME" events --kind incident > "$T/ev-k.out" 2>/dev/null; chk "events-kind-rc" 0 $?
+  chk "events-kind-only" "0" "$(awk -F'\t' '$3 != "incident"' "$T/ev-k.out" | grep -c .)"
+  # .by is "role uuid" for a rostered actor — the filter is a substring match
+  OC_ACTOR="$W2" bash "$ME" stamp note "EVENTS-FIXTURE actor probe" >/dev/null 2>&1
+  bash "$ME" events --actor "$W2" > "$T/ev-a.out" 2>/dev/null; chk "events-actor-rc" 0 $?
+  chk "events-actor-only" "0" "$(awk -F'\t' -v u="$W2" 'index($4,u)==0' "$T/ev-a.out" | grep -c .)"
+  bash "$ME" events --json > "$T/ev.json" 2>/dev/null; chk "events-json-rc" 0 $?
+  chk "events-json-array" "true" "$(jq 'type=="array" and length > 0 and length <= 20' "$T/ev.json" 2>/dev/null)"
+  chk "events-json-fields" "true" "$(jq '[.[-1] | has("n") and has("t") and has("kind") and has("by") and has("what")] | .[0]' "$T/ev.json" 2>/dev/null)"
+  bash "$ME" events --n 0 >/dev/null 2>&1; chk "events-n0-rc2" 2 $?
+  bash "$ME" events --n abc >/dev/null 2>&1; chk "events-n-nonint-rc2" 2 $?
+  bash "$ME" events --bogus >/dev/null 2>&1; chk "events-unknown-flag-rc2" 2 $?
+  bash "$ME" events --n >/dev/null 2>&1; chk "events-n-novalue-rc2" 2 $?
+  bash "$ME" events -h >/dev/null 2>&1; chk "events-help-rc0" 0 $?
+  OC_LEDGER="$T/bad.json" bash "$ME" events >/dev/null 2>&1; chk "events-bad-ledger-rc3" 3 $?
+  # 71-bis. mode (#97): the MODE ruling is the newest DECLARATION — not the
+  # newest row that mentions MODE:, and not the oldest declaration. The fixture
+  # is the live-ledger shape that made the verb necessary: an OLDER declaration,
+  # a NEWER declaration, and a NEWER STILL prose row that only talks about the
+  # gate. A loose predicate answers 400, oldest-wins answers 200, and only the
+  # declaration predicate answers 300 — so this arm cannot pass vacuously.
+  cat > "$T/mode.json" <<'MODEJSON'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":100,"t":"2026-01-01T00:00:00Z","kind":"note","by":"x","what":"held on the MODE: gate pending owner"},
+ {"n":200,"t":"2026-02-01T00:00:00Z","kind":"note","by":"x","what":"MODE: UPSTREAM-ON-REQUEST — older declaration"},
+ {"n":300,"t":"2026-03-01T00:00:00Z","kind":"note","by":"x","what":"MODE: FORK-STANDING — newer declaration"},
+ {"n":400,"t":"2026-04-01T00:00:00Z","kind":"note","by":"x","what":"PHASE 7 MODE: GATE. MODE: resolved live at 12:00"}]}
+MODEJSON
+  OC_LEDGER="$T/mode.json" bash "$ME" mode > "$T/mode.out" 2>/dev/null; chk "mode-rc0" 0 $?
+  chkeq "mode-newest-declaration" "300" "$(cut -f1 "$T/mode.out")"
+  chkeq "mode-value" "FORK-STANDING" "$(cut -f3 "$T/mode.out")"
+  chkeq "mode-not-newest-mention" "true" "$([ "$(cut -f1 "$T/mode.out")" != "400" ] && echo true || echo false)"
+  chkeq "mode-not-oldest-declaration" "true" "$([ "$(cut -f1 "$T/mode.out")" != "200" ] && echo true || echo false)"
+  OC_LEDGER="$T/mode.json" bash "$ME" mode --json > "$T/mode-json.out" 2>/dev/null; chk "mode-json-rc0" 0 $?
+  chkeq "mode-json-n" "300" "$(jq -r '.n' "$T/mode-json.out")"
+  chkeq "mode-json-value" "FORK-STANDING" "$(jq -r '.value' "$T/mode-json.out")"
+  chkeq "mode-json-ts" "2026-03-01T00:00:00Z" "$(jq -r '.ts' "$T/mode-json.out")"
+  # prose-only: mentions MODE: but never declares => rc 1, fail closed, says why
+  cat > "$T/mode-prose.json" <<'MODEPROSE'
+{"current_skill_version":"0.4.1","workers":[],"events":[
+ {"n":10,"t":"2026-01-01T00:00:00Z","kind":"note","by":"x","what":"held on the MODE: gate"},
+ {"n":11,"t":"2026-01-02T00:00:00Z","kind":"note","by":"x","what":"PHASE 7 MODE: GATE. MODE: resolved live by HQ"}]}
+MODEPROSE
+  OC_LEDGER="$T/mode-prose.json" bash "$ME" mode >/dev/null 2>"$T/mode-prose.err"; chk "mode-no-declaration-rc1" 1 $?
+  chkeq "mode-no-declaration-says-prose" "true" "$(grep -q 'prose is not a ruling' "$T/mode-prose.err" && echo true || echo false)"
+  chkeq "mode-no-declaration-names-count" "true" "$(grep -q '2 row(s) mention MODE:' "$T/mode-prose.err" && echo true || echo false)"
+  bash "$ME" mode --bogus >/dev/null 2>&1; chk "mode-unknown-flag-rc2" 2 $?
+  bash "$ME" mode -h >/dev/null 2>&1; chk "mode-help-rc0" 0 $?
+  OC_LEDGER="$T/bad.json" bash "$ME" mode >/dev/null 2>&1; chk "mode-bad-ledger-rc3" 3 $?
+  chkeq "verbs-flag-contains-mode" "true" "$(bash "$ME" --verbs 2>/dev/null | grep -qw mode && echo true || echo false)"
+
+  # 71. grammar / suggestion hints and --verbs discovery
+  bash "$ME" --verbs > "$T/verbs.out" 2>/dev/null; chk "verbs-flag-rc0" 0 $?
+  chk "verbs-flag-contains-stamp" "true" "$(grep -qw stamp "$T/verbs.out" && echo true || echo false)"
+  chk "verbs-flag-contains-roster" "true" "$(grep -qw roster "$T/verbs.out" && echo true || echo false)"
+  out="$(bash "$ME" roster-enroll 2>&1 || true)"
+  chk "suggest-roster-enroll" "true" "$(oc_has "$out" "did you mean 'enroll'?" && echo true || echo false)"
+  out="$(bash "$ME" roster-amend 2>&1 || true)"
+  chk "suggest-roster-amend" "true" "$(oc_has "$out" "did you mean 'promote' or 'enroll'?" && echo true || echo false)"
+
+  bash "$ME" events --since 2020-01-01T00:00:00Z > "$T/ev-s.out" 2>/dev/null; chk "events-since-past-rc" 0 $?
+  chk "events-since-past-20" "20" "$(grep -c . "$T/ev-s.out")"
+  # The compare is BYTE-lexicographic on t (== chronological for well-formed
+  # ISO). The fixture, like a hand-edited ledger, carries a corrupt t="x" from
+  # an earlier case — "x" sorts above every digit-leading timestamp, so the
+  # no-match sentinel has to sort above "x" too, not just above 2099.
+  bash "$ME" events --since zzzz >/dev/null 2>&1; chk "events-since-none-rc1" 1 $?
+  # truncation: 160 by default, exact under --full, and a clipped row is nudged
+  # on stderr (a SILENT clip is how a claim gets built on half a line).
+  LONG="$(printf 'x%.0s' $(seq 1 300))"
+  bash "$ME" stamp note "$LONG" >/dev/null 2>&1
+  bash "$ME" events --n 1 > "$T/ev-tr.out" 2>"$T/ev-tr.err"; chk "events-trunc-rc" 0 $?
+  chk "events-trunc-160" "160" "$(awk -F'\t' '{print length($5)}' "$T/ev-tr.out")"
+  grep -q "truncated" "$T/ev-tr.err" && ok || bad "events-trunc-nudge"
+  bash "$ME" events --n 1 --full > "$T/ev-full.out" 2>"$T/ev-full.err"; chk "events-full-rc" 0 $?
+  chk "events-full-300" "300" "$(awk -F'\t' '{print length($5)}' "$T/ev-full.out")"
+  grep -q "truncated" "$T/ev-full.err" && bad "events-full-no-nudge" || ok
+
+  # ---- events: NON-CANONICAL key schema (lane 329bf3a3 report, 2026-09-13) ----
+  # `.events[]` carries 27 distinct key schemas, but this verb read ONLY the
+  # canonical {n,t,kind,by,what}: a row that stored its content in `text`
+  # rendered with a BLANK content column AND was invisible to --actor/--since.
+  # Live acceptance row: n=2250 (actor,claim_ref,kind,n,text,ts).
+  # Assertions below compare the EXACT rendered string — never a grep, so a
+  # traceback echoing the source line cannot satisfy them.
+  NCL_TEXT="noncanonical content must survive the projection"
+  NCL_ACTOR="cccccccc-1111-2222-3333-444444444444"
+  NCL_TS="y2099-01-01T00:00:00Z"
+  jq --arg t "$NCL_TEXT" --arg a "$NCL_ACTOR" --arg s "$NCL_TS" \
+     '.events += [{"n":99001,"ts":$s,"actor":$a,"kind":"nc-schema","text":$t,"claim_ref":"nc-probe"}]' \
+     "$T/state/workers-ledger.json" > "$T/state/nc.json" \
+     && mv "$T/state/nc.json" "$T/state/workers-ledger.json"
+  bash "$ME" events --n 1 > "$T/nc.out" 2>"$T/nc.err"; chk "events-nc-render-rc" 0 $?
+  chk "events-nc-content" "$NCL_TEXT" "$(awk -F'\t' '{print $5}' "$T/nc.out")"
+  chk "events-nc-ts"      "$NCL_TS"    "$(awk -F'\t' '{print $2}' "$T/nc.out")"
+  chk "events-nc-kind"    "nc-schema"  "$(awk -F'\t' '{print $3}' "$T/nc.out")"
+  chk "events-nc-actor"   "$NCL_ACTOR" "$(awk -F'\t' '{print $4}' "$T/nc.out")"
+  bash "$ME" events --actor "$NCL_ACTOR" --json > "$T/nc-a.out" 2>/dev/null
+  chk "events-nc-actor-reach" 1 "$(jq 'length' "$T/nc-a.out" 2>/dev/null || echo X)"
+  bash "$ME" events --since "$NCL_TS" --json > "$T/nc-s.out" 2>/dev/null
+  chk "events-nc-since-reach" 1 "$(jq 'length' "$T/nc-s.out" 2>/dev/null || echo X)"
+  bash "$ME" events --kind nc-schema --json > "$T/nc-k.out" 2>/dev/null
+  chk "events-nc-kind-reach" 1 "$(jq 'length' "$T/nc-k.out" 2>/dev/null || echo X)"
+  # ---- events: H-1 (c23) the {at,detail,id,type} LEGACY BLOCK ---------------
+  # 22 live rows carry this shape. The old projection read only
+  # {kind,type}/{by,actor,role}/{t,ts}/{what,text,summary,note}, so EVERY one of
+  # them rendered a BLANK stamp AND a blank content column -- and the blank stamp
+  # also dropped them out of every --since window (byte-lexicographic compare
+  # against "" is always-less-than). `detail`/`at`/`id` are now in the
+  # projection, so the row renders AND is reachable.
+  #
+  # The assertions are FILTER-scoped (`--kind legacy-shape`), never positional:
+  # a `--n 1` tail read would be moved by any later leg that appends a row, and
+  # this block sits upstream of several that do.
+  LEG_AT="2026-08-27T02:55:00Z"
+  LEG_DETAIL="legacy at/detail row must render its stamp and its content"
+  jq --arg s "$LEG_AT" --arg d "$LEG_DETAIL" \
+     '.events += [{"at":$s,"detail":$d,"id":99002,"type":"legacy-shape"}]' \
+     "$T/state/workers-ledger.json" > "$T/state/leg.json" \
+     && mv "$T/state/leg.json" "$T/state/workers-ledger.json"
+  bash "$ME" events --kind legacy-shape --n 1 > "$T/leg.out" 2>"$T/leg.err"
+  chk "events-legacy-render-rc" 0 $?
+  chk "events-legacy-stamp"   "$LEG_AT"      "$(awk -F'\t' '{print $2}' "$T/leg.out")"
+  chk "events-legacy-content" "$LEG_DETAIL"  "$(awk -F'\t' '{print $5}' "$T/leg.out")"
+  chk "events-legacy-kind"    "legacy-shape" "$(awk -F'\t' '{print $3}' "$T/leg.out")"
+  # ...and it is REACHABLE by --since, which is the half a blank stamp broke.
+  bash "$ME" events --since "$LEG_AT" --kind legacy-shape --n 1 --json > "$T/leg-s.out" 2>/dev/null
+  chk "events-legacy-since-reach" 1 "$(jq 'length' "$T/leg-s.out" 2>/dev/null || echo X)"
+  # Remove the probe row: it is a fixture, and later legs assert a TAIL row.
+  jq '.events |= map(select((.id // 0) != 99002))' "$T/state/workers-ledger.json" > "$T/state/leg2.json" \
+    && mv "$T/state/leg2.json" "$T/state/workers-ledger.json"
+
+
+  # the truncation nudge must measure the NORMALISED field it prints, not .what
+  LONGNC="$(printf 'y%.0s' $(seq 1 300))"
+  jq --arg t "$LONGNC" '(.events[] | select(.n==99001) | .text) |= $t' \
+     "$T/state/workers-ledger.json" > "$T/state/nc2.json" \
+     && mv "$T/state/nc2.json" "$T/state/workers-ledger.json"
+  bash "$ME" events --n 1 > "$T/nc-t.out" 2>"$T/nc-t.err"; chk "events-nc-trunc-rc" 0 $?
+  chk "events-nc-trunc-160" "160" "$(awk -F'\t' '{print length($5)}' "$T/nc-t.out")"
+  grep -q "truncated" "$T/nc-t.err" && ok || bad "events-nc-trunc-nudge"
+  # ---- H-2 (c23) WRITE-SIDE stamp validation -------------------------------
+  # The live ledger carried 19 stamps that cannot be true (9 literal-x, 2
+  # space-separated, 8 minute-precision). Because --since compares
+  # BYTE-LEXICOGRAPHICALLY they silently mis-ranked. `--at` is the only
+  # caller-supplied stamp, so it is validated at WRITE: refuse, never guess.
+  # Placed AFTER the truncation legs on purpose: a successful ack APPENDS a row,
+  # and those legs assert a tail row.
+  H2_U="$(jq -r '.workers[0].uuid' "$OC_LEDGER")"
+  for _bad in "2026-01-02 03:04:05Z" "2026-01-02T03:04Z" "2026-01-02T03:0x:05Z" "not-a-stamp"; do
+    bash "$ME" ack "$H2_U" 0.9.9 --at "$_bad" >/dev/null 2>&1
+    chk "h2 ack --at refuses '$_bad'" 2 $?
+  done
+  bash "$ME" ack "$H2_U" 0.9.9 --at "2026-01-02T03:04:05Z" >/dev/null 2>&1
+  chk "h2 ack --at accepts a well-formed stamp" 0 $?
+
+  # --- D2/#507: the atomic_jq temp leak --------------------------------------
+  # A corpse left by a SIGKILL must be collected by the NEXT mutation — no trap
+  # can catch SIGKILL, so this sweep is the only cover — while a FRESH temp must
+  # survive the age gate (a blanket `rm .ledger.*` would reap a live one).
+  OLD_TMP="$T/state/.ledger.stale1"; : > "$OLD_TMP"; touch -d '3 days ago' "$OLD_TMP"
+  NEW_TMP="$T/state/.ledger.fresh1"; : > "$NEW_TMP"
+  bash "$ME" stamp note "#507 sweep probe" >/dev/null 2>&1
+  [ ! -e "$OLD_TMP" ] && ok || bad "tmp-sweep-stale-reaped"
+  [ -e "$NEW_TMP" ] && ok || bad "tmp-sweep-fresh-kept"
+  rm -f "$T/state"/.ledger.* 2>/dev/null
+
+  # trap leg: a CATCHABLE signal mid-write must not leave the temp behind. The
+  # window is opened deterministically by a jq shim that sleeps ONLY when its
+  # stdout is the `.ledger.*` temp (the mutation write), so nothing else in the
+  # invocation is slowed. The `SAW` guard matters: a probe that never observed
+  # the window must report INCONCLUSIVE, never a vacuous green.
+  SHIM="$T/shim"; mkdir -p "$SHIM"; REAL_JQ="$(command -v jq)"
+  cat > "$SHIM/jq" <<SHIMEOF
+#!/bin/sh
+case "\$(readlink /proc/\$\$/fd/1 2>/dev/null)" in */.ledger.*) sleep 5 ;; esac
+exec "$REAL_JQ" "\$@"
+SHIMEOF
+  chmod +x "$SHIM/jq"
+  PATH="$SHIM:$PATH" bash "$ME" stamp note "#507 trap probe" >/dev/null 2>&1 &
+  KPID=$!
+  SAW=0
+  for _ in $(seq 1 100); do
+    [ -n "$(ls "$T/state"/.ledger.* 2>/dev/null)" ] && { SAW=1; break; }
+    sleep 0.05
+  done
+  kill -TERM "$KPID" 2>/dev/null; wait "$KPID" 2>/dev/null
+  if [ "$SAW" -eq 0 ]; then
+    bad "tmp-trap-probe-window (temp never observed — probe inconclusive)"
+  else
+    LEFT="$(ls "$T/state"/.ledger.* 2>/dev/null)"
+    [ -z "$LEFT" ] && ok || { bad "tmp-trap-clears-on-term"; rm -f "$T/state"/.ledger.*; }
+  fi
+  rm -rf "$T"
+
+
+  # --- #570 (2026-10-05, toolsmith lane): atomic_jq must never fail SILENTLY ---
+  # Triage spent several turns re-deriving a cause jq had ALREADY stated: the
+  # `2>/dev/null` in atomic_jq turned "string and array cannot be added" into a
+  # bare rc=3 -- indistinguishable from a bad uuid or a missing ledger. Two legs,
+  # and BOTH assert the store is UNTOUCHED on failure:
+  #   A. the provoking row class -- a legacy `.notes` STRING -- is COERCED by
+  #      promote (rc 0) instead of failing the addition, so such a row self-heals;
+  #   B. a GENUINE jq failure still returns 3, but now PRINTS jq's own message.
+  # Leg B is the discriminating one: a bare rc=3 cannot distinguish the cause,
+  # which IS the defect. Fixture shapes are the ones proven in this lane's
+  # hermetic harness (string .notes for A; string .events for B), and the
+  # no-silent-failure assertion is on stderr CONTENT, never on the rc alone.
+  Q5U="cccccccc-1111-2222-3333-444444444444"
+  Q5ARR='[{"n":1,"t":"2026-10-05T00:00:00Z","by":"seed","kind":"note","what":"seed"}]'
+  Q5STR='"legacy string | 2026-09-06 roster-amend n=1604"'
+  q5seed() { # $1=dir $2=notes-json $3=events-json
+    mkdir -p "$1/state" "$1/skill"
+    printf '{"workers":[{"uuid":"%s","role":"editor","topic_id":9,"feature":"q570","notes":%s}],"events":%s,"updated_at":"2026-10-05T00:00:00Z"}\n' \
+      "$Q5U" "$2" "$3" > "$1/state/workers-ledger.json"
+  }
+  # A -- a string .notes must be COERCED, not fatal
+  Q5A="$(mktemp -d)"; q5seed "$Q5A" "$Q5STR" "$Q5ARR"
+  OC_NO_FLOODGUARD=1 OC_ACTOR= OC_SKILL_DIR="$Q5A/skill" OC_LEDGER="$Q5A/state/workers-ledger.json" \
+    bash "$ME" promote "$Q5U" reviewer >/dev/null 2>"$Q5A/err"
+  chk "q570-A-promote-coerces-a-string-notes" 0 $?
+  chk "q570-A-notes-became-an-array" "array" \
+    "$(jq -r '.workers[0].notes|type' "$Q5A/state/workers-ledger.json")"
+  chk "q570-A-legacy-entry-survived" "legacy string | 2026-09-06 roster-amend n=1604" \
+    "$(jq -r '.workers[0].notes[0]' "$Q5A/state/workers-ledger.json")"
+  chk "q570-A-role-was-applied" "reviewer" \
+    "$(jq -r '.workers[0].role' "$Q5A/state/workers-ledger.json")"
+  # B -- a REAL jq failure must be LOUD, and must not touch the store
+  Q5B="$(mktemp -d)"; q5seed "$Q5B" "$Q5ARR" "$Q5STR"
+  Q5BEFORE="$(md5sum "$Q5B/state/workers-ledger.json" | cut -d' ' -f1)"
+  OC_NO_FLOODGUARD=1 OC_ACTOR= OC_SKILL_DIR="$Q5B/skill" OC_LEDGER="$Q5B/state/workers-ledger.json" \
+    bash "$ME" promote "$Q5U" reviewer >/dev/null 2>"$Q5B/err"
+  chk "q570-B-jq-failure-still-returns-3" 3 $?
+  chk "q570-B-names-the-cause-on-stderr" "true" \
+    "$(grep -q 'atomic_jq failed' "$Q5B/err" && echo true || echo false)"
+  chk "q570-B-carries-jq-s-OWN-message" "true" \
+    "$(grep -q 'cannot be added' "$Q5B/err" && echo true || echo false)"
+  chk "q570-B-store-UNTOUCHED-on-failure" "$Q5BEFORE" \
+    "$(md5sum "$Q5B/state/workers-ledger.json" | cut -d' ' -f1)"
+  rm -rf "$Q5A" "$Q5B"
+
+  # --- A1b: a SELF verb's uuid is OPTIONAL and derived from the environment ----
+  # (owner directive 2026-09-26 23:14Z: the tools still required the lane to pass
+  #  its own session id while the env already held it.)
+  #
+  # SELF-CONTAINED on purpose: a private store, so these legs neither read the
+  # shared fixture's roster nor add a worker to it. An earlier version ran
+  # against $OC_LEDGER and enrolling a worker made FOUR roster-count legs below
+  # read one extra -- fixture pollution that looked like a defect.
+  A1T="$(mktemp -d)"
+  A1L="$A1T/workers-ledger.json"
+  A1W="bbbbbbbb-1111-2222-3333-444444444444"
+  printf '{"workers":[{"uuid":"%s","role":"tester","topic":"1","feature":"a1b","last_acked":null,"confirmed":false,"notes":[]}],"events":[]}\n' "$A1W" > "$A1L"
+
+  OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack 0.9.1 >/dev/null 2>&1
+  chk "a1b-ack-no-uuid-derives" 0 $?
+  chk "a1b-ack-wrote-the-env-id" "0.9.1" \
+    "$(jq -r '[.workers[]|select(.uuid=="'"$A1W"'")][0].last_acked.version // ""' "$A1L")"
+
+  OC_ACTOR= OPENCRABS_SESSION_ID= OC_LEDGER="$A1L" bash "$ME" ack 0.9.2 >/dev/null 2>"$A1T/err"
+  chk "a1b-ack-no-env-refuses" 2 $?
+  chk "a1b-refusal-names-the-remedy" "true" \
+    "$(grep -qE 'OPENCRABS_SESSION_ID|pass the uuid explicitly' "$A1T/err" && echo true || echo false)"
+
+  # A single non-uuid argument is disambiguated BY SHAPE: for ack it is the
+  # VERSION, for enroll the ROLE. That is the form the owner asked for.
+  # A FRESH uuid: $A1W is already enrolled above, so enrolling it again would
+  # die "already enrolled" and measure the wrong thing.
+  A1E="cccccccc-1111-2222-3333-444444444444"
+  OC_ACTOR= OPENCRABS_SESSION_ID="$A1E" OC_LEDGER="$A1L" bash "$ME" enroll a1b-tester >/dev/null 2>&1
+  chk "a1b-enroll-single-arg-is-role" 0 $?
+  chk "a1b-enroll-used-the-env-id" "a1b-tester" \
+    "$(jq -r '[.workers[]|select(.uuid=="'"$A1E"'")][0].role // ""' "$A1L")"
+
+  # THE DECISION LEG. The roster-admin path must SURVIVE: acking on ANOTHER
+  # lane's uuid is documented usage (the ack2 fixture drives it end to end), and
+  # A1b's cross-check half would refuse it -- 60 legs redden under that rule.
+  # So a supplied other-uuid must reach the ROSTER check (rc 3, unknown uuid),
+  # never a mismatch refusal (rc 2). If someone adds the unconditional
+  # cross-check later, THIS leg reddens first and points at the reason.
+  OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack aaaaaaaa-1111-2222-3333-444444444444 0.9.3 >/dev/null 2>&1
+  chk "a1b-other-uuid-not-cross-checked" 3 $?
+
+  # (#657) A1b's cross-check half, shipped as a WARNING. These legs assert the
+  # two properties that make the warning useful rather than noise: it NAMES the
+  # mismatch, and it never changes the outcome.
+  _a1o="$(OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.4 2>&1)"
+  chk "a1b-other-uuid-warns" "true" \
+    "$(grep -q 'NOT the ambient session' <<< "$_a1o" && echo true || echo false)"
+  _a1o="$(OC_ACTOR= OPENCRABS_SESSION_ID="$A1W" OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.5 2>&1)"; _a1rc=$?
+  chk "a1b-warned-ack-still-succeeds" 0 "$_a1rc"
+  chk "a1b-warned-ack-wrote-the-other-lane" "0.9.5" \
+    "$(jq -r '[.workers[]|select(.uuid=="'"$A1E"'")][0].last_acked.version // ""' "$A1L")"
+  # GATE: a non-uuid ambient must stay SILENT, or every fixture and every
+  # non-session shell would emit the note and the warning would become noise.
+  _a1o="$(OC_ACTOR=test-runner OPENCRABS_SESSION_ID=test-runner OC_LEDGER="$A1L" bash "$ME" ack "$A1E" 0.9.6 2>&1)"
+  chk "a1b-label-ambient-stays-silent" "true" \
+    "$(grep -q 'NOT the ambient session' <<< "$_a1o" && echo false || echo true)"
+  rm -rf "$A1T"
+
+  # ---- factory #70: a LINKED WORKTREE is a git checkout ----------------------
+  # `.git` is a FILE there, so `[ -d "$x/.git" ]` answered FALSE and every
+  # state/skill tail silently no-oped. One leg per FUNCTION FAMILY, each paired
+  # with the non-git control that must KEEP skipping — without the control an arm
+  # passes vacuously on a tool whose predicate never runs.
+  #
+  # This block builds its OWN root. The shared $T is rm -rf'd by an earlier
+  # block, so a fixture pointed into it tests a nonexistent path and every arm
+  # reddens for the wrong reason (measured on the first run: 15 arms, all
+  # "cannot change to .../state").
+  W70="$(mktemp -d)"; mkdir -p "$W70/state" "$W70/skill/tools/tests"
+  : > "$W70/skill/tools/tests/.keep"
+  cat > "$W70/state/workers-ledger.json" <<EOF
+{"current_skill_version":"0.4.1","meta":{"skill_version":"0.4.1","current_skill_version":"0.4.1"},"updated_at":"2026-01-01T00:00:00Z","workers":[],"events":[]}
+EOF
+  printf 'name: fixture\nversion: 0.4.2\n---\n# fixture\n' > "$W70/skill/SKILL.md"
+  printf '# fixture changelog\n' > "$W70/skill/CHANGELOG.md"
+  printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$W70/skill/tools/tests/battery-last.json"
+  for _r in "$W70/state" "$W70/skill"; do
+    git -C "$_r" init -q 2>/dev/null
+    git -C "$_r" config user.email t@t; git -C "$_r" config user.name t
+    git -C "$_r" config commit.gpgsign false
+    git -C "$_r" add -A; git -C "$_r" commit -q -m base
+  done
+  export OC_LEDGER="$W70/state/workers-ledger.json" OC_SKILL_DIR="$W70/skill" OC_DEPLOY_STATE_DIR="$W70/state"
+  # The scope harness sources ONE extracted function, and that function calls
+  # _is_git_repo — so the snippet must carry the helper. Without it every call
+  # returns 127, the SKIP branch fires on EVERY path, and the four #540 arms
+  # measure a fixture that never ran.
+  eval "$(grep -m1 '^STATE_TRACKED_PATHS=' "$ME")"
+  eval "$(grep -m1 '^STATE_TRACKED_GLOB='   "$ME")"
+  awk '/^_is_git_repo\(\)/,/^}$/' "$ME" > "$W70/scope_fn.sh"
+  awk '/^_ledger_tracked_names\(\)/,/^}$/' "$ME" >> "$W70/scope_fn.sh"
+  awk '/^state_out_of_scope_audit\(\)/,/^}$/' "$ME" >> "$W70/scope_fn.sh"
+  chk "git70-scope-harness-carries-the-helper" "1" "$(grep -c '^_is_git_repo()' "$W70/scope_fn.sh")"
+  _scope70() { SD="$1" STATE_TRACKED_PATHS="$STATE_TRACKED_PATHS" STATE_TRACKED_GLOB="$STATE_TRACKED_GLOB" \
+    bash -c 'STATE_DIR() { printf "%s\n" "$SD"; }; . '"$W70"'/scope_fn.sh; state_out_of_scope_audit' 2>&1; }
+
+  git -C "$W70/state" worktree add -q "$W70/state-wt" -b wt70state >/dev/null 2>&1
+  chk "git70-state-wt-fixture-is-a-gitdir-FILE" "file" \
+    "$([ -f "$W70/state-wt/.git" ] && [ ! -d "$W70/state-wt/.git" ] && echo file || echo other)"
+  # (a) state_out_of_scope_audit — the SKIP note must NOT appear for a worktree.
+  _sout="$(_scope70 "$W70/state-wt")"
+  grep -q 'SKIPPED' <<< "$_sout" && bad "git70-audit-worktree-skipped" || ok
+  # control: a plain directory STILL skips, and still says it is not a clean result.
+  mkdir -p "$W70/notgit"
+  _sout="$(_scope70 "$W70/notgit")"
+  grep -q 'SKIPPED' <<< "$_sout" && ok || bad "git70-audit-nongit-still-skips"
+  # (b) _git_state_commit_now — a stamp in a worktree state dir must COMMIT.
+  _wt0="$(git -C "$W70/state-wt" rev-parse HEAD)"
+  _wtout="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" bash "$ME" stamp note "git70 worktree commit" 2>&1)"
+  case "$_wtout" in *"git: state commit ok"*) ok ;; *) bad "git70-state-commit-in-worktree: $_wtout" ;; esac
+  [ "$(git -C "$W70/state-wt" rev-parse HEAD)" != "$_wt0" ] && ok || bad "git70-state-commit-head-moved"
+  # (c) commit-pending in a worktree state dir — the sweep must COMMIT, and its
+  #     mirror tail must PUSH (covers push_mirror, whose guard is the same test).
+  git init -q --bare "$W70/state-origin.git"
+  git -C "$W70/state-wt" remote add origin "$W70/state-origin.git" 2>/dev/null
+  git -C "$W70/state-wt" push -q -u origin HEAD >/dev/null 2>&1
+  jq '.events += [{"n": 9901, "t": "x", "by": "tool", "kind": "note", "what": "git70-wt"}]' \
+    "$W70/state-wt/workers-ledger.json" > "$W70/d70.json" && mv "$W70/d70.json" "$W70/state-wt/workers-ledger.json"
+  _wt1="$(git -C "$W70/state-wt" rev-parse HEAD)"
+  _cpo="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" bash "$ME" commit-pending 2>&1)"; _cprc=$?
+  chk "git70-commit-pending-worktree-rc" 0 "$_cprc"
+  [ "$(git -C "$W70/state-wt" rev-parse HEAD)" != "$_wt1" ] && ok || bad "git70-commit-pending-worktree-committed"
+  case "$_cpo" in *"mirror: state pushed"*) ok ;; *) bad "git70-push-mirror-worktree: $_cpo" ;; esac
+  # the bare repo's HEAD still names the default branch (master), which the push
+  # never created — assert the PUSHED branch carries the local tip instead.
+  [ "$(git -C "$W70/state-origin.git" rev-parse --verify -q refs/heads/wt70state 2>/dev/null)" \
+    = "$(git -C "$W70/state-wt" rev-parse HEAD)" ] && ok || bad "git70-push-mirror-received"
+  # (d) push_backlog_if_due — forced with OC_LEDGER_PUSH_MIN=1, because its default
+  #     10-commit threshold would return before the guard could matter.
+  _blout="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" OC_LEDGER_PUSH_MIN=1 bash "$ME" stamp note "git70 backlog" 2>&1)"
+  case "$_blout" in *"mirror-due: state"*) ok ;; *) bad "git70-push-backlog-worktree: $_blout" ;; esac
+  # (e) the sync family — with SKILL_DIR a WORKTREE the stray-guard must FIRE and a
+  #     clean bump must COMMIT into the worktree. This is the v0.4.157 defect
+  #     reachable again from any worktree: the guard read "no repo" and went INERT.
+  git -C "$W70/skill" worktree add -q "$W70/skill-wt" -b wt70skill >/dev/null 2>&1
+  chk "git70-skill-wt-fixture-is-a-gitdir-FILE" "file" \
+    "$([ -f "$W70/skill-wt/.git" ] && [ ! -d "$W70/skill-wt/.git" ] && echo file || echo other)"
+  _cur="$(jq -r '.current_skill_version // "0.4.0"' "$OC_LEDGER")"
+  _nxt="$(printf '%s' "$_cur" | awk -F. '{printf "%s.%s.%s", $1, $2, $3+1}')"
+  printf '\n## v%s\nworktree receipt\n' "$_nxt" >> "$W70/skill-wt/CHANGELOG.md"
+  printf '{"verdict":"PASS","fail":0,"ts":"%s"}\n' "$(now_iso)" > "$W70/skill-wt/tools/tests/battery-last.json"
+  echo "wt-stray" > "$W70/skill-wt/tools/wt-stray-probe.sh"
+  _wts_out="$(OC_SKILL_DIR="$W70/skill-wt" bash "$ME" sync --version "$_nxt" --why git70-stray 2>&1)"; _wts_rc=$?
+  chk "git70-sync-worktree-stray-refused" 7 "$_wts_rc"
+  case "$_wts_out" in *"wt-stray-probe.sh"*) ok ;; *) bad "git70-sync-worktree-stray-names-path: $_wts_out" ;; esac
+  rm -f "$W70/skill-wt/tools/wt-stray-probe.sh"
+  _wth0="$(git -C "$W70/skill-wt" rev-parse HEAD)"
+  OC_SKILL_DIR="$W70/skill-wt" bash "$ME" sync --version "$_nxt" --why git70-bump >"$W70/wtbump.out" 2>&1
+  chk "git70-sync-worktree-bump-rc" 0 $?
+  [ "$(git -C "$W70/skill-wt" rev-parse HEAD)" != "$_wth0" ] && ok || bad "git70-sync-worktree-bump-committed"
+  git -C "$W70/skill-wt" log -1 --format=%s | grep -q "skill v$_nxt" && ok || bad "git70-sync-worktree-bump-subject"
+  # (f) the SKILL half of commit-pending --bundle — same predicate, second home.
+  printf '{"verdict":"PASS","fail":0,"ts":"%s","probe":"bundle70"}\n' "$(now_iso)" > "$W70/skill-wt/tools/tests/battery-last.json"
+  _bo="$(OC_LEDGER="$W70/state-wt/workers-ledger.json" OC_SKILL_DIR="$W70/skill-wt" bash "$ME" commit-pending --bundle 2>&1)"
+  case "$_bo" in *"runtime artifacts committed"*) ok ;; *) bad "git70-bundle-worktree-skill: $_bo" ;; esac
+  # a failing sync must be diagnosable, so its log is shown when it reddens
+  [ -s "$W70/wtbump.out" ] || bad "git70-sync-worktree-bump-log-empty"
+  rm -rf "$W70"
+
+  # ---- #149: migrate legacy ledger -> JSONL (P2) ---------------------------
+  # Every arm runs in a SCRATCH dir via OC_DEV_STATE/OC_LEDGER. Arm 1 exists
+  # because the first scratch run of this verb silently migrated the LIVE state
+  # dir: $LEDGER was set in the environment but parse_global resets it at :186,
+  # so "isolated" was never isolated. The destination guard is the fix, and an
+  # arm that proves it fires is the only thing that keeps it honest.
+  M149="$(mktemp -d)"
+  seed149() { # $1 = dir — three schema generations, duplicate n, null n, no kind
+    mkdir -p "$1/state"
+    cat > "$1/state/workers-ledger.json" <<'M149EOF'
+{"workers":[{"uuid":"14914914-9149-4914-9149-149149149149","role":"editor","topic_id":9}],
+ "events":[
+  {"n":1,"t":"2026-01-01T00:00:00Z","kind":"claim","what":"modern row"},
+  {"n":2,"t":"2026-01-02T00:00:00Z","kind":"note","what":"modern row two"},
+  {"t":"2026-01-03T00:00:00Z","type":"legacy","text":"legacy: ts+type+text, no n, no kind"},
+  {"n":3,"kind":"note","what":"no t at all"},
+  {"n":null,"t":"2026-01-04T00:00:00Z","kind":"note","what":"explicit null n"},
+  {"n":1258,"t":"2026-01-05T00:00:00Z","what":"no kind, duplicate n"},
+  {"n":1258,"t":"2026-01-05T00:00:01Z","what":"no kind, duplicate n again"},
+  {"n":4,"t":"2026-01-06T00:00:00Z","kind":"note","what":"tail row"}
+ ],
+ "meta":{"generation":3}}
+M149EOF
+  }
+  # (1) #149 DEFECT, measured 2026-11-22 by the HQ lane while verifying P1+P2:
+  # the destination guard compared STATE_DIR() against $STATE_DIR_DEFAULT, and
+  # BOTH read $OC_DEV_STATE (:185 and :237) — so with that variable set they
+  # were equal BY CONSTRUCTION and EVERY scratch dir was refused as "the LIVE
+  # state dir". The arm that used to sit here ASSERTED that false positive (a
+  # $M149L/state scratch dir, refused as live), which is exactly how the guard
+  # stayed green while broken: the arm encoded the bug. The only way past it was
+  # --live — the flag that permits the REAL live dir.
+  # A GENUINE live dir is now spelled from a RELOCATED $HOME, so the guard is
+  # exercised without ever pointing at the real record.
+  M149H="$M149/home"
+  M149L="$M149H/.opencrabs/profiles/ops/opencrabs-dev"
+  mkdir -p "$M149L"
+  seed149 "$M149H/seedtmp"
+  mv "$M149H/seedtmp/state/workers-ledger.json" "$M149L/workers-ledger.json"
+  rm -rf "$M149H/seedtmp"
+  HOME="$M149H" OC_DEV_STATE= OC_LEDGER="$M149L/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>"$M149/err"
+  chk "mig149-refuses-the-live-state-dir" 2 $?
+  [ ! -f "$M149L/events.jsonl" ] && ok || bad "mig149-live-refusal-wrote-nothing"
+  grep -q 'refusing to migrate the LIVE state dir' "$M149/err" && ok || bad "mig149-live-refusal-names-the-reason"
+
+  # (1b) POSITIVE CONTROL for that guard: SAME relocated $HOME, destination is a
+  # scratch dir reached through OC_DEV_STATE — the false positive must be GONE.
+  # Without this arm the guard could satisfy (1) by refusing everything, which
+  # is precisely the defect being fixed.
+  M149S="$M149/scratch"; seed149 "$M149S"
+  HOME="$M149H" OC_DEV_STATE="$M149S/state" OC_LEDGER="$M149S/state/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>"$M149/err2"
+  chk "mig149-scratch-not-refused-when-OC_DEV_STATE-set" 0 $?
+  [ -s "$M149S/state/events.jsonl" ] && ok || bad "mig149-scratch-guard-false-positive-wrote-nothing"
+  grep -q 'LIVE state dir' "$M149/err2" && bad "mig149-scratch-guard-false-positive-diagnostic" || ok
+
+  # (1c) --live must still permit the genuine live dir, or the bypass is dead
+  # and the guard has become a wall with no declared window at all.
+  HOME="$M149H" OC_DEV_STATE= OC_LEDGER="$M149L/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl --live >/dev/null 2>&1
+  chk "mig149-live-flag-permits-the-live-dir" 0 $?
+  [ -s "$M149L/events.jsonl" ] && ok || bad "mig149-live-flag-wrote-the-record"
+
+  # (1d) #149 DEFECT 2: the refusal's own remedy must EXIST. It printed
+  # "Use --ledger <scratch>/workers-ledger.json", and migrate's arg loop did not
+  # accept --ledger at all (rc 2 "unknown argument '--ledger'") — so the one
+  # instruction the operator was given could not be followed. This arm runs the
+  # printed remedy VERBATIM rather than a paraphrase of it.
+  M149D="$M149/remedy"; seed149 "$M149D"
+  HOME="$M149H" OC_DEV_STATE= \
+    bash "$ME" migrate --to jsonl --ledger "$M149D/state/workers-ledger.json" >/dev/null 2>&1
+  chk "mig149-printed-remedy-is-a-real-flag" 0 $?
+  [ -s "$M149D/state/events.jsonl" ] && ok || bad "mig149-printed-remedy-migrated-the-copy"
+  HOME="$M149H" OC_DEV_STATE= bash "$ME" migrate --to jsonl --ledger >/dev/null 2>&1
+  chk "mig149-ledger-flag-without-value" 2 $?
+
+  # (2) a scratch dir migrates
+  M149A="$M149/a"; seed149 "$M149A"
+  M149SRC="$M149A/state/workers-ledger.json"
+  OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" migrate --to jsonl >"$M149A/out" 2>&1
+  chk "mig149-scratch-migrate-rc" 0 $?
+  [ -s "$M149A/state/events.jsonl" ] && ok || bad "mig149-record-written"
+  [ -s "$M149A/state/workers.json" ] && ok || bad "mig149-workers-written"
+
+  # (3) every row carried, verbatim — the three schema generations survive
+  _m149n_src="$(jq '[.events[]?]|length' "$M149SRC")"
+  _m149n_out="$(wc -l < "$M149A/state/events.jsonl" | tr -d ' ')"
+  chk "mig149-row-count-preserved" "$_m149n_src" "$_m149n_out"
+  # trap 1: null n stays null, never renumbered
+  _m149null_src="$(jq '[.events[]?|select(.n==null)]|length' "$M149SRC")"
+  _m149null_out="$(jq -s '[.[]|select(.n==null)]|length' "$M149A/state/events.jsonl")"
+  chk "mig149-null-n-preserved" "$_m149null_src" "$_m149null_out"
+  # trap 10: duplicate n multiplicity, never deduped
+  _m149dup_src="$(jq '[.events[]?|.n]|group_by(.)|map(select(length>1))|length' "$M149SRC")"
+  _m149dup_out="$(jq -s '[.[]|.n]|group_by(.)|map(select(length>1))|length' "$M149A/state/events.jsonl")"
+  chk "mig149-duplicate-n-multiplicity" "$_m149dup_src" "$_m149dup_out"
+  # trap 9: rows without `kind` and rows carrying ts/type stay exactly as they were
+  _m149nk_src="$(jq '[.events[]?|select(has("kind")|not)]|length' "$M149SRC")"
+  _m149nk_out="$(jq -s '[.[]|select(has("kind")|not)]|length' "$M149A/state/events.jsonl")"
+  chk "mig149-kindless-rows-not-normalised" "$_m149nk_src" "$_m149nk_out"
+  _m149ts_src="$(jq '[.events[]?|select(has("ts"))]|length' "$M149SRC")"
+  _m149ts_out="$(jq -s '[.[]|select(has("ts"))]|length' "$M149A/state/events.jsonl")"
+  chk "mig149-legacy-ts-rows-carried" "$_m149ts_src" "$_m149ts_out"
+
+  # (4) the view is a FUNCTION OF THE RECORD, not a copy of the source
+  jq -S . "$M149A/state/workers-ledger.json" > "$M149A/view.canon"
+  jq -S -s --slurpfile w "$M149A/state/workers.json" '($w[0]//{})+{events:.}' \
+    "$M149A/state/events.jsonl" > "$M149A/derived.canon"
+  if diff -q "$M149A/view.canon" "$M149A/derived.canon" >/dev/null 2>&1; then
+    ok
+  else
+    bad "mig149-view-is-derived-from-the-record"
+  fi
+
+  # (5) refuses to clobber an existing record, and --force overwrites
+  OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>&1
+  chk "mig149-refuses-existing-record" 2 $?
+  OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" migrate --to jsonl --force >/dev/null 2>&1
+  chk "mig149-force-overwrites" 0 $?
+
+  # (6) refusals that must never write: bad target, non-JSON source
+  M149B="$M149/b"; seed149 "$M149B"
+  OC_DEV_STATE="$M149B/elsewhere" OC_LEDGER="$M149B/state/workers-ledger.json" \
+    bash "$ME" migrate --to yaml >/dev/null 2>&1
+  chk "mig149-refuses-unknown-target" 2 $?
+  M149C="$M149/c"; mkdir -p "$M149C/state"
+  printf 'not json at all\n' > "$M149C/state/workers-ledger.json"
+  OC_DEV_STATE="$M149C/elsewhere" OC_LEDGER="$M149C/state/workers-ledger.json" \
+    bash "$ME" migrate --to jsonl >/dev/null 2>&1
+  chk "mig149-refuses-non-json-source" 3 $?
+  [ ! -f "$M149C/state/events.jsonl" ] && ok || bad "mig149-non-json-refusal-wrote-nothing"
+
+  # (7) THE POINT OF THE WHOLE CHANGE: a stamp appends ONE line, it does not
+  # rewrite the blob. Without this arm the migration could be correct and the
+  # write path still be O(n) — the reason the owner asked for text.
+  _m149before="$(wc -l < "$M149A/state/events.jsonl" | tr -d ' ')"
+  OC_NO_FLOODGUARD=1 OC_ACTOR=14914914-9149-4914-9149-149149149149 \
+    OC_DEV_STATE="$M149A/elsewhere" OC_LEDGER="$M149SRC" \
+    bash "$ME" stamp note "mig149 append probe" >/dev/null 2>&1
+  _m149after="$(wc -l < "$M149A/state/events.jsonl" | tr -d ' ')"
+  chk "mig149-stamp-appends-exactly-one-line" "$((_m149before + 1))" "$_m149after"
+  chk "mig149-appended-row-is-the-last" "mig149 append probe" \
+    "$(tail -1 "$M149A/state/events.jsonl" | jq -r '.what // .text // .summary // ""')"
+  rm -rf "$M149"
+
+  # ---- #177 lock-free read verbs ----------------------------------------------
+  # workers / worker / events --all|--jsonl / ok. No lock, no ledger_load slurp.
+  # Fixtures cover both the compact file and JSONL mode, plus the events.jsonl
+  # --ledger remap (canonical default moving to the record path).
+  R177="$T/r177"; mkdir -p "$R177"
+  printf '%s' '{"workers":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"editor","topic_id":7,"feature":"x","state":"ACTIVE"},{"uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","role":"toolsmith","topic_id":0,"feature":"-","state":"RETIRED"}],"events":[{"n":1,"t":"2026-11-25T09:00:00Z","kind":"claim","by":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","what":"CLAIM #177"},{"n":2,"t":"2026-11-25T09:01:00Z","kind":"note","by":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","what":"hello"}]}' > "$R177/workers-ledger.json"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" ok >/dev/null
+  chk "r177-ok-legacy-rc" 0 $?
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" workers --json > "$R177/w.json"
+  chk "r177-workers-count" 2 "$(jq 'length' "$R177/w.json")"
+  chk "r177-workers-first-role" "editor" "$(jq -r '.[0].role' "$R177/w.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" worker --uuid "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" > "$R177/one.tsv"
+  chk "r177-worker-tsv" $'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb	toolsmith	0	RETIRED' "$(cat "$R177/one.tsv")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" worker --uuid "00000000-0000-4000-8000-000000000000" >/dev/null 2>&1
+  chk "r177-worker-miss-rc" 1 $?
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --json --all > "$R177/e.json"
+  chk "r177-events-all-count" 2 "$(jq 'length' "$R177/e.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind note --json --all > "$R177/en.json"
+  chk "r177-events-kind-filter" 1 "$(jq 'length' "$R177/en.json")"
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind nosuch --json --all > "$R177/empty.json"
+  chk "r177-events-all-empty-is-rc0" 0 $?
+  chk "r177-events-all-empty-array" "[]" "$(cat "$R177/empty.json")"
+  # JSONL mode: record + workers.json, view may be absent (fresh clone).
+  mkdir -p "$R177/jl"
+  printf '%s\n' '{"n":1,"t":"2026-11-25T09:00:00Z","kind":"claim","by":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","what":"CLAIM #177"}' \
+    '{"n":2,"t":"2026-11-25T09:01:00Z","kind":"note","by":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","what":"hello"}' \
+    > "$R177/jl/events.jsonl"
+  printf '%s' '{"workers":[{"uuid":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","role":"editor","topic_id":7,"feature":"x","state":"ACTIVE"}]}' > "$R177/jl/workers.json"
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" ok >/dev/null
+  chk "r177-ok-jsonl-without-view-rc" 0 $?
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" workers --json > "$R177/jl-w.json"
+  chk "r177-jsonl-workers-count" 1 "$(jq 'length' "$R177/jl-w.json")"
+  OC_LEDGER="$R177/jl/workers-ledger.json" bash "$ME" events --jsonl > "$R177/jl-e.jsonl"
+  chk "r177-jsonl-events-lines" 2 "$(wc -l < "$R177/jl-e.jsonl" | tr -d ' ')"
+  # --ledger events.jsonl is used as the record path (#177; no view remap).
+  OC_LEDGER="$R177/jl/events.jsonl" bash "$ME" workers --json > "$R177/remap-w.json"
+  chk "r177-remap-events-jsonl-workers" 1 "$(jq 'length' "$R177/remap-w.json")"
+  OC_LEDGER="$R177/jl/events.jsonl" bash "$ME" events --json --all > "$R177/remap-e.json"
+  chk "r177-remap-events-jsonl-events" 2 "$(jq 'length' "$R177/remap-e.json")"
+  mkdir -p "$R177/bad"
+  printf 'not json\n' > "$R177/bad/workers-ledger.json"
+  OC_LEDGER="$R177/bad/workers-ledger.json" bash "$ME" ok >/dev/null 2>&1
+  chk "r177-ok-malformed-rc" 3 $?
+  # existing tail events: no-match stays rc 1 (a verdict), --all does not change it
+  OC_LEDGER="$R177/workers-ledger.json" bash "$ME" events --kind nosuch >/dev/null 2>&1
+  chk "r177-events-tail-nomatch-still-rc1" 1 $?
+  # #177: a jsonl stamp appends the record and must not create or refresh the view.
+  mkdir -p "$R177/noview"
+  printf '%s\n' '{"n":1,"t":"2026-11-25T09:00:00Z","kind":"note","by":"hq","what":"seed"}' > "$R177/noview/events.jsonl"
+  printf '%s' '{"workers":[],"updated_at":"2026-11-25T09:00:00Z"}' > "$R177/noview/workers.json"
+  OC_LEDGER="$R177/noview/events.jsonl" bash "$ME" stamp note "no-view stamp" --by hq --allow-unattributed --allow-no-ref >/dev/null
+  chk "r177-stamp-jsonl-no-view-file" 1 "$([ ! -e "$R177/noview/workers-ledger.json" ] && echo 1 || echo 0)"
+  chk "r177-stamp-jsonl-appended" 2 "$(wc -l < "$R177/noview/events.jsonl" | tr -d ' ')"
+
+  echo "oc-ledger selftest: PASS=$P FAIL=$F"
+  [ "$F" -eq 0 ]
+}
+
+# ---- confirm (v0.4.58, Duty-6 lens C #5) ------------------------------------
+_latest_claim_issue() { # $1=uuid -> stdout: issue number (rc 0) or failure
+  # diagnostic (rc 3). Single owner of the claim->issue derivation —
+  # cmd_claim_ref and cmd_confirm both consume it (E4, v0.4.77).
+  local claim issue
+  claim="$(jq_ledger -r --arg u "$1" '[.events[] | select(.kind=="claim" and ((.by // "") | contains($u)))][-1].what // ""')"
+  [ -n "$claim" ] || { echo "no claim event by $1"; return 3; }
+  # RESIDUAL (lane c6b1a539 report, 2026-09-12; the D-2 family — the gate must
+  # not LIE): the ref is extracted by the SINGLE OWNER (_issue_ref_tokens),
+  # never by a bare '#<digits>' grep. Both failure modes are live in the ledger:
+  #   (1) a claim written "issue 76" / "issue=172" carries NO '#' at all, so the
+  #       old grep returned rc 3 for a claim that EXISTS — a false negative on
+  #       cmd_claim_ref AND on cmd_confirm, which delegates here;
+  #   (2) the old grep took the first '#<digits>' ANYWHERE in the prose, so
+  #       n=1585 ("...issue 94 ... keep fence parsing reusable for the #93
+  #       options hook") derived 93 — the WRONG issue, which cmd_confirm would
+  #       then verify against GitHub and close. The token scan reads the ref in
+  #       the order it is WRITTEN, so the claimed issue wins over a passing
+  #       mention. MEASURED across all 130 live claim rows (python, 2026-09-12):
+  #       109 resolved under the old grep — 108 keep the SAME number and n=1585
+  #       is CORRECTED 93 -> 94; 6 that were previously unresolvable now resolve;
+  #       0 are lost; 15 name no issue at all under either scan.
+  issue="$(_issue_ref_tokens "$claim" | head -1)"
+  [ -n "$issue" ] || { echo "latest claim by $1 carries no numeric issue ref: $claim"; return 3; }
+  echo "$issue"
+}
+
+_latest_open_claim_issue() { # $1=uuid [$2=max_age_days] -> stdout: the lane's latest claim issue
+  # that is STILL OPEN and YOUNGER than $2 days (rc 0), else a diagnostic (rc 3).
+  #
+  # AGE BOUND (#631, measured 2026-11-09 by the HQ lane, commit e54c092d): an
+  # OPEN claim never expires, so `--open` alone is unbounded in TIME as well as
+  # in choice. The HQ lane's newest open claim was n=8822 from 2026-09-19
+  # ("RE-CLAIM #311 ... CI-143 kill storm") — 51 days old — while its two NEWER
+  # claims were both closed, so the newest-first scan walked past them and
+  # stamped a November editor.md doc fix with a September CI claim. The trailer
+  # was a durable false provenance record in git history, and the post-commit
+  # comment went looking for issue 311 on that claim's tracker.
+  #
+  # $2 = 0 or absent keeps the old unbounded behaviour (the plain read a human
+  # or a diagnostic verb wants); a positive value REFUSES rather than answering
+  # when the newest open claim is older, because a wrong Issue-Ref outlives the
+  # commit that carries it. The escapes are the ones the no-claim path already
+  # offers: `--issue <N>` (the lane names its issue) or `--session-id-only`
+  # (the commit belongs to none).
+  #
+  # An UNDECIDABLE age (missing/unparseable `t`) also refuses: a row whose age
+  # cannot be read is not evidence of freshness, and the fail-open direction
+  # here is the one that writes a false trailer into history.
+  #
+  # #335: the write-side counterpart of _latest_claim_issue, for callers that
+  # must not ACT on a released claim. oc-commit derives Issue-Ref from here:
+  # deriving it from a claim whose issue already carries a `done` row posts an
+  # implementation comment onto a FINISHED issue (the cross-post the defect
+  # report caught).
+  #
+  # Row selection (#492): the lane's NEWEST claim row that is still OPEN, not
+  # simply its newest claim row. The old rule mirrored _latest_claim_issue
+  # exactly, which is correct only while a lane's newest claim is also its
+  # newest OPEN one — closing a newer claim then made this verb answer rc 3
+  # while older open claims existed. The closure predicate stays the canonical
+  # one (oc_claims.claim_is_closed) — never re-inlined here: four inlined copies
+  # of it had already drifted apart (#305).
+  _prepare_unified || return 3
+  python3 -c '
+import sys, os, json, datetime
+
+sys.dont_write_bytecode = True   # keep the shared checkout byte-identical
+sys.path.insert(0, os.path.join(sys.argv[2], "lib"))
+import oc_claims as oc
+
+def _age_days(ts):
+    """Days between the row stamp and now, or None when it cannot be READ.
+
+    None is UNDECIDABLE, never 0: a row whose age cannot be read is not
+    evidence of freshness (see the age-bound block above the function).
+    """
+    s = (ts or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds() / 86400.0
+
+# #631: an UNPARSEABLE bound must be refused, never silently read as 0
+# (unbounded). float("7d") raises, and the old default made a typo look like a
+# working bound — an accepted-but-inert flag is indistinguishable from an
+# honoured one, which is the exact failure class #631 is about. The SHELL side
+# validates first so the refusal carries the verb voice and rc 2.
+try:
+    max_age_d = float(sys.argv[4] or 0)
+except (IndexError, ValueError):
+    max_age_d = 0.0
+
+try:
+    with open(sys.argv[1]) as f:
+        events = json.load(f).get("events", [])
+except Exception as e:
+    sys.stderr.write("failed to read ledger: %s\n" % e)
+    sys.exit(3)
+
+uuid = sys.argv[3]
+rows = oc.parse_events(events)
+idxs = [i for i, row in enumerate(rows)
+        if row["kind"] == "claim" and uuid in row["by"]]
+if not idxs:
+    sys.stderr.write("no claim event by %s\n" % uuid)
+    sys.exit(3)
+
+# #492: the selection is the NEWEST claim ROW THAT IS STILL OPEN, not the newest
+# claim row. The two are the same thing only while the newest claim row is also
+# the newest OPEN one; the moment a lane closes a newer claim, a
+# latest-row-only scan finds that closed row, answers rc 3, and HIDES every
+# older claim that is still open. Measured live 2026-09-21: claim-ref --open
+# returned rc 3 ("latest claim ... is CLOSED (#421)") while a claims query
+# showed the SAME lane holding an issue claim with no close row -- still open.
+# The consumer that cannot absorb this is oc-commit, which derives its Issue-Ref
+# from here and hard-fails (rc 3) instead of committing.
+#
+# Newest-first so the answer stays "the most recent claim the lane may act on";
+# the closure predicate is the canonical one (oc.claim_is_closed), never
+# re-inlined. One row per issue is already handled: a multi-target claim
+# contributes whichever of its targets is still open.
+for idx in reversed(idxs):
+    row = rows[idx]
+    for tok in row["targets"]:
+        if not oc.claim_is_closed(rows, idx, row["by"], tok):
+            # #631: the age bound. Rows are scanned newest-first, so the FIRST
+            # open candidate is also the YOUNGEST open one — if it is already
+            # over the bound, every older candidate is too, and the honest
+            # answer is a refusal rather than a walk down to an even staler row.
+            if max_age_d > 0:
+                age = _age_days(row["t"])
+                if age is None:
+                    sys.stderr.write(
+                        "cannot DATE the newest open claim (#%d by %s, t=%r), so its age is UNDECIDABLE and an Issue-Ref cannot be derived from it safely\n"
+                        % (tok, uuid, row["t"]))
+                    sys.stderr.write(
+                        "pass --issue <N> to name the intended issue, or --session-id-only if this commit belongs to none\n")
+                    sys.exit(3)
+                if age > max_age_d:
+                    sys.stderr.write(
+                        "the newest open claim is STALE — #%d was claimed %.1f days ago (bound %.1f d, %.0f h): %s\n"
+                        % (tok, age, max_age_d, max_age_d * 24.0, row["what"]))
+                    sys.stderr.write(
+                        "refusing to derive an Issue-Ref from an abandoned claim; pass --issue <N> to name the intended issue, or --session-id-only if this commit belongs to none\n")
+                    sys.exit(3)
+            sys.stdout.write("%d\n" % tok)
+            sys.exit(0)
+
+row = rows[idxs[-1]]
+if not row["targets"]:
+    sys.stderr.write("latest claim by %s carries no numeric issue ref: %s\n"
+                     % (uuid, row["what"]))
+    sys.exit(3)
+older = len(idxs) - 1
+sys.stderr.write(
+    "latest claim by %s is CLOSED (#%s — a done/close row for it follows): %s\n"
+    % (uuid, ", #".join(str(t) for t in row["targets"]), row["what"]))
+if older:
+    sys.stderr.write(
+        "%d older claim row(s) by %s were also scanned and none is open\n"
+        % (older, uuid))
+sys.exit(3)
+' "$_UNIFIED" "$_OC_DIR" "$1" "${2:-0}"
+  local _purc=$?
+  _cleanup_unified
+  return $_purc
+}
+
+cmd_claim() { # oc-ledger claim [<uuid>] <issue-number|#N> [text...] | oc-ledger claim --issue <N> [--what <text>]
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger claim [<uuid>] <issue-number|#N> [text...] | oc-ledger claim --issue <N> [--what <text>]"; exit 0 ;; esac
+  local by="" issue="" what=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by|--session|--actor) by="${2:-}"; shift 2 ;;
+      --issue|--ref) issue="${2:-}"; shift 2 ;;
+      --what|--note|--task|--title) what="${2:-}"; shift 2 ;;
+      -h|--help) echo "usage: oc-ledger claim [<uuid>] <issue-number|#N> [text...] | oc-ledger claim --issue <N> [--what <text>]"; exit 0 ;;
+      *)
+        if [ -z "$issue" ] && [[ "$1" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+          by="$1"
+        elif [ -z "$issue" ] && [[ "$1" =~ ^#?[0-9]+$ ]]; then
+          issue="${1#\#}"
+        elif [ -z "$what" ]; then
+          what="$1"
+        else
+          what="$what $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+  [ -n "$issue" ] || die 2 "usage: oc-ledger claim [<uuid>] <issue-number|#N> [text...] (numeric issue ref required)"
+  # Defect #335: the prefix test must BE the consumer's predicate, not a
+  # substring search. The old `case *"#$issue"*` fired on a mention ANYWHERE in
+  # the prose, so `claim --issue 299 --what "fixed #294 ... (#299)"` suppressed
+  # the prefix and the row's LEADING cluster (#294) became the claim's target —
+  # the explicit flag lost to a passing mention, and oc-commit then derived
+  # Issue-Ref #294 from that row and cross-posted onto a done issue. Suppress
+  # the prefix ONLY when the prose already LEADS with a cluster naming $issue,
+  # tested with the single owner (oc_claims.primary_issue_tokens) that every
+  # consumer reads the row with. Accept `--issue #N` too: a stray '#' would
+  # otherwise build "CLAIM ##N" and dodge the membership test.
+  issue="${issue#\#}"
+  local full_what
+  if [ -n "$what" ]; then
+    if _primary_issue_tokens "$what" | grep -qx "$issue"; then
+      full_what="$what"
+    else
+      full_what="CLAIM #$issue — $what"
+    fi
+  else
+    full_what="CLAIM #$issue"
+  fi
+  local stamp_args=("claim" "$full_what")
+  [ -n "$by" ] && stamp_args+=(--by "$by")
+  cmd_stamp "${stamp_args[@]}"
+}
+
+cmd_claim_ref() { # oc-ledger claim-ref <uuid> [--open] — print the #N from the
+  # worker's latest claim event (E2 finding 4, v0.4.72; the PLAIN form's
+  # derivation is shared with cmd_confirm via _latest_claim_issue since v0.4.77).
+  # --open (#335): the only ref a consumer may safely ACT on (oc-commit's
+  # Issue-Ref + its post-commit comment). PREDICATE (#492): it answers with the
+  # #N of the lane's NEWEST CLAIM ROW THAT IS STILL OPEN — NOT the #N of its
+  # newest claim row. A lane that has closed a newer claim therefore still
+  # resolves to an older open one; rc 3 means NO claim row by that lane is open
+  # (or none of them carries an issue ref), never merely "the latest one is
+  # closed".
+  # Without --open the verb answers with the latest claim row whether open or
+  # closed.
+  # Pure read: no existence check, no ledger mutation. rc 0 + "#N" | rc 3.
+  local open=0 uuid="" max_age_d=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --open) open=1; shift ;;
+      # #631: bound the AGE of the claim the derivation may act on. 0/absent =
+      # unbounded (the plain read); a positive value refuses rather than
+      # answering when the newest open claim is older than that.
+      --max-age-d) max_age_d="${2:-}"; [ -n "$max_age_d" ] || die 2 "claim-ref: --max-age-d needs a value (days; 0 = unbounded)"; shift 2 ;;
+      --max-age-d=*) max_age_d="${1#--max-age-d=}"; shift ;;
+      -h|--help) echo "usage: oc-ledger claim-ref <uuid> [--open] [--max-age-d <days>]   (--open = the lane's NEWEST claim row that is STILL OPEN; --max-age-d > 0 additionally REFUSES when that claim is older than <days> (#631). rc 3 = no open claim, or one too old to act on. The composed '<role> <uuid>' is also accepted; for an ISSUE number use: oc-ledger claims <N>)"; exit 0 ;;
+      --*) die 2 "claim-ref: unknown flag '$1'" ;;
+      *) [ -z "$uuid" ] || die 2 "claim-ref: unexpected extra argument '$1'"; uuid="$1"; shift ;;
+    esac
+  done
+  [ -n "$uuid" ] || die 2 "usage: oc-ledger claim-ref <uuid> [--open]"
+  # #631: the bound must be a NUMBER. A typo (`--max-age-d 7d`) used to be
+  # accepted by this parse and then read by the helper as 0 = UNBOUNDED, so a
+  # caller who believed they had a bound had none — an accepted-but-inert flag
+  # is indistinguishable from an honoured one, which is the exact class #631
+  # fixes. Refuse rc 2 instead of quietly answering without the bound.
+  case "$max_age_d" in
+    ''|*[!0-9.]*|*.*.*) die 2 "claim-ref: --max-age-d must be a number of days (got '$max_age_d'; 0 = unbounded)" ;;
+  esac
+  # #441 / Design Q shape 1 (Decision 15, self-ruled): enforce the DOMAIN the
+  # usage line declares. Only PRESENCE was checked before, so any non-empty
+  # string was taken as the actor and _latest_claim_issue's free substring did
+  # the rest — two plain issue numbers failed in OPPOSITE directions, rc 0 and
+  # rc 3, so a caller could not learn the failure MODE from the argument and a
+  # typo was reported as a fact about the ledger:
+  #   claim-ref 440  -> 402, rc 0   (440 sits inside 52058a75-e94b-4400-9e07-…)
+  #   claim-ref 2fae -> 436, rc 0   (a four-character fragment)
+  #   claim-ref 441  -> 393, rc 0   (this defect's OWN issue number)
+  #   claim-ref 438  -> "no claim event by 438", rc 3
+  # ACCEPTED: a canonical uuid, or the M2-24 composed '<role> <uuid>' form that
+  # derive_by EMITS (round-trip guard: the TRAILING token must be a uuid).
+  # REJECTED, rc 2, naming the verb that DOES take an issue number.
+  # The match itself is deliberately NOT touched (shape 1): a full 36-character
+  # uuid cannot substring-lie, and the composed form still needs the substring.
+  case "$uuid" in
+    *" "*) _is_uuid "${uuid##* }" \
+             || die 2 "claim-ref: '$uuid' is neither a session uuid nor the '<role> <uuid>' form — usage: oc-ledger claim-ref <uuid> [--open]. To resolve an ISSUE number, run: oc-ledger claims <N>" ;;
+    *) _is_uuid "$uuid" \
+         || die 2 "claim-ref: '$uuid' is not a session uuid — the ledger is addressed by session uuid, and a bare issue number or a fragment substring-matches a FOREIGN lane and answers with ITS claim. Usage: oc-ledger claim-ref <uuid> [--open]. To resolve an ISSUE number, run: oc-ledger claims <N>" ;;
+  esac
+  local out
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  if [ "$open" = 1 ]; then
+    # 2>&1: the helper writes its DIAGNOSTIC to stderr and nothing to stdout on
+    # failure, so a stdout-only capture made this die print a dangling
+    # "claim-ref --open:" with no reason after it. Merging keeps one message.
+    out="$(_latest_open_claim_issue "$uuid" "$max_age_d" 2>&1)" || die 3 "claim-ref --open: $out"
+  else
+    out="$(_latest_claim_issue "$uuid" 2>&1)" || die 3 "claim-ref: $out"
+  fi
+  echo "$out"
+}
+
+cmd_confirm() { # oc-ledger confirm <uuid> [--gh <cmd>] — verify the worker's
+  # latest claim against the live fork, then flip workers[].confirmed=true.
+  # Lens-C gap closed: until today NO verb flipped confirmed — "confirmation"
+  # was an unsanctioned hand-edit of the ledger JSON.
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger confirm <uuid> [--gh <cmd>]"; exit 0 ;; esac
+  local uuid="" gh="${GH_BIN:-gh}"
+  while [ $# -gt 0 ]; do case "$1" in
+    --gh) gh="${2:-}"; [ -n "$gh" ] || die 2 "confirm: --gh needs a command"; shift 2 ;;
+    --*) die 2 "confirm: unknown flag '$1'" ;;
+    *) if [ -z "$uuid" ]; then uuid="$1"; fi; shift ;;
+  esac; done
+  [ -n "$uuid" ] || die 2 "usage: oc-ledger confirm <uuid> [--gh <cmd>]"
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  jq_ledger -e --arg u "$uuid" '.workers[] | select(.uuid==$u)' >/dev/null 2>&1 \
+    || die 3 "confirm: unknown worker uuid $uuid"
+  # claim->issue derivation delegated to the single owner (E4, v0.4.77)
+  local out issue
+  out="$(_latest_claim_issue "$uuid")" || die 3 "confirm: $out"
+  issue="$out"
+  # live issue existence check, against ALL home trackers (injectable gh shim
+  # keeps selftest offline). v0.4.284: a claim may name any of the three, so
+  # resolvable in ANY passes. Fail-safe in the direction that matters -- a
+  # confirm that cannot find the issue ANYWHERE is still refused, never taken.
+  local _r _found=0
+  for _r in ${HOME_REPOS[@]+"${HOME_REPOS[@]}"}; do
+    "$gh" issue view "$issue" --repo "$_r" --json number >/dev/null 2>&1 \
+      && { _found=1; break; }
+  done
+  [ "$_found" = 1 ] || die 3 "confirm: issue #$issue not resolvable on any home tracker"
+  local t role by n; t="$(now_iso)"
+  # D-2 (HQ d72bd52d, 2026-09-12): `by` must CONTAIN the uuid, because
+  # cmd_claims links a closure with `(.value.by // "") | contains($u)`.
+  # The composed "<role> <uuid>" form satisfies it and stays readable.
+  role="$(jq_ledger -r --arg u "$uuid" '[.workers[] | select(.uuid==$u)][0].role // ""' 2>/dev/null || true)"
+  by="$uuid"; [ -n "$role" ] && by="$role $uuid"
+  _confirm_locked() {
+    # D-2: the top-level .events row is the one cmd_claims SCANS — without it
+    # `confirm` flips .confirmed but the claim still reads OPEN forever.
+    n=$(( $(max_n) + 1 ))
+    atomic_jq --arg u "$uuid" --arg t "$t" --arg i "$issue" --arg by "$by" --arg n "$n" \
+      '(.workers[] | select(.uuid==$u) | .confirmed) = true
+       | (.workers[] | select(.uuid==$u) | .events) += [{t: $t, kind: "confirm", issue: ("#"+$i)}]
+       | .events += [{n: ($n|tonumber), t: $t, by: $by, kind: "confirm",
+                      what: ("CONFIRM #" + $i + " — claim verified live (workers[].confirmed=true)")}]
+       | .updated_at = $t' || return $?
+    echo "confirmed: $uuid (claim #$issue verified live)"
+    git_state_commit "ledger confirm $uuid (#$issue)"
+  }
+  with_lock _confirm_locked
+}
+
+cmd_lessons() { # oc-ledger lessons — H-2 (v0.4.116): extract lesson/incident rows
+  # by class. Usage: oc-ledger lessons [--kind <lesson|incident|all>] [--class <text>]
+  # Prints one line per matching event: "n=<idx>\t<kind>\t<t>\t<what-first-160>".
+  # --class is a case-insensitive substring match over the row text (H-1/H-2 class
+  # extraction: uncoded-lesson sweep). Read-only, no lock. rc 3 = ledger unreadable.
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger lessons [--kind <lesson|incident|all>] [--class <text>]"; exit 0 ;; esac
+  local kind="all" cls=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -h|--help) echo "usage: oc-ledger lessons [--kind <lesson|incident|all>] [--class <text>]"; exit 0 ;;
+      --kind) [ $# -ge 2 ] || die 2 "lessons: --kind needs a value"; kind="$2"; shift 2 ;;
+      --class) [ $# -ge 2 ] || die 2 "lessons: --class needs a value"; cls="$2"; shift 2 ;;
+      *) die 2 "lessons: unknown arg '$1' (usage: oc-ledger lessons [--kind <lesson|incident|all>] [--class <text>])" ;;
+    esac
+  done
+  case "$kind" in lesson|incident|all) ;; *) die 2 "lessons: --kind must be lesson|incident|all (got '$kind')" ;; esac
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # F-4 (v0.4.119): --class is a SUBSTRING match (header doc was already right;
+  # the old test($cls;"i") compiled it as regex — invalid regex hit jq's
+  # stderr-to-/dev/null + unconditional exit 0 = silent false-clean). Lowercase
+  # both sides + contains; jq rc is captured — jq failure dies rc 3.
+  local lcls
+  lcls="$(printf '%s' "$cls" | tr 'A-Z' 'a-z')"
+  local out rc
+  out="$(jq_ledger -r --arg kind "$kind" --arg lcls "$lcls" \
+    '.events | to_entries[]
+     | select(($kind == "all") or ((.value.kind // "") == $kind))
+     | select(($lcls == "") or (((.value.what // "") | ascii_downcase) | contains($lcls)))
+     | (["n=" + (.key | tostring), (.value.kind // "?"), (.value.t // "?"), ((.value.what // "") | .[0:160])] | join("\t"))')"
+  rc=$?
+  [ $rc -eq 0 ] || die 3 "lessons: jq failed (rc $rc) — ledger unreadable or query error"
+  [ -n "$out" ] && printf '%s\n' "$out"
+  exit 0
+}
+
+cmd_claims() { # oc-ledger claims [<N>] — dispatch=verify-unclaimed backend (#129
+  # family, v0.4.97, optimized v0.4.182; canonical predicate #313): print every
+  # OPEN claim-ref on issue #N (or ALL open claims if omitted) from the ledger
+  # events, one line per claim: "<uuid>\t<t>\t<what>". Empty output + rc 0 =
+  # clean (unclaimed) — the grep-lane hand query, mechanized. rc 3 = ledger
+  # unreadable. Read-only, no mutation, no lock.
+  #
+  # The closure predicate lives in tools/lib/oc_claims.py — THE single
+  # implementation, shared with oc-harvest-dispatch (#305), oc-issue-dispatch
+  # (#309), oc-roster and the sweep-closed-claims verb below (#314). Do NOT
+  # re-inline a predicate here: four inlined copies had drifted apart (two
+  # extracted issue tokens as ints, two as strings, so one copy's comparison
+  # was forever-False; only one asked WHO wrote the closing row, so a foreign
+  # lane's prose mention of `#N` released a live claim — #305) and disagreed
+  # about the same ledger.
+  case "${1:-}" in -h|--help) echo "usage: oc-ledger claims [<issue-number|#N>]"; exit 0 ;; esac
+  local target=""
+  if [ -n "${1:-}" ]; then
+    target="${1#\#}"
+    case "$target" in ''|*[!0-9]*) die 2 "claims: issue number must be numeric (got '$1')" ;; esac
+  fi
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+
+  _prepare_unified || die 3 "claims: cannot load ledger"
+  python3 -c '
+import sys, os, json
+
+# No .pyc next to the module: the shared checkout must stay byte-identical, and
+# a stale __pycache__ entry for the file that governs claim closure is a hazard
+# not worth the import speedup (mtime granularity + equal size can serve it).
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(sys.argv[3], "lib"))
+import oc_claims as oc
+
+try:
+    with open(sys.argv[1]) as f:
+        events = json.load(f).get("events", [])
+except Exception as e:
+    sys.stderr.write("failed to read ledger: %s\n" % e)
+    sys.exit(3)
+
+for claim in oc.open_claims(events, sys.argv[2] or None):
+    sys.stdout.write("%s\t%s\t%s\n" % (claim["by"], claim["t"], claim["what"]))
+' "$_UNIFIED" "$target" "$_OC_DIR"
+  local _purc=$?
+  _cleanup_unified
+  exit $_purc
+}
+cmd_sweep_closed_claims() { # oc-ledger sweep-closed-claims [--dry-run]
+  # Release OPEN claim rows whose issue is CLOSED on a home tracker and OPEN on
+  # none (v0.4.284 -- three trackers, overlapping number spaces; see the probe
+  # below for the fail-safe rule).
+  #
+  # #485: the verdict is a claim about a POPULATION, so the population is read in
+  # FULL. Only the CLOSED list was fetched before, which made a token absent from
+  # it indistinguishable from a token whose issue is genuinely OPEN — and also
+  # from a token naming an issue that does not exist on ANY home tracker, which
+  # is the shape that printed "All open claims map to OPEN issues." for 15 days
+  # while n=1678 (a slug-qualified ref read in the wrong space) stayed OPEN against
+  # work that had shipped. That false clean was found by a hand census, not by
+  # the tool. Every token now lands in exactly one of three classes: CLOSED
+  # (released), OPEN (the intended clean case), UNRESOLVED (reported, never
+  # released, and it WITHHOLDS the clean verdict). The summary line carries the
+  # four counts so the verdict can be checked against the population it names.
+  #
+  # #314: this verb had NO WRITE PATH. `--dry-run` was parsed, passed to the
+  # embedded python, and the live branch printed the same scan and `exit 0` — so
+  # the flag changed nothing, `dry_run` was a dead variable, and the selftest
+  # pinned the no-op as correct behaviour. A claim on a shipped-and-closed issue
+  # therefore stayed OPEN until its claimant hand-stamped a redundant closure.
+  #
+  # Closure predicate = tools/lib/oc_claims.py (canonical, #313) — the same
+  # implementation `claims` above and every other consumer uses. A claim is
+  # released by ONE `unclaim` row ADDRESSED to the issue (`#N — closed-issue
+  # stale claim sweep`): signal 2 of the canonical rule, whose author is by
+  # design NOT the claimant. One row per CLOSED issue therefore releases every
+  # lane's claim on it, so the plan is DEDUPED by issue number.
+  #
+  # A `gh` failure is LOUD (rc 4), never a silent clean: an empty closed_map
+  # from a failed probe used to print "All open claims map to OPEN issues." —
+  # absence read as a verdict (see the probe-vs-silence rule in AGENTS.md).
+  local dry_run=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry_run=1; shift ;;
+      -h|--help) echo "usage: oc-ledger sweep-closed-claims [--dry-run]"; exit 0 ;;
+      *) die 2 "sweep-closed-claims: unknown argument '$1'" ;;
+    esac
+  done
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+
+  local pairs unres
+  _prepare_unified || die 3 "sweep-closed-claims: cannot load ledger"
+  pairs="$(python3 -c '
+import sys, os, json, subprocess
+
+sys.dont_write_bytecode = True   # keep the shared checkout byte-identical (see cmd_claims)
+sys.path.insert(0, os.path.join(sys.argv[2], "lib"))
+import oc_claims as oc
+
+try:
+    with open(sys.argv[1]) as f:
+        events = json.load(f).get("events", [])
+except Exception as e:
+    sys.stderr.write("failed to read ledger: %s\n" % e)
+    sys.exit(3)
+
+open_claims = oc.open_claims(events)
+if not open_claims:
+    sys.exit(0)
+
+# #485: the closed list ALONE cannot decide the verdict. A token absent from it
+# is indistinguishable from a token whose issue is genuinely OPEN -- and also
+# from a token naming an issue that does not exist in this repo, which is the
+# case that printed the clean verdict for 15 days (n=1678 named an
+# UPSTREAM-qualified ref read in fork space). So BOTH states are read and every
+# token lands in exactly one of three classes: CLOSED (release), OPEN (the
+# intended clean case), or UNRESOLVED (report it -- never silently count it as
+# open).
+# v0.4.284: THREE home trackers, and their number spaces OVERLAP. Probe all
+# three in both states. A token is CLOSED only when it is closed on a home repo
+# and OPEN ON NONE; if ANY home repo has it open it stays OPEN, so the ambiguity
+# can only resolve toward "still open" -- the direction that never writes a
+# false unclaim.
+HOME_REPOS = ("leshchenko1979/opencrabs",
+              "leshchenko1979/opencrabs-dev-factory",
+              "opencrabs/opencrabs")
+
+def probe(state):
+    """number -> {"title": str, "repos": [repo, ...]}
+
+    #38: the three home trackers have OVERLAPPING number spaces, so one number
+    can exist on more than one of them with a DIFFERENT title on each. The
+    claim token it is matched against is a bare integer -- parse_issue_ref_value
+    (tools/lib/oc_claims.py) keeps the number and DISCARDS the slug -- so the
+    token cannot say which tracker it means. The first-probed repo title is
+    therefore kept for display only, and the repos a number was seen on ride
+    beside it so the emit can withhold a title the token cannot support.
+    """
+    out = {}
+    for repo in HOME_REPOS:
+        res = subprocess.run(
+            ["gh", "issue", "list", "--repo", repo,
+             "--state", state, "--limit", "1000", "--json", "number,title"],
+            capture_output=True, text=True)
+        if res.returncode != 0:
+            sys.stderr.write("gh issue list --repo %s --state %s failed (rc %d): %s\n"
+                             % (repo, state, res.returncode,
+                                (res.stderr or "").strip()[:200]))
+            sys.exit(4)
+        try:
+            for i in json.loads(res.stdout):
+                ent = out.setdefault(i["number"],
+                                     {"title": i.get("title", ""), "repos": []})
+                ent["repos"].append(repo)
+        except Exception as e:
+            sys.stderr.write("failed to parse %s issues (%s): %s\n"
+                             % (repo, state, e))
+            sys.exit(4)
+    return out
+
+
+closed_map = probe("closed")
+open_map = probe("open")
+
+n_closed = n_open = 0
+unresolved = []
+for claim in open_claims:
+    for tok in claim["tokens"]:
+        # OPEN WINS: tested FIRST, so a token open on ANY home repo is never
+        # released on the strength of a same-numbered CLOSED issue elsewhere.
+        if tok in open_map:
+            n_open += 1
+        elif tok in closed_map:
+            n_closed += 1
+            # #38: print a title ONLY when the number was seen on exactly one
+            # home tracker. On an overlap the bare token names no repo, so the
+            # first-probed repo title is a specificity the claim does not
+            # carry -- the release verdict is still correct (closed everywhere,
+            # open nowhere) but the title is withheld and the ambiguity named.
+            ent = closed_map[tok]
+            repos = ent["repos"]
+            if len(repos) == 1:
+                label = (ent["title"] or "")[:60]
+            else:
+                label = ("no single title — #%d exists on %d home trackers (%s)"
+                         % (tok, len(repos), ", ".join(repos)))
+            sys.stdout.write("C\t%d\t%s\t%s\n"
+                             % (tok, claim["by"], label))
+        else:
+            unresolved.append((tok, claim["by"], claim["what"][:60]))
+for tok, by, what in unresolved:
+    sys.stdout.write("U\t%d\t%s\t%s\n" % (tok, by, what))
+# The verdict is a CLAIM ABOUT A POPULATION, so the population travels with it.
+sys.stdout.write("S\t%d\t%d\t%d\t%d\n"
+                 % (len(open_claims), n_open, n_closed, len(unresolved)))
+' "$_UNIFIED" "$_OC_DIR" 2>"${TMPDIR:-/tmp}/oc-sweep-closed-claims.$$.err")"
+  rc=$?
+  _cleanup_unified
+  [ $rc -eq 0 ] || die 3 "sweep-closed-claims: scan failed (rc $rc) — ledger or GitHub probe"
+
+  local counts
+  counts="$(printf '%s\n' "$pairs" | awk -F'\t' '$1=="S" {print $2" "$3" "$4" "$5}')"
+  unres="$(printf '%s\n' "$pairs" | awk -F'\t' '$1=="U" {print $2"\t"$3"\t"$4}')"
+  pairs="$(printf '%s\n' "$pairs" | awk -F'\t' '$1=="C" {print $2"\t"$3"\t"$4}')"
+  rm -f "${TMPDIR:-/tmp}/oc-sweep-closed-claims.$$.err"
+
+  # #485: report the UNRESOLVABLE class before any verdict. A token that names
+  # no fork issue in EITHER state is neither a stale claim nor a live one: it is
+  # a claim this verb cannot judge, and counting it as open is what made the
+  # clean verdict a lie.
+  local n_unres=0
+  if [ -n "$unres" ]; then
+    n_unres="$(printf '%s\n' "$unres" | grep -c .)"
+    echo "UNRESOLVED: $n_unres claim token(s) name no issue on any home tracker (neither OPEN nor CLOSED):"
+    printf '%s\n' "$unres" | awk -F'\t' \
+      '{ printf "  Issue #%s is on no home tracker — claimed by %s (%s)\n", $1, $2, $3 }'
+    echo "  These claims are NOT released and NOT clean. A common cause is a"
+    echo "  reference to a repository we do not track (a third-party slug, or a"
+    echo "  tracker added after this list was last updated): the number resolves"
+    echo "  there, never here."
+  fi
+
+  if [ -z "$pairs" ]; then
+    if [ -n "$unres" ]; then
+      exit 0
+    fi
+    echo "All open claims map to OPEN issues ($counts = claim rows, open tokens, closed tokens, unresolvable tokens)."
+    exit 0
+  fi
+
+  local issues n_claims n_issues
+  issues="$(printf '%s\n' "$pairs" | cut -f1 | sort -n -u)"
+  n_claims="$(printf '%s\n' "$pairs" | grep -c .)"
+  n_issues="$(printf '%s\n' "$issues" | grep -c .)"
+  echo "Found $n_claims open claim(s) across $n_issues CLOSED issue(s):"
+  printf '%s\n' "$pairs" | awk -F'\t' \
+    '{ printf "  Issue #%s (CLOSED: %s) claimed by %s\n", $1, $3, $2 }'
+
+  if [ "$dry_run" = 1 ]; then
+    echo "--dry-run: no ledger rows written. Re-run without --dry-run to release these claims."
+    exit 0
+  fi
+
+  local iss released=0
+  for iss in $issues; do
+    cmd_stamp unclaim "#$iss — closed-issue stale claim sweep" \
+      || die 4 "sweep-closed-claims: unclaim stamp failed for #$iss"
+    released=$(( released + 1 ))
+  done
+  echo "Released $released closed issue(s) — one unclaim row addressed to each."
+  exit 0
+}
+
+# ---- ship-audit tail-chain (C-F4, v0.4.71) ------------------------------------
+# Tail-chains the deploy-journal orphan audit onto the Duty-3/4 sweep cadence:
+# rc1 = findings (orphaned/failed legs) -> loud stderr pointer; the audit's own
+# invocation is journaled by lib/oc-log.sh. rc2/other = fixture/env, ignored.
+# OC_SHIP_AUDIT_CHAIN=0 disables (selftest/battery fixtures).
+oc_ship_audit_chain() {
+  [ "${OC_SHIP_AUDIT_CHAIN:-1}" = "1" ] || return 0
+  local AUDIT RC=0
+  AUDIT="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/oc-audit-ship"
+  [ -x "$AUDIT" ] || return 0
+  "$AUDIT" --grace 120 >/dev/null 2>&1 || RC=$?
+  if [ "$RC" -eq 1 ]; then
+    echo "oc-ledger: SHIP-AUDIT rc=1 - ORPHANED/failed deploy legs detected; run: tools/ship/oc-audit-ship --grace 120" >&2
+  fi
+  return 0
+}
+
+# ---- roster (read-only; defect fix 2026-09-11, lane d18ce16a) -----------------
+cmd_roster() { # oc-ledger roster [--role <substr>] [--live] [--json]
+  # role -> FULL uuid resolution — the backend the skill already promised.
+  # The skill cites `oc-ledger roster --live --role <role>` as THE dynamic way to
+  # resolve a lane uuid (editor.md §Telegram surface law, toolsmith.md
+  # §Tool-problem reports, hq.md §Duty 2), but the verb NEVER EXISTED: `oc-ledger
+  # roster` fell through to the usage branch (rc 2), so a lane following its own
+  # skill either fell back to session_search or HAND-ASSEMBLED a uuid — the exact
+  # phantom class
+  # (n=2221 frankenstein id) the full-uuid-from-a-same-turn-receipt law exists
+  # to prevent. READ-ONLY: no lock, no mutation, never journals a write.
+  #   --role <substr>  case-insensitive substring over .workers[].role
+  #   --live           keep only rows whose uuid is a LIVE session (profile
+  #                    session DB, read-only, ~0s — same source as
+  #                    oc-notify-fanout law 3). OC_LEDGER_DB overrides the path.
+  #   --include-retired  ALSO list rows whose .state == "RETIRED". Default
+  #                      EXCLUDES them (law 9, owner order 2026-09-12): a
+  #                      retired lane must never be a dispatch target, and a
+  #                      role-to-uuid resolver that returns one is the same
+  #                      defect from the resolution side — e756b84b
+  #                      (retired_compiler) was FIRST in two HQ fanout waves
+  #                      and resolved via `roster --live --role` until this
+  #                      fix. Legacy rows written before `retire` learned to
+  #                      REMOVE (v1.3, 2026-09-11) still sit in .workers[].
+  #   --json           JSON array of {uuid,role,topic_id,feature,last_acked}
+  # Output (TSV, ledger order): uuid <TAB> role <TAB> topic <TAB> feature <TAB> ack
+  # rc 0 rows printed · 1 NO-MATCH (a VERDICT, deliberately not a silent empty:
+  # a caller that gets 1 must fall back to session_search, NEVER assemble an id)
+  # · 2 usage · 3 ledger or session DB unreadable.
+  local role="" live=0 json=0 include_retired=0 reconcile=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) [ -n "${2:-}" ] || die 2 "roster: --role needs a value"; role="$2"; shift 2 ;;
+      --live) live=1; shift ;;
+      --include-retired) include_retired=1; shift ;;
+      --reconcile) reconcile=1; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: oc-ledger roster [--role <substr>] [--live] [--reconcile] [--include-retired] [--json]"; exit 0 ;;
+      *) die 2 "roster: unknown arg '$1' (usage: oc-ledger roster [--role <substr>] [--live] [--reconcile] [--include-retired] [--json])" ;;
+    esac
+  done
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+
+  local livef="" livejson="{}"
+  if [ "$live" -eq 1 ]; then
+    local db; db="${OC_LEDGER_DB:-$(dirname "$(STATE_DIR)")/opencrabs.db}"
+    [ -f "$db" ] || die 3 "roster --live: session DB not found: $db (override with OC_LEDGER_DB)"
+    livef="$(mktemp)" || die 3 "roster --live: mktemp failed"
+    # archived_at IS NULL AND non-subagent — the oc-notify-fanout law-3 query,
+    # one read-only handle; a DB that will not answer is a HARD fail (rc 3),
+    # never an empty roster that reads as "no such lane".
+    # The reader is tools/lib/oc_sqlite, NOT the `sqlite3` CLI (#371). Gating on
+    # that binary made this verb — the one every lane uses to resolve a role to a
+    # session uuid — fail rc 3 against a perfectly readable DB, because until
+    # 2026-09-19 the CLI was not on this box at all (installed that day on owner
+    # order; the absence is history, the routing rule is not). The helper reads
+    # through python3's built-in sqlite3 module: the same engine, no PATH
+    # assumption.
+    #
+    # TOPIC DERIVATION (2026-09-19, Toolsmith). The liveness predicate still
+    # comes from `sessions`, but the row now also carries the session's LIVE
+    # topic from session_bindings.thread_id, because that column — written by
+    # the daemon at bind time — IS the delivery route, while the ledger's
+    # workers[].topic_id is only a copy stamped at enroll/promote time and goes
+    # stale the moment a topic is REASSIGNED to another lane. Measured over the
+    # 32 live-bound workers: 28 matched, 4 drifted (212b3c83 29947->36841,
+    # a5b34466 30220->30517, and two enrolled with no topic at all) — 12.5%,
+    # and precisely the lanes that MOVED, which is where a wrong topic does the
+    # most damage. The ledger field stays as the FALLBACK for rows with no live
+    # binding (see the jq below), so the non-live path is unchanged.
+    "$_OC_DIR/lib/oc_sqlite" "file:${db}?mode=ro" \
+      "SELECT s.id, COALESCE(b.thread_id, '') FROM sessions s LEFT JOIN session_bindings b ON b.session_id = s.id WHERE s.archived_at IS NULL AND (s.title IS NULL OR s.title NOT LIKE 'subagent:%');" \
+      > "$livef" 2>/dev/null || { rm -f "$livef"; die 3 "roster --live: session DB unreadable: $db"; }
+    livejson="$(jq -Rn '[inputs | split("|") | {key: .[0], value: (.[1] // "")}] | from_entries' < "$livef")" \
+      || { rm -f "$livef"; die 3 "roster --live: live session map unparseable: $db"; }
+  fi
+
+  local lrole; lrole="$(printf '%s' "$role" | tr 'A-Z' 'a-z')"
+  # Legacy role alias (ontology fold 2026-09-11, commit c586e61f): the HQ role
+  # string was `hq-supervisor`, now `hq`. tools.log shows
+  # `roster --live --role hq-supervisor` run at 11:51:28Z — MINUTES before the
+  # fold was announced — so without this alias that query returns rc 1
+  # NO-MATCH, which a lane reads as "HQ is unrostered": a false negative in
+  # exactly the place lanes check HQ's existence. Twin of canon_role() in
+  # oc-notify-fanout; BOTH carry a selftest asserting the legacy string still
+  # resolves, so the pair cannot drift apart.
+  [ "$lrole" = "hq-supervisor" ] && lrole="hq"
+  local sel rc
+  # $livejson maps a live session uuid -> its live thread_id ("" when the
+  # session has no binding). With --live it is BOTH the liveness filter and the
+  # topic source; without --live it is empty and every row passes, keeping the
+  # historical (ledger-order, stored-topic) output byte-identical.
+  sel="$(jq_ledger -r --arg lr "$lrole" --argjson ir "$include_retired" \
+    --argjson lv "$live" --argjson live "$livejson" \
+    '.workers[]?
+     | select(($ir == 1) or ((.state // "") != "RETIRED"))
+     | select(($lr == "") or (((.role // "") | ascii_downcase) | contains($lr)))
+     | . as $w
+     | ($w.uuid // "") as $u
+     | ($live[$u] // null) as $lt
+     | select(($lv == 0) or ($lt != null))
+     | [$u, ($w.role // "-"),
+        (if ($lt != null and $lt != "") then $lt
+         else (($w.topic_id // "-") | tostring) end),
+        (($w.feature // "-") | tostring | .[0:60]), ($w.last_acked.version // "-")]
+     | @tsv')"
+  rc=$?
+  # RETIRED-exclusion diagnostics (law 9, defect #6, 2026-09-12): when the
+  # default filter excludes rows, a rc-1 NO-MATCH must say whether retirement
+  # is the reason, so a lane does not read it as "no such lane ever existed".
+  local retired_n=0
+  if [ "$include_retired" -eq 0 ]; then
+    retired_n="$(jq_ledger -r --arg lr "$lrole" \
+      '[.workers[]? | select((.state // "") == "RETIRED")
+        | select(($lr == "") or (((.role // "") | ascii_downcase) | contains($lr)))] | length' 2>/dev/null)" || retired_n=0
+    case "$retired_n" in ''|*[!0-9]*) retired_n=0 ;; esac
+  fi
+  [ $rc -eq 0 ] || { [ -n "$livef" ] && rm -f "$livef"; die 3 "roster: jq failed (rc $rc) — ledger unreadable or query error"; }
+
+  local out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # No liveness filter here: the jq above already applied it via $livejson,
+    # because the same map also supplies the topic.
+    out="${out}${line}"$'\n'
+  done <<< "$sel"
+  [ -n "$livef" ] && rm -f "$livef"
+
+  # ---- J-3 (c23): BINDING-MISMATCH detection -------------------------------
+  # triage.md Duty T6: "a lane that MOVES leaves its roster row unreconciled
+  # -- reconcile the row to its LIVE binding". The table above already PREFERS
+  # the binding, which is exactly why the drift is invisible in the output:
+  # the stored field goes stale the moment a topic is reassigned, and nothing
+  # re-derives it. enroll/promote write facts true at ONE instant. Measured
+  # cost: 4 of 32 live-bound workers had drifted (lesson n=8722; lanes
+  # 212b3c83, a5b34466, d5863180 -> cbdfde4a), each found by a lane reading
+  # two stores and comparing by eye. This is the detect half; the fix half
+  # already exists (retire / promote --topic).
+  if [ "$reconcile" -eq 1 ]; then
+    [ "$live" -eq 1 ] || die 2 "roster --reconcile requires --live (there is no binding to reconcile against otherwise)"
+    local drift_n=0
+    local dline
+    while IFS= read -r dline; do
+      [ -n "$dline" ] || continue
+      printf '%s\n' "$dline" >&2
+      drift_n=$(( drift_n + 1 ))
+    done <<< "$(jq_ledger -r --argjson ir "$include_retired" --argjson live "$livejson" --arg lr "$lrole" \
+      '.workers[]?
+       | select(($ir == 1) or ((.state // "") != "RETIRED"))
+       | select(($lr == "") or (((.role // "") | ascii_downcase) | contains($lr)))
+       | . as $w
+       | ($w.uuid // "") as $u
+       | ($live[$u] // null) as $lt
+       | select($lt != null and $lt != "")
+       | (($w.topic_id // "") | tostring) as $st
+       | select($st != "" and $st != $lt)
+       | "BINDING-MISMATCH uuid=\($u[0:8]) role=\($w.role // "-") stored=\($st) live=\($lt) -- reconcile with: oc-ledger promote \($u) \($w.role // "editor") --topic \($lt)"')"
+    if [ "$drift_n" -eq 0 ]; then
+      printf '%s\n' "roster --reconcile: 0 BINDING-MISMATCH over the live-bound rows" >&2
+    else
+      printf '%s\n' "roster --reconcile: ${drift_n} BINDING-MISMATCH row(s) -- each is a lane that MOVED and left its roster row unreconciled" >&2
+    fi
+  fi
+
+  [ -n "$out" ] || {
+    local lsfx=""; [ "$live" -eq 1 ] && lsfx=" (live sessions only)"
+    echo "roster: no row matches${role:+ role~'$role'}${lsfx} — fall back to session_search; NEVER hand-assemble a uuid" >&2
+    if [ "$include_retired" -eq 0 ] && [ "$retired_n" -gt 0 ]; then
+      echo "roster: ${retired_n} RETIRED row(s) match this role and are excluded by default — pass --include-retired to list them; a RETIRED row must never be dispatched" >&2
+    fi
+    exit 1
+  }
+
+  if [ "$json" -eq 1 ]; then
+    printf '%s' "$out" | jq -Rn '[inputs | split("\t")
+      | {uuid: .[0], role: .[1], topic_id: .[2], feature: .[3], last_acked: .[4]}]'
+  else
+    printf '%s' "$out"
+    # Dispatch-safety nudge: a filtered lookup that returns >1 row WITHOUT
+    # --live is the stale-row trap (an old lane shares the role string).
+    local nrows; nrows="$(printf '%s' "$out" | grep -c .)"
+    if [ -n "$role" ] && [ "$live" -eq 0 ] && [ "$nrows" -gt 1 ]; then
+      echo "roster: $nrows rows match role~'$role' — add --live to keep only live sessions before dispatching" >&2
+    fi
+  fi
+  exit 0
+}
+
+# ---- duplicates (read-only; c23 H-3) -----------------------------------------
+# H-3: "one fact, two rows". Two rows for one event double EVERY count that
+# reads the ledger and admit two distinct `by` identities for one act, which
+# breaks the attribution discipline the ledger exists to provide. Measured
+# specimens: byte-identical DONE rows (n=4144 / n=4146, 2m17s apart) and issue
+# #34 carrying two claim rows 73s apart with no unclaim between.
+# Read-only. It REPORTS; it never deletes -- a duplicate may carry the only
+# copy of a detail, so removal stays a human call (the class is known and
+# recurring: patrol row n=10298 recorded 13 phantom instances).
+cmd_duplicates() {
+  local json=0 kind=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --kind) [ -n "${2:-}" ] || die 2 "duplicates: --kind needs a value"; kind="$2"; shift 2 ;;
+      -h|--help) echo "usage: oc-ledger duplicates [--kind <k>] [--json]"; exit 0 ;;
+      *) die 2 "duplicates: unknown arg '$1' (usage: oc-ledger duplicates [--kind <k>] [--json])" ;;
+    esac
+  done
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  # Group by the FACT -- (kind, what) -- NOT by the actor. Grouping by
+  # (kind, by, what) finds nothing on the very specimens this verb exists for,
+  # because the two rows carry DIFFERENT `by` strings for one act; the actor
+  # difference is the second half of the defect, not a reason to exclude the
+  # row. Measured live 2026-09-25: 111 groups by (kind, what), of which the
+  # two classes below are reported separately.
+  local sel
+  sel="$(jq_ledger -r --arg k "$kind" '
+    [ .events[]?
+      | select($k == "" or ((.kind // .type // "") == $k))
+      | { k: (.kind // .type // "-"),
+          t: (.t // .ts // .at // ""),
+          b: (.by // .actor // .role // "-"),
+          w: ((.what // .text // .summary // .note // .detail // "") | tostring),
+          n: (.n // 0) } ]
+    | map(select(.w != ""))
+    | group_by([.k, .w])
+    | map(select(length > 1))
+    | .[]
+    | { kind: .[0].k, count: length,
+        bys: ([ .[].b ] | unique),
+        rows: [ .[].n ], ts: [ .[].t ],
+        what: (.[0].w | .[0:90]) }
+    | . + { cls: (if (.bys | length) == 1 then "DUPLICATE" else "IDENTITY-SPLIT" end) }
+  ')" || die 3 "duplicates: ledger unreadable"
+  # jq -s slurps the stream into ONE array; a per-input -r would print one
+  # count per row, and a multi-line value then fails the digit test below and
+  # reads as 0 -- a clean verdict over a non-empty result.
+  local ntot ndup nsplit
+  ntot="$(printf '%s' "$sel" | jq -s 'length' 2>/dev/null || echo 0)"
+  case "$ntot" in ''|*[!0-9]*) ntot=0 ;; esac
+  ndup="$(printf '%s' "$sel" | jq -s '[.[] | select(.cls=="DUPLICATE")] | length' 2>/dev/null || echo 0)"
+  case "$ndup" in ''|*[!0-9]*) ndup=0 ;; esac
+  nsplit="$(printf '%s' "$sel" | jq -s '[.[] | select(.cls=="IDENTITY-SPLIT")] | length' 2>/dev/null || echo 0)"
+  case "$nsplit" in ''|*[!0-9]*) nsplit=0 ;; esac
+  if [ "$json" -eq 1 ]; then
+    printf '%s' "$sel" | jq -s '.'
+  else
+    if [ "$ntot" -eq 0 ]; then
+      printf '%s\n' "duplicates: none -- no two rows share (kind, what)"
+    else
+      printf '%s\n' "$sel" | jq -r '"\(.cls) kind=\(.kind) count=\(.count) by=\(.bys|join(" | ")) rows=\(.rows|join(",")) ts=\(.ts|join(" ")) :: \(.what)"'
+      printf '%s\n' "duplicates: ${ntot} group(s) -- ${ndup} DUPLICATE (one fact, one actor, repeated) + ${nsplit} IDENTITY-SPLIT (one act, two distinct actor identities). Each doubles every count that reads the ledger; removal is a human call, because a duplicate may hold the only copy of a detail."
+    fi
+  fi
+  exit 0
+}
+
+# ---- events / tail (read-only; HQ request 2026-09-11) ------------------------
+cmd_events() { # oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T]
+  #                          [--json] [--full]
+  # Read the RECENT tail of the ledger. HQ playbooks kept assuming this verb
+  # (`oc-ledger tail`) while the usage line listed NO read verb for events —
+  # the same phantom-verb family as `roster` (fixed the same day, lane d18ce16a)
+  # and the `oc-ledger show` the oc-ship help used to name. The failure
+  # mode is what makes it worth a verb: a guess gets the usage branch (rc 2) or
+  # an empty result, and an auditor reads that as "the ledger has no such
+  # event" instead of "wrong verb". `tail` is an accepted ALIAS.
+  # READ-ONLY: no lock, no mutation, never journals a write.
+  #   --n N      how many rows, counted back from the NEWEST (default 20, >=1)
+  #   --kind K   exact kind match. NOT validated against KINDS on purpose:
+  #              retired or never-admitted kinds must stay READABLE (that is
+  #              how you audit a kind that a writer was stamping blind).
+  #   --actor U  substring match over .by (full uuid, or a lane's short prefix)
+  #   --since T  byte-lexicographic compare on `t` (== chronological for a
+  #              well-formed ISO-8601Z stamp; a corrupt t sorts by its bytes)
+  #   --json     JSON array of the matching events (full fields, untruncated)
+  #   --all      do not apply the --n tail window; emit every match (rc 0 even
+  #              when the match set is empty — a full dump is not a verdict)
+  #   --jsonl    stream one event object per line, no wrapper array; implies
+  #              the record is read as a stream (no ledger_load slurp, no lock)
+  #   --full     do not truncate `what` (default 160 chars, as in `lessons`);
+  #              a truncated row is nudged on stderr so no caller silently
+  #              builds a claim on a clipped read
+  # Output (TSV, oldest -> newest): n <TAB> t <TAB> kind <TAB> by <TAB> what
+  # rc 0 rows printed · 1 NO-MATCH verdict (deliberately not a silent empty:
+  # a caller that gets 1 must widen the filter, NEVER conclude "no events")
+  # · 2 usage · 3 ledger unreadable.
+  local n=20 kind="" actor="" since="" json=0 full=0 all=0 jsonl=0
+  if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+    n="$1"; shift
+  fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --n) [ -n "${2:-}" ] || die 2 "events: --n needs a value"; n="$2"; shift 2 ;;
+      --kind) [ -n "${2:-}" ] || die 2 "events: --kind needs a value"; kind="$2"; shift 2 ;;
+      --actor) [ -n "${2:-}" ] || die 2 "events: --actor needs a value"; actor="$2"; shift 2 ;;
+      --since) [ -n "${2:-}" ] || die 2 "events: --since needs a value"; since="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      --jsonl) jsonl=1; shift ;;
+      --all) all=1; shift ;;
+      --full) full=1; shift ;;
+      -h|--help) echo "usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--jsonl] [--all] [--full]"; exit 0 ;;
+      *) die 2 "events: unknown arg '$1' (usage: oc-ledger events|tail [--n N] [--kind K] [--actor U] [--since T] [--json] [--jsonl] [--all] [--full])" ;;
+    esac
+  done
+  case "$n" in ''|*[!0-9]*) die 2 "events: --n must be a positive integer (got '$n')" ;; esac
+  [ "$n" -ge 1 ] || die 2 "events: --n must be >= 1 (got '$n')"
+  [ "$json" -eq 1 ] && [ "$jsonl" -eq 1 ] && die 2 "events: --json and --jsonl are mutually exclusive"
+  ledger_ok || die 3 "ledger missing or unparseable: $LEDGER"
+  if [ "$all" -eq 1 ] || [ "$jsonl" -eq 1 ]; then
+    _events_dump "$kind" "$actor" "$since" "$json" "$jsonl" "$full" "$all"
+    exit $?
+  fi
+  local sel rc
+  # #156 (2026-11-23): read through `ledger_load` — the ONE reader — instead of
+  # raw-jq on `$LEDGER`. In JSONL mode `$LEDGER` names the DERIVED view, which
+  # is gitignored once cut over: on a fresh clone (record present, view absent)
+  # this verb used to die rc 3 "ledger unreadable" for a ledger that is perfectly
+  # readable, and every caller that reads back a row it just wrote — including
+  # oc-deploy's recover-receipt idempotence check — inherited that false absence.
+  # Legacy mode is byte-identical (`ledger_load` is `cat "$LEDGER"` there), and
+  # `pipefail` (line 167) means a loader refusal is NOT masked by jq's rc.
+  # Schema-mismatch fix (lane 329bf3a3 report): `.events[]` carries 27 distinct
+  # key schemas and this verb read ONLY the canonical {n,t,kind,by,what}. A row
+  # that kept its content in `text` (or its stamp in `ts`, its actor in `actor`)
+  # rendered with a BLANK content column AND was invisible to --actor/--since.
+  # The projection below is normalised ONCE and used by BOTH the filter and the
+  # render, so a row can never be SELECTABLE by a value it does not PRINT.
+  sel="$(ledger_load | jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" --argjson n "$n" '
+    # H-1 (c23): the ledger is not ONE schema. Widened to every key the live
+    # corpus actually uses -- measured over 10300 events: the 22-row
+    # {at,detail,id,type} block rendered a BLANK stamp AND a blank content
+    # column, and further shapes carry their content in event/action/directive/
+    # details and their actor in `who`.
+    def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+    def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+    def n_what: ((.what // .text // .summary // .note // .detail // .event
+                  // .action // .directive // .details // "") | tostring);
+    def n_n:    (.n // .seq // .id // 0);
+    # H-2 (c23): --since compares BYTE-LEXICOGRAPHICALLY, so a malformed stamp
+    # silently mis-ranks instead of erroring, and a BLANK one is always-less-than
+    # and is dropped from EVERY window. Normalise the two LOSSLESS shapes here (a
+    # space separator, and a minute-precision stamp missing its seconds) so
+    # historical rows stay reachable. `ack --at` now REFUSES a stamp outside the
+    # ISO-8601 UTC family, so this is a compatibility path for OLD rows only,
+    # never a licence to write a new one. It covers three lossless shapes:
+    # a space separator, minute precision missing its seconds, and -- measured
+    # against the live corpus, which is how this third one was found -- the
+    # fractional-second / +00:00 spellings that are perfectly valid and that a
+    # stricter predicate had been counting as malformed. Windowing stays STRICT: a row that is
+    # still non-ISO is NOT forced into every window, because that would make
+    # `--since` unable to report an empty window at all.
+    def n_t: ((.t // .ts // .at // "") | tostring
+              | sub("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}) "; .d + "T")
+              | sub("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2})Z$"; .d + ":00Z"));
+    [ .events[]?
+      | select(($kind == "") or (n_kind == $kind))
+      | select(($actor == "") or (n_by | contains($actor)))
+      | select(($since == "") or (n_t >= $since))
+    ] as $m
+    | ($m | length) as $len
+    | $m[(if $len > $n then $len - $n else 0 end):]')"
+  rc=$?
+  [ $rc -eq 0 ] || die 3 "events: jq failed (rc $rc) — ledger unreadable or query error"
+
+  local count; count="$(printf '%s' "$sel" | jq 'length')"
+  [ "$count" -gt 0 ] || {
+    echo "events: no event matches (kind${kind:+=$kind} actor${actor:+~$actor} since${since:+>=$since}) — widen the filter; an empty result here is a VERDICT, not an empty ledger" >&2
+    exit 1
+  }
+  if [ "$json" -eq 1 ]; then printf '%s\n' "$sel" | jq '.'; exit 0; fi
+
+  local trunc=160; [ "$full" -eq 1 ] && trunc=1000000
+  printf '%s' "$sel" | jq -r --argjson t "$trunc" '
+    def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+    def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+    def n_t:    ((.t // .ts // .at // "") | tostring
+                 | sub("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}) "; .d + "T")
+                 | sub("\\.[0-9]+Z$"; "Z")
+                 | sub("\\+00:00$"; "Z")
+                 | sub("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2})Z$"; .d + ":00Z"));
+    def n_what: ((.what // .text // .summary // .note // .detail // .event
+                  // .action // .directive // .details // "") | tostring);
+    def n_n:    (.n // .seq // .id // 0);
+    .[] | [ n_n,
+            (n_t    | if . == "" then "?" else . end),
+            (n_kind | if . == "" then "?" else . end),
+            (n_by   | if . == "" then "-" else . end),
+            (n_what | .[0:$t]) ] | @tsv'
+  if [ "$full" -eq 0 ]; then
+    local clipped
+    clipped="$(printf '%s' "$sel" | jq --argjson t "$trunc" '
+      def n_what: ((.what // .text // .summary // .note // .detail // .event
+                    // .action // .directive // .details // "") | tostring);
+      [.[] | select((n_what | length) > $t)] | length')"
+    [ "${clipped:-0}" -gt 0 ] && echo "events: $clipped row(s) had 'what' truncated to $trunc chars — rerun with --full for the complete text" >&2
+  fi
+  exit 0
+}
+
+# ---- lock-free streaming dumps (#177) ----------------------------------------
+# The seven direct readers needed only: the workers list, one worker by uuid,
+# every event (optionally filtered), and a syntax check. These verbs take NO
+# fleet lock and do not go through ledger_load (which slurps the record into
+# a unified dict). In JSONL mode they read workers.json / events.jsonl; in
+# legacy mode they read .workers / .events off the compact file.
+
+_workers_source() {
+  # stdout: path to the file a workers read should open, plus a second
+  # word "array" (the file IS the workers array) or "dict" (.workers).
+  if _jsonl_mode && [ -f "$(_JSONL_WORKERS)" ]; then
+    printf '%s dict\n' "$(_JSONL_WORKERS)"
+    return 0
+  fi
+  [ -f "$LEDGER" ] || return 3
+  printf '%s dict\n' "$LEDGER"
+}
+
+_events_source() {
+  if _jsonl_mode; then
+    printf '%s jsonl\n' "$(_JSONL_EVENTS)"
+    return 0
+  fi
+  [ -f "$LEDGER" ] || return 3
+  printf '%s array\n' "$LEDGER"
+}
+
+# Filter program shared by --all / --jsonl dumps. Raw fields, no schema
+# normalisation: callers that used to json.load the view's .events must see
+# the same objects.
+_EVENTS_FILTER='
+  def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+  def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+  def n_t:    ((.t // .ts // .at // "") | tostring);
+  select(($kind == "") or (n_kind == $kind))
+  | select(($actor == "") or (n_by | contains($actor)))
+  | select(($since == "") or (n_t >= $since))
+'
+
+_events_dump() { # kind actor since json jsonl full all
+  local kind="$1" actor="$2" since="$3" json="$4" jsonl="$5" full="$6" all="$7"
+  local src mode sel rc
+  src="$(_events_source)" || die 3 "events: ledger missing or unparseable: $LEDGER"
+  mode="${src##* }"; src="${src% *}"
+  if [ "$mode" = "jsonl" ]; then
+    sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" \
+      "$_EVENTS_FILTER" "$src")"
+    rc=$?
+  else
+    sel="$(jq -c --arg kind "$kind" --arg actor "$actor" --arg since "$since" \
+      "[.events[]? | ($_EVENTS_FILTER)][]" "$src")"
+    rc=$?
+  fi
+  [ $rc -eq 0 ] || die 3 "events: jq failed (rc $rc) — ledger unreadable or query error"
+  if [ "$jsonl" -eq 1 ]; then
+    [ -n "$sel" ] && printf '%s\n' "$sel"
+    exit 0
+  fi
+  if [ "$json" -eq 1 ]; then
+    if [ -z "$sel" ]; then echo '[]'; else printf '%s\n' "$sel" | jq -s -c '.'; fi
+    exit 0
+  fi
+  # TSV of every match (the --all text form). Empty is rc 0, not a no-match verdict.
+  if [ -z "$sel" ]; then exit 0; fi
+  local trunc=160; [ "$full" -eq 1 ] && trunc=1000000
+  printf '%s\n' "$sel" | jq -s -r --argjson t "$trunc" '
+    def n_kind: ((.kind // .type // .event // .ev // "") | tostring);
+    def n_by:   ((.by // .actor // .role // .who // "") | tostring);
+    def n_t:    ((.t // .ts // .at // "") | tostring);
+    def n_what: ((.what // .text // .summary // .note // .detail // .event
+                  // .action // .directive // .details // "") | tostring);
+    def n_n:    (.n // .seq // .id // 0);
+    .[] | [ n_n,
+            (n_t    | if . == "" then "?" else . end),
+            (n_kind | if . == "" then "?" else . end),
+            (n_by   | if . == "" then "-" else . end),
+            (n_what | .[0:$t]) ] | @tsv'
+  exit 0
+}
+
+cmd_ok() { # oc-ledger ok — syntax check, no lock, no slurp of the view
+  case "${1:-}" in
+    -h|--help) echo "usage: oc-ledger ok"; echo "Exit: 0 readable / 3 missing or unparseable"; exit 0 ;;
+    "") ;;
+    *) die 2 "ok: unknown arg '$1' (usage: oc-ledger ok)" ;;
+  esac
+  ledger_ok || die 3 "ok: ledger missing or unparseable: $LEDGER"
+  echo "ok"
+  exit 0
+}
+
+cmd_workers() { # oc-ledger workers [--json] [--uuid U]
+  # READ-ONLY, no lock. Emits the workers list from workers.json (JSONL mode)
+  # or .workers (legacy / fixture). Default is --json (the array the seven
+  # readers already consumed as ledger_data["workers"]).
+  local json=1 uuid="" tsv=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; tsv=0; shift ;;
+      --tsv)  tsv=1; json=0; shift ;;
+      --uuid) [ -n "${2:-}" ] || die 2 "workers: --uuid needs a value"; uuid="$2"; shift 2 ;;
+      -h|--help) echo "usage: oc-ledger workers [--json|--tsv] [--uuid U]"; exit 0 ;;
+      *) die 2 "workers: unknown arg '$1' (usage: oc-ledger workers [--json|--tsv] [--uuid U])" ;;
+    esac
+  done
+  local src mode
+  src="$(_workers_source)" || die 3 "workers: ledger missing or unparseable: $LEDGER"
+  mode="${src##* }"; src="${src% *}"
+  local prog
+  if [ -n "$uuid" ]; then
+    prog='[.workers[]? | select((.uuid // "") == $u)]'
+  else
+    prog='(.workers // [])'
+  fi
+  local out
+  out="$(jq -c --arg u "$uuid" "$prog" "$src")" || die 3 "workers: jq failed — ledger unreadable or query error"
+  if [ "$tsv" -eq 1 ]; then
+    printf '%s' "$out" | jq -r '.[] | [(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.feature // "-"), (.state // "ACTIVE")] | @tsv'
+    exit 0
+  fi
+  printf '%s\n' "$out"
+  exit 0
+}
+
+cmd_worker() { # oc-ledger worker --uuid U [--json]
+  # One roster row by uuid. Default TSV matches oc-notify-fanout's extract:
+  # uuid, role (editor), topic_id (0), state (ACTIVE). --json emits the object.
+  # rc 0 found · 1 NO-MATCH (empty stdout) · 2 usage · 3 unreadable.
+  local uuid="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --uuid) [ -n "${2:-}" ] || die 2 "worker: --uuid needs a value"; uuid="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -h|--help) echo "usage: oc-ledger worker --uuid U [--json]"; exit 0 ;;
+      *)
+        if [ -z "$uuid" ] && [ "${1#-}" = "$1" ]; then uuid="$1"; shift
+        else die 2 "worker: unknown arg '$1' (usage: oc-ledger worker --uuid U [--json])"; fi ;;
+    esac
+  done
+  [ -n "$uuid" ] || die 2 "worker: --uuid is required"
+  local src
+  src="$(_workers_source)" || die 3 "worker: ledger missing or unparseable: $LEDGER"
+  src="${src% *}"
+  local out
+  out="$(jq -c --arg u "$uuid" '[.workers[]? | select((.uuid // "") == $u)][0] // empty' "$src")" \
+    || die 3 "worker: jq failed — ledger unreadable or query error"
+  [ -n "$out" ] || exit 1
+  if [ "$json" -eq 1 ]; then
+    printf '%s\n' "$out"
+    exit 0
+  fi
+  printf '%s\n' "$out" | jq -r '[(.uuid // ""), (.role // "editor"), ((.topic_id // 0) | tostring), (.state // "ACTIVE")] | @tsv'
+  exit 0
+}
+
+# ---- mode (#97) ---------------------------------------------------------------
+# The MODE ruling is a DECLARATION row, not any row that mentions MODE:. The
+# grammar (SKILL.md §CONSENT REGISTER) is `MODE: <VALUE> — <provenance>`. The
+# live ledger carries 34 rows containing "MODE:" of which exactly ONE is a
+# declaration; the other 33 are prose ("held on the MODE gate"). So reading the
+# ledger by eye answers the WRONG row, and `events` cannot answer at all without
+# --n because it is a TAIL whose default window is ~21 rows. This verb is that
+# predicate, stated once. Newest DECLARATION wins; prose never does.
+cmd_mode() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      -h|--help)
+        printf '%s\n' \
+          'usage: oc-ledger mode [--json]' \
+          '' \
+          'Print the NEWEST row whose what IS a MODE declaration — not the oldest' \
+          'match, and not a row that merely talks about the MODE gate.' \
+          '' \
+          'Declaration grammar (SKILL.md §CONSENT REGISTER):' \
+          '    MODE: <FORK-STANDING|UPSTREAM-ON-REQUEST> — <provenance>' \
+          '' \
+          'Legacy values read forward: DEGRADED => FORK-STANDING;' \
+          'HIGH-TRUST => UPSTREAM-ON-REQUEST with no named groups.' \
+          '' \
+          'rc 0 declaration printed · 1 no declaration (fail closed: FORK-STANDING)' \
+          '   2 usage · 3 ledger unreadable'
+        return 0 ;;
+      *) die 2 "mode: unknown arg: $1 (see oc-ledger mode --help)" ;;
+    esac
+  done
+  # `ledger_ok` is ALREADY mode-aware (#149): in JSONL mode it validates the
+  # RECORD, never the derived view. The projection below was not — it raw-read
+  # `$LEDGER`, which in JSONL mode names a view that is gitignored once cut over.
+  # Measured 2026-11-23 on a fixture carrying events.jsonl + workers.json and no
+  # legacy blob: `oc-ledger mode` died rc 3 "projection failed on
+  # workers-ledger.json" while `events` answered from the same directory. #156
+  # routes it through `ledger_load` (the ONE reader) so the two verbs cannot
+  # disagree about which file the ledger IS. `pipefail` (line 167) keeps a
+  # loader refusal from being masked by jq's rc.
+  ledger_ok || die 3 "mode: ledger unreadable: $LEDGER"
+  local _msrc
+  if _jsonl_mode; then _msrc="$(_JSONL_EVENTS)"; else _msrc="$LEDGER"; fi
+
+  # Projection and render each re-state the defs: jq defs do not cross calls.
+  local proj
+  proj=$(ledger_load | jq -c '
+    def dw: ((.what // .text // .note // .detail // "") | tostring)
+            | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+    def is_decl: dw | test("^MODE:[ ]+[A-Z][A-Z0-9_-]*([ ]+(—|--|-)[ ]+.*)?$");
+    def is_prose: (dw | test("MODE:")) and (is_decl | not);
+    { decl: ([.events[]? | select(is_decl)] | sort_by(.n // 0) | last),
+      prose: ([.events[]? | select(is_prose)] | length) }
+  ' 2>/dev/null) || die 3 "mode: projection failed on $_msrc"
+
+  local decl
+  decl=$(printf '%s' "$proj" | jq -c '.decl')
+  if [ "$decl" = "null" ] || [ -z "$decl" ]; then
+    local prose
+    prose=$(printf '%s' "$proj" | jq -r '.prose')
+    echo "oc-ledger: mode: NO DECLARATION in $_msrc" >&2
+    echo "oc-ledger: mode: $prose row(s) mention MODE: but none IS a declaration — prose is not a ruling" >&2
+    echo "oc-ledger: mode: fail closed — no declaration means FORK-STANDING" >&2
+    exit 1
+  fi
+
+  if [ "$json" -eq 1 ]; then
+    printf '%s' "$decl" | jq -c '
+      def dw: ((.what // .text // .note // .detail // "") | tostring)
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+      { n: (.n // null),
+        ts: (.t // .ts // .at // null),
+        value: (dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value) }'
+  else
+    printf '%s' "$decl" | jq -r '
+      def dw: ((.what // .text // .note // .detail // "") | tostring)
+              | gsub("^[[:space:]]+|[[:space:]]+$"; "");
+      [ (.n // "?"),
+        (.t // .ts // .at // "?"),
+        (dw | capture("^MODE:[ ]+(?<value>[A-Z][A-Z0-9_-]*)") | .value) ] | @tsv'
+  fi
+  exit 0
+}
+
+# ---- dispatch -----------------------------------------------------------------
+parse_global "$@"
+case "${1:-}" in -h|--help) echo "usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode|workers|worker|ok> | [selftest|--selftest]"; exit 0 ;; esac
+if [ "$SELFTEST" -eq 1 ]; then
+  # (#722) `selftest --help` must be a READ. parse_global consumes the bare
+  # `selftest` token as a GLOBAL flag, so the dispatcher's own `selftest)` arm is
+  # UNREACHABLE for it and the battery would run instead of answering. The arm
+  # therefore has to sit HERE, before cmd_selftest.
+  case "${ARGS[0]:-}" in -h|--help) echo "usage: oc-ledger selftest"; exit 0 ;; esac
+  cmd_selftest; exit $?
+fi
+sub="${ARGS[0]:-}"; rest=("${ARGS[@]:1}")
+case "$sub" in
+  stamp) cmd_stamp "${rest[@]+"${rest[@]}"}" ;;
+  fixture) cmd_fixture "${rest[@]+"${rest[@]}"}" ;;
+  sync) cmd_sync "${rest[@]+"${rest[@]}"}" ;;
+  check-version) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger check-version"; exit 0 ;; esac; cmd_check_version ;;
+  law-digest) cmd_law_digest "${rest[@]+"${rest[@]}"}" ;;
+  cadence) case "${rest[0]:-}" in -h|--help) echo "usage: oc-ledger cadence"; exit 0 ;; esac; cmd_cadence ;;
+  ack) cmd_ack "${rest[@]+"${rest[@]}"}" ;;
+  enroll) cmd_enroll "${rest[@]+"${rest[@]}"}" ;;
+  promote) cmd_promote "${rest[@]+"${rest[@]}"}" ;;
+  retire)  cmd_retire  "${rest[@]+"${rest[@]}"}" ;;
+  # rc MUST survive the audit chain: oc_ship_audit_chain always returns 0, so a
+  # bare `cmd; oc_ship_audit_chain` swallowed the verb's status and a failed
+  # commit-pending exited 0 (measured 2026-11-20). The chain still runs.
+  commit-pending) cmd_commit_pending "${rest[@]+"${rest[@]}"}"; _cpd_rc=$?; oc_ship_audit_chain; [ "$_cpd_rc" -eq 0 ] || exit "$_cpd_rc" ;;
+  claim) cmd_claim "${rest[@]+"${rest[@]}"}" ;;
+  confirm) cmd_confirm "${rest[@]+"${rest[@]}"}" ;;
+  migrate) cmd_migrate "${rest[@]+"${rest[@]}"}" ;;
+  claim-ref) cmd_claim_ref "${rest[@]+"${rest[@]}"}" ;;
+  claims) cmd_claims "${rest[@]+"${rest[@]}"}" ;;
+  sweep-closed-claims) cmd_sweep_closed_claims "${rest[@]+"${rest[@]}"}" ;;
+  lessons) cmd_lessons "${rest[@]+"${rest[@]}"}" ;;
+  roster) cmd_roster "${rest[@]+"${rest[@]}"}" ;;
+  events|tail) cmd_events "${rest[@]+"${rest[@]}"}" ;;
+  workers) cmd_workers "${rest[@]+"${rest[@]}"}" ;;
+  worker) cmd_worker "${rest[@]+"${rest[@]}"}" ;;
+  ok) cmd_ok "${rest[@]+"${rest[@]}"}" ;;
+  duplicates) cmd_duplicates "${rest[@]+"${rest[@]}"}" ;;
+  mode) cmd_mode "${rest[@]+"${rest[@]}"}" ;;
+  selftest) cmd_selftest; exit $? ;;   # unreachable: parse_global sets SELFTEST=1 above
+  --verbs)
+    echo "stamp fixture sync check-version law-digest cadence ack enroll promote retire commit-pending confirm migrate claim claim-ref claims sweep-closed-claims lessons roster events tail workers worker ok duplicates mode"
+    exit 0
+    ;;
+  *)
+    case "$sub" in
+      note|show|list) die 2 "unknown verb '$sub' — did you mean 'events' or 'stamp note'?" ;;
+      append|add|entry|record) die 2 "unknown verb '$sub' — did you mean 'stamp'?" ;;
+      roster-enroll) die 2 "unknown verb '$sub' — did you mean 'enroll'?" ;;
+      roster-amend|roster-update) die 2 "unknown verb '$sub' — did you mean 'promote' or 'enroll'?" ;;
+      roster-retire) die 2 "unknown verb '$sub' — did you mean 'retire'?" ;;
+      kinds) die 2 "unknown verb '$sub' — kinds are listed in --help" ;;
+      push-mirror) die 2 "unknown verb '$sub' — did you mean 'sync' or 'commit-pending'?" ;;
+      version-publish) die 2 "unknown verb '$sub' — did you mean 'sync --version <v>'?" ;;
+      *) die 2 "unknown verb '$sub' — usage: oc-ledger <stamp|fixture|sync|check-version|law-digest|cadence|ack|enroll|promote|retire|commit-pending|confirm|migrate|claim|claim-ref|claims|lessons|roster|events|tail|duplicates|mode|workers|worker|ok> | --verbs | --selftest" ;;
+    esac
+    ;;
+esac

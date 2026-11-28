@@ -547,7 +547,12 @@ def test_two_checkouts_of_the_same_tree_share_a_key(tmp_path):
     # Same content at a different absolute path.
     copy = other / "state"
     copy.mkdir()
-    (copy / "oc-ledger").write_bytes(ledger.read_bytes())
+    # The tool is a dispatch shim: its closure is the shim PLUS the two
+    # implementations it names. A copy of the shim alone would have a
+    # different (smaller) closure, and the key comparison below would then
+    # be asserting that a broken copy matches — not that paths are relative.
+    for _sib in ("oc-ledger", "oc-ledger.py", "oc-ledger.bash"):
+        (copy / _sib).write_bytes((cf.TOOLS_DIR / "state" / _sib).read_bytes())
 
     assert oc_cache.sourced_libs(ledger) == oc_cache.sourced_libs(copy / "oc-ledger"), \
         "the closure must be spelled repo-relative, not absolute"

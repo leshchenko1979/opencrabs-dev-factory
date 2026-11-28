@@ -167,7 +167,7 @@ def law_scan(root: Path) -> dict:
     ``CHANGELOG.md`` (written by the bumper in the same act) and ``README.md``
     (the tool-fleet surface).
     """
-    tool = H.TOOLS_DIR / "state" / "oc-ledger"
+    tool = H.TOOLS_DIR / "state" / "oc-ledger.bash"
     r = subprocess.run([sys.executable, "-c", LAW_SCANNER, str(tool), str(root)],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, "the law scanner failed: %r" % r.stderr[-500:]

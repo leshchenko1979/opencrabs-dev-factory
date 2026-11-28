@@ -59,7 +59,7 @@ import pytest
 import conftest as cf
 
 PY_TOOL = cf.TOOLS_DIR / "state" / "oc-ledger.py"
-BASH_TOOL = cf.TOOLS_DIR / "state" / "oc-ledger"
+BASH_TOOL = cf.LEDGER_BASH   # pre-flip bash; the live path is the shim
 
 ACTOR = cf.LEDGER_ACTOR
 EDITOR = "11111111-1111-1111-1111-111111111111"

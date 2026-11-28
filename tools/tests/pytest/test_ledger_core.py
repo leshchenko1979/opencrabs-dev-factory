@@ -48,7 +48,7 @@ sys.path.insert(0, str(cf.TOOLS_DIR / "lib"))
 import ledger_core as L  # noqa: E402
 
 PY_TOOL = cf.TOOLS_DIR / "state" / "oc-ledger.py"
-BASH_TOOL = cf.TOOLS_DIR / "state" / "oc-ledger"
+BASH_TOOL = cf.LEDGER_BASH   # pre-flip bash; the live path is the shim
 
 EVENT = {"n": 1, "at": "2026-01-01T00:00:00Z", "event": "note",
          "detail": "a row", "actor": "fixture"}

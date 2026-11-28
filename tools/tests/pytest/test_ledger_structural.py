@@ -106,7 +106,7 @@ import pytest
 import conftest as cf
 from lib import ledger as L
 
-TOOL = cf.tool_path("oc-ledger")
+TOOL = cf.LEDGER_BASH   # parses/evals the SHELL source, not the shim
 
 # The awk range rule the shell uses, kept in one place: start at the first line
 # matching ``^fn()`` and end at the first following line that is exactly ``}``.

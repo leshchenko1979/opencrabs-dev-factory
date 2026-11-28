@@ -265,7 +265,7 @@ def test_ledger_sandbox_recipe_still_matches_the_tool():
     the ledger payload, the two repos, the .keep, and the actor — not the
     surrounding shell syntax.
     """
-    src = (cf.TOOLS_DIR / "state" / "oc-ledger").read_text(encoding="utf-8")
+    src = cf.LEDGER_BASH.read_text(encoding="utf-8")
     start = src.index("cmd_selftest()")
     end = src.index("export OC_ACTOR=", start)
     recipe = src[start:end]

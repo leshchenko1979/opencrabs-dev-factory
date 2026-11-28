@@ -100,6 +100,15 @@ _ASSIGN_STMT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 # A Python import that resolves inside tools/lib (`from oc_log import ...`).
 _PY_IMPORT = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)",
                         re.MULTILINE)
+# A DISPATCH SHIM naming a sibling in its own directory (`py="$here/oc-ledger.py"`).
+# oc-ledger is a shim since the factory #204 flip: it is a ~90-line dispatcher
+# and the code that actually runs lives beside it. Without this the key hashes
+# only the dispatcher, so an edit to oc-ledger.py or oc-ledger.bash would serve
+# a STALE PASS — the one failure mode a result cache must never have, and here
+# it would hide a regression in the fleet's write path. Deliberately narrow: only
+# a `$here/<name>` reference on a line that assigns or sources counts, so prose
+# in a comment never enters the key.
+_SIBLING_REF = re.compile(r"\$here/([A-Za-z0-9][A-Za-z0-9_.\-]*)")
 # SOURCE files only. `tools/tests/battery-last.json` is referenced by oc-ledger
 # as its own gate receipt and is REWRITTEN by every battery run, so hashing it
 # would invalidate the cache on every run — the one input that is guaranteed to
@@ -215,6 +224,13 @@ def referenced_files(path, tools_dir=None) -> list[Path]:
                     if cand not in out:
                         out.append(cand)
                 break
+        # Siblings named through the shim's own directory (`$here/<name>`): the
+        # dispatcher at tools/state/oc-ledger names oc-ledger.py and
+        # oc-ledger.bash this way, and those are the files that RUN.
+        for m in _SIBLING_REF.finditer(line):
+            sib = p.parent / m.group(1)
+            if sib.is_file() and not sib.is_symlink() and sib not in out:
+                out.append(sib)
     # Python deps, scanned in EVERY file and not just ``*.py`` ones: half the
     # Python tools here are extensionless (`tools/audit/oc-claims-single-source`)
     # and several shell tools carry a ``python3 - <<'OCPY'`` heredoc that imports

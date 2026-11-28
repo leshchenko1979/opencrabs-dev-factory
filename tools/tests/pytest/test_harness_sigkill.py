@@ -133,6 +133,15 @@ class DispatchStub:
         # sleep, so the SIGKILL never lands mid-send.
         shutil.copy2(tools / "state" / "oc-ledger", self.tools / "state" / "oc-ledger")
         (self.tools / "state" / "oc-ledger").chmod(0o755)
+        # The live path is a DISPATCH SHIM (factory #204 flip): it execs
+        # oc-ledger.py for every verb but selftest and oc-ledger.bash for
+        # selftest. A fixture that copies only the shim leaves both arms
+        # resolving to a missing sibling and exiting rc 2 before the notify
+        # sleep — so the SIGKILL could never land mid-send.
+        for _sib in ("oc-ledger.py", "oc-ledger.bash"):
+            _src = tools / "state" / _sib
+            if _src.is_file():
+                shutil.copy2(_src, self.tools / "state" / _sib)
 
         (self.tools / "lib" / "oc-notify.sh").write_text(NOTIFY_STUB, encoding="utf-8")
         (self.tools / "lib" / "oc-notify.sh").chmod(0o755)
