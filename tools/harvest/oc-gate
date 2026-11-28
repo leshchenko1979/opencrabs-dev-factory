@@ -229,12 +229,36 @@ CHECKPOINT_FILE=""
 # second job-name parser here would be a second thing to rot.
 _pr_gate_receipt_path() { printf '%s/oc-deploy/journal/gate-%s.json' "$LOCK_DIR" "${RUN_ID:-}"; }
 
-_pr_write_gate_receipt() { # $1=verdict $2=reason $3=adopted pin sha
-  local verdict="${1:-}" reason="${2:-}" pin="${3:-}" _dir _tmp _jobs
+_pr_write_gate_receipt() { # $1=verdict $2=reason $3=adopted pin sha [$4=state]
+  # #205 P1 — WRITE THE IDENTITY AT ADOPTION, NOT ONLY AT THE VERDICT.
+  # Until this, the receipt was written at exactly ONE site (the verdict switch),
+  # so a watcher killed mid-wait (TLS blip, daemon restart) left a run that went
+  # on to pass with NO artifact at all, and `oc-ship` then refused the chain with
+  # "no receipt at .../gate-<run>.json" — measured live on run 46083074632.
+  # State is a THIRD positional so the existing verdict call site is unchanged:
+  #   $4=verdict (default) -> state:"verdict" + verdict + reason
+  #   $4=adopted           -> state:"adopted" and NO `verdict` key at all
+  # The absence is the safety property, not a shortcut: the sole consumer
+  # (`shipchain_gate_receipt_check`) requires verdict == "GREEN" exactly, so an
+  # adopted receipt reads as "" != "GREEN" -> refused rc 4. Adding an
+  # IN_PROGRESS enum value would extend a vocabulary every consumer must learn
+  # and would still need the same refusal; absence needs none.
+  local verdict="${1:-}" reason="${2:-}" pin="${3:-}" state="${4:-verdict}" _dir _tmp _jobs
   [ -n "${RUN_ID:-}" ] || return 0
   # No pin -> no receipt, and SAY SO in the journal (silence would read as
   # "nothing to write" rather than "the identity was unconfirmed").
   if [ -z "$pin" ]; then oc_log_extra "gate_receipt" "skipped-unpinned"; return 0; fi
+  # An ADOPTED write must never clobber an existing receipt. `oc-gate resume`
+  # re-attaches to a run that may already carry a CONCLUDED/GREEN receipt (the
+  # watcher died after the verdict, or a lane is re-watching to collect it);
+  # overwriting that with a verdict-less adopted one would REFUSE the very run
+  # the resume is watching — the same trap the ship fixture's fake gate documents
+  # for a resume whose first positional is the literal word `resume`. The
+  # existing file is strictly more informative, so keep it and say so.
+  if [ "$state" = "adopted" ] && [ -f "$(_pr_gate_receipt_path)" ]; then
+    oc_log_extra "gate_receipt" "kept-existing"
+    return 0
+  fi
   command -v jq >/dev/null 2>&1 || { oc_log_extra "gate_receipt" "skipped-no-jq"; return 0; }
   _dir="$(dirname "$(_pr_gate_receipt_path)")"
   mkdir -p "$_dir" 2>/dev/null || { oc_log_extra "gate_receipt" "skipped-mkdir"; return 0; }
@@ -245,12 +269,21 @@ _pr_write_gate_receipt() { # $1=verdict $2=reason $3=adopted pin sha
   # distinction untestable (the fixture handed back {"jobs":[…]} and the arm
   # asserting .jobs[0] read a key of that object — a green control that proved
   # nothing). Local jq is already a hard dependency two lines above.
-  _jobs="$("$GH_BIN" run view "$RUN_ID" --repo "$REPO" --json jobs 2>/dev/null || true)"
-  [ -n "$_jobs" ] || _jobs='{}'
-  _jobs="$(printf '%s' "$_jobs" | jq -c '[.jobs[]? | {name: .name, conclusion: .conclusion,
-             blocking: (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"),
-             failed_steps: [.steps[]? | select(.conclusion == "failure") | .name]}]' 2>/dev/null || true)"
-  [ -n "$_jobs" ] || _jobs='[]'
+  # ADOPTION does not fetch jobs: the run has not finished, so a jobs read buys
+  # nothing the verdict receipt will not fetch again — and it is one more API
+  # call on the path that exists to be FAST and side-effect-free. `[]` here is
+  # the honest value ("no conclusion is known yet"), and the consumer never
+  # reaches `.jobs` on an adopted receipt (it is refused on `verdict` first).
+  if [ "$state" = "adopted" ]; then
+    _jobs='[]'
+  else
+    _jobs="$("$GH_BIN" run view "$RUN_ID" --repo "$REPO" --json jobs 2>/dev/null || true)"
+    [ -n "$_jobs" ] || _jobs='{}'
+    _jobs="$(printf '%s' "$_jobs" | jq -c '[.jobs[]? | {name: .name, conclusion: .conclusion,
+               blocking: (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"),
+               failed_steps: [.steps[]? | select(.conclusion == "failure") | .name]}]' 2>/dev/null || true)"
+    [ -n "$_jobs" ] || _jobs='[]'
+  fi
   _tmp="$(_pr_gate_receipt_path).tmp.$$"
   if ! jq -n \
       --arg schema "oc-gate-receipt/1" \
@@ -260,14 +293,16 @@ _pr_write_gate_receipt() { # $1=verdict $2=reason $3=adopted pin sha
       --arg carrier_head "${CARRIER_HEAD:-}" \
       --arg run_id "$RUN_ID" \
       --arg run_url "${RUN_URL:-}" \
+      --arg state "$state" \
       --arg verdict "$verdict" \
       --arg reason "$reason" \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --argjson jobs "$_jobs" \
-      '{schema: $schema, requested_sha: $requested_sha, tested_sha: $tested_sha,
+      '{schema: $schema, state: $state, requested_sha: $requested_sha,
+        tested_sha: $tested_sha,
         carrier_ref: $carrier_ref, carrier_head: $carrier_head,
-        run_id: $run_id, run_url: $run_url, jobs: $jobs,
-        verdict: $verdict, reason: $reason, ts: $ts}' > "$_tmp" 2>/dev/null; then
+        run_id: $run_id, run_url: $run_url, jobs: $jobs, ts: $ts}
+       + (if $state == "adopted" then {} else {verdict: $verdict, reason: $reason} end)' > "$_tmp" 2>/dev/null; then
     rm -f "$_tmp" 2>/dev/null || :
     oc_log_extra "gate_receipt" "failed-jq"
     return 0
@@ -278,6 +313,48 @@ _pr_write_gate_receipt() { # $1=verdict $2=reason $3=adopted pin sha
     return 0
   fi
   oc_log_extra "gate_receipt" "$(_pr_gate_receipt_path)"
+}
+
+# --- #205 P2: discovery by the sha a gate TESTED -------------------------------
+# There was no way to answer "which run tested sha X". Every gate is a
+# `workflow_dispatch` on the CARRIER branch, so the run's own `head_sha` is the
+# carrier ref by GitHub design (the same fact oc-gate:2455 documents for the
+# adoption pin) — `gh api runs?head_sha=<sha>` therefore returns ZERO for every
+# gate that exists, and that zero was read as "no gate ran" by lanes that had
+# just watched one. The tested sha lives in TWO places only: the job display
+# name and the receipt's `tested_sha`. This verb reads the second.
+# It NEVER consults head_sha: using that field IS the defect.
+# rc 0 = at least one receipt matches; 1 = none (an explicit verdict, never
+# silence); 2 = cannot read (no jq, unreadable dir).
+_pr_find_by_sha() { # $1 = full 40-hex sha
+  local sha="${1:-}" dir _f _row n=0 out=""
+  [ -n "$sha" ] || return 2
+  dir="$LOCK_DIR/oc-deploy/journal"
+  command -v jq >/dev/null 2>&1 || { echo "oc-gate find: jq absent — cannot read receipts" >&2; return 2; }
+  if [ ! -d "$dir" ]; then
+    echo "oc-gate find: no receipt journal at $dir — no gate has recorded a receipt on this state dir" >&2
+    return 1
+  fi
+  for _f in "$dir"/gate-*.json; do
+    [ -f "$_f" ] || continue
+    n=$((n + 1))
+    _row="$(jq -r --arg sha "$sha" '
+      select((.tested_sha // "") == $sha)
+      | [ (.run_id // "-"), (.state // "-"), (.verdict // "-"), (.ts // "-") ] | @tsv' "$_f" 2>/dev/null || true)"
+    [ -n "$_row" ] || continue
+    out="${out}${_row}	${_f}
+"
+  done
+  if [ -z "$out" ]; then
+    echo "oc-gate find: no receipt matches sha $sha (scanned $n receipt(s) in $dir)" >&2
+    echo "oc-gate find: a gate that ran before #205 P1 wrote its receipt only at verdict time, so a watcher killed mid-wait left nothing here — check the run's own job names with 'gh run view <id> --json jobs'" >&2
+    return 1
+  fi
+  printf 'RUN_ID	STATE	VERDICT	TS	RECEIPT\n'
+  # Newest first. The ts field is column 4; a receipt whose ts is unreadable
+  # sorts last rather than vanishing (it is still a match and still evidence).
+  printf '%s' "$out" | sort -t"$(printf '\t')" -k4,4r
+  return 0
 }
 
 _pr_write_checkpoint() {
@@ -322,7 +399,7 @@ usage() { # [reason] — C-#1: prints WHY before the usage block. A repeat of th
   printf '%s %s %s\n' "$_now" "$_h" "$_cnt" > "$_cf" 2>/dev/null || :
   [ "$_cnt" -gt 1 ] && sleep $(( _cnt * 2 < 10 ? _cnt * 2 : 10 ))
   cat >&2 <<EOS
-Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
+Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref> | find --sha <40hex>] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
   <branch-or-sha>  the TREE to gate. A full 40-hex sha is preferred and is what the
                    carrier inputs require: a short sha is REFUSED (carrier inputs are
                    FULL-sha-bound). The workflow yml always comes from --carrier, so
@@ -334,8 +411,14 @@ Usage: $PROG [<branch-or-sha> | resume <run-id> | wait <ref>] [--wait N] [--budg
                    (the escape from the #121 refusal; not the default, because the
                    silent wrong-tree gate is the expensive direction)
   resume <run-id>  re-attach to a run this lane WITNESSED (rc-5 stdout / journal extra.run_id);
-  wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
                    skips shape gate / yml check / dispatch / lock / adoption, goes straight to watch+verdict
+  wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
+  find --sha <40hex>  print every gate RECEIPT whose tested_sha is that sha — run id,
+                   state (adopted|verdict), verdict (or -), ts, receipt path. Read-only:
+                   no dispatch, no watch. rc 0 = at least one match, 1 = none, 2 = unreadable.
+                   Use this INSTEAD of `gh api runs?head_sha=<sha>`, which returns ZERO for
+                   every gate: a dispatch run's head_sha is the CARRIER ref, never the tested
+                   sha (#205 P2).
   --test-threads N RETIRED 2026-11-20 (#181): the carrier declares the input and IGNORES it
                    (pr-checks.yml "Accepted and IGNORED — read by nothing") — the #1936 Stage 1
                    mitigation is dead; the flag stays parsed for compatibility, a request is
@@ -1151,6 +1234,128 @@ do_selftest() {
   if [ ! -e "$_rcp" ]; then
     t_ok "receipt: a foreign-sha job name writes NO receipt"
   else t_bad "receipt: foreign-sha run still wrote $_rcp"; fi
+  # ---- #205 P1: THE RECEIPT IS WRITTEN AT ADOPTION, NOT ONLY AT THE VERDICT --
+  # The defect: `_pr_write_gate_receipt` had exactly ONE call site, after the
+  # conclusion switch, so a watcher killed mid-wait left a GREEN run with NO
+  # artifact and `oc-ship` refused the chain ("no receipt at .../gate-<run>.json",
+  # measured live on run 46083074632). These arms are a SET and each one is
+  # needed: the first proves the writer fires BEFORE the verdict, the second
+  # proves the artifact is still REFUSED by the sole consumer, the third proves
+  # the verdict still rewrites it. Without the negative control a tool that wrote
+  # a GREEN receipt at adoption would pass arms 1 and 3 and be catastrophic.
+  #
+  # The killed-watch fixture already exists in this battery (arm "killed watch"):
+  # it SIGTERMs the watcher while the run stays in_progress. This arm does the
+  # same thing and then reads the receipt the adoption write left behind.
+  rm -rf "$D/state/oc-deploy"
+  mk_shim "$D/gh" inflight
+  OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=2 \
+    OC_TOOLS_NOLOG=1 OC_NO_FLOODGUARD=1 \
+    "$SELF" "$SHA" --wait 120 >/dev/null 2>&1 &
+  AW=$!
+  sleep 3
+  kill -TERM "$AW" 2>/dev/null
+  wait "$AW" && AW_RC=0 || AW_RC=$?
+  _adopt_rcp="$D/state/oc-deploy/journal/gate-222.json"
+  if [ -s "$_adopt_rcp" ] \
+     && [ "$(jq -r '.state // empty' "$_adopt_rcp" 2>/dev/null)" = "adopted" ] \
+     && [ "$(jq -r '.tested_sha // empty' "$_adopt_rcp" 2>/dev/null)" = "$SHA" ] \
+     && [ "$(jq -r '.run_id // empty' "$_adopt_rcp" 2>/dev/null)" = "222" ]; then
+    t_ok "#205 P1: a watcher KILLED mid-watch leaves an adopted receipt naming run+tested_sha"
+  else t_bad "#205 P1: killed watcher left no/incorrect adopted receipt at $_adopt_rcp (rc=$AW_RC, got '$(jq -c . "$_adopt_rcp" 2>/dev/null || echo '<none>')')"; fi
+  # THE KEY MUST BE ABSENT, not empty. `has("verdict")` is the only assertion that
+  # discriminates: a writer emitting verdict:"" would satisfy a `// ""` read and
+  # would ALSO be refused by the consumer, so an emptiness check would pass while
+  # the schema had silently grown a third state. Absence is the design.
+  if jq -e 'has("verdict") | not' "$_adopt_rcp" >/dev/null 2>&1; then
+    t_ok "#205 P1: the adopted receipt carries NO verdict key at all (not an empty string)"
+  else t_bad "#205 P1: adopted receipt carries a verdict key ($(jq -c '{verdict}' "$_adopt_rcp" 2>/dev/null))"; fi
+  # THE CONSUMER'S NEGATIVE CONTROL lives in the SHIP battery, not here: the sole
+  # consumer `shipchain_gate_receipt_check` is a function of `oc-ship`, and a
+  # copy of its predicate written into this file would prove that the COPY
+  # refuses — the tautology this fleet's rule 7 forbids. `oc-ship --selftest`
+  # carries `receipt-adopted-refused` (rc 4) beside `receipt-not-green-refused`,
+  # both driving the REAL function through a real chain.
+  # ---- #205 P2: find --sha ---------------------------------------------------
+  # Positive: the adopted receipt written above names $SHA, so find must return
+  # rc 0 AND the run id. Negative: a sha nothing tested must return rc 1 with an
+  # explicit message — a zero-hit search is a RESULT, never silence.
+  rm -rf "$D/state/oc-deploy"; mkdir -p "$D/state/oc-deploy/journal"
+  jq -n --arg s "$SHA" '{schema:"oc-gate-receipt/1", state:"adopted", requested_sha:$s,
+      tested_sha:$s, carrier_ref:"ci/quick-build-linux", carrier_head:$s, run_id:"777",
+      run_url:"", jobs:[], ts:"2026-11-28T00:00:00Z"}' \
+    > "$D/state/oc-deploy/journal/gate-777.json"
+  jq -n --arg s "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" '{schema:"oc-gate-receipt/1",
+      state:"verdict", tested_sha:$s, run_id:"888", verdict:"GREEN", ts:"2026-11-28T00:00:01Z"}' \
+    > "$D/state/oc-deploy/journal/gate-888.json"
+  FIND_RC=0
+  FIND_OUT="$(OC_DEPLOY_STATE_DIR="$D/state" OC_TOOLS_NOLOG=1 "$SELF" find --sha "$SHA" 2>&1)" || FIND_RC=$?
+  if [ "$FIND_RC" -eq 0 ] && case "$FIND_OUT" in *"777"*) true ;; *) false ;; esac \
+     && case "$FIND_OUT" in *"888"*) false ;; *) true ;; esac; then
+    t_ok "#205 P2: find --sha returns rc 0 and the matching run, and NOT the non-matching one"
+  else t_bad "#205 P2: find --sha match wrong (rc=$FIND_RC out=$FIND_OUT)"; fi
+  # The adopted state must render as adopted with a '-' verdict — the whole point
+  # of the state field is that a reader can tell "ran, unfinished" from "ran, green".
+  if case "$FIND_OUT" in *"777"*"adopted"*"-"*) true ;; *) false ;; esac; then
+    t_ok "#205 P2: find prints state and '-' for a receipt with no verdict"
+  else t_bad "#205 P2: find did not render state/verdict columns (out=$FIND_OUT)"; fi
+  FIND_RC=0
+  FIND_OUT="$(OC_DEPLOY_STATE_DIR="$D/state" OC_TOOLS_NOLOG=1 "$SELF" find --sha "0000000000000000000000000000000000000000" 2>&1)" || FIND_RC=$?
+  if [ "$FIND_RC" -eq 1 ] && case "$FIND_OUT" in *"no receipt matches"*) true ;; *) false ;; esac; then
+    t_ok "#205 P2: a sha nothing tested returns rc 1 with an explicit no-match message"
+  else t_bad "#205 P2: non-matching sha wrong (rc=$FIND_RC out=$FIND_OUT)"; fi
+  # Shape gate: a short sha is a usage error (rc 2), never a silent no-match —
+  # a false negative is the exact failure class this verb removes.
+  FIND_RC=0
+  FIND_OUT="$(OC_DEPLOY_STATE_DIR="$D/state" OC_TOOLS_NOLOG=1 "$SELF" find --sha abc123 2>&1)" || FIND_RC=$?
+  if [ "$FIND_RC" -eq 2 ] && case "$FIND_OUT" in *"FULL 40-char sha"*) true ;; *) false ;; esac; then
+    t_ok "#205 P2: a short sha is refused rc 2 at the boundary, not reported as 'no match'"
+  else t_bad "#205 P2: short sha not refused properly (rc=$FIND_RC out=$FIND_OUT)"; fi
+  # ---- #205 P1 (verdict half): the SAME path is rewritten with state+verdict --
+  rm -rf "$D/state/oc-deploy"
+  mk_shim "$D/gh" green
+  OC_GH="$D/gh" OC_DEPLOY_STATE_DIR="$D/state" OC_PRCHECKS_LOCK_WAIT=5 \
+    OC_PRCHECKS_RESOLVE_WAIT=2 OC_PRCHECKS_RESOLVE_POLL=1 OC_PRCHECKS_POLL=1 \
+    OC_TOOLS_NOLOG=1 "$SELF" "$SHA" >/dev/null 2>&1 || true
+  if [ -s "$_rcp" ] \
+     && [ "$(jq -r '.state // empty' "$_rcp" 2>/dev/null)" = "verdict" ] \
+     && [ "$(jq -r '.verdict // empty' "$_rcp" 2>/dev/null)" = "GREEN" ] \
+     && [ "$(jq -r '.tested_sha // empty' "$_rcp" 2>/dev/null)" = "$SHA" ]; then
+    t_ok "#205 P1: a completed gate REWRITES the same path with state=verdict + verdict=GREEN"
+  else t_bad "#205 P1: verdict receipt wrong at $_rcp ($(jq -c '{state,verdict}' "$_rcp" 2>/dev/null || echo none))"; fi
+  # The adopted write must never clobber a concluded receipt (a resume re-attaches
+  # to a run that may already carry one, and overwriting that with a verdict-less
+  # file would refuse the very run being re-watched). Asserted directly on the
+  # WRITER, with LOCK_DIR pointed at the fixture so `_pr_gate_receipt_path`
+  # resolves where the assertion reads — without that the call writes into the
+  # real state dir and the arm reads a file nothing touched (measured: it failed
+  # exactly that way on the first run).
+  jq -n --arg s "$SHA" '{schema:"oc-gate-receipt/1", state:"verdict", requested_sha:$s,
+      tested_sha:$s, carrier_ref:"ci/quick-build-linux", carrier_head:$s, run_id:"777",
+      run_url:"", jobs:[], verdict:"GREEN", reason:"", ts:"2026-11-28T00:00:00Z"}' \
+    > "$D/state/oc-deploy/journal/gate-777.json"
+  _saved_lock_dir="${LOCK_DIR:-}"
+  LOCK_DIR="$D/state"
+  RUN_ID=777 SHA="$SHA" CARRIER="ci/quick-build-linux" CARRIER_HEAD="$SHA" \
+    _pr_write_gate_receipt "" "" "$SHA" "adopted" 2>/dev/null || true
+  LOCK_DIR="$_saved_lock_dir"
+  if [ "$(jq -r '.verdict // empty' "$D/state/oc-deploy/journal/gate-777.json" 2>/dev/null)" = "GREEN" ] \
+     && [ "$(jq -r '.state // empty' "$D/state/oc-deploy/journal/gate-777.json" 2>/dev/null)" = "verdict" ]; then
+    t_ok "#205 P1: an adopted write does NOT clobber an existing concluded receipt"
+  else t_bad "#205 P1: adopted write clobbered the concluded receipt ($(jq -c '{state,verdict}' "$D/state/oc-deploy/journal/gate-777.json" 2>/dev/null || echo none))"; fi
+  # POSITIVE CONTROL for that guard: the SAME call on a path with NO existing
+  # file MUST write — otherwise a writer that always returned early would pass
+  # the arm above while persisting nothing at adoption, which is the defect.
+  rm -f "$D/state/oc-deploy/journal/gate-778.json"
+  _saved_lock_dir="${LOCK_DIR:-}"
+  LOCK_DIR="$D/state"
+  RUN_ID=778 SHA="$SHA" CARRIER="ci/quick-build-linux" CARRIER_HEAD="$SHA" \
+    _pr_write_gate_receipt "" "" "$SHA" "adopted" 2>/dev/null || true
+  LOCK_DIR="$_saved_lock_dir"
+  if [ "$(jq -r '.state // empty' "$D/state/oc-deploy/journal/gate-778.json" 2>/dev/null)" = "adopted" ]; then
+    t_ok "#205 P1 control: with no existing receipt the adopted write DOES fire"
+  else t_bad "#205 P1 control: adopted write never fired on a clean path (the no-clobber arm would be vacuous)"; fi
   # SHIM RESTORE — the arms above deliberately leave the shim on a REFUSING
   # fixture (adopt_sha_foreign), and the arms that follow inherit whatever shim
   # this block leaves behind. The next arm runs without `|| true` under set -e,
@@ -1828,7 +2033,7 @@ FDV
 }
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   cat <<'EOH'
-Usage: oc-gate [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
+Usage: oc-gate [<branch-or-sha> | resume <run-id> | wait <ref> | find --sha <40hex>] [--fast] [--wait N] [--budget N] [--poll S] [--repo SLUG-or-PATH] [--carrier C] [--fault-scope PR] [--test-threads N] [--gate-carrier-tree] [--no-log]
   <branch-or-sha>  the TREE to gate. A full 40-hex sha is preferred and is what the
                    carrier inputs require: a short sha is REFUSED (carrier inputs are
                    FULL-sha-bound). The workflow yml always comes from --carrier, so
@@ -1841,6 +2046,11 @@ Usage: oc-gate [<branch-or-sha> | resume <run-id> | wait <ref>] [--fast] [--wait
                    silent wrong-tree gate is the expensive direction)
   resume <run-id>  re-attach to a witnessed run (no dispatch, no adoption) — #74 H2
   wait <ref>       single-invocation wait/watch loop with budget (default 2700s, poll 30s) — Cycle 5 C-1
+  find --sha <40hex>  print every gate RECEIPT whose tested_sha is that sha — run id, state
+                   (adopted|verdict), verdict (or -), ts, receipt path. Read-only: no dispatch,
+                   no watch. rc 0 = at least one match, 1 = none, 2 = unreadable. Use this
+                   INSTEAD of `gh api runs?head_sha=<sha>`, which returns ZERO for every gate:
+                   a dispatch run's head_sha is the CARRIER ref, never the tested sha (#205 P2).
   --fast           fast gate (fmt + clippy only, skip tests on carrier)
   --test-threads N RETIRED 2026-11-20 (#181): the carrier declares the input and IGNORES it;
                    accepted, NOT forwarded (loud note, rc 0). Undeclared-by-the-yml is still rc 4.
@@ -1858,6 +2068,12 @@ RESUME_MODE=0
 WAIT_SUBCOMMAND=0
 FAST_MODE=0
 TEST_THREADS=""
+# #205 P2: `find` is a READ-ONLY discovery verb, like `wait` — it takes no
+# positional ref (the sha arrives via --sha), so it is a flag rather than a
+# subcommand word: the parser's positional slot must stay free, and a `find`
+# subcommand would have needed a second positional grammar.
+FIND_MODE=0
+FIND_SHA=""
 # Immutable-input flag (owner GO 2026-09-17 22:59Z, incident run 35279942039):
 # a full 40-hex sha as the INPUT ref is an immutable cutover/gate ref — a
 # re-dispatch on it must NOT SIGTERM an in-flight run on the same sha, so the
@@ -1876,6 +2092,10 @@ while [ $# -gt 0 ]; do
     --budget)  shift; WAIT_SECS="${1:-}"; case "$WAIT_SECS" in ''|*[!0-9]*) usage "--budget needs an integer (got '$WAIT_SECS')" ;; esac ;;
     --poll)    shift; POLL="${1:-}"; case "$POLL" in ''|*[!0-9]*) usage "--poll needs an integer (got '$POLL')" ;; esac ;;
     wait)      [ "$WAIT_SUBCOMMAND" -eq 0 ] || usage "repeat 'wait'"; [ "$RESUME_MODE" -eq 0 ] || usage "cannot mix wait and resume"; WAIT_SUBCOMMAND=1 ;;
+    # #205 P2: discover the gate run that TESTED a sha. Read-only: no dispatch,
+    # no adoption, no watch. --sha is its only argument.
+    find)      FIND_MODE=1 ;;
+    --sha)     shift; FIND_SHA="${1:-}"; [ -n "$FIND_SHA" ] || usage "--sha needs a value" ;;
     --repo)    shift; REPO="${1:-}"; [ -n "$REPO" ] || usage "--repo needs a value" ;;
     --carrier) shift; CARRIER="${1:-}"; [ -n "$CARRIER" ] || usage "--carrier needs a value" ;;
     --gate-carrier-tree) GATE_CARRIER_TREE=1 ;;   # #121: acknowledge gating the CARRIER'S OWN TREE
@@ -1892,6 +2112,19 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ "$FIND_MODE" -eq 1 ]; then
+  # Validate the shape HERE so a typo dies at the boundary (rc 2) with a message
+  # that names the requirement, instead of scanning receipts for a string that
+  # cannot be a sha and reporting "no match" — a false negative is the exact
+  # failure class this verb exists to remove.
+  [ -n "$FIND_SHA" ] || usage "find needs --sha <40-hex>"
+  case "$FIND_SHA" in
+    *[!0-9a-fA-F]*) usage "find --sha needs a hex sha (got '$FIND_SHA')" ;;
+  esac
+  [ "${#FIND_SHA}" -eq 40 ] || usage "find --sha needs a FULL 40-char sha (got ${#FIND_SHA} chars: '$FIND_SHA') — a short sha cannot discriminate, the receipt stores the full one"
+  _pr_find_by_sha "$(printf '%s' "$FIND_SHA" | tr 'A-F' 'a-f')"
+  exit $?
+fi
 [ -n "$REF" ] || usage "missing <branch-or-sha> argument"
 if [ "$WAIT_SUBCOMMAND" -eq 1 ]; then
   # C-1 (Duty-6 Cycle-5 review): single-invocation wait defaults to 2700s budget and 30s poll
@@ -2475,6 +2708,15 @@ RUN_URL="${RUN_URL:-}"; RUN_URL="https://github.com/$REPO/actions/runs/$RUN_ID"
       # "did I adopt my own run?". Echo it. Log first, echo second: the durable
       # record must never depend on a stream a caller may redirect.
       echo "$PROG: adoption pin ok — run=$RUN_ID pins sha $_pin_sha${SHA:+ (armed $SHA)}" >&2
+      # #205 P1: THE IDENTITY IS NOW KNOWN, SO WRITE IT NOW. The pin is the one
+      # fact that makes the receipt worth anything, and every other field
+      # (run id, carrier ref+head, requested sha) is already resolved here.
+      # If this watcher dies in the next second, the artifact on disk still
+      # names the run and the sha it was testing — and the verdict can be
+      # RECOVERED with `oc-gate resume` instead of re-bought with a fresh gate.
+      # An adopted receipt carries NO verdict, so `oc-ship` still refuses it
+      # (verdict "" != "GREEN", rc 4) — nothing can ship on an unfinished gate.
+      _pr_write_gate_receipt "" "" "$_pin_sha" "adopted"
     else
       # queued run: jobs not materialised yet. Cannot discriminate — DISCLOSE,
       # never a silent clean. (#631: this is the residual window.)
@@ -2771,7 +3013,11 @@ oc_log_extra "fmt" "$(printf '%s' "$FMT_LINES" | awk -F'\t' '{print $3}' | sort 
 oc_log_extra "verdict" "$VERDICT"
 oc_log_extra "verdict_reason" "$REASON"
 # Durable receipt: the identity the gate just proved, on disk for `ship` to bind.
-_pr_write_gate_receipt "$VERDICT" "$REASON" "${_pin_sha:-}"
+# #205 P1: this REWRITES the adopted receipt written at pin time — same path, same
+# identity fields, now with state:"verdict" and the verdict/reason. An unpinned run
+# still writes nothing (skipped-unpinned): a receipt naming a sha the gate never
+# verified is worse than none.
+_pr_write_gate_receipt "$VERDICT" "$REASON" "${_pin_sha:-}" "verdict"
 
 echo "VERDICT $VERDICT${REASON:+ (reason: $REASON)}"
 echo "RUN $RUN_URL"

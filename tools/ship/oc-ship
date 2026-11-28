@@ -957,6 +957,151 @@ case "$TEST_THREADS" in
   '') : ;;
   *[!0-9]*) die "OC_SHIPCHAIN_TEST_THREADS needs a non-negative integer (got '$TEST_THREADS')" 2 ;;
 esac
+# ---- #205 P3: `--in-flight` — what is shipping RIGHT NOW ---------------------
+# Nothing answered this. Chains are transient systemd units (garbage-collected
+# on exit) or bare process trees with no unit at all, so
+# `systemctl --user list-units --all 'oc-ship-*'` returns ZERO rows even for a
+# chain that finished an hour ago — and the absence was read as "nothing is
+# shipping". Measured: of 571 `kind=shipchain` ledger rows, 0 carried a pid, so
+# a killed chain's last row was byte-identical to a running one's and #1064 was
+# reported chainless while 29 minutes into a ship.
+#
+# THE REGISTRY IS THE LEDGER THAT ALREADY EXISTS. No new file: STATE_DIR is a
+# git repository whose .gitignore records that a transient untracked file
+# "disarmed every clean-tree signal (#540 class)", so a new state file would
+# need gitignore work and would risk exactly that. The ledger has no such cost.
+#
+# LIVENESS: `kill -0 <pid>`. A chain with NO pid (every historical row) is
+# reported `UNKNOWN` — never guessed as running, because "no evidence of death"
+# is not evidence of life and that is the direction that costs a lane hours.
+ship_in_flight() {
+  local n="${OC_SHIPCHAIN_INFLIGHT_N:-400}" ledger_out rc=0
+  local state_dir="${OC_DEPLOY_STATE_DIR:-$HOME/.opencrabs/profiles/ops/opencrabs-dev}"
+  # OC_SHIP_LEDGER is the ONLY seam a test may use, and it exists because
+  # OC_TOOLS_DIR cannot serve as one: the oc-root bootstrap RESOLVES it from
+  # `$0`'s own location and OVERWRITES any inherited value on purpose (see
+  # tools/lib/oc-root.sh, case 2 — a fixture copy beside fake siblings must
+  # keep its own tree, so a walk that honoured the environment would escape
+  # the fixture and defeat the isolation). Measured 2026-11-28: the selftest
+  # arms set OC_TOOLS_DIR="$T/faketools" and the stub was never read — the
+  # verb answered from the REAL fleet ledger (17 real chains, zero fixture
+  # chains) while every fixture assertion read as a product defect.
+  local led="${OC_SHIP_LEDGER:-${OC_TOOLS_DIR:-$TOOLS_DIR}/state/oc-ledger}"
+  if [ ! -x "$led" ]; then
+    printf 'oc-ship: --in-flight needs %s (the fleet ledger tool) — not found\n' "$led" >&2
+    return 2
+  fi
+  # `--n` is MANDATORY on the events verb: it is a TAIL whose default window is
+  # 20 rows, so a bare `events --kind shipchain` returns an empty result that is
+  # INDISTINGUISHABLE from "no rows exist". --all would dump the whole record
+  # (8k+ rows); a bounded tail is what an in-flight question needs, and the
+  # bound is overridable for an unusually long tail.
+  # `--json` (an ARRAY), not `--jsonl`: the filter below indexes the whole
+  # document (`.[]`), and NDJSON would hand it one object per line — which fails
+  # every row and reads as "no parseable prefix" over a perfectly good tail.
+  ledger_out="$("$led" events --kind shipchain --n "$n" --full --json 2>/dev/null)" || rc=$?
+  # rc 1 from `events` is its NO-MATCH VERDICT, not an error: the tail held no
+  # shipchain row, which IS the answer to "what is shipping" (nothing). Any
+  # other rc is a real read failure and must not be dressed as a clean answer —
+  # that conflation is the whole defect class this verb exists to kill.
+  if [ "$rc" -eq 1 ]; then
+    printf 'oc-ship: --in-flight: no shipchain row in the last %s ledger rows — nothing shipping\n' "$n"
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf 'oc-ship: --in-flight could not read the ledger (rc=%s) — this is NOT "nothing is shipping"\n' "$rc" >&2
+    return 2
+  fi
+  if [ -z "$ledger_out" ]; then
+    printf 'oc-ship: --in-flight: the ledger tail (%s rows) holds no shipchain row — nothing shipping, or the tail is too short; raise OC_SHIPCHAIN_INFLIGHT_N\n' "$n" >&2
+    return 0
+  fi
+  # Group by chain id, keep the NEWEST row per chain (rows are appended oldest ->
+  # newest, so the last row seen for a chain id wins), and emit TSV so the shell
+  # never parses JSON: cid, issue, sha, pid, event, ts.
+  local rows
+  rows="$(printf '%s\n' "$ledger_out" | jq -r '
+    # THE `?` OPERATOR IS LOAD-BEARING, and `try ... catch` is NOT a substitute:
+    # jq'"'"'s capture() RAISES on a non-match, and in jq 1.7 a `try (…|capture(…))
+    # catch ""` inside an array constructor silently DROPS the element instead of
+    # substituting the catch value — measured here, over a 40-row tail, it
+    # returned one row where `? // ""` returned forty. A filter that drops rows
+    # reads downstream as "no parseable prefix", which is exactly the false
+    # absence this verb exists to end.
+    def cid: ((.what // "") | capture("^\\[(?<c>[^]]+)\\]") | .c)? // "";
+    def cwhat: ((.what // "") | sub("^\\[[^]]*\\] "; "")) // (.what // "");
+    def field($k): (cwhat | capture("(?:^|\\s)" + $k + "=(?<v>[^\\s]+)") | .v)? // "";
+    def ev: (cwhat
+             | if test("^START ") then "START"
+               elif test("^DONE ") then "DONE"
+               elif test("^SHIP-LOCK released") then "RELEASED"
+               elif test("^SHIP-LOCK ") then "SHIP-LOCK"
+               elif test("^LEG") then (capture("^(?<l>LEG[0-9]+)") | .l)
+               elif test("^(FATAL|FAIL|RED)") then "FAIL"
+               else (split(" ")[0] // "?") end);
+    [ .[] | select(cid != "") | {
+        cid: cid, t: (.t // ""), ev: ev,
+        issue: (field("issue")), sha: (field("sha")), pid: (field("pid"))
+      } ]
+    # THE LAST ROW ANSWERS "WHAT IS IT DOING", THE EARLIER ONES ANSWER "WHO IS
+    # IT". `map(last)` alone took the newest row for every field, and the newest
+    # row of a running chain is a LEG line that carries no pid and no issue — so
+    # a chain 29 minutes into a ship printed `-` for its issue and UNKNOWN for
+    # its liveness, which is the exact false absence this verb exists to kill
+    # (#1064 read chainless for that reason). Only START stamps issue=/pid=, so
+    # those fields must be CARRIED FORWARD from the newest row that has them.
+    # The event and its instant still come from the newest row: that is the
+    # the chain present state, not its identity.
+    | group_by(.cid)
+    | map( (last) as $l
+           | { cid: .[0].cid, t: ($l.t // ""), ev: $l.ev,
+               issue: ([.[].issue | select(. != "")] | last // ""),
+               sha:   ([.[].sha   | select(. != "")] | last // ""),
+               pid:   ([.[].pid   | select(. != "")] | last // "") } )
+    | sort_by(.t) | .[]
+    # \u001f (UNIT SEPARATOR), never a TAB: `read` splits on IFS and TAB is IFS
+    # WHITESPACE, so consecutive tabs COLLAPSE and every empty field silently
+    # shifts the columns after it — measured here, the ts landed in the sha
+    # column on every chain whose issue was empty. A non-whitespace separator
+    # preserves empty fields, which is what makes a missing fact READ as missing
+    # rather than as the neighbouring fact.
+    | [ .cid, (.issue // ""), (.sha // ""), (.pid // ""), .ev, .t ] | join("\u001f")' 2>/dev/null)" || rows=""
+
+  if [ -z "$rows" ]; then
+    printf 'oc-ship: --in-flight: ledger rows present but none carried a parseable [CHAIN-...] prefix — cannot group; raw tail follows\n' >&2
+    printf '%s\n' "$ledger_out" | tail -20 >&2
+    return 2
+  fi
+
+  # TERMINAL events: a chain whose newest row is one of these has FINISHED (or
+  # failed) and is not in flight. It is listed as ENDED rather than dropped, so
+  # "absent" and "finished" stay distinguishable — the distinction whose absence
+  # started this issue.
+  local cid issue sha pid ev ts verdict shown=0
+  printf 'CHAIN\tISSUE\tSHA\tPID\tLAST\tAT\tVERDICT\n'
+  while IFS="$(printf '\037')" read -r cid issue sha pid ev ts; do
+    [ -n "$cid" ] || continue
+    shown=$((shown + 1))
+    case "$ev" in
+      DONE|RELEASED|FAIL) verdict="ENDED" ;;
+      *)
+        if [ -n "$pid" ] && [ "$pid" != "none" ]; then
+          if kill -0 "$pid" 2>/dev/null; then verdict="RUNNING"; else verdict="DEAD"; fi
+        else
+          verdict="UNKNOWN"
+        fi ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$cid" "${issue:--}" "${sha:--}" "${pid:--}" "$ev" "${ts:--}" "$verdict"
+  done <<EOF
+$rows
+EOF
+  if [ "$shown" -eq 0 ]; then
+    printf 'oc-ship: --in-flight: no chain rows in the ledger tail — nothing shipping in the last %s shipchain rows\n' "$n" >&2
+  fi
+  return 0
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --eval-docs-skip)
@@ -1023,6 +1168,10 @@ while [ $# -gt 0 ]; do
     # exits 0 before any required-arg check or network call. This is what the
     # selftest drives; a re-implementation in the test would prove nothing.
     --resolve-priority) PRIORITY_PROBE=1; shift ;;
+    # #205 P3: read-only. Answers "what is shipping right now" from the ledger
+    # that already exists; takes no --sha/--branch, so it exits HERE rather than
+    # tripping the required-arg checks below.
+    --in-flight) ship_in_flight; exit $? ;;
     --help|-h)   usage ;;
     *) die "unknown arg: $1 (see --help)" 2 ;;
   esac
@@ -1551,7 +1700,17 @@ fi
 # longer survives to the gate. Production never sets it.
 
 journal "pre-flight ok: branch $BRANCH and sha $SHA present"
-journal "START sha=$SHA branch=$BRANCH priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?} priority_applied=${PRIORITY_APPLIED:-none}"
+# #205 P3: `issue=` and `pid=` join the START row. Both were AVAILABLE here and
+# stamped nowhere, and their absence is why "is #N shipping?" could not be
+# answered: a chain's rows carried no issue number at all, and 0 of 571
+# `kind=shipchain` rows carried a pid — so a killed chain's final row was
+# byte-identical to a running one's, and #1064 was reported "chainless" while
+# 29 minutes into a ship. Additive to a FREE-TEXT field: no schema change, no
+# chain-id change, so the documented retrieval recipe and every historical row
+# keep working (they simply read `unknown` for the two new facts).
+# `$$` is the CHAIN process (the detach re-execs this tool, so the pid here is
+# the one that owns the rest of the run — not a wrapper's).
+journal "START sha=$SHA branch=$BRANCH priority=$PRIORITY nice=${PRIORITY_NICE:-?} ioprio=${PRIORITY_IOPRIO:-?} priority_applied=${PRIORITY_APPLIED:-none} issue=${ISSUE:-none} pid=$$"
 
 # ---- gate-mode marker (Design E, #415 step 11) -----------------------------
 # The DEFAULT is FAST: fmt + clippy only, and the all-features test leg is

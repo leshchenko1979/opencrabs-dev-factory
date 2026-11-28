@@ -1112,6 +1112,32 @@ EOF
   RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
   check_rc "receipt-not-green-refused" "$RC" 4
   case "$OUT" in *"rc 4"*) ok "receipt-not-green-names-its-class" ;; *) bad "receipt-not-green-names-its-class: $OUT" ;; esac
+  # (g2) #205 P1: AN ADOPTED RECEIPT IS REFUSED — the fact that makes writing a
+  #      receipt at ADOPTION time safe. The gate now persists the identity the
+  #      moment the pin is known (state:"adopted", NO `verdict` key), so a
+  #      watcher killed mid-wait leaves an artifact `oc-gate resume` can recover
+  #      from instead of a hole. The whole design rests on this consumer refusing
+  #      that artifact: if an adopted receipt shipped, a gate that had merely
+  #      STARTED would authorize a deploy.
+  #      Written DIRECTLY rather than through gate_receipt(), because the point is
+  #      the ABSENT KEY: a fixture that emitted verdict:"" would prove only that
+  #      the empty string is refused, and the writer's own `+ {}` branch (which
+  #      omits the key) would go untested.
+  jq -n --arg schema "oc-gate-receipt/1" --arg sha "$FSHA" \
+    '{schema:$schema, state:"adopted", requested_sha:$sha, tested_sha:$sha,
+      carrier_ref:"ci/quick-build-linux", carrier_head:$sha, run_id:"11111",
+      run_url:"", jobs:[], ts:"2026-11-28T00:00:00Z"}' \
+    > "$T/state/oc-deploy/journal/gate-11111.json"
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-adopted-refused" "$RC" 4
+  case "$OUT" in *"not GREEN"*) ok "receipt-adopted-says-not-green" ;; *) bad "receipt-adopted-says-not-green: $OUT" ;; esac
+  #      POSITIVE CONTROL, and it must come AFTER the refusal: the SAME sha, the
+  #      SAME run id, only the state/verdict differing. Without it, an arm that
+  #      refuses every receipt would pass (g2) while the consumer was broken in
+  #      the other direction.
+  gate_receipt 11111 "$FSHA"
+  RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
+  check_rc "receipt-adopted-control-green-ships" "$RC" 0
   # (h) A SKIPPED JOB IS NOT EVIDENCE: GREEN whose only job never actually ran.
   RCPT_JOB_CONC="skipped"; gate_receipt 11111 "$FSHA"; unset RCPT_JOB_CONC
   RC=0; OUT="$(OC_GH="$T/fake-gh" run_chain --sha "$FSHA" --branch feat --gated-sha "$FSHA" 2>&1)" || RC=$?
@@ -3335,6 +3361,151 @@ DRIVER
   wait "$_GC_HOLD" 2>/dev/null || true
   rm -rf "$T/state/.git"
   printf '%s\n' "$FSHA" > "$T/ship-sha"
+
+  # ---- #205 P3: `--in-flight` --------------------------------------------------
+  # The defect: nothing answered "what is shipping right now". Chains are
+  # transient systemd units (gc'd on exit) or bare process trees, so
+  # `list-units --all 'oc-ship-*'` returns ZERO rows for a chain that finished an
+  # hour ago, and that zero was read as "nothing is shipping". The registry is
+  # the fleet ledger that already exists; LIVENESS is `kill -0` on the stamped
+  # pid, and a chain with NO pid must read UNKNOWN — never "running", because
+  # "no evidence of death" is not evidence of life, and that direction is the one
+  # that costs a lane hours (#1064 was reported chainless 29 minutes into a ship).
+  #
+  # The ledger tool is reached through TOOLS_DIR, which the oc-root bootstrap
+  # resolves from the SCRIPT'S OWN PATH — never from an env override. An
+  # `OC_TOOLS_DIR=…` handed to a real copy of this tool is therefore DEAD on
+  # arrival: the bootstrap reassigns it by design (tools/lib/oc-root.sh, case 2
+  # — a fixture copy must keep its OWN tree), and `--in-flight` then reads the
+  # REAL fleet ledger from inside a fixture that believes itself hermetic.
+  # Measured here: 17 real chains came back through a stub ledger holding one
+  # row, and every fixture assertion read as a product defect. `OC_SHIP_LEDGER`
+  # is the seam that exists for this, and it is the ONLY one a test may use.
+  mkdir -p "$T/faketools/state"
+  cat > "$T/faketools/state/oc-ledger" <<'EOF'
+#!/usr/bin/env bash
+# oc-ledger events --kind shipchain --n N --full --json  ->  canned tail.
+# The fixture is selected by FAKE_LEDGER_FIXTURE so one stub serves every leg.
+case "${FAKE_LEDGER_FIXTURE:-mixed}" in
+  empty) exit 1 ;;                       # the events verb's NO-MATCH verdict
+  broken) echo 'ledger unreadable' >&2; exit 3 ;;
+  *)
+    # A live pid ($$ of the shell that runs the stub would be gone by read time,
+    # so use a long-lived one: the fixture shell itself is not reliable, so the
+    # caller injects LIVE_PID). Rows oldest -> newest per chain.
+    cat <<JSON
+[{"n":1,"t":"2026-11-28T01:00:00Z","kind":"shipchain","what":"[CHAIN-live-1] START sha=aaaa branch=feat priority=low issue=205 pid=${FAKE_LIVE_PID:-0}"},
+ {"n":2,"t":"2026-11-28T01:01:00Z","kind":"shipchain","what":"[CHAIN-live-1] LEG1 gate dispatched"},
+ {"n":3,"t":"2026-11-28T01:00:00Z","kind":"shipchain","what":"[CHAIN-dead-1] START sha=bbbb branch=feat issue=77 pid=999999"},
+ {"n":4,"t":"2026-11-28T01:02:00Z","kind":"shipchain","what":"[CHAIN-dead-1] LEG4 ship started"},
+ {"n":5,"t":"2026-11-28T01:00:00Z","kind":"shipchain","what":"[CHAIN-old-1] START sha=cccc branch=feat"},
+ {"n":6,"t":"2026-11-28T01:03:00Z","kind":"shipchain","what":"[CHAIN-old-1] LEG2 issue-log done"},
+ {"n":7,"t":"2026-11-28T01:00:00Z","kind":"shipchain","what":"[CHAIN-done-1] START sha=dddd branch=feat issue=9 pid=${FAKE_LIVE_PID:-0}"},
+ {"n":8,"t":"2026-11-28T01:04:00Z","kind":"shipchain","what":"[CHAIN-done-1] DONE SWAPPED sha=dddd"}]
+JSON
+    ;;
+esac
+EOF
+  chmod +x "$T/faketools/state/oc-ledger"
+  # a live pid for the RUNNING leg: a sleeping child of this shell
+  sleep 60 & _live=$!
+  INFL_RC=0
+  INFL_OUT="$(OC_SHIPCHAIN_IMPL=0 OC_SHIP_LEDGER="$T/faketools/state/oc-ledger" FAKE_LIVE_PID="$_live" FAKE_LEDGER_FIXTURE=mixed \
+    timeout 60 bash "$SELF" --in-flight 2>&1)" || INFL_RC=$?
+  check_rc "in-flight-exit" "$INFL_RC" 0
+  # POSITIVE CONTROL FOR HERMETICITY: the fleet ledger holds hundreds of real
+  # chains, the stub holds four. If the fixture leaked to the fleet, a chain id
+  # that exists ONLY in the stub cannot appear — and a real one would. Assert
+  # the stub's chain is present AND that the row count matches the stub, so a
+  # leak cannot pass by accident on a fleet that happens to contain it.
+  _infl_rows="$(printf '%s\n' "$INFL_OUT" | grep -c '^CHAIN-')"
+  if [ "$_infl_rows" = "4" ]; then
+    ok "in-flight: reads the FIXTURE ledger (4 stub chains), not the fleet"
+  else
+    bad "in-flight-hermetic: got $_infl_rows chain rows, expected the stub's 4 (a fleet leak shows hundreds)"
+  fi
+  case "$INFL_OUT" in
+    *"CHAIN-live-1"*"RUNNING"*) ok "in-flight: a chain with a LIVE pid reads RUNNING" ;;
+    *) bad "in-flight-live-running: $(printf '%s' "$INFL_OUT" | tr '\n' ' ')" ;;
+  esac
+  case "$INFL_OUT" in
+    *"CHAIN-dead-1"*"DEAD"*) ok "in-flight: a chain whose stamped pid is GONE reads DEAD" ;;
+    *) bad "in-flight-dead: $(printf '%s' "$INFL_OUT" | tr '\n' ' ')" ;;
+  esac
+  case "$INFL_OUT" in
+    *"CHAIN-old-1"*"UNKNOWN"*) ok "in-flight: a chain with NO pid reads UNKNOWN, never RUNNING" ;;
+    *) bad "in-flight-unknown: $(printf '%s' "$INFL_OUT" | tr '\n' ' ')" ;;
+  esac
+  # A chain whose newest row is DONE is ENDED even though its pid is alive: the
+  # terminal event outranks liveness, or a swapped chain would report RUNNING
+  # until the process happened to exit.
+  case "$INFL_OUT" in
+    *"CHAIN-done-1"*"ENDED"*) ok "in-flight: a DONE chain reads ENDED even with a live pid" ;;
+    *) bad "in-flight-ended: $(printf '%s' "$INFL_OUT" | tr '\n' ' ')" ;;
+  esac
+  # The issue= and pid= facts must reach the output, not just the ledger.
+  case "$INFL_OUT" in
+    *"CHAIN-live-1"*"205"*) ok "in-flight: the issue number travels from the START row to the table" ;;
+    *) bad "in-flight-issue-column: $(printf '%s' "$INFL_OUT" | tr '\n' ' ')" ;;
+  esac
+  # THE IDENTITY IS CARRIED FORWARD, NOT READ OFF THE NEWEST ROW. CHAIN-live-1's
+  # newest row is a LEG1 line that carries no pid and no issue; only its START
+  # row has them. `map(last)` over every field therefore reported a chain 29
+  # minutes into a ship as `-` / UNKNOWN — the exact false absence #1064 hit.
+  # This asserts BOTH halves on the same chain: liveness from the carried pid,
+  # identity from the carried issue, state from the newest row's event.
+  _live_row="$(printf '%s\n' "$INFL_OUT" | grep '^CHAIN-live-1')"
+  case "$_live_row" in
+    *"RUNNING"*) ok "in-flight: a LEG row's chain still reads RUNNING from its START pid" ;;
+    *) bad "in-flight-carry-pid: a running chain read '$_live_row' — the START pid did not survive the LEG row" ;;
+  esac
+  case "$_live_row" in
+    *"	205	"*) ok "in-flight: the issue survives a newer row that does not carry it" ;;
+    *) bad "in-flight-carry-issue: a running chain read '$_live_row' — the START issue was dropped" ;;
+  esac
+  kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+  # NO-MATCH is a clean answer (nothing shipping); a READ FAILURE is NOT, and the
+  # two must not share an rc — that conflation is the defect class itself.
+  INFL_RC=0
+  INFL_OUT="$(OC_SHIPCHAIN_IMPL=0 OC_SHIP_LEDGER="$T/faketools/state/oc-ledger" FAKE_LEDGER_FIXTURE=empty timeout 60 bash "$SELF" --in-flight 2>&1)" || INFL_RC=$?
+  check_rc "in-flight-empty-is-clean" "$INFL_RC" 0
+  case "$INFL_OUT" in *"nothing shipping"*) ok "in-flight: an empty tail SAYS nothing is shipping" ;; *) bad "in-flight-empty-message: $INFL_OUT" ;; esac
+  INFL_RC=0
+  INFL_OUT="$(OC_SHIPCHAIN_IMPL=0 OC_SHIP_LEDGER="$T/faketools/state/oc-ledger" FAKE_LEDGER_FIXTURE=broken timeout 60 bash "$SELF" --in-flight 2>&1)" || INFL_RC=$?
+  check_rc "in-flight-read-failure-is-loud" "$INFL_RC" 2
+  case "$INFL_OUT" in *"NOT \"nothing is shipping\""*) ok "in-flight: a read failure refuses to be read as an empty answer" ;; *) bad "in-flight-read-failure-message: $INFL_OUT" ;; esac
+  # THE START ROW must carry issue= and pid= — the fixture above can only prove
+  # the READER works; this proves the WRITER stamps them, and it reads the real
+  # chain's own journal rather than the tool's text.
+  # A FRESH commit on its own branch, not $FSHA. $FSHA was shipped by the
+  # full-chain arm at the top of this battery, so re-shipping it dies rc 5
+  # ALREADY-LANDED at LEG3 — a true verdict about the FIXTURE, not about the
+  # START row this leg exists to inspect. START is stamped before LEG1, so the
+  # row is there either way; the fresh sha just lets the chain reach a normal
+  # end instead of failing on a fixture already in origin/main.
+  git -C "$T/clone" checkout -q main
+  git -C "$T/clone" checkout -qb feat-inflight
+  echo inflight > "$T/clone/inflight.txt"
+  git -C "$T/clone" add -A && git -C "$T/clone" commit -qm 'inflight-start-row' --trailer "Session-Id: $FIXTURE_SESSION"
+  _IFSHA="$(git -C "$T/clone" rev-parse HEAD)"
+  git -C "$T/clone" push -q origin feat-inflight
+  git -C "$T/clone" checkout -q main
+  rm -f "$T/journal.log"
+  RC=0; OUT="$(run_chain --sha "$_IFSHA" --branch feat-inflight --issue 42 --wait 5 2>&1)" || RC=$?
+  check_rc "in-flight-start-row-chain" "$RC" 0
+  if [ "$RC" -ne 0 ]; then
+    printf '  in-flight-start-row-chain rc=%s: %s\n' "$RC" "$(printf '%s' "$OUT" | tail -3 | tr '\n' ' ')"
+  fi
+  if grep -qE 'START .*issue=42( |$)' "$T/journal.log" 2>/dev/null \
+     && grep -qE 'START .*pid=[0-9]+( |$)' "$T/journal.log" 2>/dev/null; then
+    ok "in-flight: the START row carries issue= and pid="
+  else bad "in-flight-start-row-fields: $(grep 'START' "$T/journal.log" 2>/dev/null | head -1)"; fi
+  # NEGATIVE CONTROL for the two greps above: a row WITHOUT them must not match,
+  # or the assertion would pass on any row at all (e.g. a regex matching empty).
+  if printf '[CHAIN-x] START sha=aaaa branch=feat priority=low\n' \
+     | grep -qE 'START .*issue=42( |$)'; then
+    bad "in-flight-start-row-control: the issue grep matches a row with no issue="
+  else ok "in-flight-start-row-control: the issue grep does NOT match a row without it"; fi
 
   echo "selftest: $PASS passed, $FAIL failed"
   # Contract fix 2026-09-11: was `return $?`, which returned ECHO's status (0),
