@@ -4357,6 +4357,143 @@ def cmd_sync(ledger, args):
     return L.RC_OK
 
 
+CP_HELP = ("usage: oc-ledger commit-pending [--bundle]   (--bundle also sweeps "
+           "the TRACKED state paths and commits the skill runtime artifacts; "
+           "both mirrors are pushed either way)")
+
+
+def _max_event_n(doc) -> int:
+    """``jq '([.events[]? | .n // 0] | max // 0)'`` — nulls ignored, not rewritten."""
+    best = 0
+    events = doc.get("events") if isinstance(doc, dict) else None
+    if isinstance(events, list):
+        for row in events:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("n")
+            if value is None or isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)) and value > best:
+                best = int(value)
+    return best
+
+
+def _head_event_n(directory: str, name: str, jsonl: bool) -> int:
+    """The same max, read from the RECORD AT HEAD (#149 spec trap 3).
+
+    In JSONL mode ``HEAD:workers-ledger.json`` is a materialized view that is
+    gitignored after cutover, so comparing against it always reported a window
+    of zero (or a git error the bash swallowed with ``|| echo``) while real rows
+    sat uncommitted. Read the committed JSONL and count ITS rows instead.
+
+    -1 means "HEAD has no readable copy of this record", which the caller turns
+    into the bash's ``|| echo "$disk_n"`` arm: a first commit legitimately has
+    no ``HEAD:`` file, and a zero window is the honest report there.
+    """
+    rc, out, _ = _git_run(directory, "show", "HEAD:%s" % name)
+    if rc != 0 or not out:
+        return -1
+    if jsonl:
+        best = 0
+        for line in out.split("\n"):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                return -1
+            if isinstance(row, dict):
+                value = row.get("n")
+                if (isinstance(value, (int, float))
+                        and not isinstance(value, bool) and value > best):
+                    best = int(value)
+        return best
+    try:
+        return _max_event_n(json.loads(out))
+    except ValueError:
+        return -1
+
+
+def cmd_commit_pending(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(CP_HELP)
+        return L.RC_OK
+    bundle = 1 if (args and args[0] == "--bundle") else 0
+    sd = L.state_dir(ledger)
+    jsonl = L.jsonl_mode(ledger)
+    did = 0
+    failed = 0
+    errs = ""
+    if L.is_git_repo(sd):
+        # -- state repo: the RECORD first -----------------------------------
+        record = "events.jsonl" if jsonl else "workers-ledger.json"
+        tracked = ("events.jsonl", "workers.json") if jsonl else \
+            ("workers-ledger.json",)
+        disk_n = L.max_n(ledger)
+        head_n = _head_event_n(sd, record, jsonl)
+        if head_n < 0:
+            head_n = disk_n
+        if _porcelain_paths(sd, *tracked):
+            rc, _, _ = _git_run(sd, "add", *tracked)
+            if rc == 0:
+                subject = ("ledger commit-pending: events n=%d..%d uncommitted "
+                           "(HQ sweep)" % (head_n + 1, disk_n))
+                if _commit_with_retry(sd, subject):
+                    outln("sweep: state ledger committed (n=%d..%d)"
+                          % (head_n + 1, disk_n))
+                    did = 1
+                else:
+                    failed = 1
+                    errs += "; %s: %s" % (record, _CW_ERR)
+            else:
+                failed = 1
+                errs += "; git add refused %s" % record
+        if bundle == 1:
+            # #508 (DRY): the TRACKED namespace lives in ONE home, consumed by
+            # both this verb and the auto-commit tail.
+            if state_sweep_tracked(sd, ledger, "commit-pending --bundle"):
+                did = 1
+            if STATE_SWEEP_ERR:
+                failed = 1
+                errs += "; %s" % STATE_SWEEP_ERR
+    # -- skill repo: whitelisted runtime artifacts only, never doc edits -----
+    if bundle == 1 and L.is_git_repo(L.skill_dir()):
+        skill = L.skill_dir()
+        hits = [path for path in RUNTIME_ARTIFACTS
+                if _porcelain_paths(skill, path)]
+        if hits:
+            rc, _, _ = _git_run(skill, "add", "--", *hits)
+            if rc == 0:
+                subject = ("runtime-artifacts sweep (B3): %s (oc-ledger "
+                           "commit-pending --bundle)" % " ".join(hits))
+                if _commit_with_retry(skill, subject):
+                    outln("sweep: skill runtime artifacts committed: %s"
+                          % " ".join(hits))
+                    did = 1
+                else:
+                    failed = 1
+                    errs += "; skill: %s: %s" % (" ".join(hits), _CW_ERR)
+            else:
+                failed = 1
+                errs += "; git add refused skill: %s" % " ".join(hits)
+    # -- mirror tail step (v0.4.50) -----------------------------------------
+    # Runs regardless of ``did``: an up-to-date push is an rc 0 no-op, and this
+    # is also where an EARLIER commit-lag gets caught up.
+    L.push_mirror(sd, "state")
+    L.push_mirror(L.skill_dir(), "skill")
+    # The verdict is THREE-WAY. "clean" may only be said when nothing was
+    # ATTEMPTED; a refused commit is a FAILURE and exits rc 4 (the contract's
+    # ``write`` code — rc 1 is a VERDICT here and would journal a write failure
+    # as a benign outcome).
+    if failed == 1:
+        errln("sweep: FAILED — a commit was attempted and git refused it: %s"
+              % errs.lstrip("; "))
+        return 4
+    if did == 0:
+        outln("sweep: clean — nothing pending")
+    return L.RC_OK
+
+
 # ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
@@ -4397,6 +4534,7 @@ _HANDLERS = {
     "confirm": cmd_confirm,
     "sweep-closed-claims": cmd_sweep_closed_claims,
     "sync": cmd_sync,
+    "commit-pending": cmd_commit_pending,
 }
 
 # The verbs this file does NOT implement yet plus the one verb the bash keeps
