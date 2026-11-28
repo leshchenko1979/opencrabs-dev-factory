@@ -1,4 +1,4 @@
-# tools/tests/pytest — the pytest half of the battery
+# tools/tests/pytest — the battery
 
 **This is the gate.** `python3 -m pytest` here is the whole battery — the shell
 harness was retired on 2026-11-28 and `tools/tests/run.sh` no longer exists.
@@ -205,7 +205,7 @@ too late: workers already exist by then.
 
 ---
 
-## Adding a ported section
+## Adding a test
 
 ```python
 import conftest as cf
@@ -228,10 +228,17 @@ Rules that are not negotiable:
 - **A leg that writes the canonical receipt must be `serial`.** The lock is the
   only thing preventing two lanes from interleaving writes.
 - **A dedicated module never repeats the selftest blanket.** `<tool> --selftest`
-  exits 0 is owned by `tools/test_tool_wrappers.py`, once per tool, slow-marked.
-  A section module exists to assert what the blanket CANNOT see about its
+  exiting 0 is owned by `tools/test_tool_wrappers.py`, once per tool,
+  slow-marked. A subject module asserts what the blanket CANNOT see about its
   subject — argv/rc vocabulary, a state-dir containment, a counter read as a
-  field. Three modules used to drive a selftest a second time (`test_gate.py`
-  ~118 s, `test_notify_fanout.py` ~266 s, `test_verify_trio.py` ~12 s × 3) and
-  the duplicate legs were deleted in factory #203: the second site bought one
-  extra `rc == 0` for minutes of wall.
+  field. A second selftest drive buys one extra `rc == 0` for minutes of wall.
+- **A new guard is neuter-verified before it ships.** Break the code it watches,
+  watch the leg redden, restore, watch it go green. A guard nobody has seen fail
+  is a comment with a pass count.
+
+## Coverage
+
+`--collect-only -q` is the coverage record: it enumerates every leg, and `-k` /
+`-m` select from it. There is no separate map to keep in step with the tree —
+a map is what let this README keep claiming a retired shell script was the gate,
+and its tail grew a section-by-section ledger for a file that no longer existed.
