@@ -23,9 +23,8 @@ what they are, not provenance)
 
 WHY A GUARD AND NOT JUST THE VALUES
 Each of these can be "simplified" back into its failure by a later editor who
-sees a bare number and no reason. ``test_harness_pytest_section.py`` guarded the
-same four terms while they lived in ``run.sh``; this module replaces it, one
-layer down, so the guard outlives the file it used to read.
+sees a bare number and no reason. The guard sits in `pytest.ini`, where the
+values now live, so it cannot drift from them.
 """
 
 from __future__ import annotations
