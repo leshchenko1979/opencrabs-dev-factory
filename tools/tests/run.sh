@@ -159,7 +159,7 @@ bad()   { FAIL=$((FAIL+1)); _battery_check_stamp FAIL "$*"; note "  FAIL - $*$BA
 # `bad` is never reached, FAIL is never incremented, and nothing in the verdict
 # records that a leg never ran. Same helper shape as oc-health:144.
 chk()   { [ "$2" = "$3" ] && ok "$1" || bad "$1 (want $2 got $3)"; }
-# tools/ is grouped by KIND (owner order 2026-09-25): oc-* live in functional
+# tools/ is grouped by KIND: oc-* live in functional
 # subdirs. Resolve by NAME so a tool can be moved without touching every leg.
 tool_path() {
   [ -x "$TOOLS_DIR/$1" ] && { printf '%s\n' "$TOOLS_DIR/$1"; return 0; }
@@ -271,7 +271,7 @@ run_selftest() {
   # six detached oc-harvest-sweep --selftest runs spun ~5 h
   # at 37-39% CPU each (load ~11 on 4 cores) and nothing reaped them.
   # 1800s default: the longest battery section measured is 296.5s (oc-ledger
-  # kernel, tools/tests/battery-last.json ts=2026-10-01T13:51:50Z, PASS 310/0),
+  # kernel, tools/tests/battery-last.json, PASS 310/0),
   # so this cannot red a slow-but-legitimate selftest. Override: OC_SELFTEST_TIMEOUT.
   # --kill-after reaps a child that ignores TERM; timeout signals the whole
   # process group, so a selftest's own grandchildren die with it.
@@ -991,7 +991,7 @@ fi
 
 # ---- shared probe helpers: PRELUDE, never a section (factory #130) --------
 # extract_chunk() (above) emits PRELUDE + ONE section, so a helper defined in
-# section 88 is invisible to section 89 under --jobs N. Measured 2026-11-21:
+# section 88 is invisible to section 89 under --jobs N:
 # `--jobs 2` reported PASS 432 / FAIL 6, all six being section 89's #76 legs
 # reading '' because `_pf_jobs` was "command not found" in that chunk, while
 # `--jobs 1` passed them -- a red receipt accusing eight healthy tools. The
@@ -1390,7 +1390,7 @@ for ln in open(path):
 FAILW=re.compile(r'fail|error|refus|denied|unable|abort|crash|not\s+found',re.I)
 
 # A NEGATED word is a DISCLAIMER, not an assertion. `(VERDICT, not an error)` names
-# a verdict and must not red the gate -- measured 2026-11-20: one register row
+# a verdict and must not red the gate -- one register row
 # was the sole HIT of 19 registered entries, and the word it fired on sat inside
 # its own disclaimer. A word list cannot tell `an error` from `not an error`, so
 # the frame is stripped before the scan; an ASSERTED failure behind the frame
@@ -1461,7 +1461,7 @@ if tool oc-attrib; then
   OC_TOOLS_NOLOG=0 OC_TOOLS_LOG="$WL" "$TOOLS_DIR/state/oc-attrib" --repo /root/opencrabs --deployed >/dev/null 2>&1
   wrc=$?
   # rc=0 normal; rc=4 = empty range (prev_sha==deployed or no commits in range) —
-  # tool-correct on degenerate live marker state (seen 2026-08-31, double swap-execute)
+  # tool-correct on degenerate live marker state (double swap-execute)
   case $wrc in 0|4) wrc_ok=1;; *) wrc_ok=0;; esac
   wjq='select(.tool=="oc-attrib" and .exit=='"$wrc"' and (.args|contains("--deployed")))'
   [ $wrc_ok -eq 1 ] && [ -f "$WL" ] && [ "$(wc -l < "$WL")" -eq 1 ] \
@@ -1704,7 +1704,7 @@ chk("primary live n=8034 parenthetical excluded",
 # (HOME_REPO_SLUGS), not one slug. This pair used to expect [] for a
 # slug-qualified reference -- the expectation pinned the OLD law, under which
 # the binary-tracker slug was foreign. Under v0.4.284 it IS one of ours, and
-# since 2026-10-04 the tracker is `opencrabs/opencrabs` (renamed from the legacy
+# the tracker is `opencrabs/opencrabs` (renamed from the legacy
 # `adolfousier/opencrabs`, which still redirects and stays in the set), so a
 # reference on EITHER slug ANCHORS; the refusal applies only to a slug we do NOT own.
 chk("primary live n=1678 binary-tracker slug is now a target",
@@ -2142,7 +2142,7 @@ Session-Id: 22222222-2222-2222-2222-222222222222"
   rm -rf "$d"
 fi
 
-# ---- 9c. oc-consent-check — RETIRED 2026-08-28 (owner order 18:50Z: consent
+# ---- 9c. oc-consent-check — RETIRED (owner order: consent
 #         process eliminated; tool archived to tools/archive/). Tests removed.
 section "oc-consent-check (RETIRED — skipped)"
 
@@ -2423,7 +2423,7 @@ GHEOF
 fi
 
 # ---- 11. oc-ledger (KERNEL C1–C5 + item-2(b) commit-pending sweep) ---------
-# RESTORED 2026-09-29 (toolsmith 2fae1230). The 2026-09-29 owner order removed
+# RESTORED. The owner order removed
 # "questions and ledger" on the premise that their code belongs to the meta
 # factory and is tested there. Measured: that holds for `questions`
 # (TEMPLATE/tools/questions + TEMPLATE/tests/test_questions.py) but NOT for
@@ -2481,7 +2481,7 @@ if tool oc-wt; then
   "$TOOLS_DIR/git/oc-wt" add "Bad_Slug" some-branch >/dev/null 2>&1; [ $? -eq 2 ] && ok "bad slug -> 2 (usage)" || bad "bad slug -> expected 2"
 fi
 
-# ---- 16. lens-C tool builds (v0.4.58, owner Go 2026-08-31 04:20Z) -----------
+# ---- 16. lens-C tool builds (owner Go) -----------
 section "oc-drift-check"
 run_selftest oc-drift-check
 if tool oc-drift-check; then
@@ -2549,10 +2549,10 @@ if tool oc-ledger; then
   # :194, `cd "$_OC_DIR/.."`). The #95 legs below hand the tool a git STATE dir
   # ($GB), so that tail IS reached -- and when the tree carries >=10 unpushed
   # commits, or ONE older than OC_LEDGER_PUSH_MAX_AGE (1800s), push_mirror
-  # pushes the current branch to `origin`. Measured 2026-11-24: a clone whose
-  # origin was a local bare repo standing in for GitHub, carrying ONE 2020-dated
-  # unpushed commit, had that remote's refs/heads/main moved onto it BY THIS
-  # SECTION -- i.e. a test run PUBLISHED a lane's unpublished work.
+  # pushes the current branch to `origin`. A clone whose origin was a local bare
+  # repo standing in for GitHub, carrying ONE 2020-dated unpushed commit, had that
+  # remote's refs/heads/main moved onto it BY THIS SECTION -- i.e. a test run
+  # PUBLISHED a lane's unpublished work.
   # The seam is OC_SKILL_DIR, which already exists (:194) -- no production
   # switch was added. Every stamp below that can reach the tail is handed a
   # SENTINEL skill repo whose origin is a bare repo under this test's temp root,
@@ -2731,7 +2731,7 @@ if tool oc-tg-audit; then
 fi
 
 # harvest tooling (oc-harvest-sweep / oc-harvest-census / oc-harvest-dispatch) is
-# NOT battery-tested. Owner order 2026-11-20: "we don't need harvest tests - we are
+# NOT battery-tested. Owner order: "we don't need harvest tests - we are
 # a standalone fork". The tools still ship and their --help legs still run in the
 # fleet rc-contract sweep, but their SELFTESTS are out of the gate: the dispatch
 # selftest alone burned ~6 min of every sequential battery for a lane that files
@@ -2766,7 +2766,7 @@ fi
 # ---- the skill repo via commit-pending --bundle) ------------------------------
 # ---- 60. rc contract: --help exits 0 fleet-wide (C-#3, tools/docs/RC-CONTRACT.md)
 section "rc contract --help=0 fleet-wide"
-# tools/ is grouped by KIND (owner order 2026-09-25), so the fleet executables
+# tools/ is grouped by KIND, so the fleet executables
 # live one level down. A flat "$TOOLS_DIR"/oc-* glob matches NOTHING after the
 # regroup and this section then passes by counting zero legs -- a fleet-wide
 # check that cannot fail, which is the silent-skip class this battery exists to
@@ -2806,7 +2806,7 @@ for t in "$TOOLS_DIR"/oc-* "$TOOLS_DIR"/*/oc-*; do
   # READ, so the text belongs on STDOUT: `tool --help | grep <flag>` must find it.
   # Twelve tools printed it to STDERR instead, so stdout was empty and a pipe
   # found nothing -- while the rc leg above stayed GREEN, because a usage text on
-  # the wrong stream is still a successful exit. The 2026-10-01 audit named seven
+  # the wrong stream is still a successful exit. An audit named seven
   # (oc-start, oc-issue-create, oc-issue-log, oc-issue-sweep, oc-harvest-sweep,
   # oc-pr-atomicity, oc-smoke-evidence); the same sweep found FIVE MORE inside
   # this very loop (the four ship/ tools and one state/ tool), which is why the
@@ -3006,10 +3006,10 @@ case "$RCX_GH" in *"PHANTOM oc-ghost-tool"*) ok "rc contract: a phantom row is S
   *) bad "rc contract: the phantom scanner cannot fire (invented row unseen)" ;; esac
 rm -rf "$RCX"
 
-# ---- 61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN 2026-09-09)
+# ---- 61. oc-notify-fanout: placeholder guard + target validation (HQ ASSIGN)
 section "oc-notify-fanout guards (law1 placeholder + dead-target skip + --roles)"
 NF="$TOOLS_DIR/notify/oc-notify-fanout"
-# LAW 16 (defect D-1, HQ 2026-09-12): self identity is DERIVED from the
+# LAW 16 (defect D-1, HQ): self identity is DERIVED from the
 # invoking session and an unresolved self is a HARD ERROR (rc 2) — the old
 # hardcoded lane default is gone. So every fixture must name its invoker.
 # Resolve the live toolsmith lane; the fallback matches no real lane, which
@@ -3237,9 +3237,9 @@ fi
 # at tools/git/oc-fmt, and the installed copy is the operational one. TWO copies of
 # one program drift silently, and the harm runs in the direction nobody expects:
 # the installed copy keeps working while the repo copy rots, so a "restore" from
-# the repo DELETES a fix. Measured 2026-11-19 -- a 53-second window in which the
-# installed copy grew its false-clean edition warning and the repo copy did not;
-# restoring would have silently re-armed the false clean. Hence byte-identity.
+# the repo DELETES a fix -- in a 53-second window the installed copy grew its
+# false-clean edition warning and the repo copy did not; restoring would have
+# silently re-armed the false clean. Hence byte-identity.
 section "oc-fmt repo/installed identity"
 _OCF="$TOOLS_DIR/git/oc-fmt"
 if [ -f "$_OCF" ]; then
@@ -3528,8 +3528,8 @@ MUTM="$(stat -c %Y "$MIRMUT" 2>/dev/null || echo 0)"
 # The verdict REQUIRES that the mutation actually applied. Without this, a
 # regression that removes the target line makes python die, leaves the file
 # unmutated, and the already-broken tool then satisfies the comparison -- a
-# FALSE ok that calls itself load-bearing (measured 2026-11-20 on a regressed
-# oc-snap.sh: two legs RED, control still `ok`).
+# FALSE ok that calls itself load-bearing (on a regressed oc-snap.sh: two legs
+# RED, control still `ok`).
 [ "$_s51_mut_ok" = 1 ] && [ -n "$MIRMUT" ] && [ "$MUTM" = "$(stat -c %Y "$S51M/tools")" ] \
   && ok "mutant control: a re-stamp that INHERITS the source age does reproduce #51 (mirror carries the tree's mtime) -- the leg above is load-bearing" \
   || bad "mutant control did not reproduce the defect (mutation_applied=$_s51_mut_ok mirror mtime $MUTM, source $(stat -c %Y "$S51M/tools")) -- the #51 leg proves nothing"
@@ -3966,7 +3966,7 @@ done
 
 # The extractor exits at the receipt write, so a numbered section placed AFTER
 # it extracts to an empty chunk and runs ZERO legs while the run still reports a
-# clean summary. Measured 2026-09-25: section 78 landed there and the battery
+# clean summary. Section 78 landed there and the battery
 # count did not move (255 -> 255). Assert the extractor can reach the LAST
 # numbered section, so this trap reddens instead of hiding.
 #
@@ -4418,7 +4418,7 @@ $(printf '%s' "$VD_OUT" | head -5)"
   # An exact total is brittle in the wrong direction: every legitimate new leg
   # reddens the battery for no reason, and the tempting repair is to lower the
   # number -- which is exactly how a leg gets silently deleted. The floor keeps
-  # the anti-deletion property (measured 2026-10-17: the hardcoded "8 passed"
+  # the anti-deletion property (the hardcoded "8 passed"
   # reddened the battery when #44 took the suite to 13).
   VD_ST="$(./tools/audit/oc-vendor-drift --selftest 2>&1)"; VD_SRC=$?
   VD_PASS="$(printf '%s' "$VD_ST" | sed -n 's/^selftest: \([0-9][0-9]*\) passed.*/\1/p' | tail -1)"
@@ -4493,9 +4493,9 @@ for rel in state/oc-ledger ship/oc-build harvest/oc-gate audit/oc-lint-laws \
   # the battery deliberately runs its parent at nice 19 + ionice -c3 with
   # jobs=1, so under load a HEALTHY tool gets killed here and the old branch
   # then named the fixpoint as the cause. That is a false ACCUSATION against a
-  # tool that never hung, not a false alarm (#83). Measured 2026-11-18: healthy
-  # = 0.03-0.04s CPU (identical under nice/ionice); a real fixpoint spin =
-  # 19.8s CPU in a 20s wall. CPU is the discriminator; the 200s wall bound is
+  # tool that never hung, not a false alarm (#83). A healthy run costs 0.03-0.04s
+  # CPU (identical under nice/ionice); a real fixpoint spin = 19.8s CPU in a 20s
+  # wall. CPU is the discriminator; the 200s wall bound is
   # only a backstop so a true runaway cannot stall the battery.
   # shellcheck disable=SC2086
   _rcf=$(mktemp)
@@ -4603,7 +4603,7 @@ section "cgroup isolation"
 # (`.../app.slice/opencrabs-ops.service`), whose wall is MemoryHigh == MemoryMax
 # == 1536 MiB with swap exhausted and whose OOMPolicy=kill tears the WHOLE unit
 # down on an allocation that exceeds it -- so a test allocation does not merely
-# die, it takes the daemon with it. Measured 2026-09-30: four daemon OOM kills
+# die, it takes the daemon with it. Four daemon OOM kills
 # (07:46 08:34 10:08 12:05Z), each during a battery run. The test processes are
 # small (tens of MiB); the hazard is CO-TENANCY with a full wall, so no test diet
 # can fix it -- the run must not BE in that cgroup. The preamble re-execs into a
@@ -4618,7 +4618,7 @@ section "cgroup isolation"
 CI_FX="$(mktemp -d)"
 CI_BLOCK="$CI_FX/iso.sh"
 # RANGE END = the isolation block's OWN end, never "the next marker we happen
-# to know about" (#74, measured 2026-11-17). The range used to end at the
+# to know about" (#74). The range used to end at the
 # red-receipt marker, which was only ever a PROXY for where this block stops.
 # The #74 pids preflight was then inserted between them and the extraction
 # silently swallowed it: the synth runs under `set -u` with no $JOBS, so it
@@ -5038,7 +5038,7 @@ _o76d="$(_pf 16 2)"
 # must read something other than 19. Without this, LEG 2 could be green because
 # the BOX already ran at 19 rather than because the block works.
 #
-# MEASURED THE HARD WAY (battery 2026-11-17T15:21:35Z, 411 PASS / 1 FAIL): run
+# MEASURED THE HARD WAY (battery 411 PASS / 1 FAIL): run
 # inside the battery, this control read nice 19 from the MUTANT and reported
 # LEG 2 inert -- because the battery has already reniced ITSELF to 19, so every
 # child inherits 19 and a neutered renice is indistinguishable from a working
@@ -5154,7 +5154,7 @@ if oc_same_patch "$2" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef "$(git -C "$2" re
 # runs, since they are this shell's own children. The lock then outlived the
 # battery -- SIGKILL the parent and it stayed held by a grandchild that was not
 # the battery at all, so the next run burned BATTERY_LOCK_WAIT (900 s) waiting on
-# a process that would never release it (measured 2026-11-16: `fuser` named six
+# a process that would never release it (`fuser` named six
 # holders, one of them a python grandchild).
 # Every leg drives the REAL block, extracted verbatim from this file between its
 # fences. A copy of the block would keep passing after the real one regressed,
