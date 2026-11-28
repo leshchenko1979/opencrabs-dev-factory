@@ -967,6 +967,15 @@ def pytest_configure(config):
     # battery-scratch and path-restore were unwitnessed and uncensused.)
     config._oc_witness_groups = set()
 
+    # THE RECEIPT IS ARMED HERE, NOT IN ``collection_modifyitems``. Under xdist
+    # that hook runs ONLY IN WORKERS — the controller never sees it — so arming
+    # the run from there left the controller's ``_oc_run`` None and the gate
+    # wrote NO receipt at all: ``oc-ledger sync`` then read whatever stale
+    # PASS sat at the canonical path. Measured 2026-11-28: a full ``-n 2`` gate
+    # reported 492 passed while ``battery-last.json`` still held the previous
+    # run's numbers. ``pytest_configure`` runs once, on the controller.
+    _receipt.pytest_configure(config)
+
 
 def pytest_collection_modifyitems(session, config, items):
     groups = getattr(config, "_oc_witness_groups", None)
@@ -981,8 +990,6 @@ def pytest_collection_modifyitems(session, config, items):
             offenders.append(item.nodeid)
     config._oc_witness_groups = groups
     config._oc_serial_without_group = offenders
-
-    _receipt.pytest_configure(config)
 
 
 def pytest_cmdline_main(config):
