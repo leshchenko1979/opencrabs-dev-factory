@@ -588,44 +588,27 @@ if [ -n "$_oc_bt_root" ]; then
   trap '_battery_tmpdir_cleanup; exit 130' INT
   trap '_battery_tmpdir_cleanup; exit 143' TERM
 fi
-# >>> BATTERY LOCK BLOCK (#449/#107) -- extracted verbatim by the section 91 legs
-# ---- single-flight lock: ONE battery run at a time (#449, holder child #107) --
-# tools/tests/battery-last.json is ONE canonical path shared by every lane, and
-# this script writes it from two sites with no lock — so two concurrent runs
-# clobber each other's receipt (measured 2026-09-20: commit 284b8456 committed a
-# FAIL receipt under a "pass 213, fail 0" message) and the extra load flakes the
-# timing-sensitive oc-ship detach-survival pair. The whole run is
-# serialized here. The canonical path is KEPT because consumers read it — a
-# per-lane receipt path would break them.
+# >>> BATTERY LOCK BLOCK -- extracted verbatim by the section 91 legs
+# ---- single-flight lock: ONE battery run at a time --------------------------
+# tools/tests/battery-last.json is ONE canonical path shared by every lane and
+# this script writes it from two sites, so concurrent runs clobber each other's
+# receipt. The path stays canonical because consumers read it.
 #
-# Placement is load-bearing TWICE. (1) It sits AFTER the --chunk branch, because
-# a --chunk child exits before reaching this line and the prelude sourced INSIDE
-# a child sees BATTERY_IN_CHUNK=1; locking earlier would deadlock every child
-# against its own parent. (2) It sits AFTER the cgroup re-exec above, because
-# that block `exec`s this script and a second entry would re-acquire the lock
-# against a holder this process still owns.
+# PLACEMENT IS LOAD-BEARING TWICE: after the --chunk branch (a child exits
+# before reaching here, and locking earlier deadlocks it against its parent)
+# and after the cgroup re-exec (which `exec`s this script, so a second entry
+# would re-acquire against a holder this process still owns).
 # rc 2 = harness condition, never a test verdict.
 #
-# THE LOCK FD LIVES IN A HOLDER CHILD, NOT IN THIS PROCESS (#107). Holding it
-# here meant every child inherited fd 9 — the --chunk children, and with the
-# default JOBS=1 every single tool the battery runs, since they are this shell's
-# own children. The lock then outlived the battery: SIGKILL the parent and it
-# stayed held by a grandchild that was not the battery at all, so the next run
-# waited BATTERY_LOCK_WAIT (900 s) for a process that would never release it.
-# Measured 2026-11-16: `fuser` named six holders, one of them a python
-# grandchild.
-#
-# Two candidate fixes were MEASURED and rejected. `flock --close` releases the
-# lock on exec — a second `flock -n` succeeded immediately, so it locks nothing.
-# Closing fd 9 in the --chunk branch fixes only the fan-out case and leaves the
-# JOBS=1 case, where the tools are this shell's own children.
-#
-# A `coproc` subshell holds it instead. A coproc's pipe ends are not inherited by
-# ordinary children (verified: a backgrounded child's fd table carries no pipe),
-# so nothing this script spawns can keep the lock alive; and the holder exits
-# when this shell's pipe write end closes, which the kernel does on death —
-# SIGKILL included, no trap required (verified: kill -9 the battery, then a
-# fresh `flock -n` succeeds).
+# THE LOCK FD LIVES IN A HOLDER CHILD, NOT THIS PROCESS. Holding it here lets
+# every child inherit it -- the --chunk children, and with JOBS=1 every tool the
+# battery runs -- so the lock outlives a SIGKILLed battery and the next run
+# waits the full budget for a process that will never release it. A coproc's
+# pipe ends are not inherited by ordinary children, so nothing this script
+# spawns can keep the lock alive; the holder exits when this shell's write end
+# closes, which the kernel does on death, SIGKILL included.
+# `flock --close` is NOT the fix: it releases on exec, so a second `flock -n`
+# succeeds immediately and nothing is locked.
 if [ -z "${BATTERY_IN_CHUNK:-}" ]; then
   # THE LOCK PATH IS NOT DERIVED FROM TMPDIR (#171). It used to be
   # ${TMPDIR:-/tmp}/oc-battery.lock, which was the same path for every lane only

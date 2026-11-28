@@ -55,8 +55,8 @@ def test_section_markers_outnumber_section_calls():
     # Every entry is a section call whose body is DELIBERATELY one block.
     # The bound is the block's own measured size plus slack; a leg that grows
     # past it is a sign another block was pasted in under the same call.
-    (67, "battery lock: no child inherits the lock fd (#107)", 260),
-    (68, "battery scratch root: one per-run TEST_TMPDIR, lock stays shared (#171)", 200),
+    (67, "battery lock: no child inherits the lock fd", 260),
+    (68, "battery scratch root: one per-run TEST_TMPDIR", 200),
 ])
 def test_section_call_does_not_swallow_a_neighbour(ordinal, title, max_span):
     """A ``section`` call's body must stay within its own block's budget.
@@ -88,7 +88,7 @@ def test_the_section_66_span_was_split_into_named_blocks():
     mandatory: blocks 85-90 (cgroup isolation, the #750 arg-arm scan, the #47
     law-digest coverage, the #74 pids preflight, the #76 jobs/priority legs and
     the #114 oc-patch "else empty" contract) all execute under the single call
-    ``section "cgroup isolation (#720)"``. The transcript names one section; the
+    ``section "cgroup isolation"``. The transcript names one section; the
     receipt's per-section timing attributes six blocks' wall to it; and a reader
     of a red transcript sees a cgroup failure when the failing leg was #114.
 
@@ -100,8 +100,8 @@ def test_the_section_66_span_was_split_into_named_blocks():
     calls = H.section_calls(text)
     lines = text.splitlines()
     idx = next((i for i, (_ln, t) in enumerate(calls)
-                if t == "cgroup isolation (#720)"), None)
-    assert idx is not None, "the ``cgroup isolation (#720)`` section call is gone"
+                if t == "cgroup isolation"), None)
+    assert idx is not None, "the ``cgroup isolation`` section call is gone"
     start = calls[idx][0]
     end = calls[idx + 1][0] if idx + 1 < len(calls) else len(lines)
     body = lines[start - 1:end - 1]
@@ -120,7 +120,7 @@ def test_the_section_66_span_was_split_into_named_blocks():
         "and test_harness_pool.py, do not widen this assertion" % (ordinals,))
 
     calls_in_span = [l for l in body if l.startswith('section "')]
-    assert calls_in_span == ['section "cgroup isolation (#720)"'], (
+    assert calls_in_span == ['section "cgroup isolation"'], (
         "the span now carries %d section calls (%r) — the #66 shape has changed; "
         "re-derive which blocks share a call before trusting the split"
         % (len(calls_in_span), calls_in_span))
@@ -147,7 +147,7 @@ def test_cgroup_extraction_stops_at_its_own_end():
     assert len(headers) == 1, (
         "the #720 extraction carries %d section headers (expected 1): %r — the "
         "range end is a name list again" % (len(headers), headers))
-    assert headers[0].startswith("# ---- cgroup isolation (#720)"), (
+    assert headers[0].startswith("# ---- cgroup isolation"), (
         "the extracted block does not begin at the #720 header: %r" % headers[0])
     # The two measured overruns, asserted by their DISTINCTIVE code, not by name.
     assert "pids budget preflight" not in block, (
