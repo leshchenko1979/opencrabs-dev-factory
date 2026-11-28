@@ -24,7 +24,7 @@ word. Three details are load-bearing, and each was a bug in the first draft:
   double-counted every ``ok || bad`` pair.
 * A section's body runs from its ``section "..."`` call to the **next** call —
   not to the next ``# ---- `` header. The header-then-call convention means
-  header-bounding truncates the body (measured: §67 read 0).
+  header-bounding truncates the body.
 * **Heredoc bodies are masked.** ``run.sh`` feeds Python units and stub scripts
   through heredocs; their text is not shell assertions. Without masking, §13
   read 101 instead of 4 because its embedded Python unit was counted as shell.
@@ -181,10 +181,9 @@ SECTION_MODULES: dict[int, tuple[str, ...]] = {
 # section is NAMED, never silently absent — an omission a reader cannot see is
 # indistinguishable from an oversight.
 DEFERRED: dict[int, str] = {
-    16: "RETIRED 2026-08-28 (owner order 18:50Z) — the consent process was "
-        "eliminated and the tool archived. The shell section is a header with no "
-        "body: it asserts nothing, so a port would be an empty test inflating the "
-        "pass count.",
+    16: "RETIRED — the consent process was eliminated and the tool archived. "
+        "The shell section is a header with no body: it asserts nothing, so a "
+        "port would be an empty test inflating the pass count.",
 }
 
 # Sections whose pytest mass is currently BELOW their shell site count. Pinned,
@@ -210,7 +209,7 @@ def _joined_lines() -> list[str]:
     """``run.sh`` with backslash continuations joined.
 
     A long ``ok "..." \\`` + continuation line is ONE logical line; counting the
-    physical halves would double it (measured on §43).
+    physical halves would double it.
     """
     out: list[str] = []
     buf = ""
@@ -230,8 +229,7 @@ def _mask_heredocs(lines: list[str]) -> list[str | None]:
 
     A heredoc must have a real closing delimiter; without that check a stray
     ``<<`` in a comment opens a body that never closes and swallows the rest of
-    the file (measured: a false open at ``run.sh:1446`` took the whole census to
-    zero).
+    the file, taking the whole census to zero.
     """
     out: list[str | None] = list(lines)
     i = 0
@@ -362,9 +360,8 @@ def test_no_deferred_section_has_a_pytest_module_that_ports_it():
     strip the parenthesised issue refs and glosses, and ask whether any mapped
     module's own docstring already carries those words. A module whose docstring
     names the subject is a module that ports it. Requiring the FULL token set
-    keeps this off accidental neighbours: measured, the true match scores 1.0
-    while the best false candidate scores 0.5 (§62 vs the harness modules, which
-    share only "transcript"-adjacent words).
+    keeps this off accidental neighbours: a true match scores 1.0 while the
+    best false candidate scores 0.5.
 
     What this cannot see is a section ported under a title that shares no words
     with run.sh's — no mechanical check can, and inventing a fuzzy threshold to

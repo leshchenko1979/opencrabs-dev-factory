@@ -6,7 +6,7 @@ ADDITIVE: ``tools/tests/run.sh`` is untouched until parity is proven, and every
 fixture here mirrors a block of that harness rather than re-inventing it.
 
 WHY EACH FIXTURE EXISTS — every one of these replaces a defect that already
-happened, measured in ``run.sh``:
+happened in ``run.sh``:
 
   1. ``scratch``      one root per worker (59 ``mktemp -d`` sites). The root
                       carries a ``.oc-battery-owner`` pid marker because a
@@ -557,10 +557,10 @@ def _run(cmd, *, timeout, cwd=None, env=None, allow_live_state=False,
     """Run ``cmd`` with a HARD bound, killing the whole PROCESS GROUP on expiry.
 
     ``subprocess.run(timeout=)`` signals only the direct child, so a selftest's
-    grandchildren survive their parent and keep burning the box — measured
-    2026-10-01: six detached ``oc-harvest-sweep --selftest`` runs spun ~5 h at
-    37-39 % CPU each and nothing reaped them. ``timeout --kill-after`` did kill
-    the group; ``start_new_session=True`` + ``os.killpg`` reproduces that.
+    grandchildren survive their parent and keep burning the box: a detached
+    ``oc-harvest-sweep --selftest`` spins for hours at a third of a core each
+    with nothing to reap it. ``timeout --kill-after`` does kill the group;
+    ``start_new_session=True`` + ``os.killpg`` reproduces that.
     ``timeout`` has NO default on purpose: a bound that can be omitted is a
     bound that will be omitted, and the #753 hang is then unreproducible.
     """
@@ -853,7 +853,7 @@ def _serial_witness(request, serial_witness_dir):
     module: ``harness/test_harness_pool_mech.py`` carries legs in TWO groups
     (``battery-pool`` and ``battery-nested``) which are allowed to overlap each
     other by design, so a module-wide hold would report a false overlap on a
-    correct run — measured, and the reason this is per-test.
+    correct run — which is why this is per-test.
 
     A test with no group marker is not witnessed at all: there is no claim to
     observe, and holding one would fence it against legs it is meant to run
