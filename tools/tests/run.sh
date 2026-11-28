@@ -343,24 +343,23 @@ JOBS="${OC_BATTERY_JOBS:-1}"
 if [ "${1:-}" = "--jobs" ] && [ -n "${2:-}" ]; then JOBS="$2"; shift 2; fi
 case "${1:-}" in --jobs=*) JOBS="${1#--jobs=}"; shift ;; esac
 # ---- cgroup isolation (#720): never run the battery inside the daemon's unit -
-# Every command a lane runs inherits the daemon's cgroup
-# (`.../app.slice/opencrabs-ops.service`), whose wall is MemoryHigh == MemoryMax
-# == 1536 MiB with swap exhausted -- measured 98.6% full WHILE IDLE -- and whose
-# OOMPolicy=kill means a test allocation does not merely die itself: systemd
-# tears the whole unit down and takes the daemon with it. The test processes are
-# small (tens of MiB); the hazard is CO-TENANCY with a full wall, so no test
-# diet can fix it -- the run must not be in that cgroup at all. It re-execs
-# itself into a transient user scope (a SIBLING of the service, outside its
-# accounting) with its own caps, and the receipt names the cgroup it ACTUALLY
-# ran in so the isolation is a durable claim, not a story.
+# Every command a lane runs inherits the daemon's cgroup, whose wall is
+# MemoryHigh == MemoryMax == 1536 MiB with swap exhausted (measured 98.6% full
+# WHILE IDLE) and whose OOMPolicy=kill means an oversized test allocation tears
+# down the whole unit and takes the daemon with it. The test processes are small
+# (tens of MiB); the hazard is CO-TENANCY with a full wall, so no test diet can
+# fix it -- the run must not be in that cgroup at all. This re-execs itself into
+# a transient user scope, a SIBLING of the service and outside its accounting,
+# with its own caps; the receipt names the cgroup it ACTUALLY ran in, so the
+# isolation is a durable claim rather than a story.
 #
-# Placement is load-bearing: this sits AFTER the --chunk branch (whose children
-# take their branch and exit, never reaching here) and AFTER the single-flight
-# lock (so a queued run blocks on the lock rather than re-exec'ing under it).
-# BATTERY_CGROUP_ISOLATED guards the re-exec to ONE level: the transient child
-# carries the flag, so it runs the suite instead of recursing.
+# PLACEMENT: after the --chunk branch (whose children take their branch and exit,
+# never reaching here) and after the single-flight lock (so a queued run blocks
+# on the lock rather than re-exec'ing under it). BATTERY_CGROUP_ISOLATED guards
+# the re-exec to ONE level: the transient child carries the flag, so it runs the
+# suite instead of recursing.
 #
-# Fails OPEN. A missing systemd-run, no user manager, an unreadable cgroup, or a
+# Fails OPEN. A missing systemd-run, no user manager, an unreadable cgroup or a
 # refusal by the re-exec all leave the run on its current path with one WARNING
 # -- a harness that refuses to run is worse than one running in the wrong
 # cgroup. Opt out with --no-cgroup or OC_BATTERY_NO_CGROUP=1.
@@ -412,32 +411,25 @@ fi
 # per tool invocation. ONE root per run -- exported as TMPDIR and OC_SNAP_ROOT --
 # gives both populations one owner and the EXIT path exactly one thing to delete.
 #
-# The root defaults to DISK; tmpfs is opt-in via OC_BATTERY_SHM_DIR. A measured
-# A/B (deploy + ship + issue-dispatch, 3 samples per arm) showed a 1.26% gain,
-# below the 10% bar set before measuring, and /dev/shm is small and shared --
-# not worth owning by default.
+# PLACEMENT IS LOAD-BEARING TWICE:
+#   * AFTER the cgroup block above, because that block `exec`s this script and
+#     no EXIT trap runs across an exec, so a root created before it is orphaned.
+#   * BEFORE the lock block below, whose path is deliberately NOT derived from
+#     TMPDIR -- see that block for why mutual exclusion needs a stable path.
 #
-# Placement is load-bearing TWICE:
-#   * AFTER the cgroup block above, because that block `exec`s this script: a
-#     root created before the exec would be orphaned by it (no EXIT trap runs
-#     across an exec).
-#   * BEFORE the lock block below -- and the LOCK PATH IS DELIBERATELY NOT
-#     DERIVED FROM TMPDIR. It used to default to ${TMPDIR:-/tmp}/oc-battery.lock;
-#     with TMPDIR now per-run, keeping that default would hand every concurrent
-#     lane its OWN lock and silently end mutual exclusion, while the lanes still
-#     share the one canonical tools/tests/battery-last.json. The lock therefore
-#     stays on a stable shared path (/tmp/oc-battery.lock) regardless of the
-#     root -- see the comment in the lock block itself.
+# The root defaults to DISK; tmpfs is opt-in. An A/B (deploy + ship +
+# issue-dispatch, 3 samples per arm) measured a 1.26% gain, below the 10% bar set
+# before measuring, and /dev/shm is small and shared.
 #
 # Env knobs:
 #   OC_BATTERY_TEST_TMPDIR  force the root (the A/B arms pin a path with this)
 #   OC_BATTERY_SHM_DIR      tmpfs candidate. UNSET BY DEFAULT = disk root; set
 #                           it (e.g. /dev/shm) to opt into tmpfs
-#   OC_BATTERY_SHM_MIN_MB   free-space floor before a tmpfs candidate is used.
-#                           Only consulted when OC_BATTERY_SHM_DIR is set. 75 MB
+#   OC_BATTERY_SHM_MIN_MB   free-space floor before a tmpfs candidate is used;
+#                           only consulted when OC_BATTERY_SHM_DIR is set. 75 MB
 #                           is 1.5x the worst peak measured on the heaviest
-#                           sections. It protects a lane running --jobs N, where
-#                           N sections' fixtures coexist: raise it if you raise N.
+#                           sections, and it protects a --jobs N lane where N
+#                           sections' fixtures coexist: raise it if you raise N.
 _oc_bt_shm_dir="${OC_BATTERY_SHM_DIR:-}"
 _oc_bt_shm_min_mb="${OC_BATTERY_SHM_MIN_MB:-75}"
 case "$_oc_bt_shm_min_mb" in ''|*[!0-9]*) _oc_bt_shm_min_mb=75 ;; esac
@@ -697,29 +689,19 @@ if [ "${OC_BATTERY_NO_PRIORITY:-0}" != "1" ] && [ -z "${BATTERY_IN_CHUNK:-}" ]; 
   BATTERY_IOPRIO="$(ionice -p $$ 2>/dev/null || true)"
 fi
 
-# ---- pids budget preflight (#74) --------------------------------------------
-# Defect (measured 2026-11-17): the default JOBS is $(nproc)=4, but a detached
-# run's scope carries pids.max=64 (scope_tasks_max), and four concurrent chunks
-# fork past it. fork() then returns EAGAIN and every assertion that needed a
-# child reads as a CODE FAILURE. Measured on ONE tree, one commit:
-#   jobs=4 -> 390/8, with 63 "Resource temporarily unavailable" rows
-#   jobs=2 -> 398/0, ZERO such rows, 747s
-#   jobs=1 -> 398/0, ZERO such rows, 1171s
-# and all eight "failing" tools pass standalone (oc-deploy 401/0, oc-ledger
-# 624/0, oc-wt 32/32, oc-harvest-census 148/148, oc-ship 278/0,
-# oc-watcher-audit 40/0, oc-commit OK, oc-smoke-evidence OK). `dmesg` names the
-# rejection in the run's OWN scope: "cgroup: fork rejected by pids controller in
-# .../run-r985c6cdd….scope". A red that describes the cgroup and not the tree
-# blocks every lane's bump and sends each one to debug eight healthy tools, so
-# the budget is read BEFORE the fan-out and JOBS is reduced to fit -- and the
-# reduction is STATED, because a silent cap is indistinguishable from a slower
-# box.
+# ---- pids budget preflight --------------------------------------------------
+# The default JOBS is $(nproc)=4, but a detached run's scope carries
+# pids.max=64, so four concurrent chunks overrun it and fork() returns EAGAIN.
+# That red describes the CGROUP, not the tree: it reports every tool in the
+# affected chunks as broken and sends each lane to debug healthy tools. So the
+# budget is read BEFORE the fan-out, JOBS is reduced to fit, and the reduction is
+# STATED -- a silent cap is indistinguishable from a slower box.
 #
-# Per-chunk demand is bounded by measurement, not taste: 64/4 does not fit and
-# 64/2 does, so demand lies in (16, 32] and the divisor takes the conservative
-# end, 32. NOTE the #720 isolation asks for TasksMax=128, so on a box where the
-# transient scope IS created this cap never binds -- it binds exactly where
-# isolation failed and the run inherited the 64-pid run scope.
+# The divisor is measured, not taste: 64/4 does not fit and 64/2 does, so
+# per-chunk demand lies in (16, 32] and the conservative end wins, 32. #720's
+# isolation asks for TasksMax=128, so where the transient scope IS created this
+# cap never binds -- it binds exactly where isolation failed and the run
+# inherited the 64-pid scope.
 BATTERY_PIDS_MAX="" BATTERY_PIDS_CAP_NOTE=""
 _oc_pids_file="${OC_BATTERY_PIDS_MAX_FILE:-/sys/fs/cgroup${BATTERY_SELF_CGROUP}/pids.max}"
 # Decided ONCE, by the parent: a chunk child runs one section and never fans
