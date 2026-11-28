@@ -1324,14 +1324,12 @@ _fg_banner="$(OC_TOOLS_LOG="$_fgl2" bash -c '. "$1/lib/oc-log.sh"; OC_LOG_TOOL=o
                                 || bad "flood guard banner miscounts: '$_fg_banner' (expected 'failed 4x'; 36x = the pretty-print bug)"
 rm -rf "$_fgd2"
 # ---- 00a7. flood guard ignores a tool's declared VERDICT rc (#68-follow-up) --
-# The guard counted EVERY non-zero exit as a failure. But RC-CONTRACT.md
-# declares, per tool, that some non-zero codes are VERDICTS — the tool worked
-# and answered. `oc-ledger law-digest` returns 1 for DRIFT (a true, useful
-# answer) and `oc-lint-laws` returns 1 for "findings"; four lanes reading either
-# inside one 120s window armed the guard and the 5th run was refused rc 8.
-# Measured live before the fix: 33 `oc-ledger law-digest` rc-1 rows, 27
-# `check-version`, 8 `cadence` — the fleet punished for reading correctly, and
-# the DRIFT they reported was TRUE.
+# CONSTRAINT: the guard must not count EVERY non-zero exit as a failure.
+# RC-CONTRACT.md declares, per tool, that some non-zero codes are VERDICTS — the
+# tool worked and answered. `oc-ledger law-digest` returns 1 for DRIFT (a true,
+# useful answer) and `oc-lint-laws` returns 1 for "findings". Counting those as
+# failures refuses the next reader rc 8, punishing the fleet for reading
+# correctly — and the DRIFT they reported is TRUE.
 #
 # THE THREE LEGS ARE A SET, because any one alone passes on a broken guard:
 #   (1) a listed tool's rc-1 rows do NOT arm it      -> 0
@@ -3360,19 +3358,17 @@ grep -q '^a2a$' "$NFMARK" 2>/dev/null \
 rm -rf "$NFSTUB"
 
 # ---- 73b. lib/oc-notify.sh per-send sender; NO journal fallback (#472, #18) --
-# Defect A (#472): the (target, window) journal fallback was TARGET-scoped, so
-# any delivery to the same lane inside the window could settle a send that never
-# landed (Triage 41ca47a9, 2026-09-21: #433's row settled #466). The caller
-# (oc-issue-dispatch) supplies a per-SEND sender label and owns the stricter,
-# identity-keyed receipt check, so this lib must forward that label as --sender.
+# CONSTRAINT A: a (target, window) journal fallback is TARGET-scoped, so any
+# delivery to the same lane inside the window can settle a send that never
+# landed. The caller (oc-issue-dispatch) supplies a per-SEND sender label and
+# owns the stricter, identity-keyed receipt check, so this lib must forward that
+# label as --sender.
 #
-# Defect B (#18): that same fallback was INERT and could never fire -- its exit
-# status was captured with `||`, which fires ONLY on failure, so the status
-# variable kept its initial value on the SUCCESS path and a matching journal row
-# still returned the transport's rc (measured: the embedded python exits 0 on a
-# matching row; the function returned 4). It is DELETED, not repaired: the
-# one-line repair would put the message-blind (target, window) predicate back in
-# service -- the exact defect #472 removed from the dispatcher.
+# CONSTRAINT B: such a fallback is also INERT if its exit status is captured
+# with `||` — that fires ONLY on failure, so the status variable keeps its
+# initial value on the SUCCESS path and a matching journal row still returns the
+# transport's rc. It is DELETED, not repaired: the one-line repair would put the
+# message-blind (target, window) predicate back in service.
 #
 # Discriminating input: a journal row that MATCHES the target on every field.
 # Pre-#18 that row was the fallback's whole purpose, so if the fallback ever
@@ -3454,26 +3450,22 @@ rm -rf "$S472"
 # report a FALSE failure against a healthy tool. Inverting the one mechanism
 # keeps this cell a true single-variable discriminator indefinitely.
 section "lib/oc-snap.sh mirror age is its own birth"
-# The defect: `cp -a "$src/." "$mir/"` applies the SOURCE DIRECTORY's own
-# attributes to the destination root, so every mirror was born carrying
-# tools/'s mtime. Measured 2026-10-20: 42 mirrors sharing ONE mtime to the
-# nanosecond (2026-09-28 09:13:41.661447704), predating their births by 21.9
-# days. The only reader of that mtime is an AGE instrument
-# (vds-servers/tools/hygiene.py pass 1 against a 14 h gate line), so each
-# mirror was ~525 h stale the instant it existed.
+# CONSTRAINT: `cp -a "$src/." "$mir/"` applies the SOURCE DIRECTORY's own
+# attributes to the destination root, so a mirror is born carrying tools/'s
+# mtime. The only reader of that mtime is an age instrument, so an inherited
+# mtime makes a brand-new mirror read as arbitrarily stale.
 #
 # Discriminating input: a tools tree with a DELIBERATELY OLD mtime. A mirror
-# that inherits it reads ~22 days old; one that carries its own birth reads
-# seconds old. The mutant is the SAME source with the re-stamp made to INHERIT
-# the source age (`touch -r "$_os_sd" "$_os_stage"`) -- identical fixture,
-# identical run, and the ONLY difference is whether the mirror root carries its
-# own birth or the tree's. That is #51's ACTUAL defect, so the mutant
-# reproduces the bug instead of merely deleting a line.
-# WHY NOT "delete the touch": since #117 the mirror root is `mkdir`ed fresh and
-# published by rename(2) (stage dir -> mv -T), so it is born NOW even with no
-# re-stamp at all -- the delete-arm measured inherit=no and the control went RED
-# on a HEALTHY tool (2026-11-20). An inherited-age mutant is immune to that:
-# measured inherit-arm inherit=YES, 4599765s off birth.
+# that inherits it reads old; one that carries its own birth reads seconds old.
+# The mutant is the SAME source with the re-stamp made to INHERIT the source
+# age (`touch -r "$_os_sd" "$_os_stage"`): identical fixture, identical run,
+# the only difference being whether the mirror root carries its own birth or
+# the tree's. That reproduces the actual defect rather than deleting a line.
+#
+# WHY NOT "delete the touch": the mirror root is mkdir'ed fresh and published by
+# rename(2), so it is born NOW even with no re-stamp at all — deleting the touch
+# leaves the arm green and the control RED on a HEALTHY tool. An inherited-age
+# mutant is immune to that.
 # A leg that passed on both would be asserting the fixture, not the fix (CODE.md item 3).
 S51="$(mktemp -d)"
 mkdir -p "$S51/tools/lib" "$S51/tools/demo" "$S51/mir"
