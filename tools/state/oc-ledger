@@ -965,31 +965,65 @@ atomic_jq() { # $@ = full jq invocation (--arg triples + program); exit 3 parse 
     return 3
   fi
   if ! jq -e . "$next" >/dev/null 2>&1; then rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; fi
-  # TRUE APPEND when the program pushed exactly ONE event onto the END — that is
-  # the entire point of #149 (one ~200-byte line per stamp instead of a fresh
-  # 2.8MB blob). Anything else (a non-event mutation, or an event edit) falls
-  # back to rewriting the record wholesale, which is still one small file.
+  # TRUE APPEND when the program pushed exactly ONE event onto the END **and
+  # touched nothing else** — that is the entire point of #149 (one ~200-byte line
+  # per stamp instead of a fresh 2.8MB blob). Anything else (a non-event
+  # mutation, or an event edit) falls back to rewriting the record wholesale,
+  # which is still one small file.
+  #
+  # FACTORY #193: the length/prefix test ALONE is not sufficient, and reading it
+  # as sufficient silently dropped roster rows. `enroll` appends ONE event and
+  # adds ONE `.workers[]` row; `promote`, `retire`, `ack`, `confirm` and `sync`
+  # each append one event while mutating non-event state too. Every one of them
+  # matched the append test, so `cat >> events.jsonl` ran and the `else` arm's
+  # `del(.events)` rewrite of workers.json was SKIPPED: the non-event change was
+  # dropped with rc 0 and no diagnostic. The comment below has always claimed
+  # "an event-only mutation does not change non-event state" — this is the clause
+  # that makes that claim TRUE instead of assumed.
+  #
+  # `.updated_at` is EXCLUDED from the comparison deliberately, and that is the
+  # pre-existing contract rather than a new allowance: every append-shaped jq
+  # program bumps it, so comparing it would send every such mutation down the
+  # slow path and re-serialize the whole record — the #149 regression this fast
+  # path exists to prevent. It is dropped knowingly (see the append arm below).
   jq -c --slurpfile o "$base" '
       (.events // []) as $new | ($o[0].events // []) as $old
+      | (del(.events) | del(.updated_at)) as $new_rest
+      | ($o[0] | del(.events) | del(.updated_at)) as $old_rest
       | if ($new|length) == (($old|length) + 1) and ($new[0:($old|length)] == $old)
+           and ($new_rest == $old_rest)
         then $new[-1] else empty end' "$next" > "$app" 2>/dev/null
   local ev; ev="$(_JSONL_EVENTS)"
   if [ -s "$app" ]; then
     # #177: a stamp is an append + fsync of one line. The view is not written,
-    # and workers.json is left alone — an event-only mutation does not change
-    # non-event state (the jq program may bump .updated_at, which we drop).
+    # and workers.json is left alone — and since #193 the predicate above has
+    # PROVEN that nothing but the event list changed (modulo .updated_at, which
+    # is dropped deliberately: every append-shaped program bumps it, and
+    # propagating it would cost the whole-record rewrite #149 removed).
     cat "$app" >> "$ev" || { rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""; return 4; }
     sync -f "$ev" 2>/dev/null || sync 2>/dev/null || true
   else
-    if ! jq -c '.events[]?' "$next" > "$ev.tmp.$$" 2>/dev/null; then
-      rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4
-    fi
-    mv "$ev.tmp.$$" "$ev" || { rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$tmp"; _OC_TMP=""; return 4; }
-    # Non-event state: only rewritten when it actually changed.
+    # Slow path: the event list is not a pure append (an event edit, or a
+    # non-event mutation such as enroll's `.workers += [...]`), so BOTH files
+    # are rebuilt. Both temps are built BEFORE either installs, so a build
+    # failure leaves the live files untouched — the contract this function
+    # opens with.
     local wf; wf="$(_JSONL_WORKERS)"
-    jq -c 'del(.events)' "$next" > "$wf.tmp.$$" 2>/dev/null \
-      && { cmp -s "$wf.tmp.$$" "$wf" 2>/dev/null || mv "$wf.tmp.$$" "$wf"; } \
-      ; rm -f "$wf.tmp.$$"
+    if ! jq -c 'del(.events)' "$next" > "$wf.tmp.$$" 2>/dev/null; then
+      rm -f "$base" "$next" "$app" "$wf.tmp.$$" "$tmp"; _OC_TMP=""; return 4
+    fi
+    if ! jq -c '.events[]?' "$next" > "$ev.tmp.$$" 2>/dev/null; then
+      rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$wf.tmp.$$" "$tmp"; _OC_TMP=""; return 4
+    fi
+    mv "$ev.tmp.$$" "$ev" || { rm -f "$base" "$next" "$app" "$ev.tmp.$$" "$wf.tmp.$$" "$tmp"; _OC_TMP=""; return 4; }
+    # Non-event state: only rewritten when it actually changed. The `|| return 4`
+    # is #193's other half — this used to be `jq ... && { cmp || mv; }` with the
+    # whole thing unguarded, so a failed workers write fell through to `return 0`
+    # and reported SUCCESS over non-event state that was never installed.
+    if ! cmp -s "$wf.tmp.$$" "$wf" 2>/dev/null; then
+      mv "$wf.tmp.$$" "$wf" || { rm -f "$base" "$next" "$app" "$wf.tmp.$$" "$tmp"; _OC_TMP=""; return 4; }
+    fi
+    rm -f "$wf.tmp.$$"
   fi
   rm -f "$base" "$next" "$app" "$tmp"; _OC_TMP=""
   return 0
