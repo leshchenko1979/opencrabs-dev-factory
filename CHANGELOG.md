@@ -1,5 +1,79 @@
 # Changelog — opencrabs-dev
 
+## v0.4.338 — `oc-notify-fanout --selftest` names its abort instead of dying silent
+
+**What changed (tool).** Factory
+[#212](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/212):
+`oc-notify-fanout --selftest` exited **rc 3 with 0 bytes on stdout AND 0 bytes
+on stderr** whenever `OC_DEV_STATE` named a directory with no `events.jsonl`.
+Under `set -euo pipefail` an unguarded non-zero exit killed the body before a
+single `chk` line, so an operator saw the same three bytes a SIGKILL produces —
+and four sessions filed the same leg failure as a resource flake. The issue
+body's `FAIL: text-file-missing-rc2 (got rc=3)` is the same defect one level
+down: that leg was measuring the ambient environment.
+
+Three changes, ONE file (`tools/notify/oc-notify-fanout`):
+
+1. **ERR trap inside the `--selftest` branch**, right after the EXIT trap. Any
+   unguarded non-zero exit now prints `SELFTEST ABORT: rc=N at line L:
+   <command>` instead of nothing. Arms that EXPECT a failure carry `|| true` or
+   sit in a conditional, where bash never fires ERR, so it speaks only for the
+   silent class.
+2. **Arm 1a2 (law-17 holder scan) isolates the ledger.** `env -u OC_DEV_STATE
+   -u OC_LEDGER` joins `-u OC_FANOUT_LEDGER`, and the assignment carries
+   `|| true`. `oc_ledger_path` precedence is `OC_LEDGER > OC_DEV_STATE > $HOME`
+   (`tools/lib/oc-log.sh`), so an inherited `OC_DEV_STATE` defeated the arm's
+   fake `HOME` and killed it at the roster check before any assertion ran.
+3. **`text-file-missing-rc2` pins `OC_FANOUT_LEDGER="$LEDG"`** on its child.
+   Unpinned, the leg resolved the ledger from ambient env and reported `got
+   rc=3` — a phantom missing-rc-2 defect.
+
+The red gate also became `[ "$F" -eq 0 ] || { trap - ERR; exit 1; }` followed by
+`exit 0`: a legitimately-red selftest prints its FAIL lines and exits quietly,
+instead of appending a `SELFTEST ABORT` line that reads as a crash.
+
+**Evidence.**
+
+| probe | result |
+| --- | --- |
+| arm A before fix (`OC_DEV_STATE` = empty dir) | rc 3, out 0 B, err 0 B |
+| arm A after fix | rc 0, `PASS=103 FAIL=0` |
+| control (`OC_DEV_STATE` unset) | rc 0, `PASS=103 FAIL=0` |
+| neuter (isolation re-broken, trap kept) | rc 3, 195 B on stdout naming line 451 |
+| production path (non-selftest, ledger-less `OC_DEV_STATE`) | rc 3, `roster missing: <dir>/events.jsonl 3` — always named |
+
+**Regression legs — `tools/tests/pytest/tools/test_notify_fanout.py` §61d.**
+`test_selftest_never_aborts_silently` drives the ledger-less `OC_DEV_STATE`
+condition itself, because the battery's `env_guard` MATERIALISES
+`events.jsonl` and can therefore never reproduce the silence by accident; it is
+`slow`-marked and pinned to the `tool-selftests` group, so the default gate
+keeps factory #203's exclusion and stays exactly as fast. Two static legs guard
+the edits that silence cannot be observed to protect —
+`test_selftest_reports_abort_instead_of_silence` (the ERR trap is registered
+INSIDE the `--selftest` branch, names `LINENO` and `BASH_COMMAND`, and the red
+gate disarms it) and `test_selftest_arms_pin_the_ledger` (arm 1a2 unsets all
+three ledger vars and carries `|| true`; the rc-2 leg pins its ledger). All
+three redden against the pre-fix tool: 2 failed / 3 passed on the static pair,
+and the slow leg reported `rc=3 (0 bytes stdout, 0 bytes stderr)` — the defect
+verbatim.
+
+**Gate: 499 passed, 0 failed, rc 0, 152 s** (`-n 2`, receipt
+`/tmp/gate212.json` during the scoped work, then the canonical
+`tools/tests/battery-last.json` stamped by the full run: `verdict: PASS`,
+`pass: 499`, `fail: 0`).
+
+**Bundled commits — the version record is the only place their ship dates exist (C8).**
+
+- `30cab6e79` fix(tools): oc-notify-fanout --selftest names its abort instead of dying silent
+- `07664df95` docs(changelog): v0.4.337's bundled-commit lists render one per line
+- `26654071a` docs(changelog): v0.4.337 names the 77 commits its sync bundled
+- `d57567688` evidence(db): the ops store carries no query timing, and the log invites the misread
+
+**Still open:** factory
+[#214](https://github.com/leshchenko1979/opencrabs-dev-factory/issues/214) — a
+SCOPED pytest run stamps a PASS backed only by the selected tests; always set
+`OC_PYTEST_RECEIPT=/tmp/x.json` for a partial run.
+
 ## v0.4.337 — the shell battery is retired; pytest is the only gate
 
 **Owner word: "Retire" (2026-11-28), on `tools/tests/run.sh`.** The 5,485-line
