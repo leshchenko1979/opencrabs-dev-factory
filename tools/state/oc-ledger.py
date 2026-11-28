@@ -3587,6 +3587,777 @@ def cmd_sweep_closed_claims(ledger, args):
 
 
 # ---------------------------------------------------------------------------
+# sync — publish a skill version: the ONE act that bumps the record
+# ---------------------------------------------------------------------------
+SYNC_HELP = ("usage: oc-ledger sync --version <v> --why <text> "
+             "[--catch-up] [--allow-sweep]")
+
+
+def battery_receipt() -> str:
+    """``battery_receipt`` — the receipt that IS this bump's evidence."""
+    return os.path.join(L.skill_dir(), "tools", "tests", "battery-last.json")
+
+
+def _epoch(text: str) -> int:
+    """``date -u -d "$ts" +%s`` — 0 when the bash's ``date`` would FAIL.
+
+    The failure arm is the bash's own (``|| echo 0``) and both callers key on
+    ``> 0``, so an unreadable stamp fails its gate instead of passing it.
+
+    AN EMPTY STAMP IS NOT A FAILURE — and that is not a detail. GNU ``date -d
+    ""`` (and ``-d "0"``, and ``-d " "``) resolves to MIDNIGHT TODAY, so a
+    receipt carrying no ``ts`` at all PASSES the 6h freshness gate until 06:00
+    UTC and fails after it. Reproduced deliberately: the flip must not change
+    what the live tool accepts, and a receipt with a missing stamp is exactly
+    the shape an older or hand-written battery leaves behind. It is a quirk,
+    not a design — the honest repair is its own change with its own receipt,
+    not something to smuggle into a port whose whole gate is byte-identity.
+
+    The rest of GNU ``date``'s grammar is NOT reproduced, and that is a
+    deliberate boundary rather than an oversight: ``-d "2026"`` is HHMM
+    (20:26 today), ``-d "yesterday"`` is a relative offset, and ``-d "2026-11"``
+    is the 1st of that month. Every one of those is a shape a machine-written
+    ``ts`` never takes, so the port parses the ISO forms that DO occur and
+    treats the rest as unparseable. A future receipt that starts emitting
+    relative dates is a real divergence and would have to be handled here.
+    """
+    text = (text or "").strip()
+    if not text or text == "0":
+        # ``date -d ""`` -> midnight today, UTC (the bash runs ``date -u``).
+        today = datetime.datetime.now(datetime.timezone.utc)
+        midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(midnight.timestamp())
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return 0
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return int(stamp.timestamp())
+
+
+def _epoch_iso(epoch: int) -> str:
+    """``date -u -d "@$e" +%FT%TZ``."""
+    return datetime.datetime.fromtimestamp(
+        epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _c8_entry_body(version: str) -> str:
+    """The CHANGELOG body of ``## v<version>`` (bash ``_c8_entry_body``).
+
+    The version arrives in TWO forms: ``$v`` is bare ("0.4.242") while ``spans``
+    carries the ledger's own ``what`` first token, which is PREFIXED
+    ("v0.4.8"). Building the pattern from the prefixed form searched for
+    '## vv0.4.8', matched nothing, and returned an EMPTY body — silently,
+    because a missing entry is deliberately not an error here. Normalise at the
+    seam so neither caller can get it wrong.
+    """
+    ver = version[1:] if version.startswith("v") else version
+    pattern = re.compile(r"^## v" + re.escape(ver) + r"([ \u2014(:]|$)")
+    try:
+        with open(os.path.join(L.skill_dir(), "CHANGELOG.md"), "r",
+                  encoding="utf-8", errors="surrogateescape") as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return ""
+    out = []
+    inside = False
+    for line in lines:
+        if not inside:
+            if pattern.search(line):
+                inside = True
+            continue
+        if line.startswith("## v"):
+            break
+        out.append(line)
+    # ``$(...)`` strips ALL trailing newlines, so a body that ends in blank
+    # lines renders without them. Only the SUBSTRING tests read this value, but
+    # matching the bash keeps a later reader from having to re-derive it.
+    return "\n".join(out).rstrip("\n")
+
+
+def _oc_log_extra(key: str, value: str) -> None:
+    """``oc_log_extra`` — the tools.log ``extra{}`` field.
+
+    A no-op unless ``OC_LOG_ENABLED=1``, and output-neutral in every case (the
+    bash only sets ``OC_LOG_EXTRA``, which the wrapper consumes). Kept as a
+    named seam so the call site survives the flip.
+    """
+    return
+
+
+def c8_naming_warn(ledger: str, version: str) -> None:
+    """C8 second leg: the entry must NAME every non-sync commit the sync bundles.
+
+    WARN-only, never a refusal, for two structural reasons recorded in law:
+    the range is OTHER LANES' work, so a hard gate would let one lane's landing
+    block the fleet's version record; and the range carries untrailered law
+    commits BY DESIGN, so a hard gate would need an exclusion list — and an
+    exclusion list is where this class of gate goes to die.
+    """
+    skill = L.skill_dir()
+    # The anchor is the previous SYNC commit, matched on the SYNC FORM this
+    # tool's own tail writes ("skill v<ver>: oc-ledger sync — <why>") and NOT on
+    # the bare '^skill v' prefix: that prefix also heads bump-only commits and
+    # CORRECTION commits. Measured 2026-09-23: 115 prefixed commits, only 82 of
+    # them syncs. A prefix-only anchor returns the newest commit with that
+    # prefix, which lands too LATE whenever a bump-only commit is newer than the
+    # newest sync — and a late anchor TRUNCATES the range, silently dropping
+    # bundled commits (an under-flag, the exact silent-clean shape the skip-NOTE
+    # below exists to prevent).
+    _, anchor = _git_out(skill, "log",
+                         "--grep=^skill v[0-9.]*: oc-ledger sync", "-1",
+                         "--format=%H")
+    if not anchor:
+        # An unverifiable check must never pass as clean (#485's shape): say
+        # SKIPPED and say it is NOT a clean result, so absence of a WARN is
+        # never read as "every commit was named".
+        errln("sync: NOTE — C8 naming check SKIPPED: no previous 'skill "
+              "v<ver>: oc-ledger sync' commit is derivable, so the bundled "
+              "range is unverifiable. This is NOT a clean result and NOT a "
+              "finding.")
+        return
+    have_ledger = os.path.isfile(ledger) or L.jsonl_mode(ledger)
+    spans = ""
+    range_after = ""
+    bounded_note = ""
+    anchor_t = ""
+    # LEDGER BOUND on the range (#651), then LEDGER CROSS-CHECK (v0.4.243). The
+    # ledger is authoritative for which versions published, and it carries
+    # versions that minted NO commit at all, so git alone cannot see a skipped
+    # window. It fires ONLY when the anchor is stale: an unconditional bound
+    # would narrow a correct range against the wrong instant (measured).
+    _, anchor_t = _git_out(skill, "log", "-1", "--format=%cI", anchor)
+    if anchor_t and have_ledger:
+        anchor_e = _epoch(anchor_t)
+        rows = [row for row in (_unified(ledger).get("events") or [])
+                if isinstance(row, dict)
+                and L.to_string(_keep(row.get("kind"), "")) == "skill-bump"]
+        stamps = sorted(L.to_string(_keep(row.get("t"), ""))
+                        for row in rows
+                        if L.to_string(_keep(row.get("t"), "")) != "")
+        bump_e_raw = stamps[-1] if stamps else ""
+        # (epoch, version) pairs sorted STABLY by the timestamp alone, so the
+        # last element is the last row among the maximum-t group in ORIGINAL
+        # order — what jq's ``sort_by(.[0]) | last`` returns. Sorting by the
+        # tuple instead would break that tie on the version.
+        pairs = [(L.to_string(_keep(row.get("t"), "")),
+                  L.to_string(_keep(row.get("what"), "")).split(" ")[0])
+                 for row in rows
+                 if L.to_string(_keep(row.get("t"), "")) != ""
+                 and L.to_string(_keep(row.get("what"), "")).split(" ")[0] != ""]
+        pairs.sort(key=lambda pair: pair[0])
+        bump_v = pairs[-1][1] if pairs else ""
+        if bump_e_raw and bump_v:
+            bump_e = _epoch(bump_e_raw)
+            _, head_raw = _git_out(skill, "log", "-1", "--format=%ct", "HEAD")
+            head_e = int(head_raw) if head_raw.isdigit() else 0
+            # The bound must never sit PAST HEAD. A skill-bump row stamped later
+            # than every commit in the repo would filter the range to EMPTY, and
+            # an empty range makes this check verify nothing while still
+            # printing a note that reads like a correction — the silent-clean
+            # shape (#485), reached from the opposite direction. Measured: the
+            # selftest's own stale-condition leg injects rows at 2099, and an
+            # unguarded bound emptied the range there and reddened five C8 legs.
+            if bump_e > anchor_e and bump_e <= head_e:
+                range_after = "--after=@%d" % bump_e
+                bounded_note = "%s@%s" % (bump_v, _epoch_iso(bump_e))
+            elif bump_e > head_e:
+                errln("sync: NOTE — C8 naming: skill-bump row %s is stamped %s, "
+                      "AFTER every commit in the repo (%s), so the range is NOT "
+                      "bounded to it — a bound past HEAD would empty the range "
+                      "and read as a clean check. The subject anchor is kept "
+                      "and the straddle is disclosed instead (#651)."
+                      % (bump_v, _epoch_iso(bump_e), _epoch_iso(head_e)))
+    # Skill-bump rows newer than the anchor enumerate the versions published
+    # since the previous sync. When the ledger bound fired, the range is already
+    # restricted to commits after the newest of them, so the straddle is
+    # CORRECTED rather than merely disclosed — and the note says which, because
+    # a reader must be able to tell a bounded range from an unbounded one.
+    if anchor_t and have_ledger:
+        # NORMALISE BOTH SIDES TO EPOCH before comparing. The two timestamps
+        # arrive in DIFFERENT ISO forms — the commit as "...+00:00", the row as
+        # "...Z" — and 'Z' (0x5A) sorts ABOVE '+' (0x2B), so a plain string
+        # compare reads a row stamped in the SAME SECOND as NEWER than the
+        # commit that follows it. Caught by this function's own control leg,
+        # which fired on an unmodified fixture.
+        anchor_e = _epoch(anchor_t)
+        newer = set()
+        for row in (_unified(ledger).get("events") or []):
+            if not isinstance(row, dict) \
+                    or L.to_string(_keep(row.get("kind"), "")) != "skill-bump":
+                continue
+            rt = L.to_string(_keep(row.get("t"), ""))
+            rv = L.to_string(_keep(row.get("what"), "")).split(" ")[0]
+            if not rt or not rv:
+                continue
+            if _epoch(rt) > anchor_e:
+                newer.add(rv)
+        spans = " ".join(sorted(newer))
+        if spans:
+            if range_after:
+                errln("sync: NOTE — C8 naming: the range is BOUNDED to commits "
+                      "after %s. Skill-bump rows newer than the subject anchor "
+                      "(%s) published without an intervening sync commit, so "
+                      "the anchor alone would have swept %s's earlier windows "
+                      "in; they are excluded by the bound (#651)."
+                      % (bounded_note, spans, range_after))
+            else:
+                errln("sync: NOTE — C8 naming: the range spans MORE THAN ONE "
+                      "version window. Skill-bump rows newer than the anchor "
+                      "(%s) published without an intervening sync commit, so a "
+                      "commit listed below may belong to an earlier window "
+                      "than this one." % spans)
+    entry = _c8_entry_body(version)
+    # #94: the SET the naming test reads. A commit is "named" if any entry in
+    # the range's own window set names it — not only the newest one.
+    #
+    # WIDENING IS CONDITIONAL, and the condition is the whole point. When the
+    # bound did NOT fire the git range is unbounded and can span several version
+    # windows; a commit shipped under an earlier window is dated in THAT
+    # window's entry, and testing only ``## v$v`` flags it for lacking a ship
+    # date it actually has. When the bound DID fire, earlier windows are
+    # excluded by construction, so widening there would hide a genuine miss.
+    entries = entry
+    widen_note = ""
+    if not range_after and spans:
+        for one in spans.split():
+            entries = entries + "\n" + _c8_entry_body(one)
+        widen_note = ("sync: note — C8 naming: the range is UNBOUNDED and spans "
+                      "more than one version window (v%s + %s), so the naming "
+                      "test read the entries for all of them. A commit is named "
+                      "if ANY of those entries names it." % (version, spans))
+    # Every NON-SYNC commit the sync bundles (hq.md:57), newest first.
+    log_args = ["log", "--format=%h %s", "--no-merges", "%s..HEAD" % anchor]
+    if range_after:
+        log_args.append(range_after)
+    _, range_text = _git_out(skill, *log_args)
+    if not range_text:
+        return
+    # #94: the scope note belongs HERE, not where the set was built. A note
+    # describing the scope of a test that never ran is noise, and the early
+    # return above is exactly that case.
+    if widen_note:
+        errln(widen_note)
+    # The syncing session's own commits, by Session-Id trailer. Built in ONE git
+    # call (a per-commit read would be one process per commit on every sync).
+    # The ambient session id, env var first (A1b: OC_ACTOR is the retired
+    # primary).
+    self_id = _ambient_uuid()
+    selfids = ""
+    if self_id:
+        trailer_args = ["log", "--format=%h %(trailers:key=Session-Id,valueonly)",
+                        "--no-merges", "%s..HEAD" % anchor]
+        if range_after:
+            trailer_args.append(range_after)
+        _, raw = _git_out(skill, *trailer_args)
+        # awk's ``NF > 1`` is the test, and it requires a NON-EMPTY second
+        # field. git emits ``"<sha> "`` — a TRAILING SPACE and nothing else —
+        # for a commit with no Session-Id trailer, so counting spaces admits
+        # those and, worse, `self_id in line` can then match a commit that
+        # merely resembles the id. Split and require field 2.
+        selfids = "".join("%s " % fields[0]
+                          for fields in
+                          (line.split(" ", 1) for line in raw.split("\n"))
+                          if len(fields) == 2 and fields[1]
+                          and self_id in fields[1])
+    # Commits carrying an Issue-Ref TRAILER — the machine-readable statement
+    # that a commit IS the work for an issue, as opposed to a subject that
+    # merely MENTIONS one in prose. Same one-git-call idiom as selfids above.
+    ref_args = ["log", "--format=%h %(trailers:key=Issue-Ref,valueonly)",
+                "--no-merges", "%s..HEAD" % anchor]
+    if range_after:
+        ref_args.append(range_after)
+    _, raw = _git_out(skill, *ref_args)
+    # Same NF>1 requirement as selfids above, and here it is load-bearing: a
+    # commit WITHOUT an Issue-Ref trailer renders as ``"<sha> "``, and treating
+    # that trailing space as a second field marked EVERY commit as carrying the
+    # trailer — which silently disabled the self-skip arm's "keep flagging real
+    # shipped work" test and let it skip commits it must keep listed.
+    refids = "".join("%s " % fields[0]
+                     for fields in
+                     (line.split(" ", 1) for line in raw.split("\n"))
+                     if len(fields) == 2 and fields[1])
+    missing = ""
+    skipped = 0
+    selfskip = 0
+    for line in range_text.split("\n"):
+        if not line:
+            continue
+        sha, _, subj = line.partition(" ")
+        # Sync commits name themselves and carry no issue ref; the law scopes
+        # the requirement to NON-sync commits.
+        if subj.startswith("skill v"):
+            continue
+        # The sweeper's own bookkeeping (oc-ledger commit-pending --bundle) is
+        # committed by THIS tool with a subject it writes itself. Those commits
+        # correctly carry no issue ref and are correctly unnamed by CHANGELOG,
+        # so without this they are re-listed as unnamed in EVERY window the
+        # sweeper runs in. Skip by the CONTRACT the tool writes, never a
+        # hand-maintained name list — a list would rot; the marker cannot.
+        if "(oc-ledger commit-pending --bundle)" in subj:
+            skipped += 1
+            continue
+        # The BUMPER'S OWN authoring commits (v0.4.243). The entry is written to
+        # the working tree, the law files are committed, and THEN this sync runs
+        # — so the range always contains the bumper's own law commit(s), and the
+        # entry could not name them even in principle: their shas did not exist
+        # when it was written. Match on the Session-Id TRAILER, never on the
+        # author name: a name is shared by every commit a lane ever makes, while
+        # the trailer is this session's own. TIGHTENED: skip only a self-commit
+        # that ALSO carries no Issue-Ref trailer — a self-commit that IS the
+        # work for an issue is real shipped work whose ship date belongs in the
+        # record, so it stays flagged. Without this, a sync run by a lane that
+        # had also shipped a fix would silently drop that fix from the WARN.
+        if " %s " % sha in " %s " % selfids:
+            if " %s " % sha in " %s " % refids:
+                pass                        # real shipped work, keep flagging
+            else:
+                selfskip += 1
+                continue
+        named = 1 if sha in entries else 0
+        if not named:
+            for ref in re.findall(r"#[0-9]+", subj):
+                if ref in entries:
+                    named = 1
+                    break
+        if not named:
+            missing += "%s %s\n" % (sha, subj)
+    # Disclose the exclusion BEFORE the clean-path return: a skip that is never
+    # reported is an exclusion list nobody can audit, which is how this class of
+    # gate dies. A lowercase note, not the WARN — the "silence means everything
+    # is named" contract still holds for the WARN itself.
+    if skipped > 0:
+        errln("sync: note — C8 naming: %d commit(s) skipped as this tool's own "
+              "sweeper bookkeeping (subject carries '(oc-ledger commit-pending "
+              "--bundle)'). Disclosed so the exclusion is never silent; those "
+              "commits carry no issue ref and need no naming." % skipped)
+    if selfskip > 0:
+        errln("sync: note — C8 naming: %d commit(s) skipped as made by THIS "
+              "syncing session (Session-Id trailer = %s) and carrying no "
+              "Issue-Ref trailer. The entry is written before those commits "
+              "exist, so it cannot name them; disclosed so the exclusion is "
+              "never silent. A self-commit that DOES carry an Issue-Ref trailer "
+              "is still listed — only the unnameable ones are skipped."
+              % (selfskip, self_id))
+    if not missing:
+        return                          # named-everything is otherwise SILENT
+    # #94: the WARN must describe the entries ACTUALLY READ. When the range was
+    # unbounded and spanned several windows, "the '## v$v' entry" is false twice
+    # over — it was not the only entry read, and it is not the only place a ship
+    # date exists. Guidance that misnames its own scope sends the reader to edit
+    # a file that already names the commit, which is how a WARN gets ignored.
+    if widen_note:
+        errln("sync: WARN — C8 naming: none of the entries for the version "
+              "windows this UNBOUNDED range spans (v%s + %s) names every commit "
+              "the sync bundles." % (version, spans))
+    else:
+        errln("sync: WARN — C8 naming: the '## v%s' entry does not name every "
+              "commit this sync bundles." % version)
+    for line in missing.split("\n"):
+        if line:
+            errln("    unnamed: %s" % line)
+    errln("  WARN only, never a refusal: the range is other lanes' work and "
+          "carries untrailered law commits by design.")
+    if widen_note:
+        # Comma-separate the window list: spans is space-separated, so echoing
+        # it raw produced "one of v0.4.2, v0.4.8 v0.4.9" — a list where the
+        # reader cannot tell whether "v0.4.8 v0.4.9" is one window or two.
+        errln("  Name each one in the entry for the window it actually shipped "
+              "under — one of %s — because each window's entry is the only "
+              "place that window's ship dates exist."
+              % ", ".join(("v%s %s" % (version, spans)).split()))
+    else:
+        errln("  Name each one in the '## v%s' entry (short sha or issue ref) — "
+              "the version record is the only place a bundled fix's ship date "
+              "exists." % version)
+
+
+def _ver_parts(version: str):
+    """``cut -d. -f2`` / ``-f3`` as STRINGS — the bash compares minor as a string."""
+    parts = version.split(".")
+    minor = parts[1] if len(parts) > 1 else ""
+    patch = parts[2] if len(parts) > 2 else ""
+    return minor, patch
+
+
+def _num(text: str) -> int:
+    """A bash ARITHMETIC operand (``$(( c3 + 1 ))``): empty or garbage reads 0.
+
+    bash resolves an unset or non-numeric name to 0 inside ``$(( ))``, which is
+    why an empty ``cur`` makes ``$(( c3 + 1 ))`` equal 1 rather than erroring.
+    """
+    return int(text) if text.isdigit() else 0
+
+
+def _test_num(text: str):
+    """A ``test`` operand (``[ "$v3" -eq ... ]``): None when non-numeric.
+
+    bash's ``test`` ERRORS on a non-integer operand and the enclosing ``&&``
+    chain treats that as false, so a garbage operand must never satisfy a
+    comparison — which is what keeps an unparseable version from authorising a
+    catch-up.
+    """
+    return int(text) if text.isdigit() else None
+
+
+def _ver_gt(minor_a: str, patch_a: str, minor_b: str, patch_b: str) -> bool:
+    """bash ``[ "$v2" -gt "$c2" ] || { [ "$v2" -eq "$c2" ] && [ "$v3" -gt "$c3" ]; }``."""
+    a, b = _test_num(minor_a), _test_num(minor_b)
+    if a is not None and b is not None and a > b:
+        return True
+    if not (a is not None and b is not None and a == b):
+        return False
+    p, q = _test_num(patch_a), _test_num(patch_b)
+    return p is not None and q is not None and p > q
+
+
+def cmd_sync(ledger, args):
+    if args and args[0] in ("-h", "--help"):
+        outln(SYNC_HELP)
+        return L.RC_OK
+    v = ""
+    why = ""
+    catchup = 0
+    allow_sweep = 0
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--version":
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "--version needs a value")
+            v = args[i + 1]
+            i += 2
+        elif arg == "--why":
+            if i + 1 >= len(args):
+                die(L.RC_USAGE, "--why needs a value")
+            why = args[i + 1]
+            i += 2
+        elif arg == "--catch-up":
+            catchup = 1
+            i += 1
+        elif arg == "--allow-sweep":
+            allow_sweep = 1
+            i += 1
+        else:
+            i += 1
+    if not v:
+        die(L.RC_USAGE, "usage: oc-ledger sync --version <v> --why <text> "
+            "[--catch-up]")
+    # ``echo "$v" | grep -Eq '^0\.[0-9]+\.[0-9]+$'`` matches ANY LINE of the
+    # value, so a multi-line --version passes the bash's shape gate on its
+    # second line. Reproduce the per-line test rather than tightening it.
+    if not any(re.fullmatch(r"0\.[0-9]+\.[0-9]+", line)
+               for line in v.split("\n")):
+        die(6, "sync: version shape must be 0.N.N, got '%s'" % v)
+    if not L.ledger_ok(ledger):
+        die(L.RC_REFUSED, "ledger missing or unparseable: %s" % ledger)
+    # battery gate: receipt must exist, be PASS, fail==0, fresh (<6h)
+    rcpt = battery_receipt()
+    if not os.path.isfile(rcpt):
+        die(5, "sync: battery gate — no receipt at %s (run tools/tests/run.sh "
+            "first)" % rcpt)
+    try:
+        with open(rcpt, "r", encoding="utf-8", errors="surrogateescape") as fh:
+            receipt = json.load(fh)
+    except (OSError, ValueError):
+        receipt = None
+    # jq ``-e '.verdict == "PASS" and (.fail == 0)'``: ``false`` and ``null``
+    # both fail the comparison against 0, and jq -e treats a false result as a
+    # non-zero exit — so the Python must not let ``False == 0`` sneak through.
+    ok_fail = (isinstance(receipt, dict)
+               and not isinstance(receipt.get("fail"), bool)
+               and isinstance(receipt.get("fail"), (int, float))
+               and receipt.get("fail") == 0)
+    if not (isinstance(receipt, dict) and receipt.get("verdict") == "PASS"
+            and ok_fail):
+        try:
+            with open(rcpt, "r", encoding="utf-8",
+                      errors="surrogateescape") as fh:
+                first = fh.read().split("\n")[0]
+        except OSError:
+            first = ""
+        die(5, "sync: battery gate — receipt is RED (%s)" % first)
+    rts = L.to_string(_keep(receipt.get("ts"), ""))
+    rs = _epoch(rts)
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    if not (rs > 0 and (now - rs) < 21600):
+        die(5, "sync: battery gate — receipt stale (>6h: %s)" % rts)
+    # SKILL.md must already carry the version (tool never writes it first)
+    skill = L.skill_dir()
+    try:
+        with open(os.path.join(skill, "SKILL.md"), "r", encoding="utf-8",
+                  errors="surrogateescape") as fh:
+            skill_md = fh.read()
+    except OSError:
+        skill_md = ""
+    if not re.search(r"^version: %s$" % re.escape(v), skill_md, re.M):
+        die(6, "sync: SKILL.md frontmatter does not say version: %s — bump the "
+            "doc first" % v)
+    # CHANGELOG gate (lens C8, v0.4.65): a bump ships only with its receipt —
+    # the v0.4.54 backfill incident (bump shipped with no CHANGELOG entry) is
+    # dead. Header convention is "## v<ver> (date) — title", so match the
+    # version token at line start followed by space/paren/dash/colon/end — not
+    # a bare-line equality.
+    try:
+        with open(os.path.join(skill, "CHANGELOG.md"), "r", encoding="utf-8",
+                  errors="surrogateescape") as fh:
+            changelog = fh.read()
+    except OSError:
+        changelog = ""
+    if not re.search(r"^## v%s([ \u2014(:]|$)" % re.escape(v), changelog, re.M):
+        die(6, "sync: CHANGELOG.md has no '## v%s' entry — write the receipt "
+            "first" % v)
+    # C8 second leg (v0.4.242): WARN, never die.
+    c8_naming_warn(ledger, v)
+    # #514: the state-dir glossary is edited by the SAME law commits a sync
+    # ships, so this is the boundary where a declared-but-uncarried name first
+    # exists.
+    state_tracked_audit(ledger)
+    # #540: the INVERSE direction at the same boundary — a tracked file that no
+    # commit path carries can be deleted silently, so it is checked where the
+    # declaration audit already runs rather than left to a hand-run patrol.
+    state_out_of_scope_audit(ledger)
+    # step check: equal (re-sync) or third-component +1 only; --catch-up (T2
+    # verdict n=1695, HQ-approved 2026-09-06) relaxes ONLY the step size for the
+    # shipped-ahead dead zone — the doc-first gate above still pins v to the
+    # shipped version, so only multi-step FORWARD jumps gain a legal path.
+    meta = _unified(ledger).get("meta")
+    cur = L.to_string(_keep(meta.get("skill_version")
+                            if isinstance(meta, dict) else None, ""))
+    skipped = ""
+    if cur != v:
+        c2, c3 = _ver_parts(cur)
+        v2, v3 = _ver_parts(v)
+        # ``[ "$c2" = "$v2" ]`` is a STRING compare of the cut fields, so a
+        # zero-padded minor ("0.04.x") never matches a bare "4" — the shape gate
+        # admits leading zeros, so the two forms really can meet here.
+        if c2 == v2 and _test_num(v3) is not None \
+                and _test_num(v3) == _num(c3) + 1:
+            pass                            # normal +1 patch step
+        elif catchup == 1:
+            if not why:
+                die(L.RC_USAGE, "sync: --catch-up requires --why \"<reason>\" "
+                    "(audit line on the catch-up event)")
+            if _ver_gt(v2, v3, c2, c3):
+                # skipped-range note for the audit event (HQ ruling: from→to +
+                # range)
+                if c2 != v2:
+                    skipped = "cross-minor jump"
+                elif (_test_num(v3) is not None
+                      and _test_num(v3) > _num(c3) + 1):
+                    step = _num(c3) + 1
+                    skipped = "skipped 0.%s.%s" % (c2, step)
+                    while step < _test_num(v3) - 1:
+                        step += 1
+                        skipped += ", 0.%s.%s" % (c2, step)
+            else:
+                die(6, "sync: catch-up refused — requested %s is behind current "
+                    "%s (no downgrades)" % (v, cur))
+        else:
+            die(6, "sync: version step refused — current %s, requested %s (only "
+                "+1 patch or re-sync equal; multi-version catch-up: --catch-up "
+                "--why \"<reason>\")" % (cur, v))
+    # H-4 provenance gate (factory #31): a skill-bump row must never ship
+    # without its why-text. The CHANGELOG gate above protects the bump's
+    # RECEIPT; this protects the row's CONTENT. The tool's own header has always
+    # declared `--why mandatory` and upstream-merge-runbook.md:411 (H-4) makes
+    # it law, but the code required it only for --catch-up — so an empty --why
+    # shipped a provenance-free row ("v0.4.294 — ; battery receipt ts ...",
+    # n=15059).
+    #
+    # Placed AFTER the step-check block on purpose: five existing selftest legs
+    # run sync with no --why and expect rc 5/6 from OTHER gates, so the gate
+    # must not pre-empt them.
+    #
+    # Polarity is fail-CLOSED — the deliberate INVERSE of the oc-issue-log
+    # foreign-tracker guard (#30): that gated an OUTWARD comment whose absence
+    # is the breach (fail-open); this gates an INWARD append-only row, and a
+    # provenance-free row cannot be repaired in place.
+    if not why:
+        die(L.RC_USAGE, "sync: --why \"<provenance>\" is required — a skill-bump "
+            "row must not ship without its why-text (H-4, factory #31)")
+    # stray-guard (v0.4.157): a bump commit must never absorb another actor's
+    # work. The v0.4.63 root-fix stages the FULL tree so a tag can never point
+    # at a tree missing its payload (incident n=1405) — but ``git add -A`` also
+    # swept UNRELATED dirty paths, landing them under the bumper's commit
+    # message with the wrong provenance. Live repro 2026-09-12: commit 20c8df4f
+    # (HQ's v0.4.156 bump) carried tools/tests/battery-last.json, another lane's
+    # dirty receipt; earlier sweeps fda12336 / 28f7ef41 took a half-written
+    # oc-deploy the same way. Refuse-and-name instead of commit-and-sweep. The
+    # v0.4.63 guarantee holds: with --allow-sweep the full tree is still staged,
+    # and without it NO tag is created at all.
+    if L.is_git_repo(skill) and allow_sweep != 1:
+        stray = [path for path in _porcelain_paths(skill)
+                 if path not in STRAY_EXEMPT]
+        if stray:
+            errln("sync: REFUSED - unrelated dirty paths in the skill repo "
+                  "would ride the bump commit:")
+            for path in stray:
+                errln("    %s" % path)
+            errln("  commit them first (preferred - they keep their own message "
+                  "and provenance),")
+            errln("  or re-run with --allow-sweep to absorb them into the bump "
+                  "deliberately.")
+            die(7, "sync: refusing to sweep unrelated dirty paths (stray-guard "
+                "v0.4.157)")
+    # factory #47: the law-file digest is stamped by the SAME act that publishes
+    # the version — no second write to forget, and the append-only row cannot be
+    # retro-edited by a later bump. Computed only after every gate above passed,
+    # so a refused sync leaves no stamp behind (a refused bump must leave no
+    # drift).
+    ldg = law_digest()
+
+    def _sync_locked():
+        n = L.max_n(ledger) + 1
+        t = L.now_iso()
+        # idempotent re-sync: a skill-bump event for this version already
+        # present (e.g. re-running after a failed git leg) → fields refreshed,
+        # NO dup event.
+        dups = [row for row in (_unified(ledger).get("events") or [])
+                if isinstance(row, dict)
+                and L.to_string(_keep(row.get("kind"), "")) == "skill-bump"
+                and L.to_string(_keep(row.get("what"), "")).startswith(
+                    "v%s " % v)]
+        if dups:
+            # factory #47: a re-sync at the SAME version is an idempotent repair
+            # of a failed git leg — it must never launder a law edit into a
+            # published version. If the digest moved, the bump is missing and
+            # the only honest action is the NEXT version: refreshing meta here
+            # would make the stamp describe law the version never covered. Fail
+            # closed (an unrepairable row is worse than a refused re-run). An
+            # empty stamp means a pre-#47 row, which has no baseline to
+            # contradict — allowed, and check-version discloses the missing
+            # baseline instead of inventing one.
+            dup_stamp = L.to_string(_keep(dups[-1].get("law_digest"), ""))
+            if dup_stamp and dup_stamp != ldg:
+                die(6, "sync: law files changed since v%s was stamped (%s -> %s) "
+                    "— a re-sync is not a bump; publish the NEXT version (bump "
+                    "SKILL.md + CHANGELOG, then sync --version <next>)"
+                    % (v, dup_stamp, ldg))
+
+            def transform(doc):
+                doc["current_skill_version"] = v
+                meta_ = doc.get("meta")
+                if not isinstance(meta_, dict):
+                    meta_ = doc["meta"] = {}
+                meta_["current_skill_version"] = v
+                meta_["skill_version"] = v
+                doc["updated_at"] = t
+                return None
+            L.atomic_write(ledger, transform)
+            outln("re-synced version=%s (event already present — idempotent, no "
+                  "dup)" % v)
+            L.git_state_commit(ledger, "ledger: skill-bump v%s re-sync via "
+                               "oc-ledger" % v)
+            return
+
+        if catchup == 1:
+            what = ("v%s — catch-up from %s%s: %s; battery receipt ts %s"
+                    % (v, cur, " (%s)" % skipped if skipped else "", why, rts))
+        else:
+            what = "v%s — %s; battery receipt ts %s" % (v, why, rts)
+
+        def transform(doc):
+            doc["current_skill_version"] = v
+            meta_ = doc.get("meta")
+            if not isinstance(meta_, dict):
+                meta_ = doc["meta"] = {}
+            meta_["current_skill_version"] = v
+            meta_["skill_version"] = v
+            doc["updated_at"] = t
+            events = doc.get("events")
+            if events is None:
+                events = doc["events"] = []
+            events.append({"n": n, "t": t, "by": "oc-ledger sync",
+                           "kind": "skill-bump", "what": what,
+                           "law_digest": ldg})
+            return None
+        L.atomic_write(ledger, transform)
+        outln("synced version=%s (event n=%s)" % (v, n))
+        L.git_state_commit(ledger, "ledger n=%s: skill-bump v%s via oc-ledger "
+                           "sync" % (n, v))
+
+    L.with_lock(ledger, _sync_locked)
+
+    # skill-repo git leg: commit the version docs + tag.
+    # v0.4.63 root-fix (incident n=1405, three strikes v0.4.58/61/62): stage the
+    # FULL working tree, never a hardcoded doc list — a bump tag must never
+    # point at a tree missing its payload files. Swept non-doc payload is named
+    # LOUDLY on stderr so the sweep is visible in tools.log, never silent.
+    if L.is_git_repo(skill):
+        # v0.4.157: the exempt list is matched against a ``sed 's/^...//'``
+        # render, because porcelain emits a ONE-char status for a worktree
+        # modification (" M SKILL.md") — matching the list against the wrong
+        # offset left it INERT.
+        swept = [path for path in _porcelain_paths(skill)
+                 if path not in STRAY_EXEMPT]
+        _git_run(skill, "add", "-A")
+        if swept:
+            errln("PAYLOAD SWEPT into bump commit (--allow-sweep; silent-stray "
+                  "class, pre-v0.4.63): %s" % ";".join(swept))
+        # #467: ``git commit`` exits non-zero for BOTH a genuine failure and the
+        # benign 'nothing to commit' case, so a bare ``||`` arm reported a
+        # commit-lag on every idempotent re-sync — a clean tree is not a
+        # deferred commit. ``git diff --cached --quiet`` exits 0 exactly when
+        # the index matches HEAD, so the commit is attempted only when there is
+        # work.
+        rc, _, _ = _git_run(skill, "diff", "--cached", "--quiet")
+        if rc != 0:
+            crc, _, _ = _git_run(skill, "commit", "-q", "-m",
+                                 "skill v%s: oc-ledger sync — %s"
+                                 % (v, why or "version sync"))
+            if crc != 0:
+                errln("commit-lag: skill commit deferred")
+        trc, _, _ = _git_run(skill, "tag", "v%s" % v)
+        if trc != 0:
+            errln("tag v%s exists or failed" % v)
+
+    # Tail step (merge A, v0.4.48): shadow-rotate rides the bump cadence — the
+    # anchor for rotation becomes mechanical instead of prose. Rotation is
+    # durability, not a gate: failure WARNS, never fails the bump. Selftests
+    # redirect STATE_DIR to fixtures, so this stays side-effect-free there.
+    rotate = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "oc-shadow-rotate")
+    rot_out = ""
+    rot_rc = 0
+    try:
+        # ``2>&1`` — ONE pipe, interleaved in write order, never two streams
+        # concatenated after the fact.
+        proc = L.child_process([rotate], stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True)
+        rot_rc = proc.returncode
+        rot_out = (proc.stdout or "").rstrip("\n")
+    except OSError as exc:
+        # The bash runs the helper UNCONDITIONALLY, so a missing or unexecutable
+        # helper is a WARN with the shell's own rc (127 ENOENT / 126 EACCES) —
+        # never a silent skip, which would read as a clean rotation.
+        rot_rc = 127 if getattr(exc, "errno", None) == 2 else 126
+        rot_out = "%s: %s" % (rotate, exc.strerror or exc)
+    except (RuntimeError, subprocess.SubprocessError) as exc:
+        rot_rc, rot_out = 1, str(exc)
+    if rot_rc == 0:
+        outln("shadow-rotate: %s" % rot_out)
+    else:
+        errln("WARN: shadow-rotate tail step rc=%d (bump unaffected): %s"
+              % (rot_rc, rot_out))
+    _oc_log_extra("shadow_rotate", "rc=%d" % rot_rc)
+
+    # Mirror tail step (v0.4.50): push both repos to origin if configured —
+    # off-box durability rides the bump cadence exactly like rotate does.
+    L.push_mirror(skill, "skill")
+    L.push_mirror(L.state_dir(ledger), "state")
+
+    # ``cmd_cadence || true`` — the cadence print is a courtesy, never a verdict
+    # on the bump. A non-zero RETURN is swallowed; a ``die`` still exits, exactly
+    # as the bash's ``exit`` inside ``cmd_cadence`` does.
+    cmd_cadence(ledger, [])
+    return L.RC_OK
+
+
+# ---------------------------------------------------------------------------
 # dispatch
 # ---------------------------------------------------------------------------
 READ_VERBS = ("ok", "law-digest", "check-version", "cadence", "events", "tail",
@@ -3625,6 +4396,7 @@ _HANDLERS = {
     "claim-ref": cmd_claim_ref,
     "confirm": cmd_confirm,
     "sweep-closed-claims": cmd_sweep_closed_claims,
+    "sync": cmd_sync,
 }
 
 # The verbs this file does NOT implement yet plus the one verb the bash keeps

@@ -411,7 +411,6 @@ _JQ_BOM = b"\xef\xbb\xbf"
 _JQ_WS_B = b" \t\r\n"          # jv_parse.c classify(): WHITESPACE
 _JQ_STRUCT_B = b"[],{}:"       # jv_parse.c classify(): STRUCTURE
 _JQ_ESCAPES_B = b'\\"/bftnr'   # found_string(): the one-byte escapes
-_JQ_NUMBER_BYTES = b"0123456789+-.eE"
 
 
 def _jq_line_column(text: str, cursor: int):
@@ -456,10 +455,11 @@ def _jq_position(text: str, pos: int, exc=None):
         (``{"a":1,}``, ``[1,]``, ``{a:1}``, ``{"a":1}\\n{"b":}``).
     """
     rendered = _jq_parse_message(text, pos, exc)
-    tail = re.search(r" at (EOF )?at line (\d+), column (\d+)$", rendered)
+    tail = re.search(r" at (EOF at )?line (\d+), column (\d+)$", rendered)
     if tail is None:
-        # jq printed no position at all (only "Malformed BOM" does that), or
-        # the fallback arm fired; a position is still part of this signature.
+        # jq printed no position at all: only "Malformed BOM" does that, and
+        # it has no line/column of its own. Report end-of-input, flagged as
+        # truncated so a caller can tell this is not a located failure.
         return _jq_line_column(text, len(text)) + (True,)
     return (int(tail.group(2)), int(tail.group(3)),
             tail.group(1) is not None)
@@ -475,64 +475,122 @@ def _jq_parse_message(text: str, pos: int, exc: ValueError) -> str:
     mapping did) is what produced ``Invalid numeric literal`` where jq says
     ``Unmatched '}'``.
 
-    Each arm below is justified by a measured corpus (jq-1.7.1, ``jq -c .``):
+    Each arm below is a VERBATIM jq-1.7.1 line (``jq -c . < input``), so this
+    table doubles as a fixture list: every row was produced by running jq on
+    the input named beside it, not by reasoning about jq.
 
-    ==============================  =========================================
-    arm                             corpus that reaches it
-    ==============================  =========================================
-    ``Expected another key-value    ``{"a":1,}`` (col 8), ``{"a":1,  }`` (10),
-    pair``                          ``{"a":1,\\n "b":2,\\n}`` (line 3 col 1)
-    ``Expected another array        ``[1,]`` (4), ``[1,2,]`` (6), ``[1, ]`` (5),
-    element``                       ``{"a":[1,]}`` (9), ``[1,]]`` (4)
-    ``Expected value before ','``   ``,`` (1), ``[,]`` (2), ``{,}`` (2),
-                                    ``{"a":,}`` (6), ``{"a":1,,}`` (8)
-    ``Expected string key before    ``:`` (1), ``{:1}`` (2)
-    ':'``
-    ``Object keys must be strings`` ``{1:2}`` (3), ``{true:1}`` (6),
-                                    ``{"a":1,2:3}`` (9)
-    ``':' not as part of an         ``[1:2]`` (3), ``{"a":1:2}`` (7),
-    object``                        ``["a":1]`` (5), ``[[1]:2]`` (5)
-    ``Unmatched ']'``               ``]`` (1), ``{"a":1]`` (7), ``[1,]`` no —
-                                    ``{"a":1,]`` (8)
-    ``Unmatched '}'``               ``}`` (1), ``{"a":1}}`` (8), ``{"a":}`` (6),
-                                    ``[}`` (2), ``{"a":[}`` (7)
-    ``Objects must consist of       ``[1}`` (3), ``{"a",1}`` (5), ``["a"}`` (5),
-    key:value pairs``               ``{"a"}`` (5), ``{"a":1,[1]}`` (11)
-    ``Expected separator between    ``{"a" 1}`` (7), ``{"a" "b"}`` (8),
-    values``                        ``[1 2]`` (5), ``{"a":1 "b"}`` (10)
-    ``Invalid numeric literal``     ``{a:1}`` (3), ``[1,x]`` (5), ``1.2.3`` (5),
-                                    ``nan1`` (4), ``infx`` (4), ``.`` (1)
-    ``Invalid literal``             ``tru`` (3), ``nullx`` (5), ``falsee`` (6)
-    ``Unfinished string``           ``{"a":"xy`` (8, at EOF), ``"abc`` (4)
-    ``Unfinished JSON term``        ``{"a":1`` (line 2 col 0), ``[1,2``,
-                                    ``{"a"``, ``{``
-    ``Invalid escape``              ``{"a":"x\\\\q"}`` (10)
-    ``Invalid \\\\uXXXX escape``     ``{"a":"\\\\u12"}`` (11)
-    ``Invalid string: control …``   ``{"a":"x<TAB>y"}`` (10), ``{"a":"x\\ny"}``
-                                    (line 2 col 2)
-    ``Malformed BOM``               a leading ``\\xef`` that is not a whole BOM
-    ==============================  =========================================
+    =========================================  =====================  ============
+    jq's message (verbatim)                    input                  line, column
+    =========================================  =====================  ============
+    Expected another key-value pair            ``{"a":1,}``           1, 8
+    Expected another key-value pair            ``{"a":1,  }``         1, 10
+    Expected another key-value pair            ``{"a":1,\n "b":2,\n}``  3, 1
+    Expected another array element             ``[1,]``               1, 4
+    Expected another array element             ``[1,2,]``             1, 6
+    Expected another array element             ``[1, ]``              1, 5
+    Expected another array element             ``{"a":[1,]}``         1, 9
+    Expected another array element             ``[1,]]``              1, 4
+    Expected value before ','                  ``,``                  1, 1
+    Expected value before ','                  ``[,]``                1, 2
+    Expected value before ','                  ``{,}``                1, 2
+    Expected value before ','                  ``{"a":,}``            1, 6
+    Expected value before ','                  ``{"a":1,,}``          1, 8
+    Expected string key before ':'             ``:``                  1, 1
+    Expected string key before ':'             ``{:1}``               1, 2
+    Object keys must be strings                ``{1:2}``              1, 3
+    Object keys must be strings                ``{true:1}``           1, 6
+    Object keys must be strings                ``{"a":1,2:3}``        1, 9
+    ':' not as part of an object               ``[1:2]``              1, 3
+    ':' not as part of an object               ``{"a":1:2}``          1, 7
+    ':' not as part of an object               ``["a":1]``            1, 5
+    ':' not as part of an object               ``[[1]:2]``            1, 5
+    Unmatched ']'                              ``]``                  1, 1
+    Unmatched ']'                              ``{"a":1]``            1, 7
+    Unmatched ']'                              ``{"a":1,]``           1, 8
+    Unmatched '}'                              ``}``                  1, 1
+    Unmatched '}'                              ``{"a":1}}``           1, 8
+    Unmatched '}'                              ``{"a":}``             1, 6
+    Unmatched '}'                              ``[}``                 1, 2
+    Unmatched '}'                              ``{"a":[}``            1, 7
+    Objects must consist of key:value pairs    ``[1}``                1, 3
+    Objects must consist of key:value pairs    ``{"a",1}``            1, 5
+    Objects must consist of key:value pairs    ``["a"}``              1, 5
+    Objects must consist of key:value pairs    ``{"a"}``              1, 5
+    Objects must consist of key:value pairs    ``{"a":1,[1]}``        1, 11
+    Expected separator between values          ``{"a" 1}``            1, 7
+    Expected separator between values          ``{"a" "b"}``          1, 8
+    Expected separator between values          ``[1 2]``              1, 5
+    Expected separator between values          ``{"a":1 "b"}``        1, 10
+    Invalid numeric literal                    ``{a:1}``              1, 3
+    Invalid numeric literal                    ``[1,x]``              1, 5
+    Invalid numeric literal                    ``1.2.3\\n``           2, 0
+    Invalid numeric literal                    ``nan1\\n``            2, 0
+    Invalid numeric literal                    ``infx\\n``            2, 0
+    Invalid numeric literal                    ``.\\n``               2, 0
+    Invalid literal                            ``tru\\n``             2, 0
+    Invalid literal                            ``nullx\\n``           2, 0
+    Invalid literal                            ``falsee\\n``          2, 0
+    Unfinished string at EOF                   ``{"a":"xy``           1, 8
+    Unfinished string at EOF                   ``"abc``               1, 4
+    Unfinished JSON term at EOF                ``{"a":1\\n``          2, 0
+    Unfinished JSON term at EOF                ``[1,2\\n``            2, 0
+    Unfinished JSON term at EOF                ``{"a"\\n``            2, 0
+    Unfinished JSON term at EOF                ``{\\n``               2, 0
+    Invalid escape                             ``{"a":"x\\\\q"}``     1, 10
+    Invalid \\uXXXX escape                    ``{"a":"\\\\u12"}``    1, 11
+    Invalid string: control characters …       ``{"a":"x<TAB>y"}``    1, 10
+    Invalid string: control characters …       ``{"a":"x\\ny"}``      2, 2
+    =========================================  =====================  ============
 
-    Three behaviours that are easy to get wrong and are pinned by the corpus:
+    Note that a failure at EOF (``1e``, ``{"a":1``, ``"abc``) is spelled with
+    the extra ``at EOF``; the ``1.2.3\\n``-style rows are NOT at EOF — the
+    newline ends the token run, so jq reports the start of the next line.
+
+    ``Malformed BOM`` is the one message with NO position at all: a leading
+    ``\\xef`` that starts a BOM but then mismatches (``\\xef1``,
+    ``\\xef\\xbb{"a":1,}``). A BOM prefix that merely runs into EOF is
+    empty input and produces no error (``\\xef\\xbb`` alone → rc 0).
+
+    Four behaviours that are easy to get wrong and are pinned by the corpus:
 
     * The numeric-literal grammar is decNumber's, not JSON's: ``+5``, ``.5``,
       ``01``, ``1.``, ``nan``, ``NaN0``, ``inf``, ``Infinity``, ``snan`` and
       ``1e999`` are all ACCEPTED by jq; ``1e``, ``1e+``, ``1.2.3``, ``0x10``,
-      ``nan1`` and ``infx`` are not. The literal arm (``t``/``f``/``n``+
-      ``u``) is a plain string compare, so ``tru\\x00`` is *Invalid literal*
-      while ``nan\\x00`` is *valid* — the numeric arm truncates at the first
-      NUL (C ``strlen``) and the literal arm does not.
-    * A string that fails to close is *Unfinished string at EOF*, but a
-      string whose CONTENT is bad (``\\\\q``, a raw control byte, a short
+      ``nan1`` and ``infx`` are not. The literal arm (``t``/``f``/``n``+``u``)
+      is a plain string compare, so ``tru\\x00`` is *Invalid literal* while
+      ``nan\\x00`` is *valid* — the numeric arm truncates at the first NUL
+      (C ``strlen``) and the literal arm does not.
+    * A string that fails to close is *Unfinished string at EOF*, but a string
+      whose CONTENT is bad (``\\\\q``, a raw control byte, a short
       ``\\\\u``) fails at the closing quote, not at EOF.
     * A byte that cannot start a value is not an error by itself — it starts a
-      literal run that is validated when the run ends, which is why
-      ``{a:1}`` blames the ``:`` (column 3) and not the ``a``.
+      literal run that is validated when the run ends, which is why ``{a:1}``
+      blames the ``:`` (column 3) and not the ``a``.
+    * ``Unmatched '}'`` and ``Objects must consist of key:value pairs`` are the
+      SAME byte (``}``) under different stack states: ``[}`` is *Unmatched*
+      (an array is open, so there is no object to close) while ``[1}`` is
+      *Objects must consist of key:value pairs* (an array is open with a
+      pending value, so jq tries to store a pair). No table keyed on the byte
+      alone can tell these apart; the parse stack can, which is why this is a
+      replay of jq's scanner rather than a mapping of Python's exceptions.
 
-    If jq would ACCEPT the stream (it prints nothing) there is no line to
-    reproduce; that happens only for the loose-number spellings above, which
-    jq normalises on output and so can never appear in a file it wrote. The
-    fallback arm still returns a diagnostic, marked as an estimate.
+    Two classes of input are OUTSIDE what this function can influence, because
+    they are decided by :func:`parse_stream_lines` (Python's ``json``) before
+    any message is built. Both are recorded here so nobody re-derives them:
+
+    * jq ACCEPTS, Python refuses — so we raise where jq prints nothing, and
+      the final arm returns a best-effort diagnostic instead of a match. This
+      is the loose-number spellings above (``+5``, ``.5``, ``01``, ``nan``,
+      ``inf``, ``1e999``). jq normalises them on output, so a file jq itself
+      wrote cannot contain one.
+    * jq REFUSES, Python accepts — so no error is raised and this function is
+      never called. Two shapes: a lone UTF-16 surrogate escape
+      (``{"a":"\\\\ud800"}``), and ADJACENT VALUES with no separator where
+      jq's lexer merges them into ONE literal run (``01false``, ``null-3``,
+      ``{}true0``, ``true001``) while Python reads them as several values
+      (``01`` → ``0`` then ``1``; ``null-3`` → ``null`` then ``-3``). Measured
+      over a 4 871-case random corpus, this shape accounts for every one of
+      the 9 cases where jq rejected and we accepted.
     """
     data = text.encode("utf-8", "surrogateescape")
 
